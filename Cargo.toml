@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+lemma-index = { path = "crates/lemma-index" }
+lemma-lsp = { path = "crates/lemma-lsp" }
+lemma-model = { path = "crates/lemma-model" }
+lemma-providers = { path = "crates/lemma-providers" }
+lemma-query = { path = "crates/lemma-query" }
+lemma-store = { path = "crates/lemma-store" }
+lemma-syntax = { path = "crates/lemma-syntax" }
+
+anyhow = "1"
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+ignore = "0.4"
+lsp-types = "0.95"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+toml = "0.8"
+tree-sitter = "0.25"
+tree-sitter-go = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23"
+which = "7"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Doc comments stay short by convention; these would force boilerplate sections.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+dbg_macro = "deny"
+todo = "warn"
+excessive_nesting = "warn"
+allow_attributes_without_reason = "warn"
