@@ -32,6 +32,15 @@ languages = ["typescript", "tsx"]
 command = "tsc"
 args = ["--lsp", "--stdio"]
 
+# ty (from Astral) answers in milliseconds once loaded, even on very large
+# workspaces. Like the TypeScript servers, it does not count import
+# statements as references; pyright does.
+[[provider]]
+id = "ty"
+languages = ["python"]
+command = "ty"
+args = ["server"]
+
 # Pyright answers before it has found the workspace's files, and those
 # answers only cover files it already knows. It logs this once it has.
 [[provider]]
