@@ -29,12 +29,18 @@ impl Language {
 
     /// Picks the language for a file extension, without the leading dot.
     pub fn from_extension(extension: &str) -> Option<Self> {
-        match extension {
-            "ts" | "mts" | "cts" => Some(Self::TypeScript),
-            "tsx" => Some(Self::Tsx),
-            "py" | "pyi" => Some(Self::Python),
-            "go" => Some(Self::Go),
-            _ => None,
+        Self::ALL
+            .into_iter()
+            .find(|language| language.extensions().contains(&extension))
+    }
+
+    /// File extensions of this language, without the leading dot.
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::TypeScript => &["ts", "mts", "cts"],
+            Self::Tsx => &["tsx"],
+            Self::Python => &["py", "pyi"],
+            Self::Go => &["go"],
         }
     }
 
@@ -206,8 +212,9 @@ pub struct Snapshot {
     pub root: String,
     /// Git commit at the time of indexing, if the root is in a repository.
     pub revision: Option<String>,
-    /// Whether the working tree had uncommitted changes. The revision alone
-    /// does not describe a dirty tree; the fingerprint does.
+    /// Whether supported source files differ from `revision`, including
+    /// untracked ones. The revision alone does not describe a dirty tree; the
+    /// fingerprint does.
     pub is_dirty: bool,
     /// Hash of every indexed file's path and contents plus the extractor
     /// version. Equal fingerprints mean equal inputs.
