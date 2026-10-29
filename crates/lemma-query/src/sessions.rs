@@ -4,10 +4,14 @@
 //! while asking a loaded one takes milliseconds. A long-lived pool keeps
 //! servers warm and tells them which files changed between lookups.
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::Duration;
+
+use lemma_model::Language;
 
 use lemma_providers::{FileChange, InstalledProvider, ProviderError, ProviderSession};
 use lemma_store::{Store, StoreError, StoredSnapshot};
@@ -27,6 +31,41 @@ pub struct SessionPool {
     /// Whether sessions outlive one lookup, and so must be told about files
     /// that change between lookups.
     is_long_lived: bool,
+    /// Sessions being started in the background by [`SessionPool::warm_up`].
+    warming: HashSet<SessionKey>,
+    /// Warm-ups whose server failed to start, kept to report on first use.
+    failed_warm_ups: HashMap<SessionKey, ProviderError>,
+    arrivals: Sender<Arrival>,
+    arrivals_inbox: Receiver<Arrival>,
+}
+
+/// A server to start ahead of the first lookup, so it is ready by then.
+pub struct WarmUp {
+    /// The index database, opened separately by the warm-up thread.
+    pub db_path: PathBuf,
+    /// The snapshot whose root the server will serve.
+    pub snapshot: StoredSnapshot,
+    /// The provider to start.
+    pub provider: InstalledProvider,
+    /// The language to warm up. A file of it is opened so the server loads
+    /// that file's project.
+    pub language: Language,
+    /// How long to wait for the server to start and load.
+    pub request_timeout: Duration,
+}
+
+/// The result of a background warm-up.
+struct Arrival {
+    key: SessionKey,
+    outcome: WarmUpOutcome,
+}
+
+enum WarmUpOutcome {
+    Ready(Box<PooledSession>),
+    StartFailed(ProviderError),
+    /// Something other than the server failed, such as reading the index;
+    /// the next lookup starts the server itself.
+    Abandoned,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -49,18 +88,43 @@ impl SessionPool {
     /// A pool for a single lookup, such as one command-line call. Sessions
     /// are stopped by [`SessionPool::shutdown`].
     pub fn for_one_lookup() -> Self {
-        Self {
-            sessions: HashMap::new(),
-            is_long_lived: false,
-        }
+        Self::new(false)
     }
 
     /// A pool whose sessions serve many lookups over time, as in a daemon.
     pub fn long_lived() -> Self {
+        Self::new(true)
+    }
+
+    fn new(is_long_lived: bool) -> Self {
+        let (arrivals, arrivals_inbox) = mpsc::channel();
         Self {
             sessions: HashMap::new(),
-            is_long_lived: true,
+            is_long_lived,
+            warming: HashSet::new(),
+            failed_warm_ups: HashMap::new(),
+            arrivals,
+            arrivals_inbox,
         }
+    }
+
+    /// Starts a server in the background unless one is running or starting
+    /// already. A lookup that needs it meanwhile waits for it instead of
+    /// starting a second one.
+    pub fn warm_up(&mut self, warm_up: WarmUp) {
+        self.collect_arrivals(None);
+        let key = session_key(&warm_up.snapshot, &warm_up.provider);
+        if self.sessions.contains_key(&key) || self.warming.contains(&key) {
+            return;
+        }
+        self.warming.insert(key.clone());
+        let arrivals = self.arrivals.clone();
+        let is_long_lived = self.is_long_lived;
+        thread::spawn(move || {
+            let outcome = warm_session(&warm_up, is_long_lived);
+            // The pool may have been dropped; the session then stops with it.
+            let _ = arrivals.send(Arrival { key, outcome });
+        });
     }
 
     /// How many servers are running.
@@ -73,10 +137,42 @@ impl SessionPool {
         self.sessions.is_empty()
     }
 
-    /// Stops every server.
-    pub fn shutdown(self) {
+    /// Stops every server, waiting for any still starting.
+    pub fn shutdown(mut self) {
+        while !self.warming.is_empty() {
+            let Some(key) = self.warming.iter().next().cloned() else {
+                break;
+            };
+            self.collect_arrivals(Some(&key));
+        }
         for pooled in self.sessions.into_values() {
             pooled.session.shutdown();
+        }
+    }
+
+    /// Moves finished warm-ups into the pool. With `waiting_for`, blocks
+    /// until that session's warm-up has finished, if it is still running.
+    fn collect_arrivals(&mut self, waiting_for: Option<&SessionKey>) {
+        loop {
+            let must_wait = waiting_for.is_some_and(|key| self.warming.contains(key));
+            let arrival = if must_wait {
+                self.arrivals_inbox.recv().ok()
+            } else {
+                self.arrivals_inbox.try_recv().ok()
+            };
+            let Some(Arrival { key, outcome }) = arrival else {
+                return;
+            };
+            self.warming.remove(&key);
+            match outcome {
+                WarmUpOutcome::Ready(pooled) => {
+                    self.sessions.insert(key, *pooled);
+                }
+                WarmUpOutcome::StartFailed(error) => {
+                    self.failed_warm_ups.insert(key, error);
+                }
+                WarmUpOutcome::Abandoned => {}
+            }
         }
     }
 
@@ -91,6 +187,10 @@ impl SessionPool {
         request_timeout: Duration,
     ) -> Result<&mut ProviderSession, PoolError> {
         let key = session_key(snapshot, provider);
+        self.collect_arrivals(Some(&key));
+        if let Some(error) = self.failed_warm_ups.remove(&key) {
+            return Err(PoolError::Start(error));
+        }
         // Syncing may drop a session that could not be told about changes.
         self.sync(&key, store, snapshot)?;
         match self.sessions.entry(key) {
@@ -174,6 +274,69 @@ fn start(
     })
 }
 
+/// Starts and readies a server on a background thread, with its own
+/// connection to the index for the baseline of file hashes.
+fn warm_session(warm_up: &WarmUp, is_long_lived: bool) -> WarmUpOutcome {
+    let Ok(store) = Store::open(&warm_up.db_path) else {
+        return WarmUpOutcome::Abandoned;
+    };
+    let started = start(
+        &store,
+        &warm_up.snapshot,
+        &warm_up.provider,
+        warm_up.request_timeout,
+        is_long_lived,
+    );
+    let mut pooled = match started {
+        Ok(pooled) => pooled,
+        Err(PoolError::Start(error)) => return WarmUpOutcome::StartFailed(error),
+        Err(PoolError::Store(_)) => return WarmUpOutcome::Abandoned,
+    };
+    let files = store.files(warm_up.snapshot.id).unwrap_or_default();
+    let paths = files
+        .iter()
+        .filter(|file| file.language == warm_up.language)
+        .map(|file| file.path.as_str());
+    // A server without a sample, or whose sample cannot be opened, is still
+    // usable; the first lookup then waits for readiness itself.
+    if let Some(sample_path) = representative_file(paths) {
+        let _ = pooled.session.warm_up(&sample_path, warm_up.language);
+    }
+    WarmUpOutcome::Ready(Box::new(pooled))
+}
+
+/// Most directory levels to descend when choosing a representative file.
+const REPRESENTATIVE_DEPTH: usize = 4;
+
+/// A file in the densest part of the tree: from the root, repeatedly step
+/// into the subdirectory holding the most of these files. Opening it makes
+/// a server load the project most lookups will need, rather than whatever
+/// sorts first, such as a configuration file at the root.
+fn representative_file<'a>(paths: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut candidates: Vec<&str> = paths.collect();
+    candidates.sort_unstable();
+    let mut prefix = String::new();
+    for _ in 0..REPRESENTATIVE_DEPTH {
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for path in &candidates {
+            let rest = &path[prefix.len()..];
+            if let Some((directory, _)) = rest.split_once('/') {
+                *counts.entry(directory).or_insert(0) += 1;
+            }
+        }
+        let Some((densest, _)) = counts
+            .into_iter()
+            .max_by(|left, right| left.1.cmp(&right.1).then(right.0.cmp(left.0)))
+        else {
+            break;
+        };
+        let next_prefix = format!("{prefix}{densest}/");
+        candidates.retain(|path| path.starts_with(&next_prefix));
+        prefix = next_prefix;
+    }
+    candidates.first().map(|path| (*path).to_owned())
+}
+
 fn session_key(snapshot: &StoredSnapshot, provider: &InstalledProvider) -> SessionKey {
     SessionKey {
         provider_id: provider.definition.id.clone(),
@@ -243,6 +406,22 @@ mod tests {
                 ("d.py".to_owned(), FileChange::Created),
             ]
         );
+    }
+
+    #[test]
+    fn the_representative_file_is_in_the_densest_directory() {
+        let paths = [
+            "a.config.ts",
+            "apps/api/src/one.ts",
+            "apps/api/src/two.ts",
+            "apps/api/src/three.ts",
+            "apps/web/index.ts",
+            "tools/x.ts",
+        ];
+
+        let chosen = representative_file(paths.into_iter());
+
+        assert_eq!(chosen.as_deref(), Some("apps/api/src/one.ts"));
     }
 
     #[test]
