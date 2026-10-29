@@ -1,0 +1,7 @@
+# Thresholds backing the readability rules in CONTRIBUTING.md.
+too-many-arguments-threshold = 5
+too-many-lines-threshold = 60
+excessive-nesting-threshold = 4
+cognitive-complexity-threshold = 15
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
