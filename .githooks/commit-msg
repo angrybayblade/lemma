@@ -1,0 +1,33 @@
+#!/bin/sh
+# Rejects commit messages that do not follow Conventional Commits.
+# See CONTRIBUTING.md#commits.
+
+message_file="$1"
+subject=$(sed -n '1p' "$message_file")
+
+# Git-generated subjects are allowed as-is.
+case "$subject" in
+  "Merge "* | "Revert "* | "fixup! "* | "squash! "* | "amend! "*) exit 0 ;;
+esac
+
+types='feat|fix|refactor|perf|test|docs|build|ci|chore'
+pattern="^($types)(\([a-z0-9-]+\))?!?: [a-z0-9].*[^.]$"
+
+if ! printf '%s' "$subject" | grep -Eq "$pattern"; then
+  echo "commit-msg: subject must look like '<type>(<scope>): <summary>'" >&2
+  echo "  types: feat, fix, refactor, perf, test, docs, build, ci, chore" >&2
+  echo "  summary: lowercase, imperative, no trailing period" >&2
+  echo "  got: $subject" >&2
+  exit 1
+fi
+
+if [ "${#subject}" -gt 72 ]; then
+  echo "commit-msg: subject is ${#subject} characters; keep it to 72 or fewer" >&2
+  exit 1
+fi
+
+second_line=$(sed -n '2p' "$message_file")
+if [ -n "$second_line" ]; then
+  echo "commit-msg: leave a blank line between the subject and the body" >&2
+  exit 1
+fi
