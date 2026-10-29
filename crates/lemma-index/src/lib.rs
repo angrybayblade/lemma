@@ -5,21 +5,24 @@
 
 mod discover;
 mod git;
+mod scan;
+mod scope;
+mod state;
+mod uncommitted;
+mod watch;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use lemma_model::{IndexedFile, Language, Snapshot, content_hash};
-use lemma_store::{
-    FileStamp, NewSnapshot, SnapshotUpdate, StampedFile, Store, StoreError, StoredFile,
-    StoredSnapshot,
-};
-use lemma_syntax::{EXTRACTOR_VERSION, Extraction, Extractor, SyntaxError};
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use lemma_model::{Language, Snapshot};
+use lemma_store::{NewSnapshot, SnapshotUpdate, Store, StoreError, StoredSnapshot};
+use lemma_syntax::{EXTRACTOR_VERSION, SyntaxError};
+
+use crate::scan::{ExtractorPool, ReusePolicy};
+use crate::scope::{DirtyScope, WalkScope};
+use crate::state::{ChangeSet, Coverage, FileSet};
 
 /// Why indexing failed.
 #[derive(Debug, thiserror::Error)]
@@ -70,122 +73,353 @@ pub struct IndexSummary {
 /// since the stored snapshot are not parsed again, and only changed files are
 /// rewritten in the store.
 pub fn index_directory(root: &Path, store: &mut Store) -> Result<IndexSummary, IndexError> {
-    let indexed_at_ns = now_ns();
-    let root = root.canonicalize().map_err(|source| IndexError::Root {
-        path: root.to_owned(),
-        source,
-    })?;
-    let root_text = root.display().to_string();
+    LiveIndex::new(root)?.index(store)
+}
 
-    let survey = survey(&root, store)?;
-    let fingerprint = snapshot_fingerprint(&survey.scans);
-    let snapshot = Snapshot {
-        root: root_text,
-        revision: survey.head.as_ref().map(|head| head.revision.clone()),
-        is_dirty: !survey.uncommitted_paths.is_empty(),
-        fingerprint,
-    };
-    let is_unchanged = survey
-        .previous
-        .as_ref()
-        .is_some_and(|previous| previous.stored.snapshot.fingerprint == snapshot.fingerprint);
+/// An index of one directory kept up to date by a long-lived process.
+///
+/// Between runs it remembers the indexed files, their totals, and the
+/// checked-out commit, so a change costs work in proportion to the change.
+/// With a watcher it also knows which paths changed, so it lists only those
+/// directories instead of walking the whole tree.
+pub struct LiveIndex {
+    root: PathBuf,
+    previous: Option<Previous>,
+    /// The commit seen by the last run.
+    last_head: HeadState,
+    watch: Option<watch::Watch>,
+    extractors: ExtractorPool,
+}
 
-    let snapshot_id = match &survey.previous {
-        Some(previous) => {
-            let update = SnapshotUpdate {
-                snapshot: &snapshot,
-                indexed_at_ns,
-                uncommitted_paths: &survey.uncommitted_paths,
-                changed: &survey.changes.changed,
-                removed: &survey.changes.removed,
-                restamped: &survey.changes.restamped,
-            };
-            store.update_snapshot(previous.stored.id, &update)?;
-            previous.stored.id
-        }
-        None => store.replace_snapshot(&NewSnapshot {
+/// What is known about the checked-out commit.
+#[derive(Debug, Clone)]
+enum HeadState {
+    /// Not known: ask Git.
+    Unknown,
+    /// Known: a commit, or `None` outside a repository or before the first
+    /// commit.
+    Known(Option<git::Head>),
+}
+
+/// What the store holds for the directory after the last run.
+struct Previous {
+    stored: StoredSnapshot,
+    files: FileSet,
+    uncommitted_paths: Vec<String>,
+}
+
+impl LiveIndex {
+    /// An index that walks the whole tree on every run.
+    pub fn new(root: &Path) -> Result<Self, IndexError> {
+        let root = root.canonicalize().map_err(|source| IndexError::Root {
+            path: root.to_owned(),
+            source,
+        })?;
+        Ok(Self {
+            root,
+            previous: None,
+            last_head: HeadState::Unknown,
+            watch: None,
+            extractors: ExtractorPool::new(),
+        })
+    }
+
+    /// An index that watches the tree and walks only what changed. Falls back
+    /// to full walks if the platform cannot watch.
+    pub fn watched(root: &Path) -> Result<Self, IndexError> {
+        let mut index = Self::new(root)?;
+        index.watch = watch::Watch::start(&index.root);
+        Ok(index)
+    }
+
+    /// Indexes the directory and stores the snapshot.
+    pub fn index(&mut self, store: &mut Store) -> Result<IndexSummary, IndexError> {
+        let indexed_at_ns = now_ns();
+        let root_text = self.root.display().to_string();
+        let ScanPlan {
+            previous,
+            walk_scope,
+            known_head,
+        } = match self.plan(store, &root_text)? {
+            Plan::Unchanged(summary) => return Ok(*summary),
+            Plan::Scan(plan) => *plan,
+        };
+
+        let survey = survey(
+            &self.root,
+            previous.as_ref(),
+            &walk_scope,
+            known_head,
+            &self.extractors,
+        )?;
+        let coverage = match &walk_scope {
+            WalkScope::Full => Coverage::All,
+            WalkScope::Partial(dirty) => Coverage::Scope(dirty),
+        };
+        let (mut files, previous_stored) = match previous {
+            Some(previous) => (previous.files, Some(previous.stored)),
+            None => (FileSet::default(), None),
+        };
+        let snapshot = Snapshot {
+            root: root_text,
+            revision: survey.head.as_ref().map(|head| head.revision.clone()),
+            is_dirty: !survey.uncommitted_paths.is_empty(),
+            fingerprint: files.fingerprint_after(&survey.changes),
+        };
+        let write = SnapshotWrite {
+            previous_id: previous_stored.as_ref().map(|stored| stored.id),
             snapshot: &snapshot,
-            extractor_version: EXTRACTOR_VERSION,
-            indexed_at_ns,
-            files: &survey.changes.changed,
+            changes: &survey.changes,
             uncommitted_paths: &survey.uncommitted_paths,
-        })?,
-    };
-    Ok(summarize(
-        snapshot_id,
-        snapshot,
-        is_unchanged,
-        &survey.scans,
-    ))
+            indexed_at_ns,
+        };
+        // If the write fails, memory no longer matches the store; `previous`
+        // stays empty and the next run reloads from the store.
+        let snapshot_id = write.save(store)?;
+        files.apply(survey.changes, coverage);
+
+        let is_unchanged = previous_stored
+            .is_some_and(|stored| stored.snapshot.fingerprint == snapshot.fingerprint);
+        let previous = Previous {
+            stored: StoredSnapshot {
+                id: snapshot_id,
+                extractor_version: EXTRACTOR_VERSION.to_owned(),
+                indexed_at_ns,
+                snapshot,
+            },
+            files,
+            uncommitted_paths: survey.uncommitted_paths,
+        };
+        let summary = previous.summary(is_unchanged);
+        self.last_head = HeadState::Known(survey.head);
+        self.previous = Some(previous);
+        Ok(summary)
+    }
+
+    /// Decides what this run must look at, or answers straight away when
+    /// nothing reported can have changed the stored snapshot.
+    fn plan(&mut self, store: &Store, root_text: &str) -> Result<Plan, IndexError> {
+        let observed = self.watch.as_mut().map(watch::Watch::changes);
+        let (previous, is_remembered) = self.current_previous(store, root_text)?;
+        let walk_scope = match (&previous, observed) {
+            (Some(previous), Some(observed)) if is_remembered && !observed.needs_full_walk => {
+                scope::walk_scope(
+                    &self.root,
+                    observed.paths.iter().map(PathBuf::as_path),
+                    previous.files.files(),
+                    Some(&self.root.join(".lemma")),
+                )
+            }
+            _ => WalkScope::Full,
+        };
+        let known_head = self.known_head(&walk_scope);
+        let is_quiet = matches!(&walk_scope, WalkScope::Partial(dirty) if dirty.is_empty());
+        let is_head_known = matches!(known_head, HeadState::Known(_));
+        match previous {
+            Some(previous) if is_quiet && is_head_known => {
+                let summary = previous.summary(true);
+                self.previous = Some(previous);
+                Ok(Plan::Unchanged(Box::new(summary)))
+            }
+            previous => Ok(Plan::Scan(Box::new(ScanPlan {
+                previous,
+                walk_scope,
+                known_head,
+            }))),
+        }
+    }
+
+    /// The previous run's state, from memory when the store still holds
+    /// exactly that snapshot, otherwise from the store. The flag says whether
+    /// it came from memory, which is when watched changes can be trusted.
+    fn current_previous(
+        &mut self,
+        store: &Store,
+        root_text: &str,
+    ) -> Result<(Option<Previous>, bool), IndexError> {
+        let stored = store.snapshot_for_root(root_text)?;
+        let remembered = self
+            .previous
+            .take()
+            .filter(|previous| stored.as_ref() == Some(&previous.stored));
+        if remembered.is_some() {
+            return Ok((remembered, true));
+        }
+        let Some(stored) = stored.filter(|stored| stored.extractor_version == EXTRACTOR_VERSION)
+        else {
+            return Ok((None, false));
+        };
+        let previous = Previous {
+            files: FileSet::from_stored(store.files(stored.id)?),
+            uncommitted_paths: store.uncommitted_paths(stored.id)?,
+            stored,
+        };
+        Ok((Some(previous), false))
+    }
+
+    /// The commit from the last run, if nothing under `.git` changed since.
+    /// Only usable when `.git` is inside the watched directory.
+    fn known_head(&self, walk_scope: &WalkScope) -> HeadState {
+        let WalkScope::Partial(dirty) = walk_scope else {
+            return HeadState::Unknown;
+        };
+        let is_git_watched = self.root.join(".git").exists();
+        if dirty.git_changed || !is_git_watched {
+            return HeadState::Unknown;
+        }
+        self.last_head.clone()
+    }
+}
+
+/// What a run has to do.
+enum Plan {
+    /// Nothing changed; this is the answer.
+    Unchanged(Box<IndexSummary>),
+    /// Scan part of the tree.
+    Scan(Box<ScanPlan>),
+}
+
+/// The part of the tree to scan, and what is already known.
+struct ScanPlan {
+    previous: Option<Previous>,
+    walk_scope: WalkScope,
+    known_head: HeadState,
+}
+
+impl Previous {
+    fn summary(&self, is_unchanged: bool) -> IndexSummary {
+        IndexSummary {
+            snapshot_id: self.stored.id,
+            snapshot: self.stored.snapshot.clone(),
+            is_unchanged,
+            files_by_language: self.files.files_by_language().clone(),
+            symbol_count: self.files.symbol_count(),
+            files_with_syntax_errors: self.files.files_with_syntax_errors(),
+            unreadable_files: self.files.unreadable_files(),
+        }
+    }
+}
+
+/// Everything one run writes to the store.
+struct SnapshotWrite<'a> {
+    previous_id: Option<i64>,
+    snapshot: &'a Snapshot,
+    changes: &'a ChangeSet,
+    uncommitted_paths: &'a [String],
+    indexed_at_ns: i64,
+}
+
+impl SnapshotWrite<'_> {
+    /// Saves a new snapshot, or updates the previous one in place.
+    fn save(&self, store: &mut Store) -> Result<i64, IndexError> {
+        let Some(previous_id) = self.previous_id else {
+            return Ok(store.replace_snapshot(&NewSnapshot {
+                snapshot: self.snapshot,
+                extractor_version: EXTRACTOR_VERSION,
+                indexed_at_ns: self.indexed_at_ns,
+                files: &self.changes.changed,
+                uncommitted_paths: self.uncommitted_paths,
+            })?);
+        };
+        store.update_snapshot(
+            previous_id,
+            &SnapshotUpdate {
+                snapshot: self.snapshot,
+                indexed_at_ns: self.indexed_at_ns,
+                uncommitted_paths: self.uncommitted_paths,
+                changed: &self.changes.changed,
+                removed: &self.changes.removed,
+                restamped: &self.changes.restamped,
+            },
+        )?;
+        Ok(previous_id)
+    }
 }
 
 /// Everything learned about the directory before anything is written.
 struct Survey {
-    previous: Option<Previous>,
-    scans: Vec<Scan>,
-    changes: Changes,
+    changes: ChangeSet,
     head: Option<git::Head>,
     uncommitted_paths: Vec<String>,
 }
 
-/// The stored snapshot of the directory, as the starting point for an
-/// incremental update.
-struct Previous {
-    stored: StoredSnapshot,
-    files: HashMap<String, StoredFile>,
-    uncommitted_paths: Vec<String>,
+/// How this run learns which source files differ from the commit.
+enum GitPlan {
+    /// Not a repository.
+    NoRepository,
+    /// The commit is new to this index, or Git's own state changed: ask
+    /// about every source file.
+    Everything(git::Head),
+    /// Same commit, and the watcher named what changed: ask about those
+    /// paths while the scan runs.
+    Paths(git::Head, Vec<String>),
+    /// Same commit, but what changed is only known once the scan finishes.
+    AfterScan(git::Head),
 }
 
-/// Scans the directory and asks Git what changed, overlapping the slow parts:
-/// the walk and Git run in the background while the stored files load.
-fn survey(root: &Path, store: &Store) -> Result<Survey, IndexError> {
-    let head_probe = git::HeadProbe::start(root);
+/// Scans the directory and asks Git what changed, overlapping the slow
+/// parts: Git runs while the walk and parse do.
+fn survey(
+    root: &Path,
+    previous: Option<&Previous>,
+    walk_scope: &WalkScope,
+    known_head: HeadState,
+    extractors: &ExtractorPool,
+) -> Result<Survey, IndexError> {
+    let head_probe = matches!(known_head, HeadState::Unknown).then(|| git::HeadProbe::start(root));
     thread::scope(|scope| {
-        let walk = scope.spawn(|| discover::source_files(root));
-        let previous = load_previous(store, &root.display().to_string())?;
-        let head = head_probe.finish();
-
-        // A first index, or a different commit, needs a full `git status`;
-        // start it now so it runs during the scan.
-        let needs_full_status = head.as_ref().is_some_and(|head| {
-            previous.as_ref().is_none_or(|previous| {
-                previous.stored.snapshot.revision.as_deref() != Some(head.revision.as_str())
-            })
+        let walk = scope.spawn(|| match walk_scope {
+            WalkScope::Full => discover::source_files(root),
+            WalkScope::Partial(dirty) => discover::source_files_in(root, Some(dirty)),
         });
-        let full_status = head
-            .as_ref()
-            .filter(|_| needs_full_status)
-            .cloned()
-            .map(|head| scope.spawn(move || git::uncommitted_paths(root, &head, None)));
+        let head = match (head_probe, known_head) {
+            (Some(probe), _) => probe.finish(),
+            (None, HeadState::Known(head)) => head,
+            (None, HeadState::Unknown) => None,
+        };
+        let previous_uncommitted =
+            previous.map_or(&[][..], |previous| previous.uncommitted_paths.as_slice());
+        let plan = git_plan(head.clone(), previous, walk_scope);
+        let early_git = match &plan {
+            GitPlan::Everything(head) => {
+                let head = head.clone();
+                Some(scope.spawn(move || uncommitted::all(root, &head)))
+            }
+            GitPlan::Paths(head, paths) => {
+                let head = head.clone();
+                let paths = paths.clone();
+                Some(scope.spawn(move || {
+                    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+                    uncommitted::refreshed(root, &head, previous_uncommitted, &paths)
+                }))
+            }
+            GitPlan::NoRepository | GitPlan::AfterScan(_) => None,
+        };
 
-        let known = previous.as_ref().map(|previous| &previous.files);
-        let empty = HashMap::new();
+        let empty = BTreeMap::new();
         let reuse = ReusePolicy {
-            known: known.unwrap_or(&empty),
-            trusted_before_ns: previous
-                .as_ref()
-                .map(|previous| previous.stored.indexed_at_ns),
+            known: previous.map_or(&empty, |previous| previous.files.files()),
+            trusted_before_ns: previous.map(|previous| previous.stored.indexed_at_ns),
         };
-        let scans = scan_files(join(walk)?, &reuse)?;
-        let changes = Changes::between(reuse.known, scans.iter());
+        let scans = scan::scan_files(join(walk)?, &reuse, extractors)?;
+        let coverage = match walk_scope {
+            WalkScope::Full => Coverage::All,
+            WalkScope::Partial(dirty) => Coverage::Scope(dirty),
+        };
+        let changes = match previous {
+            Some(previous) => previous.files.changes(scans, coverage),
+            None => FileSet::default().changes(scans, coverage),
+        };
 
-        let uncommitted = match (&head, full_status, &previous) {
-            (None, _, _) => Vec::new(),
-            (Some(_), Some(full_status), _) => join(full_status).unwrap_or_default(),
-            (Some(head), None, Some(previous)) => {
-                refresh_uncommitted(root, head, &previous.uncommitted_paths, &changes)
+        let uncommitted_paths = match (plan, early_git) {
+            (_, Some(early)) => join(early),
+            (GitPlan::AfterScan(head), None) => {
+                let touched: Vec<&str> = changes.touched_paths().collect();
+                uncommitted::refreshed(root, &head, previous_uncommitted, &touched)
             }
-            (Some(head), None, None) => {
-                git::uncommitted_paths(root, head, None).unwrap_or_default()
-            }
+            _ => Vec::new(),
         };
-        let uncommitted_paths = uncommitted
-            .into_iter()
-            .filter(|path| discover::is_in_scope(path))
-            .collect();
         Ok(Survey {
-            previous,
-            scans,
             changes,
             head,
             uncommitted_paths,
@@ -193,75 +427,28 @@ fn survey(root: &Path, store: &Store) -> Result<Survey, IndexError> {
     })
 }
 
-/// Most paths Git is asked about by name before a full status is cheaper.
-const MAX_NAMED_STATUS_PATHS: usize = 1000;
-
-/// Updates the previous run's uncommitted paths by asking Git only about
-/// files whose contents changed since. Untouched files cannot have started or
-/// stopped differing from an unchanged commit.
-fn refresh_uncommitted(
-    root: &Path,
-    head: &git::Head,
-    previous: &[String],
-    changes: &Changes,
-) -> Vec<String> {
-    let changed_paths = changes
-        .changed
-        .iter()
-        .map(|changed| changed.file.path.as_str());
-    let touched: Vec<&str> = changed_paths
-        .chain(changes.removed.iter().map(String::as_str))
-        .collect();
-    if touched.is_empty() {
-        return previous.to_vec();
-    }
-    if touched.len() > MAX_NAMED_STATUS_PATHS {
-        return git::uncommitted_paths(root, head, None).unwrap_or_default();
-    }
-    let Some(now_uncommitted) = git::uncommitted_paths(root, head, Some(&touched)) else {
-        return git::uncommitted_paths(root, head, None).unwrap_or_default();
+fn git_plan(
+    head: Option<git::Head>,
+    previous: Option<&Previous>,
+    walk_scope: &WalkScope,
+) -> GitPlan {
+    let Some(head) = head else {
+        return GitPlan::NoRepository;
     };
-
-    let touched: HashSet<&str> = touched.into_iter().collect();
-    let mut paths: BTreeSet<String> = previous
-        .iter()
-        .filter(|path| !touched.contains(path.as_str()))
-        .cloned()
-        .collect();
-    paths.extend(now_uncommitted);
-    paths.into_iter().collect()
-}
-
-/// The stored snapshot of `root` and its files, if one exists and was made
-/// by this extractor version. Older snapshots are rebuilt from scratch.
-fn load_previous(store: &Store, root_text: &str) -> Result<Option<Previous>, IndexError> {
-    let Some(stored) = store
-        .snapshot_for_root(root_text)?
-        .filter(|stored| stored.extractor_version == EXTRACTOR_VERSION)
-    else {
-        return Ok(None);
-    };
-    let files = known_files(store.files(stored.id)?);
-    let uncommitted_paths = store.uncommitted_paths(stored.id)?;
-    Ok(Some(Previous {
-        stored,
-        files,
-        uncommitted_paths,
-    }))
-}
-
-/// Scans files on every core. `collect` keeps the discovery order, which
-/// keeps the snapshot deterministic.
-fn scan_files(
-    discovered: Vec<discover::SourceFile>,
-    reuse: &ReusePolicy<'_>,
-) -> Result<Vec<Scan>, IndexError> {
-    let extractors = ExtractorPool::new();
-    let scans: Vec<Result<Scan, IndexError>> = discovered
-        .into_par_iter()
-        .map(|file| scan_file(&extractors, file, reuse))
-        .collect();
-    scans.into_iter().collect()
+    let previous_revision =
+        previous.and_then(|previous| previous.stored.snapshot.revision.as_deref());
+    if previous_revision != Some(head.revision.as_str()) {
+        return GitPlan::Everything(head);
+    }
+    match walk_scope {
+        // Staging or committing changes `.git` without moving files; only a
+        // full status sees that.
+        WalkScope::Partial(DirtyScope {
+            git_changed: true, ..
+        }) => GitPlan::Everything(head),
+        WalkScope::Partial(dirty) => GitPlan::Paths(head, dirty.paths.iter().cloned().collect()),
+        WalkScope::Full => GitPlan::AfterScan(head),
+    }
 }
 
 /// Waits for a background thread, re-raising its panic if it had one.
@@ -269,253 +456,6 @@ fn join<T>(handle: thread::ScopedJoinHandle<'_, T>) -> T {
     handle
         .join()
         .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
-}
-
-/// What scanning one discovered file found.
-enum Scan {
-    /// Stamp unchanged since the stored snapshot; not read.
-    Unchanged(StoredFile),
-    /// Read and hashed: same contents as stored, but a different stamp.
-    Restamped(StoredFile),
-    /// Parsed, because it is new or its contents changed.
-    Parsed(StampedFile),
-    /// Not valid UTF-8 or could not be read.
-    Unreadable(String),
-}
-
-/// Which stored files a scan may reuse instead of parsing again.
-struct ReusePolicy<'a> {
-    known: &'a HashMap<String, StoredFile>,
-    /// When the previous indexing run started, if there was one.
-    trusted_before_ns: Option<i64>,
-}
-
-impl ReusePolicy<'_> {
-    /// The stored file for this path, if it is the same language.
-    fn stored(&self, file: &discover::SourceFile) -> Option<&StoredFile> {
-        self.known
-            .get(&file.relative_path)
-            .filter(|stored| stored.language == file.language)
-    }
-
-    /// Whether an unchanged stamp is enough to skip reading the file.
-    ///
-    /// A file written during or after the previous run could have changed
-    /// within the same timestamp tick as the stamp that run recorded. Like
-    /// Git's "racily clean" check, such files are always read again; only
-    /// stamps older than the previous run's start are trusted.
-    fn trusts(&self, stored: &StoredFile, stamp: FileStamp) -> bool {
-        let Some(trusted_before_ns) = self.trusted_before_ns else {
-            return false;
-        };
-        stored.stamp == stamp && stamp.modified_ns.max(stamp.changed_ns) < trusted_before_ns
-    }
-}
-
-/// Reuses, rehashes, or parses one file.
-fn scan_file(
-    extractors: &ExtractorPool,
-    file: discover::SourceFile,
-    reuse: &ReusePolicy<'_>,
-) -> Result<Scan, IndexError> {
-    let stored = reuse.stored(&file);
-    if let Some(stored) = stored.filter(|stored| reuse.trusts(stored, file.stamp)) {
-        return Ok(Scan::Unchanged(stored.clone()));
-    }
-
-    let Some(contents) = read_utf8(&file.absolute_path) else {
-        return Ok(Scan::Unreadable(file.relative_path));
-    };
-    let content_hash = content_hash(contents.as_bytes());
-    if let Some(stored) = stored.filter(|stored| stored.content_hash == content_hash) {
-        let restamped = StoredFile {
-            stamp: file.stamp,
-            ..stored.clone()
-        };
-        return Ok(Scan::Restamped(restamped));
-    }
-
-    let extraction = extractors.extract(file.language, &contents)?;
-    Ok(Scan::Parsed(StampedFile {
-        file: IndexedFile {
-            path: file.relative_path,
-            language: file.language,
-            content_hash,
-            has_syntax_errors: extraction.has_syntax_errors,
-            symbols: extraction.symbols,
-        },
-        stamp: file.stamp,
-    }))
-}
-
-/// One extractor per worker thread, created the first time that thread has
-/// to parse. Setting one up compiles every query (about 10 ms), so a no-op
-/// re-index should not pay for it, and parsers cannot be shared between
-/// threads.
-struct ExtractorPool {
-    slots: Vec<Mutex<Option<Extractor>>>,
-}
-
-impl ExtractorPool {
-    fn new() -> Self {
-        // One slot per pool thread, plus one for a caller outside the pool.
-        let slots = (0..=rayon::current_num_threads())
-            .map(|_| Mutex::new(None))
-            .collect();
-        Self { slots }
-    }
-
-    fn extract(&self, language: Language, source: &str) -> Result<Extraction, IndexError> {
-        let index = rayon::current_thread_index().map_or(0, |thread| thread + 1);
-        let Some(slot) = self.slots.get(index) else {
-            return Ok(Extractor::new()?.extract(language, source)?);
-        };
-        // Each slot is only used by its own thread, so a poisoned lock just
-        // means an earlier extraction on this thread failed; the extractor
-        // itself is still usable.
-        let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
-        let extractor = match slot.take() {
-            Some(extractor) => extractor,
-            None => Extractor::new()?,
-        };
-        Ok(slot.insert(extractor).extract(language, source)?)
-    }
-}
-
-/// The store writes needed to go from the stored files to the scanned ones.
-struct Changes {
-    changed: Vec<StampedFile>,
-    removed: Vec<String>,
-    restamped: Vec<(String, FileStamp)>,
-}
-
-impl Changes {
-    fn between<'a>(
-        known: &HashMap<String, StoredFile>,
-        scans: impl Iterator<Item = &'a Scan>,
-    ) -> Self {
-        let mut changes = Self {
-            changed: Vec::new(),
-            removed: Vec::new(),
-            restamped: Vec::new(),
-        };
-        let mut present = HashSet::new();
-        for scan in scans {
-            match scan {
-                Scan::Unchanged(stored) => {
-                    present.insert(stored.path.as_str());
-                }
-                Scan::Restamped(stored) => {
-                    present.insert(stored.path.as_str());
-                    changes.restamped.push((stored.path.clone(), stored.stamp));
-                }
-                Scan::Parsed(parsed) => {
-                    present.insert(parsed.file.path.as_str());
-                    changes.changed.push(parsed.clone());
-                }
-                Scan::Unreadable(_) => {}
-            }
-        }
-        changes.removed = known
-            .keys()
-            .filter(|path| !present.contains(path.as_str()))
-            .cloned()
-            .collect();
-        changes.removed.sort();
-        changes
-    }
-}
-
-/// Per-file facts every kind of scan can report.
-struct FileFacts<'a> {
-    path: &'a str,
-    language: Language,
-    content_hash: &'a str,
-    has_syntax_errors: bool,
-    symbol_count: usize,
-}
-
-impl Scan {
-    fn facts(&self) -> Option<FileFacts<'_>> {
-        match self {
-            Scan::Unchanged(stored) | Scan::Restamped(stored) => Some(FileFacts {
-                path: &stored.path,
-                language: stored.language,
-                content_hash: &stored.content_hash,
-                has_syntax_errors: stored.has_syntax_errors,
-                symbol_count: stored.symbol_count,
-            }),
-            Scan::Parsed(parsed) => Some(FileFacts {
-                path: &parsed.file.path,
-                language: parsed.file.language,
-                content_hash: &parsed.file.content_hash,
-                has_syntax_errors: parsed.file.has_syntax_errors,
-                symbol_count: parsed.file.symbols.len(),
-            }),
-            Scan::Unreadable(_) => None,
-        }
-    }
-}
-
-fn known_files(files: Vec<StoredFile>) -> HashMap<String, StoredFile> {
-    files
-        .into_iter()
-        .map(|file| (file.path.clone(), file))
-        .collect()
-}
-
-/// Hash of the extractor version and every file's path and content hash.
-/// Scans must already be sorted by path.
-fn snapshot_fingerprint(scans: &[Scan]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(EXTRACTOR_VERSION.as_bytes());
-    hasher.update(b"\n");
-    for facts in scans.iter().filter_map(Scan::facts) {
-        hasher.update(facts.path.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(facts.content_hash.as_bytes());
-        hasher.update(b"\n");
-    }
-    hasher.finalize().to_hex().to_string()
-}
-
-fn summarize(
-    snapshot_id: i64,
-    snapshot: Snapshot,
-    is_unchanged: bool,
-    scans: &[Scan],
-) -> IndexSummary {
-    let mut files_by_language = BTreeMap::new();
-    let mut symbol_count = 0;
-    let mut files_with_syntax_errors = Vec::new();
-    let mut unreadable_files = Vec::new();
-    for scan in scans {
-        let Some(facts) = scan.facts() else {
-            if let Scan::Unreadable(path) = scan {
-                unreadable_files.push(path.clone());
-            }
-            continue;
-        };
-        *files_by_language.entry(facts.language).or_insert(0) += 1;
-        symbol_count += facts.symbol_count;
-        if facts.has_syntax_errors {
-            files_with_syntax_errors.push(facts.path.to_owned());
-        }
-    }
-    IndexSummary {
-        snapshot_id,
-        snapshot,
-        is_unchanged,
-        files_by_language,
-        symbol_count,
-        files_with_syntax_errors,
-        unreadable_files,
-    }
-}
-
-fn read_utf8(path: &Path) -> Option<String> {
-    let bytes = fs::read(path).ok()?;
-    String::from_utf8(bytes).ok()
 }
 
 /// The current wall-clock time. Only used to decide which file stamps can be
@@ -532,6 +472,7 @@ fn now_ns() -> i64 {
 mod tests {
     use super::*;
     use lemma_store::{NameMatch, SymbolFilter};
+    use std::fs;
 
     fn write(root: &Path, relative_path: &str, contents: &str) {
         let path = root.join(relative_path);
@@ -698,65 +639,21 @@ mod tests {
         assert_eq!(symbol_ids(&store, summary.snapshot_id, "Delete"), []);
     }
 
-    fn stored_file(stamp: FileStamp) -> StoredFile {
-        StoredFile {
-            path: "a.py".to_owned(),
-            language: Language::Python,
-            content_hash: "hash".to_owned(),
-            has_syntax_errors: false,
-            symbol_count: 1,
-            stamp,
-        }
-    }
-
-    fn stamp(modified_ns: i64) -> FileStamp {
-        FileStamp {
-            size_bytes: 10,
-            modified_ns,
-            changed_ns: modified_ns,
-            inode: 1,
-        }
-    }
-
-    fn policy(
-        known: &HashMap<String, StoredFile>,
-        trusted_before_ns: Option<i64>,
-    ) -> ReusePolicy<'_> {
-        ReusePolicy {
-            known,
-            trusted_before_ns,
-        }
-    }
-
     #[test]
-    fn matching_stamps_from_before_the_last_run_are_trusted() {
-        let known = HashMap::new();
-        let reuse = policy(&known, Some(1_000));
+    fn a_live_index_matches_a_fresh_one_after_edits() {
+        let repository = sample_repository();
+        let mut live_store = Store::open_in_memory().unwrap();
+        let mut fresh_store = Store::open_in_memory().unwrap();
+        let mut live = LiveIndex::new(repository.path()).unwrap();
+        live.index(&mut live_store).unwrap();
 
-        assert!(reuse.trusts(&stored_file(stamp(500)), stamp(500)));
-    }
+        write(repository.path(), "py/extra.py", "def extra():\n    pass\n");
+        fs::remove_file(repository.path().join("go/main.go")).unwrap();
+        let after_edit = live.index(&mut live_store).unwrap();
+        let fresh = index_directory(repository.path(), &mut fresh_store).unwrap();
 
-    #[test]
-    fn stamps_written_during_the_last_run_are_not_trusted() {
-        let known = HashMap::new();
-        let reuse = policy(&known, Some(1_000));
-
-        assert!(!reuse.trusts(&stored_file(stamp(1_000)), stamp(1_000)));
-    }
-
-    #[test]
-    fn different_stamps_are_not_trusted() {
-        let known = HashMap::new();
-        let reuse = policy(&known, Some(1_000));
-
-        assert!(!reuse.trusts(&stored_file(stamp(500)), stamp(600)));
-    }
-
-    #[test]
-    fn nothing_is_trusted_without_a_previous_run() {
-        let known = HashMap::new();
-        let reuse = policy(&known, None);
-
-        assert!(!reuse.trusts(&stored_file(stamp(500)), stamp(500)));
+        assert_eq!(after_edit.snapshot.fingerprint, fresh.snapshot.fingerprint);
+        assert_eq!(after_edit.symbol_count, fresh.symbol_count);
+        assert_eq!(after_edit.files_by_language, fresh.files_by_language);
     }
 }

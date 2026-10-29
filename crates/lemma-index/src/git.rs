@@ -7,7 +7,7 @@ use std::process::{Child, Command, Stdio};
 use lemma_model::Language;
 
 /// The commit checked out in the indexed directory.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct Head {
     /// The commit id.
     pub revision: String,

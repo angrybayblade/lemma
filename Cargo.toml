@@ -22,6 +22,8 @@ blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
 lsp-types = "0.95"
+memchr = "2"
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 rayon = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
