@@ -11,7 +11,7 @@ use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use lemma_model::{Language, ReferenceOutcome, SymbolKind};
 use lemma_providers::ProviderRegistry;
-use lemma_query::{ReferenceOptions, SymbolResolution, SymbolSelector};
+use lemma_query::{LookupContext, ReferenceOptions, SessionPool, SymbolResolution, SymbolSelector};
 use lemma_store::{NameMatch, Store, StoredSnapshot, StoredSymbol, SymbolFilter};
 
 use crate::output::Format;
@@ -188,7 +188,15 @@ fn references(
     };
 
     let registry = load_registry(Path::new(&snapshot.snapshot.root), providers_file)?;
-    let report = lemma_query::find_references(&mut store, &snapshot, &registry, target, &options)?;
+    let context = LookupContext {
+        snapshot: &snapshot,
+        registry: &registry,
+        options: &options,
+    };
+    let mut pool = SessionPool::for_one_lookup();
+    let report = lemma_query::find_references(&mut store, &context, target, &mut pool);
+    pool.shutdown();
+    let report = report?;
     output::reference_report(&report, &snapshot.snapshot.root, format)?;
 
     let answered = matches!(

@@ -5,11 +5,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use lemma_lsp::lsp_types::notification::{DidCloseTextDocument, DidOpenTextDocument};
+use lemma_lsp::lsp_types::notification::{
+    DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
+};
 use lemma_lsp::lsp_types::request::References;
 use lemma_lsp::lsp_types::{
-    self, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Location, ReferenceContext,
-    ReferenceParams, TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Url,
+    self, DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    FileChangeType, FileEvent, Location, ReferenceContext, ReferenceParams, TextDocumentIdentifier,
+    TextDocumentItem, TextDocumentPositionParams, Url,
 };
 use lemma_lsp::{LaunchConfig, LspClient, LspError, PositionEncoding, line_text};
 use lemma_model::{Language, Position, Reference, Span};
@@ -32,11 +35,25 @@ pub enum ReferenceAnswer {
     Unsupported,
 }
 
+/// How a file changed since a server last looked at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileChange {
+    /// The file is new.
+    Created,
+    /// The file's contents changed.
+    Changed,
+    /// The file no longer exists.
+    Deleted,
+}
+
 /// A started language server scoped to one workspace root.
 pub struct ProviderSession {
     provider_id: String,
     root: PathBuf,
     client: LspClient,
+    /// Whether the server has been seen ready once. After that it has loaded
+    /// the workspace, and later lookups need not wait again.
+    has_been_ready: bool,
 }
 
 impl ProviderSession {
@@ -64,7 +81,29 @@ impl ProviderSession {
             provider_id: definition.id.clone(),
             root: root.to_owned(),
             client,
+            has_been_ready: false,
         })
+    }
+
+    /// Tells the server about files that changed on disk since it started or
+    /// last heard, so a long-lived server does not answer from stale files.
+    /// Paths are relative to the root.
+    pub fn files_changed(&self, changes: &[(String, FileChange)]) -> Result<(), ProviderError> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let mut events = Vec::with_capacity(changes.len());
+        for (path, change) in changes {
+            let absolute_path = self.root.join(path);
+            let uri =
+                Url::from_file_path(&absolute_path).map_err(|()| ProviderError::InvalidPath {
+                    path: absolute_path,
+                })?;
+            events.push(FileEvent::new(uri, file_change_type(*change)));
+        }
+        self.client
+            .notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams { changes: events })
+            .map_err(|source| self.server_error(source))
     }
 
     /// The version the server reported, if any.
@@ -79,7 +118,7 @@ impl ProviderSession {
     /// Finds references to the symbol whose identifier is at `position` in a
     /// file relative to the root.
     pub fn references(
-        &self,
+        &mut self,
         path: &str,
         language: Language,
         position: Position,
@@ -106,8 +145,11 @@ impl ProviderSession {
         // Some servers answer before loading the workspace and return empty
         // results that look real. If readiness times out, ask anyway: the
         // answer is the best available.
-        self.client
-            .wait_until_ready(&uri, opened_at, READY_QUIET_PERIOD);
+        if !self.has_been_ready {
+            self.client
+                .wait_until_ready(&uri, opened_at, READY_QUIET_PERIOD);
+            self.has_been_ready = true;
+        }
         let locations = self.client.request::<References>(ReferenceParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -240,6 +282,14 @@ fn normalize_version(reported: &str) -> String {
 }
 
 /// The identifier LSP expects for each language.
+fn file_change_type(change: FileChange) -> FileChangeType {
+    match change {
+        FileChange::Created => FileChangeType::CREATED,
+        FileChange::Changed => FileChangeType::CHANGED,
+        FileChange::Deleted => FileChangeType::DELETED,
+    }
+}
+
 fn language_id(language: Language) -> &'static str {
     match language {
         Language::TypeScript => "typescript",

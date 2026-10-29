@@ -3,9 +3,13 @@
 
 mod references;
 mod resolve;
+mod sessions;
 
-pub use references::{ReferenceOptions, ReferenceReport, find_references};
+pub use references::{
+    LookupContext, ReferenceOptions, ReferenceReport, answer_without_provider, find_references,
+};
 pub use resolve::{SymbolResolution, SymbolSelector, resolve_symbol};
+pub use sessions::SessionPool;
 
 /// Why a query could not be answered.
 #[derive(Debug, thiserror::Error)]
