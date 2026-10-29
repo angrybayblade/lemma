@@ -1,0 +1,16 @@
+[package]
+name = "lemma-query"
+description = "Symbol resolution and reference lookups over an indexed snapshot."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+lemma-model.workspace = true
+lemma-providers.workspace = true
+lemma-store.workspace = true
+thiserror.workspace = true
