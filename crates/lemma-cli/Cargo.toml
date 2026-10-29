@@ -11,7 +11,6 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
-blake3.workspace = true
 clap.workspace = true
 lemma-index.workspace = true
 lemma-model.workspace = true

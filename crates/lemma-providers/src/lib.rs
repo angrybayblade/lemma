@@ -10,7 +10,7 @@ mod session;
 
 use std::path::PathBuf;
 
-pub use registry::{InstalledProvider, ProviderDefinition, ProviderRegistry, resolve_executable};
+pub use registry::{InstalledProvider, ProviderDefinition, ProviderRegistry};
 pub use session::{FileChange, ProviderSession, ReferenceAnswer};
 
 /// Why a provider could not be configured or could not answer.

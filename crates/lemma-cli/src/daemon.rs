@@ -1,14 +1,17 @@
-//! A background process that keeps language servers warm between commands.
+//! A background process that runs Lemma's commands with warm state.
 //!
-//! Starting a language server and letting it load a large workspace takes
-//! seconds; asking one that is already loaded takes milliseconds. The first
-//! `lemma refs` that needs a server starts a daemon for its index database.
-//! Later calls send their lookups to it over a Unix socket. The daemon exits
-//! after a period without requests, stopping its servers.
+//! Every command spends most of its time on things a long-lived process can
+//! do once: opening the database, and starting language servers that take
+//! seconds to load a large project. So `lemma` forwards its arguments,
+//! working directory and `PATH` to a per-user daemon over a Unix socket and
+//! prints what comes back. The first command starts the daemon. It exits
+//! after a period without commands, stopping its servers.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -18,121 +21,104 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use lemma_model::{Provenance, ReferenceOutcome};
-use lemma_query::{LookupContext, ReferenceOptions, ReferenceReport, SessionPool};
-use lemma_store::{Store, StoredSymbol};
+use clap::Parser;
 use serde::{Deserialize, Serialize};
+
+use crate::cli::Cli;
+use crate::engine::{Engine, Invocation};
 
 /// How long a starting daemon has to begin accepting connections.
 const STARTUP_LIMIT: Duration = Duration::from_secs(5);
 /// How often to retry connecting while a daemon starts or stops.
-const CONNECT_RETRY: Duration = Duration::from_millis(10);
-/// Extra time, beyond the lookup's own timeout, to wait for an answer.
-const ANSWER_GRACE: Duration = Duration::from_secs(30);
+const CONNECT_RETRY: Duration = Duration::from_millis(2);
 
-/// A message from a command to the daemon, one JSON object per line.
+/// A message to the daemon, one JSON object per line.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "command", rename_all = "snake_case")]
+#[serde(tag = "request", rename_all = "snake_case")]
 enum Request {
-    References {
-        /// Identifies the `lemma` binary, so a daemon from an older build
-        /// is replaced instead of answering with old code.
+    Run {
+        /// Identifies the `lemma` binary, so a daemon from another build is
+        /// replaced instead of answering with different code.
         build: String,
-        root: String,
-        symbol_id: i64,
-        include_declaration: bool,
-        refresh: bool,
-        timeout_ms: u64,
-        providers_file: Option<PathBuf>,
+        /// Arguments after the program name.
+        args: Vec<String>,
+        cwd: PathBuf,
+        /// The caller's `PATH`, as raw bytes.
+        path_env: Option<Vec<u8>>,
     },
     Shutdown,
 }
 
 /// The daemon's reply, one JSON object per line.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-enum Response {
-    Answer {
-        outcome: ReferenceOutcome,
-        provenance: Option<Provenance>,
-        from_cache: bool,
-        skipped_providers: Vec<String>,
+#[serde(tag = "reply", rename_all = "snake_case")]
+enum Reply {
+    Done {
+        stdout: String,
+        stderr: String,
+        exit_code: u8,
     },
     /// The daemon is from a different build and is exiting; start a new one.
     Restart,
-    Failed {
-        message: String,
-    },
     Stopping,
 }
 
-/// A reference lookup to send to the daemon.
-pub(crate) struct LookupRequest<'a> {
-    pub db_path: &'a Path,
-    pub root: &'a str,
-    pub symbol: StoredSymbol,
-    pub options: ReferenceOptions,
-    pub providers_file: Option<&'a Path>,
+/// What a forwarded command printed and returned.
+pub(crate) struct Finished {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: u8,
 }
 
-/// Runs a lookup in the database's daemon, starting the daemon if needed.
-pub(crate) fn find_references(request: LookupRequest<'_>) -> anyhow::Result<ReferenceReport> {
-    let socket = socket_path(request.db_path)?;
-    let message = Request::References {
+/// Runs the command in the daemon, starting one if needed. `None` means no
+/// daemon could be reached, and the caller should run the command itself.
+pub(crate) fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
+    let socket = socket_path().ok()?;
+    let request = Request::Run {
         build: build_id(),
-        root: request.root.to_owned(),
-        symbol_id: request.symbol.id,
-        include_declaration: request.options.include_declaration,
-        refresh: request.options.refresh,
-        timeout_ms: u64::try_from(request.options.request_timeout.as_millis()).unwrap_or(u64::MAX),
-        providers_file: request.providers_file.map(Path::to_owned),
+        args,
+        cwd,
+        path_env: std::env::var_os("PATH").map(OsString::into_vec),
     };
-    let answer_limit = request.options.request_timeout + ANSWER_GRACE;
-
-    let mut response = exchange(&socket, request.db_path, &message, answer_limit)?;
-    if matches!(response, Response::Restart) {
+    let mut reply = exchange(&socket, &request).ok()?;
+    if matches!(reply, Reply::Restart) {
         wait_until_gone(&socket);
-        response = exchange(&socket, request.db_path, &message, answer_limit)?;
+        reply = exchange(&socket, &request).ok()?;
     }
-    match response {
-        Response::Answer {
-            outcome,
-            provenance,
-            from_cache,
-            skipped_providers,
-        } => Ok(ReferenceReport {
-            symbol: request.symbol,
-            outcome,
-            provenance,
-            from_cache,
-            skipped_providers,
+    match reply {
+        Reply::Done {
+            stdout,
+            stderr,
+            exit_code,
+        } => Some(Finished {
+            stdout,
+            stderr,
+            exit_code,
         }),
-        Response::Failed { message } => bail!("{message}"),
-        Response::Restart | Response::Stopping => bail!("the lemma daemon stopped unexpectedly"),
+        Reply::Restart | Reply::Stopping => None,
     }
 }
 
-/// Asks the database's daemon to exit. Returns whether one was running.
-pub(crate) fn stop(db_path: &Path) -> anyhow::Result<bool> {
-    let socket = socket_path(db_path)?;
+/// Asks the daemon to exit. Returns whether one was running.
+pub(crate) fn stop() -> anyhow::Result<bool> {
+    let socket = socket_path()?;
     let Ok(mut stream) = UnixStream::connect(&socket) else {
         return Ok(false);
     };
     send(&mut stream, &Request::Shutdown)?;
-    receive::<Response>(&mut stream)?;
+    receive::<Reply>(&mut stream)?;
     wait_until_gone(&socket);
     Ok(true)
 }
 
-/// Serves lookups for one database until idle for `idle_limit`.
-pub(crate) fn serve(db_path: &Path, idle_limit: Duration) -> anyhow::Result<()> {
-    let socket = socket_path(db_path)?;
+/// Serves commands until idle for `idle_limit`.
+pub(crate) fn serve(idle_limit: Duration) -> anyhow::Result<()> {
+    let socket = socket_path()?;
     let Some(listener) = bind(&socket)? else {
-        // Another daemon for this database won the race to start.
+        // Another daemon won the race to start.
         return Ok(());
     };
-    let mut index = OpenIndex::open(db_path)?;
-    let mut pool = SessionPool::long_lived();
+    let mut engine = Engine::long_lived();
     let last_request = Arc::new(Mutex::new(Instant::now()));
     watch_for_idleness(socket.clone(), Arc::clone(&last_request), idle_limit);
 
@@ -144,161 +130,87 @@ pub(crate) fn serve(db_path: &Path, idle_limit: Duration) -> anyhow::Result<()> 
         let Ok(request) = receive::<Request>(&mut stream) else {
             continue;
         };
-        let response = match request {
-            Request::Shutdown => Response::Stopping,
-            Request::References { ref build, .. } if *build != build_id() => Response::Restart,
-            Request::References {
-                root,
-                symbol_id,
-                include_declaration,
-                refresh,
-                timeout_ms,
-                providers_file,
+        let reply = match request {
+            Request::Shutdown => Reply::Stopping,
+            Request::Run { ref build, .. } if *build != build_id() => Reply::Restart,
+            Request::Run {
+                args,
+                cwd,
+                path_env,
                 ..
             } => {
-                let options = ReferenceOptions {
-                    include_declaration,
-                    refresh,
-                    request_timeout: Duration::from_millis(timeout_ms),
+                let invocation = Invocation {
+                    cwd,
+                    path_env: path_env.map(OsString::from_vec),
                 };
-                let lookup = DaemonLookup {
-                    root: &root,
-                    symbol_id,
-                    options: &options,
-                    providers_file: providers_file.as_deref(),
-                };
-                match index.current() {
-                    Ok(store) => answer(store, &mut pool, &lookup),
-                    Err(error) => Response::Failed {
-                        message: format!("{error:#}"),
-                    },
-                }
+                run(&mut engine, args, &invocation)
             }
         };
         *lock(&last_request) = Instant::now();
-        let is_exiting = matches!(response, Response::Stopping | Response::Restart);
+        let is_exiting = matches!(reply, Reply::Stopping | Reply::Restart);
         // A caller that gave up is not a reason to stop serving others.
-        let _ = send(&mut stream, &response);
+        let _ = send(&mut stream, &reply);
         if is_exiting {
             break;
         }
     }
 
-    pool.shutdown();
     let _ = fs::remove_file(&socket);
+    engine.shutdown();
     Ok(())
 }
 
-/// The daemon's connection to the index, reopened when the database file
-/// is replaced, as `lemma index` does when rebuilding from scratch.
-struct OpenIndex {
-    path: PathBuf,
-    store: Store,
-    inode: Option<u64>,
-}
-
-impl OpenIndex {
-    fn open(path: &Path) -> anyhow::Result<Self> {
-        let store = Store::open(path)
-            .with_context(|| format!("could not open index {}", path.display()))?;
-        Ok(Self {
-            path: path.to_owned(),
-            store,
-            inode: inode_of(path),
-        })
-    }
-
-    fn current(&mut self) -> anyhow::Result<&mut Store> {
-        if inode_of(&self.path) != self.inode {
-            *self = Self::open(&self.path)?;
-        }
-        Ok(&mut self.store)
-    }
-}
-
-fn inode_of(path: &Path) -> Option<u64> {
-    use std::os::unix::fs::MetadataExt;
-    fs::metadata(path).ok().map(|metadata| metadata.ino())
-}
-
-struct DaemonLookup<'a> {
-    root: &'a str,
-    symbol_id: i64,
-    options: &'a ReferenceOptions,
-    providers_file: Option<&'a Path>,
-}
-
-fn answer(store: &mut Store, pool: &mut SessionPool, lookup: &DaemonLookup<'_>) -> Response {
-    match run_lookup(store, pool, lookup) {
-        Ok(report) => Response::Answer {
-            outcome: report.outcome,
-            provenance: report.provenance,
-            from_cache: report.from_cache,
-            skipped_providers: report.skipped_providers,
+/// Runs one forwarded command the way `main` would, capturing its output.
+fn run(engine: &mut Engine, args: Vec<String>, invocation: &Invocation) -> Reply {
+    let mut stdout = Vec::new();
+    let arguments = std::iter::once("lemma".to_owned()).chain(args);
+    let (stderr, exit_code) = match Cli::try_parse_from(arguments) {
+        Err(error) => (
+            error.render().to_string(),
+            u8::try_from(error.exit_code()).unwrap_or(1),
+        ),
+        Ok(cli) => match engine.execute(cli, invocation, &mut stdout) {
+            Ok(code) => (String::new(), code),
+            Err(error) => (format!("error: {error:#}\n"), 1),
         },
-        Err(error) => Response::Failed {
-            message: format!("{error:#}"),
-        },
+    };
+    Reply::Done {
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr,
+        exit_code,
     }
-}
-
-fn run_lookup(
-    store: &mut Store,
-    pool: &mut SessionPool,
-    lookup: &DaemonLookup<'_>,
-) -> anyhow::Result<ReferenceReport> {
-    let Some(snapshot) = store.snapshot_for_root(lookup.root)? else {
-        bail!("{} is no longer indexed; run `lemma index`", lookup.root);
-    };
-    let Some(symbol) = store.symbol(snapshot.id, lookup.symbol_id)? else {
-        bail!("the symbol is no longer indexed; run `lemma index` and try again");
-    };
-    let registry = crate::load_registry(Path::new(lookup.root), lookup.providers_file)?;
-    let context = LookupContext {
-        snapshot: &snapshot,
-        registry: &registry,
-        options: lookup.options,
-    };
-    Ok(lemma_query::find_references(store, &context, symbol, pool)?)
 }
 
 /// Sends a request and reads the reply, starting a daemon if none answers.
-fn exchange(
-    socket: &Path,
-    db_path: &Path,
-    request: &Request,
-    answer_limit: Duration,
-) -> anyhow::Result<Response> {
-    let mut stream = connect_or_start(socket, db_path)?;
-    stream.set_read_timeout(Some(answer_limit))?;
+fn exchange(socket: &Path, request: &Request) -> anyhow::Result<Reply> {
+    let mut stream = connect_or_start(socket)?;
     send(&mut stream, request)?;
     receive(&mut stream)
 }
 
-fn connect_or_start(socket: &Path, db_path: &Path) -> anyhow::Result<UnixStream> {
+fn connect_or_start(socket: &Path) -> anyhow::Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(socket) {
         return Ok(stream);
     }
-    start_daemon(db_path)?;
+    start_daemon()?;
     let deadline = Instant::now() + STARTUP_LIMIT;
     loop {
         if let Ok(stream) = UnixStream::connect(socket) {
             return Ok(stream);
         }
         if Instant::now() >= deadline {
-            bail!("the lemma daemon did not start; retry with --no-daemon");
+            bail!("the lemma daemon did not start");
         }
         thread::sleep(CONNECT_RETRY);
     }
 }
 
 /// The daemon is never waited for: it outlives this command on purpose.
-fn start_daemon(db_path: &Path) -> anyhow::Result<()> {
+fn start_daemon() -> anyhow::Result<()> {
     let executable = std::env::current_exe().context("could not find the lemma executable")?;
     Command::new(executable)
-        .arg("--db")
-        .arg(db_path)
         .arg("daemon")
+        .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -319,7 +231,7 @@ fn bind(socket: &Path) -> anyhow::Result<Option<UnixListener>> {
     let _ = fs::remove_file(socket);
     let listener = UnixListener::bind(socket)
         .with_context(|| format!("could not listen on {}", socket.display()))?;
-    // Only this user may send lookups.
+    // Only this user may send commands.
     fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
     Ok(Some(listener))
 }
@@ -337,7 +249,7 @@ fn watch_for_idleness(socket: PathBuf, last_request: Arc<Mutex<Instant>>, idle_l
         }
         if let Ok(mut stream) = UnixStream::connect(&socket) {
             let _ = send(&mut stream, &Request::Shutdown);
-            let _ = receive::<Response>(&mut stream);
+            let _ = receive::<Reply>(&mut stream);
         }
     });
 }
@@ -365,14 +277,15 @@ fn receive<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> anyhow::Res
     Ok(serde_json::from_str(&line)?)
 }
 
-/// One socket per index database, in the temporary directory because socket
-/// paths are limited to about 100 bytes.
-fn socket_path(db_path: &Path) -> anyhow::Result<PathBuf> {
-    let db_path = db_path
-        .canonicalize()
-        .with_context(|| format!("could not resolve {}", db_path.display()))?;
-    let hash = blake3::hash(db_path.as_os_str().as_encoded_bytes()).to_hex();
-    Ok(std::env::temp_dir().join(format!("lemma-{}.sock", &hash[..16])))
+/// One socket per user, in the temporary directory because socket paths are
+/// limited to about 100 bytes. The user id keeps users apart on systems that
+/// share one temporary directory.
+fn socket_path() -> anyhow::Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    let user = fs::metadata(&home)
+        .with_context(|| format!("could not read {}", Path::new(&home).display()))?
+        .uid();
+    Ok(std::env::temp_dir().join(format!("lemma-{user}.sock")))
 }
 
 /// The running binary's path and modification time. Rebuilding or upgrading
@@ -399,66 +312,46 @@ mod tests {
 
     #[test]
     fn requests_round_trip_as_one_json_line() {
-        let request = Request::References {
+        let request = Request::Run {
             build: "1.0".to_owned(),
-            root: "/repo".to_owned(),
-            symbol_id: 7,
-            include_declaration: false,
-            refresh: true,
-            timeout_ms: 60_000,
-            providers_file: None,
+            args: vec!["refs".to_owned(), "#7".to_owned()],
+            cwd: PathBuf::from("/repo"),
+            path_env: Some(b"/usr/bin:/bin".to_vec()),
         };
 
         let line = serde_json::to_string(&request).unwrap();
         let parsed: Request = serde_json::from_str(&line).unwrap();
 
         assert!(!line.contains('\n'));
-        assert!(matches!(
-            parsed,
-            Request::References {
-                symbol_id: 7,
-                refresh: true,
-                ..
-            }
-        ));
+        let Request::Run { args, path_env, .. } = parsed else {
+            panic!("expected a run request, got {line}");
+        };
+        assert_eq!(args, ["refs", "#7"]);
+        assert_eq!(path_env.as_deref(), Some(&b"/usr/bin:/bin"[..]));
     }
 
     #[test]
-    fn answers_keep_the_outcome() {
-        let response = Response::Answer {
-            outcome: ReferenceOutcome::Empty,
-            provenance: None,
-            from_cache: false,
-            skipped_providers: vec!["pyright: not found".to_owned()],
+    fn parse_errors_are_reported_like_the_command_line() {
+        let mut engine = Engine::one_shot();
+        let invocation = Invocation {
+            cwd: PathBuf::from("/"),
+            path_env: None,
         };
 
-        let line = serde_json::to_string(&response).unwrap();
-        let parsed: Response = serde_json::from_str(&line).unwrap();
+        let reply = run(&mut engine, vec!["no-such-command".to_owned()], &invocation);
 
-        let Response::Answer {
-            outcome,
-            skipped_providers,
-            ..
-        } = parsed
+        let Reply::Done {
+            stderr, exit_code, ..
+        } = reply
         else {
-            panic!("expected an answer, got {line}");
+            panic!("expected a finished command");
         };
-        assert_eq!(outcome, ReferenceOutcome::Empty);
-        assert_eq!(skipped_providers, ["pyright: not found"]);
+        assert_eq!(exit_code, 2);
+        assert!(stderr.contains("no-such-command"));
     }
 
     #[test]
-    fn each_database_gets_its_own_short_socket_path() {
-        let directory = tempfile::tempdir().unwrap();
-        let first = directory.path().join("a.db");
-        let second = directory.path().join("b.db");
-        fs::write(&first, "").unwrap();
-        fs::write(&second, "").unwrap();
-
-        let first_socket = socket_path(&first).unwrap();
-
-        assert_eq!(first_socket, socket_path(&first).unwrap());
-        assert_ne!(first_socket, socket_path(&second).unwrap());
-        assert!(first_socket.as_os_str().len() < 104);
+    fn the_socket_path_is_short_enough_for_unix_sockets() {
+        assert!(socket_path().unwrap().as_os_str().len() < 104);
     }
 }
