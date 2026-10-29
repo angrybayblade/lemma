@@ -88,28 +88,31 @@ struct ProviderView<'a> {
 }
 
 pub(crate) fn index_summary(
+    out: &mut dyn Write,
     summary: &IndexSummary,
     database: &Path,
     format: Format,
 ) -> io::Result<()> {
     let snapshot = &summary.snapshot;
     if format == Format::Json {
-        return print_json(&IndexView {
-            database: database.display().to_string(),
-            snapshot_id: summary.snapshot_id,
-            root: &snapshot.root,
-            revision: snapshot.revision.as_deref(),
-            is_dirty: snapshot.is_dirty,
-            fingerprint: &snapshot.fingerprint,
-            is_unchanged: summary.is_unchanged,
-            files_by_language: &summary.files_by_language,
-            symbol_count: summary.symbol_count,
-            files_with_syntax_errors: &summary.files_with_syntax_errors,
-            unreadable_files: &summary.unreadable_files,
-        });
+        return print_json(
+            out,
+            &IndexView {
+                database: database.display().to_string(),
+                snapshot_id: summary.snapshot_id,
+                root: &snapshot.root,
+                revision: snapshot.revision.as_deref(),
+                is_dirty: snapshot.is_dirty,
+                fingerprint: &snapshot.fingerprint,
+                is_unchanged: summary.is_unchanged,
+                files_by_language: &summary.files_by_language,
+                symbol_count: summary.symbol_count,
+                files_with_syntax_errors: &summary.files_with_syntax_errors,
+                unreadable_files: &summary.unreadable_files,
+            },
+        );
     }
 
-    let mut out = io::stdout().lock();
     let state = if summary.is_unchanged {
         "unchanged"
     } else {
@@ -144,11 +147,14 @@ pub(crate) fn index_summary(
     writeln!(out, "index {}", database.display())
 }
 
-pub(crate) fn symbols(found: &[StoredSymbol], format: Format) -> io::Result<()> {
+pub(crate) fn symbols(
+    out: &mut dyn Write,
+    found: &[StoredSymbol],
+    format: Format,
+) -> io::Result<()> {
     if format == Format::Json {
-        return print_json(&found.iter().map(SymbolView::new).collect::<Vec<_>>());
+        return print_json(out, &found.iter().map(SymbolView::new).collect::<Vec<_>>());
     }
-    let mut out = io::stdout().lock();
     if found.is_empty() {
         return writeln!(out, "no matching symbols");
     }
@@ -159,18 +165,21 @@ pub(crate) fn symbols(found: &[StoredSymbol], format: Format) -> io::Result<()> 
 }
 
 pub(crate) fn ambiguous(
+    out: &mut dyn Write,
     query: &str,
     candidates: &[StoredSymbol],
     format: Format,
 ) -> io::Result<()> {
     if format == Format::Json {
-        return print_json(&AmbiguousView {
-            state: "ambiguous",
-            query,
-            candidates: candidates.iter().map(SymbolView::new).collect(),
-        });
+        return print_json(
+            out,
+            &AmbiguousView {
+                state: "ambiguous",
+                query,
+                candidates: candidates.iter().map(SymbolView::new).collect(),
+            },
+        );
     }
-    let mut out = io::stdout().lock();
     writeln!(
         out,
         "`{query}` matches {} symbols; pick one by qualified name, filter, or #id:",
@@ -183,21 +192,24 @@ pub(crate) fn ambiguous(
 }
 
 pub(crate) fn reference_report(
+    out: &mut dyn Write,
     report: &ReferenceReport,
     root: &str,
     format: Format,
 ) -> io::Result<()> {
     if format == Format::Json {
-        return print_json(&ReferenceView {
-            symbol: SymbolView::new(&report.symbol),
-            provenance: report.provenance.as_ref(),
-            from_cache: report.from_cache,
-            skipped_providers: &report.skipped_providers,
-            outcome: &report.outcome,
-        });
+        return print_json(
+            out,
+            &ReferenceView {
+                symbol: SymbolView::new(&report.symbol),
+                provenance: report.provenance.as_ref(),
+                from_cache: report.from_cache,
+                skipped_providers: &report.skipped_providers,
+                outcome: &report.outcome,
+            },
+        );
     }
 
-    let mut out = io::stdout().lock();
     writeln!(out, "{}", symbol_line(&report.symbol))?;
     if let Some(provenance) = &report.provenance {
         let version = provenance
@@ -210,10 +222,10 @@ pub(crate) fn reference_report(
     for skipped in &report.skipped_providers {
         writeln!(out, "skipped {skipped}")?;
     }
-    write_outcome(&mut out, report, root)
+    write_outcome(out, report, root)
 }
 
-fn write_outcome(out: &mut impl Write, report: &ReferenceReport, root: &str) -> io::Result<()> {
+fn write_outcome(out: &mut dyn Write, report: &ReferenceReport, root: &str) -> io::Result<()> {
     let provider = report
         .provenance
         .as_ref()
@@ -259,8 +271,12 @@ fn write_outcome(out: &mut impl Write, report: &ReferenceReport, root: &str) -> 
     }
 }
 
-pub(crate) fn providers(registry: &ProviderRegistry, format: Format) -> io::Result<()> {
-    let installed = |command: &str| lemma_providers::resolve_executable(command);
+pub(crate) fn providers(
+    out: &mut dyn Write,
+    registry: &ProviderRegistry,
+    format: Format,
+) -> io::Result<()> {
+    let installed = |command: &str| registry.resolve_executable(command);
     if format == Format::Json {
         let views: Vec<_> = registry
             .definitions()
@@ -272,10 +288,9 @@ pub(crate) fn providers(registry: &ProviderRegistry, format: Format) -> io::Resu
                 executable: installed(&definition.command).map(|path| path.display().to_string()),
             })
             .collect();
-        return print_json(&views);
+        return print_json(out, &views);
     }
 
-    let mut out = io::stdout().lock();
     for definition in registry.definitions() {
         let languages: Vec<_> = definition
             .languages
@@ -327,8 +342,7 @@ fn display_position(position: Position) -> String {
     format!("{}:{}", position.line + 1, position.column + 1)
 }
 
-fn print_json(value: &impl Serialize) -> io::Result<()> {
-    let mut out = io::stdout().lock();
-    serde_json::to_writer_pretty(&mut out, value)?;
+fn print_json(out: &mut dyn Write, value: &impl Serialize) -> io::Result<()> {
+    serde_json::to_writer_pretty(&mut *out, value)?;
     writeln!(out)
 }

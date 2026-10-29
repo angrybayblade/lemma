@@ -1,5 +1,6 @@
 //! The set of configured providers and choosing one for a language.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -78,6 +79,16 @@ pub struct InstalledProvider {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderRegistry {
     definitions: Vec<ProviderDefinition>,
+    /// Where to look for executables, if not this process's own `PATH`.
+    search: Option<ExecutableSearch>,
+}
+
+/// A `PATH` and working directory to resolve executables against, such as
+/// those of the command a long-running daemon is answering.
+#[derive(Debug, Clone, PartialEq)]
+struct ExecutableSearch {
+    path: OsString,
+    cwd: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -91,7 +102,10 @@ impl ProviderRegistry {
     /// The providers that ship with Lemma.
     pub fn builtin() -> Result<Self, ProviderError> {
         let definitions = parse_definitions("built-in providers", BUILTIN_PROVIDERS)?;
-        Ok(Self { definitions })
+        Ok(Self {
+            definitions,
+            search: None,
+        })
     }
 
     /// The built-in providers plus a project's own, if its file exists.
@@ -124,6 +138,26 @@ impl ProviderRegistry {
             .collect();
         Self {
             definitions: overrides.into_iter().chain(builtins).collect(),
+            search: self.search,
+        }
+    }
+
+    /// Resolves executables against `path` and `cwd` instead of this
+    /// process's environment.
+    #[must_use]
+    pub fn with_search_path(self, path: OsString, cwd: PathBuf) -> Self {
+        Self {
+            search: Some(ExecutableSearch { path, cwd }),
+            ..self
+        }
+    }
+
+    /// Finds a provider's executable by name on the search path, or checks a
+    /// given path.
+    pub fn resolve_executable(&self, command: &str) -> Option<PathBuf> {
+        match &self.search {
+            Some(search) => which::which_in(command, Some(&search.path), &search.cwd).ok(),
+            None => which::which(command).ok(),
         }
     }
 
@@ -142,7 +176,7 @@ impl ProviderRegistry {
     /// Providers for a language whose executables are on `PATH`, in the order
     /// they should be tried.
     pub fn installed(&self, language: Language) -> Vec<InstalledProvider> {
-        self.installed_with(language, resolve_executable)
+        self.installed_with(language, |command| self.resolve_executable(command))
     }
 
     /// Like [`ProviderRegistry::installed`], with a custom way to find executables.
@@ -167,11 +201,6 @@ impl ProviderRegistry {
             .iter()
             .filter(move |definition| definition.languages.contains(&language))
     }
-}
-
-/// Finds an executable by name on `PATH`, or checks a given path.
-pub fn resolve_executable(command: &str) -> Option<PathBuf> {
-    which::which(command).ok()
 }
 
 fn parse_definitions(origin: &str, text: &str) -> Result<Vec<ProviderDefinition>, ProviderError> {
