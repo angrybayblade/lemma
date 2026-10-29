@@ -84,13 +84,14 @@ pub fn find_references(
             }
         };
 
-        let (provider_version, outcome) = ask_provider(session, &symbol, options);
+        let (provider_version, outcome) = ask_provider(session, &symbol);
         if matches!(outcome, ReferenceOutcome::ProviderFailed { .. }) {
             // The server may be wedged or gone; start a fresh one next time.
             pool.discard(snapshot, &provider);
         }
-        let key = lookup_key(&symbol, definition, options);
+        let key = lookup_key(&symbol, definition);
         store.save_references(&key, provider_version.as_deref(), &outcome)?;
+        let outcome = without_own_declaration(outcome, &symbol, options);
         let outcome = with_enclosing_symbols(store, snapshot.id, outcome)?;
         let provenance = provenance(definition, provider_version);
         let mut report = uncached_report(symbol, outcome, Some(provenance));
@@ -134,11 +135,12 @@ pub fn answer_without_provider(
     }
 
     for provider in &providers {
-        let key = lookup_key(symbol, &provider.definition, options);
+        let key = lookup_key(symbol, &provider.definition);
         let Some(cached) = store.cached_references(&key)? else {
             continue;
         };
-        let outcome = with_enclosing_symbols(store, snapshot.id, cached.outcome)?;
+        let outcome = without_own_declaration(cached.outcome, symbol, options);
+        let outcome = with_enclosing_symbols(store, snapshot.id, outcome)?;
         let provenance = provenance(&provider.definition, cached.provider_version);
         return Ok(Some(ReferenceReport {
             symbol: symbol.clone(),
@@ -163,17 +165,41 @@ fn is_stale(store: &Store, snapshot_id: i64, root: &Path, path: &str) -> Result<
     Ok(content_hash(&contents) != indexed_hash)
 }
 
-fn lookup_key(
-    symbol: &StoredSymbol,
-    definition: &ProviderDefinition,
-    options: &ReferenceOptions,
-) -> ReferenceLookupKey {
+/// Providers are always asked with declarations included and the answer is
+/// cached that way, so both kinds of lookup share it.
+fn lookup_key(symbol: &StoredSymbol, definition: &ProviderDefinition) -> ReferenceLookupKey {
     ReferenceLookupKey {
         symbol_id: symbol.id,
         provider_id: definition.id.clone(),
         config_fingerprint: definition.fingerprint(),
-        include_declaration: options.include_declaration,
+        include_declaration: true,
     }
+}
+
+/// Drops the symbol's own definition from the answer, unless it was asked
+/// for.
+///
+/// Lemma asks providers to include declarations because some, such as ty,
+/// count import statements as declarations and leave them out otherwise.
+/// An import is a use of the symbol, so it should be reported.
+fn without_own_declaration(
+    outcome: ReferenceOutcome,
+    symbol: &StoredSymbol,
+    options: &ReferenceOptions,
+) -> ReferenceOutcome {
+    if options.include_declaration {
+        return outcome;
+    }
+    let ReferenceOutcome::Found { mut references } = outcome else {
+        return outcome;
+    };
+    let declared_at = symbol.symbol.name_span.start;
+    references
+        .retain(|reference| reference.path != symbol.path || reference.span.start != declared_at);
+    if references.is_empty() {
+        return ReferenceOutcome::Empty;
+    }
+    ReferenceOutcome::Found { references }
 }
 
 /// Asks a started provider. Failures become outcomes: they say something
@@ -181,14 +207,13 @@ fn lookup_key(
 fn ask_provider(
     session: &mut ProviderSession,
     symbol: &StoredSymbol,
-    options: &ReferenceOptions,
 ) -> (Option<String>, ReferenceOutcome) {
     let provider_version = session.provider_version();
     let answer = session.references(
         &symbol.path,
         symbol.language,
         symbol.symbol.name_span.start,
-        options.include_declaration,
+        true,
     );
 
     let outcome = match answer {
