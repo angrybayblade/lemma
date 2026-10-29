@@ -251,7 +251,7 @@ mod tests {
         );
         assert_eq!(
             registry.candidate_ids(Language::Python),
-            ["pyright", "basedpyright"]
+            ["ty", "pyright", "basedpyright"]
         );
     }
 
@@ -274,6 +274,7 @@ mod tests {
             [
                 ("custom-python", "custom"),
                 ("pyright", "/opt/pyright"),
+                ("ty", "ty"),
                 ("basedpyright", "basedpyright-langserver")
             ]
         );
