@@ -427,6 +427,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lemma-query"
+version = "0.1.0"
+dependencies = [
+ "lemma-model",
+ "lemma-providers",
+ "lemma-store",
+ "thiserror",
+]
+
+[[package]]
 name = "lemma-store"
 version = "0.1.0"
 dependencies = [
