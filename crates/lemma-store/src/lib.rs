@@ -387,26 +387,32 @@ impl Store {
         snapshot_id: i64,
         filter: &SymbolFilter,
     ) -> Result<Vec<StoredSymbol>, StoreError> {
-        let mut statement = self.connection.prepare_cached(
+        // Separate statements, so an exact search can use the name indexes
+        // instead of scanning every symbol.
+        let name_condition = match filter.name_match {
+            NameMatch::Exact => "(s.name = ?2 OR s.qualified_name = ?2)",
+            // A name is always the end of its qualified name, so searching
+            // the qualified name alone finds both.
+            NameMatch::Contains => r"s.qualified_name LIKE ?3 ESCAPE '\'",
+        };
+        let sql = format!(
             r"SELECT s.id, f.path, f.language, s.name, s.qualified_name, s.kind,
                      s.start_line, s.start_column, s.end_line, s.end_column,
                      s.name_start_line, s.name_start_column, s.name_end_line, s.name_end_column
               FROM symbols s JOIN files f ON f.id = s.file_id
               WHERE f.snapshot_id = ?1
-                AND CASE WHEN ?2 THEN (s.name = ?3 OR s.qualified_name = ?3)
-                         ELSE (s.name LIKE ?4 ESCAPE '\' OR s.qualified_name LIKE ?4 ESCAPE '\')
-                    END
-                AND (?5 IS NULL OR s.kind = ?5)
-                AND (?6 IS NULL OR f.language = ?6)
-                AND (?7 IS NULL OR instr(f.path, ?7) > 0)
-              ORDER BY (s.name = ?3 OR s.qualified_name = ?3) DESC,
+                AND {name_condition}
+                AND (?4 IS NULL OR s.kind = ?4)
+                AND (?5 IS NULL OR f.language = ?5)
+                AND (?6 IS NULL OR instr(f.path, ?6) > 0)
+              ORDER BY (s.name = ?2 OR s.qualified_name = ?2) DESC,
                        length(s.qualified_name), f.path, s.start_line
-              LIMIT ?8",
-        )?;
+              LIMIT ?7"
+        );
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let rows = statement.query_map(
             params![
                 snapshot_id,
-                filter.name_match == NameMatch::Exact,
                 filter.text,
                 like_pattern(&filter.text),
                 filter.kind.map(SymbolKind::as_str),
