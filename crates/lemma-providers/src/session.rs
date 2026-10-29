@@ -144,6 +144,22 @@ impl ProviderSession {
             .map_err(|source| self.server_error(source))
     }
 
+    /// The id of the server's process, which also names its process group.
+    pub fn process_id(&self) -> u32 {
+        self.client.process_id()
+    }
+
+    /// Pauses the server and the processes it started; see
+    /// [`LspClient::pause`]. Returns whether the pause was delivered.
+    pub fn pause(&self) -> bool {
+        self.client.pause()
+    }
+
+    /// Resumes a paused server. Returns whether the signal was delivered.
+    pub fn resume(&self) -> bool {
+        self.client.resume()
+    }
+
     /// The version the server reported, if any.
     pub fn provider_version(&self) -> Option<String> {
         self.client

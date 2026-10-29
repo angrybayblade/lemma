@@ -11,7 +11,7 @@ pub use references::{
 };
 pub use resolve::{SymbolResolution, SymbolSelector, resolve_symbol};
 pub use search::SymbolSearch;
-pub use sessions::{SessionPool, WarmUp};
+pub use sessions::{IdlePolicy, ServerState, SessionPool, SessionStatus, WarmUp};
 
 /// Why a query could not be answered.
 #[derive(Debug, thiserror::Error)]

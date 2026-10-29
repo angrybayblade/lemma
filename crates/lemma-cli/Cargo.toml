@@ -19,6 +19,7 @@ lemma-query.workspace = true
 lemma-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 
 [[bin]]
 name = "lemma"

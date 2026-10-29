@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+lemma-lsp.workspace = true
 memchr.workspace = true
 lemma-model.workspace = true
 lemma-providers.workspace = true

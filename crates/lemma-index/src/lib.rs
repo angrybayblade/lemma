@@ -132,6 +132,24 @@ impl LiveIndex {
         Ok(index)
     }
 
+    /// The directory this index covers.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Whether the watcher has seen files change since the last index, a
+    /// sign that someone is working in the directory.
+    pub fn has_unindexed_changes(&self) -> bool {
+        self.watch.as_ref().is_some_and(watch::Watch::has_pending)
+    }
+
+    /// Languages with indexed files, as of the last run.
+    pub fn languages(&self) -> Vec<Language> {
+        self.previous.as_ref().map_or_else(Vec::new, |previous| {
+            previous.files.files_by_language().keys().copied().collect()
+        })
+    }
+
     /// Indexes the directory and stores the snapshot.
     pub fn index(&mut self, store: &mut Store) -> Result<IndexSummary, IndexError> {
         let indexed_at_ns = now_ns();
