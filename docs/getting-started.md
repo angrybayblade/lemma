@@ -102,7 +102,7 @@ via ty 0.0.94
   tests/test_router.py:40:5  in test_delete_unknown_route
 ```
 
-The first lookup for a language starts its language server, so it takes a few seconds. Lemma keeps the server running in a background daemon, so later lookups, even of other symbols, take milliseconds. Answers are also cached until the code changes.
+Commands run in a background daemon that `lemma` starts on first use. It starts each language's server in the background after `lemma index`, so by the time you look something up the server has usually loaded the project; later lookups, even of other symbols, take milliseconds. Answers are also cached until the code changes.
 
 If a name matches more than one symbol, Lemma lists the candidates and asks you to choose. Use the qualified name, a filter such as `--language python` or `--path api/`, or the id: `lemma refs '#415'`.
 
