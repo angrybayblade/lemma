@@ -7,6 +7,8 @@ use ignore::{DirEntry, WalkBuilder, WalkState};
 use lemma_model::Language;
 use lemma_store::FileStamp;
 
+use crate::scope::DirtyScope;
+
 /// Directories never worth indexing, even when not ignored by Git.
 const SKIPPED_DIRECTORIES: [&str; 1] = ["node_modules"];
 
@@ -25,14 +27,40 @@ pub(crate) struct SourceFile {
 /// Respects `.gitignore` and skips hidden files, so build output and
 /// Lemma's own `.lemma/` directory are left out.
 pub(crate) fn source_files(root: &Path) -> Result<Vec<SourceFile>, ignore::Error> {
+    source_files_in(root, None)
+}
+
+/// Like [`source_files`], but only in the directories `scope` names. The
+/// same ignore rules apply, since the walk still passes through every
+/// directory above them.
+pub(crate) fn source_files_in(
+    root: &Path,
+    scope: Option<&DirtyScope>,
+) -> Result<Vec<SourceFile>, ignore::Error> {
+    let filter_root = root.to_owned();
+    let filter_scope = scope.cloned();
     let walker = WalkBuilder::new(root)
         .hidden(true)
         .git_ignore(true)
         .git_exclude(true)
         .require_git(false)
-        .filter_entry(|entry| {
+        .filter_entry(move |entry| {
             let name = entry.file_name().to_string_lossy();
-            !SKIPPED_DIRECTORIES.contains(&name.as_ref())
+            if SKIPPED_DIRECTORIES.contains(&name.as_ref()) {
+                return false;
+            }
+            let Some(scope) = &filter_scope else {
+                return true;
+            };
+            let is_directory = entry.file_type().is_some_and(|kind| kind.is_dir());
+            let Some(relative) = relative_path(&filter_root, entry.path()) else {
+                return false;
+            };
+            if is_directory {
+                relative.is_empty() || scope.enters(&relative)
+            } else {
+                scope.covers(&relative)
+            }
         })
         .build_parallel();
 
