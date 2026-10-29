@@ -9,6 +9,7 @@ mod activity;
 mod client;
 mod encoding;
 mod message;
+mod process;
 mod transport;
 
 use std::path::PathBuf;
@@ -17,6 +18,12 @@ use std::time::Duration;
 pub use activity::Readiness;
 pub use client::{LaunchConfig, LspClient, ServerDetails};
 pub use encoding::{PositionEncoding, line_text};
+
+/// Resident memory, in bytes, of each server process and the processes it
+/// started, by process id. Servers that are not running are left out.
+pub fn memory_bytes(process_ids: &[u32]) -> std::collections::HashMap<u32, u64> {
+    process::tree_memory_bytes(process_ids)
+}
 pub use lsp_types;
 
 /// Why talking to a language server failed.
