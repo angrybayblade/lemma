@@ -10,12 +10,18 @@
 #   args                    command arguments
 #   initialization_options  sent during the LSP initialize handshake
 #   settings                returned when the server asks for workspace/configuration
+#   ready_messages          log messages, or titles of finished progress reports,
+#                           meaning the server has loaded the workspace (* matches
+#                           anything); Lemma waits for one before asking
 
+# The server publishes diagnostics and goes quiet before it starts loading
+# the project; this progress report ending is the real signal.
 [[provider]]
 id = "typescript-language-server"
 languages = ["typescript", "tsx"]
 command = "typescript-language-server"
 args = ["--stdio"]
+ready_messages = ["Initializing JS/TS language features*"]
 
 # TypeScript 7's native compiler has its own server. typescript-language-server
 # needs TypeScript 6 or older, so whichever matches the installed TypeScript
@@ -26,23 +32,30 @@ languages = ["typescript", "tsx"]
 command = "tsc"
 args = ["--lsp", "--stdio"]
 
+# Pyright answers before it has found the workspace's files, and those
+# answers only cover files it already knows. It logs this once it has.
 [[provider]]
 id = "pyright"
 languages = ["python"]
 command = "pyright-langserver"
 args = ["--stdio"]
+ready_messages = ["Found * source file*", "No source files found*"]
 
+# logLevel keeps the ready message above from being filtered out.
 [provider.settings.python.analysis]
 diagnosticMode = "openFilesOnly"
+logLevel = "Information"
 
 [[provider]]
 id = "basedpyright"
 languages = ["python"]
 command = "basedpyright-langserver"
 args = ["--stdio"]
+ready_messages = ["Found * source file*", "No source files found*"]
 
 [provider.settings.basedpyright.analysis]
 diagnosticMode = "openFilesOnly"
+logLevel = "Information"
 
 [[provider]]
 id = "gopls"

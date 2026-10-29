@@ -54,6 +54,7 @@ impl ProviderSession {
             initialization_options: definition.initialization_options.clone(),
             settings: definition.settings.clone().unwrap_or(Value::Null),
             request_timeout,
+            ready_messages: definition.ready_messages.clone(),
         };
         let client = LspClient::start(&config).map_err(|source| ProviderError::Server {
             provider: definition.id.clone(),
