@@ -15,7 +15,19 @@ CREATE TABLE IF NOT EXISTS snapshots (
     revision          TEXT,
     is_dirty          INTEGER NOT NULL,
     fingerprint       TEXT NOT NULL,
-    extractor_version TEXT NOT NULL
+    extractor_version TEXT NOT NULL,
+    -- Wall-clock time the indexing run started. Files modified before it and
+    -- unchanged on disk since can be reused without reading them again.
+    indexed_at_ns     INTEGER NOT NULL
+);
+
+-- Paths, relative to the snapshot root, of source files that differ from
+-- the snapshot's revision. Kept so the next index only has to ask Git about
+-- files that changed since.
+CREATE TABLE IF NOT EXISTS uncommitted_paths (
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots (id) ON DELETE CASCADE,
+    path        TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, path)
 );
 
 CREATE TABLE IF NOT EXISTS files (
@@ -25,6 +37,12 @@ CREATE TABLE IF NOT EXISTS files (
     language          TEXT NOT NULL,
     content_hash      TEXT NOT NULL,
     has_syntax_errors INTEGER NOT NULL,
+    symbol_count      INTEGER NOT NULL,
+    -- File system metadata when the file was read; see FileStamp.
+    size_bytes        INTEGER NOT NULL,
+    modified_ns       INTEGER NOT NULL,
+    changed_ns        INTEGER NOT NULL,
+    inode             INTEGER NOT NULL,
     UNIQUE (snapshot_id, path)
 );
 
