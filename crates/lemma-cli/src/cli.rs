@@ -65,9 +65,13 @@ pub(crate) struct DaemonArgs {
     /// Stop the running daemon instead of starting one.
     #[arg(long)]
     pub stop: bool,
-    /// Exit after this many seconds without a command.
-    #[arg(long, default_value_t = 1800)]
-    pub idle_secs: u64,
+    /// Show the running daemon's language servers instead of starting one.
+    #[arg(long, conflicts_with = "stop")]
+    pub status: bool,
+    /// Exit after this many seconds without a command, instead of the
+    /// configured `idle_exit`.
+    #[arg(long)]
+    pub idle_secs: Option<u64>,
 }
 
 #[derive(Args)]

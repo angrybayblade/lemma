@@ -90,12 +90,32 @@ Lists every configured language server, whether its command was found, and the o
 
 ## `lemma daemon`
 
-Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; you only need this command to run it in the foreground or to stop it.
+Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; you only need this command to run it in the foreground, check on it, or stop it.
 
 | Option | Meaning |
 | --- | --- |
+| `--status` | List the daemon's language servers: starting, running or paused, how long idle, and memory. |
 | `--stop` | Stop the running daemon. |
-| `--idle-secs <n>` | Exit after this many seconds without a command (default 1800). |
+| `--idle-secs <n>` | Exit after this many seconds without a command, instead of the configured `idle_exit`. |
+
+### Settings
+
+The daemon reads `~/.config/lemma/config.toml` (or `$XDG_CONFIG_HOME/lemma/config.toml`, or the file named by `LEMMA_CONFIG`), and reads it again whenever it changes. Every setting is optional:
+
+```toml
+[daemon]
+idle_exit = "never"        # stop the daemon after this long without a command
+
+[servers]
+pause_after = "10m"        # pause idle language servers
+stop_after = "2h"          # stop idle language servers
+memory_budget = "none"     # e.g. "2GB": stop the least recently used servers beyond this
+warm_on_activity = true    # start a project's servers again when its files change
+```
+
+Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `none`. The values above are the defaults. Unknown settings are rejected, so a typo shows up instead of being ignored; a file that stops parsing while the daemon runs leaves the previous settings in force.
+
+A paused server, and every process it started, is stopped with `SIGSTOP`: it uses no CPU, and the operating system can compress or swap out its memory under pressure. The next lookup resumes it, which took about 45 ms for gopls in testing, against seconds to start a server again.
 
 There is one daemon per user. It talks to `lemma` over a Unix socket in the temporary directory that only your user can open, and finds language servers on the `PATH` of each command it runs. A daemon started by a different build of Lemma is replaced automatically. The daemon is not available on Windows; commands there always run in-process.
 

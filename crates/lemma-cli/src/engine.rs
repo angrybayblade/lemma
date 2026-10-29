@@ -8,20 +8,21 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use lemma_index::{IndexSummary, LiveIndex};
-use lemma_model::ReferenceOutcome;
+use lemma_index::LiveIndex;
+use lemma_model::{Language, ReferenceOutcome};
 use lemma_providers::ProviderRegistry;
 use lemma_query::{
-    LookupContext, ReferenceOptions, SessionPool, SymbolResolution, SymbolSearch, SymbolSelector,
-    WarmUp,
+    IdlePolicy, LookupContext, ReferenceOptions, ServerState, SessionPool, SymbolResolution,
+    SymbolSearch, SymbolSelector, WarmUp,
 };
 use lemma_store::{NameMatch, Store, StoreError, StoredSnapshot, StoredSymbol, SymbolFilter};
 
@@ -69,6 +70,38 @@ pub(crate) struct Engine {
     warms_up_after_index: bool,
     /// In-memory symbol name search, by database, built in the background.
     searches: HashMap<PathBuf, Arc<Mutex<SearchSlot>>>,
+    /// Where each indexed directory was last indexed from, by database and
+    /// root, so its servers can be started again later with the same `PATH`
+    /// and provider configuration.
+    origins: HashMap<(PathBuf, PathBuf), Origin>,
+}
+
+/// The parts of a command that decide which language servers it can use.
+#[derive(Debug, Clone)]
+struct Origin {
+    path_env: Option<OsString>,
+    cwd: PathBuf,
+    providers_file: Option<PathBuf>,
+}
+
+impl Origin {
+    /// Built-in providers plus the given file or the project's own,
+    /// resolving executables on the caller's `PATH`.
+    fn registry(&self, root: &Path) -> anyhow::Result<ProviderRegistry> {
+        let registry = match &self.providers_file {
+            Some(file) => {
+                if !file.is_file() {
+                    bail!("provider configuration {} does not exist", file.display());
+                }
+                ProviderRegistry::load(file)?
+            }
+            None => ProviderRegistry::load(&root.join(LEMMA_DIRECTORY).join(PROVIDERS_FILE))?,
+        };
+        Ok(match &self.path_env {
+            Some(path) => registry.with_search_path(path.clone(), self.cwd.clone()),
+            None => registry,
+        })
+    }
 }
 
 /// A database's in-memory search: the one ready to use, and the snapshot
@@ -95,6 +128,7 @@ impl Engine {
             pool: SessionPool::for_one_lookup(),
             warms_up_after_index: false,
             searches: HashMap::new(),
+            origins: HashMap::new(),
         }
     }
 
@@ -106,6 +140,7 @@ impl Engine {
             pool: SessionPool::long_lived(),
             warms_up_after_index: true,
             searches: HashMap::new(),
+            origins: HashMap::new(),
         }
     }
 
@@ -170,7 +205,10 @@ impl Engine {
         let summary = live.index(store)?;
         output::index_summary(out, &summary, &db_path, request.format)?;
         if self.warms_up_after_index {
-            self.warm_up(request, &db_path, &summary)?;
+            let origin = request.origin();
+            let languages: Vec<Language> = summary.files_by_language.keys().copied().collect();
+            self.warm_up(&db_path, &key.1, &languages, &origin)?;
+            self.origins.insert(key, origin);
             let slot = self.searches.entry(db_path.clone()).or_default();
             build_search(slot, &db_path, &summary.snapshot.fingerprint);
         }
@@ -269,32 +307,83 @@ impl Engine {
     /// so the first lookup does not wait for it to load the project.
     fn warm_up(
         &mut self,
-        request: &Request<'_>,
         db_path: &Path,
-        summary: &IndexSummary,
+        root: &Path,
+        languages: &[Language],
+        origin: &Origin,
     ) -> anyhow::Result<()> {
         let store = self.store(db_path)?;
-        let Some(snapshot) = store.snapshot_for_root(&summary.snapshot.root)? else {
+        let Some(snapshot) = store.snapshot_for_root(&root.display().to_string())? else {
             return Ok(());
         };
-        let mut warm_ups = Vec::new();
-        let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
-        for language in summary.files_by_language.keys().copied() {
-            let Some(provider) = registry.installed(language).into_iter().next() else {
+        let registry = origin.registry(root)?;
+        for language in languages {
+            let Some(provider) = registry.installed(*language).into_iter().next() else {
                 continue;
             };
-            warm_ups.push(WarmUp {
+            self.pool.warm_up(WarmUp {
                 db_path: db_path.to_owned(),
                 snapshot: snapshot.clone(),
                 provider,
-                language,
+                language: *language,
                 request_timeout: WARM_UP_TIMEOUT,
             });
         }
-        for warm_up in warm_ups {
-            self.pool.warm_up(warm_up);
-        }
         Ok(())
+    }
+
+    /// Pauses and stops idle servers by `policy`, and, with
+    /// `warms_up_on_activity`, starts servers again for directories whose
+    /// files are changing, so they are ready by the next lookup.
+    pub fn maintain(&mut self, policy: &IdlePolicy, warms_up_on_activity: bool) {
+        self.pool.maintain(policy, Instant::now());
+        if !warms_up_on_activity {
+            return;
+        }
+        let active: Vec<((PathBuf, PathBuf), Vec<Language>)> = self
+            .live_indexes
+            .iter()
+            .filter(|(_, live)| live.has_unindexed_changes() && !self.pool.serves_root(live.root()))
+            .map(|(key, live)| (key.clone(), live.languages()))
+            .collect();
+        for ((db_path, root), languages) in active {
+            let Some(origin) = self.origins.get(&(db_path.clone(), root.clone())).cloned() else {
+                continue;
+            };
+            // Best effort: a failure here shows up again on the next lookup.
+            let _ = self.warm_up(&db_path, &root, &languages, &origin);
+        }
+    }
+
+    /// A line per running language server: what it serves, how long it has
+    /// been idle, whether it is paused, and its memory.
+    pub fn status(&mut self) -> String {
+        let statuses = self.pool.status(Instant::now());
+        if statuses.is_empty() {
+            return "no language servers\n".to_owned();
+        }
+        let mut text = String::new();
+        for status in statuses {
+            let memory = status.memory_bytes.map_or_else(
+                || "?".to_owned(),
+                |bytes| format!("{} MB", bytes / (1024 * 1024)),
+            );
+            let state = match status.state {
+                ServerState::Starting => "starting",
+                ServerState::Running => "running",
+                ServerState::Paused => "paused",
+            };
+            let _ = writeln!(
+                text,
+                "{:<28} {:<8} idle {:>6}  {:>8}  {}",
+                status.provider_id,
+                state,
+                format_duration(status.idle),
+                memory,
+                status.root.display()
+            );
+        }
+        text
     }
 
     fn store(&mut self, db_path: &Path) -> anyhow::Result<&mut Store> {
@@ -434,19 +523,15 @@ impl Request<'_> {
     /// Built-in providers plus the given file or the project's own,
     /// resolving executables on the caller's `PATH`.
     fn registry(&self, root: &Path) -> anyhow::Result<ProviderRegistry> {
-        let registry = match &self.providers_file {
-            Some(file) => {
-                if !file.is_file() {
-                    bail!("provider configuration {} does not exist", file.display());
-                }
-                ProviderRegistry::load(file)?
-            }
-            None => ProviderRegistry::load(&root.join(LEMMA_DIRECTORY).join(PROVIDERS_FILE))?,
-        };
-        Ok(match &self.invocation.path_env {
-            Some(path) => registry.with_search_path(path.clone(), self.invocation.cwd.clone()),
-            None => registry,
-        })
+        self.origin().registry(root)
+    }
+
+    fn origin(&self) -> Origin {
+        Origin {
+            path_env: self.invocation.path_env.clone(),
+            cwd: self.invocation.cwd.clone(),
+            providers_file: self.providers_file.clone(),
+        }
     }
 }
 
@@ -471,6 +556,16 @@ fn select_symbol(
         path_contains: filters.path,
     };
     Ok(lemma_query::resolve_symbol(store, snapshot.id, &selector)?)
+}
+
+/// `45s`, `12m`, `3h`: the largest whole unit.
+fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3600 => format!("{}m", seconds / 60),
+        _ => format!("{}h", seconds / 3600),
+    }
 }
 
 /// `.lemma/index.db` under the indexed directory, creating the directory.

@@ -548,6 +548,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -602,6 +603,7 @@ dependencies = [
 name = "lemma-query"
 version = "0.1.0"
 dependencies = [
+ "lemma-lsp",
  "lemma-model",
  "lemma-providers",
  "lemma-store",

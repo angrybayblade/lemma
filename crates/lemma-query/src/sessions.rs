@@ -6,10 +6,10 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lemma_model::Language;
 
@@ -77,6 +77,10 @@ struct SessionKey {
 
 struct PooledSession {
     session: ProviderSession,
+    /// When a lookup last used the session.
+    last_used: Instant,
+    /// Whether the server is paused; it is resumed before any use.
+    is_paused: bool,
     /// The snapshot fingerprint the server's view matches.
     synced_fingerprint: String,
     /// Content hash of every file, by path, as of `synced_fingerprint`.
@@ -137,6 +141,111 @@ impl SessionPool {
         self.sessions.is_empty()
     }
 
+    /// Whether a server for this root is running or starting.
+    pub fn serves_root(&self, root: &Path) -> bool {
+        self.sessions
+            .keys()
+            .chain(&self.warming)
+            .any(|key| key.root == root)
+    }
+
+    /// Applies the idle policy: pauses servers idle longer than
+    /// `pause_after`, stops those idle longer than `stop_after`, then stops
+    /// the least recently used until the servers fit the memory budget.
+    pub fn maintain(&mut self, policy: &IdlePolicy, now: Instant) {
+        self.collect_arrivals(None);
+        let mut expired = Vec::new();
+        for (key, pooled) in &mut self.sessions {
+            let idle = now.saturating_duration_since(pooled.last_used);
+            if policy.stop_after.is_some_and(|limit| idle >= limit) {
+                expired.push(key.clone());
+            } else if policy.pause_after.is_some_and(|limit| idle >= limit) && !pooled.is_paused {
+                pooled.is_paused = pooled.session.pause();
+            }
+        }
+        for key in expired {
+            self.stop(&key);
+        }
+        if let Some(budget) = policy.memory_budget_bytes {
+            self.fit_budget(budget);
+        }
+    }
+
+    /// What every server is doing, including those still starting.
+    pub fn status(&mut self, now: Instant) -> Vec<SessionStatus> {
+        self.collect_arrivals(None);
+        let ids: Vec<u32> = self
+            .sessions
+            .values()
+            .map(|pooled| pooled.session.process_id())
+            .collect();
+        let memory = lemma_lsp::memory_bytes(&ids);
+        let mut statuses: Vec<SessionStatus> = self
+            .sessions
+            .iter()
+            .map(|(key, pooled)| SessionStatus {
+                provider_id: key.provider_id.clone(),
+                root: key.root.clone(),
+                idle: now.saturating_duration_since(pooled.last_used),
+                state: if pooled.is_paused {
+                    ServerState::Paused
+                } else {
+                    ServerState::Running
+                },
+                memory_bytes: memory.get(&pooled.session.process_id()).copied(),
+            })
+            .collect();
+        statuses.extend(self.warming.iter().map(|key| SessionStatus {
+            provider_id: key.provider_id.clone(),
+            root: key.root.clone(),
+            idle: Duration::ZERO,
+            state: ServerState::Starting,
+            memory_bytes: None,
+        }));
+        statuses.sort_by(|left, right| {
+            left.root
+                .cmp(&right.root)
+                .then(left.provider_id.cmp(&right.provider_id))
+        });
+        statuses
+    }
+
+    fn fit_budget(&mut self, budget: u64) {
+        let ids: Vec<u32> = self
+            .sessions
+            .values()
+            .map(|pooled| pooled.session.process_id())
+            .collect();
+        let memory = lemma_lsp::memory_bytes(&ids);
+        let mut by_age: Vec<(Instant, SessionKey, u64)> = self
+            .sessions
+            .iter()
+            .map(|(key, pooled)| {
+                let bytes = memory
+                    .get(&pooled.session.process_id())
+                    .copied()
+                    .unwrap_or(0);
+                (pooled.last_used, key.clone(), bytes)
+            })
+            .collect();
+        by_age.sort_by_key(|(last_used, _, _)| *last_used);
+        let mut total: u64 = by_age.iter().map(|(_, _, bytes)| bytes).sum();
+        for (_, key, bytes) in by_age {
+            if total <= budget {
+                break;
+            }
+            self.stop(&key);
+            total = total.saturating_sub(bytes);
+        }
+    }
+
+    fn stop(&mut self, key: &SessionKey) {
+        if let Some(mut pooled) = self.sessions.remove(key) {
+            pooled.wake();
+            pooled.session.shutdown();
+        }
+    }
+
     /// Stops every server, waiting for any still starting.
     pub fn shutdown(mut self) {
         while !self.warming.is_empty() {
@@ -145,7 +254,8 @@ impl SessionPool {
             };
             self.collect_arrivals(Some(&key));
         }
-        for pooled in self.sessions.into_values() {
+        for mut pooled in self.sessions.into_values() {
+            pooled.wake();
             pooled.session.shutdown();
         }
     }
@@ -191,10 +301,18 @@ impl SessionPool {
         if let Some(error) = self.failed_warm_ups.remove(&key) {
             return Err(PoolError::Start(error));
         }
+        // A paused server cannot read what sync sends it, so resume first.
+        if let Some(pooled) = self.sessions.get_mut(&key) {
+            pooled.wake();
+        }
         // Syncing may drop a session that could not be told about changes.
         self.sync(&key, store, snapshot)?;
         match self.sessions.entry(key) {
-            Entry::Occupied(entry) => Ok(&mut entry.into_mut().session),
+            Entry::Occupied(entry) => {
+                let pooled = entry.into_mut();
+                pooled.last_used = Instant::now();
+                Ok(&mut pooled.session)
+            }
             Entry::Vacant(entry) => {
                 let pooled = start(
                     store,
@@ -211,7 +329,8 @@ impl SessionPool {
     /// Stops and forgets the provider's session, so the next lookup starts a
     /// fresh server.
     pub(crate) fn discard(&mut self, snapshot: &StoredSnapshot, provider: &InstalledProvider) {
-        if let Some(pooled) = self.sessions.remove(&session_key(snapshot, provider)) {
+        if let Some(mut pooled) = self.sessions.remove(&session_key(snapshot, provider)) {
+            pooled.wake();
             pooled.session.shutdown();
         }
     }
@@ -238,7 +357,8 @@ impl SessionPool {
             return Ok(());
         }
         // A server that cannot be told is replaced rather than trusted.
-        if let Some(stale) = self.sessions.remove(key) {
+        if let Some(mut stale) = self.sessions.remove(key) {
+            stale.wake();
             stale.session.shutdown();
         }
         Ok(())
@@ -269,6 +389,8 @@ fn start(
     };
     Ok(PooledSession {
         session,
+        last_used: Instant::now(),
+        is_paused: false,
         synced_fingerprint: snapshot.snapshot.fingerprint.clone(),
         synced_files,
     })
@@ -335,6 +457,55 @@ fn representative_file<'a>(paths: impl Iterator<Item = &'a str>) -> Option<Strin
         prefix = next_prefix;
     }
     candidates.first().map(|path| (*path).to_owned())
+}
+
+impl PooledSession {
+    /// Resumes the server if it is paused.
+    fn wake(&mut self) {
+        if self.is_paused {
+            self.session.resume();
+            self.is_paused = false;
+        }
+    }
+}
+
+/// When to pause and stop servers nobody is using.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct IdlePolicy {
+    /// Pause a server idle this long, so it uses no CPU and its memory can
+    /// be compressed or swapped. `None` never pauses.
+    pub pause_after: Option<Duration>,
+    /// Stop a server idle this long. `None` keeps it.
+    pub stop_after: Option<Duration>,
+    /// Stop the least recently used servers while all of them together use
+    /// more resident memory than this. `None` sets no limit.
+    pub memory_budget_bytes: Option<u64>,
+}
+
+/// What a server in the pool is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerState {
+    /// Being started and loading its project in the background.
+    Starting,
+    /// Ready to answer.
+    Running,
+    /// Paused while idle; resumed on the next lookup.
+    Paused,
+}
+
+/// One server, for status reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStatus {
+    /// The provider it serves.
+    pub provider_id: String,
+    /// The workspace root it serves.
+    pub root: PathBuf,
+    /// How long since a lookup used it; zero while starting.
+    pub idle: Duration,
+    /// Whether it is starting, running or paused.
+    pub state: ServerState,
+    /// Resident memory of the server and its helpers, if it could be read.
+    pub memory_bytes: Option<u64>,
 }
 
 fn session_key(snapshot: &StoredSnapshot, provider: &InstalledProvider) -> SessionKey {

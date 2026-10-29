@@ -18,19 +18,22 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, bail};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Cli;
+use crate::config::{self, Config};
 use crate::engine::{Engine, Invocation};
 
 /// How long a starting daemon has to begin accepting connections.
 const STARTUP_LIMIT: Duration = Duration::from_secs(5);
 /// How often to retry connecting while a daemon starts or stops.
 const CONNECT_RETRY: Duration = Duration::from_millis(2);
+/// How often idle language servers are checked.
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
 
 /// A message to the daemon, one JSON object per line.
 #[derive(Debug, Serialize, Deserialize)]
@@ -46,6 +49,10 @@ enum Request {
         /// The caller's `PATH`, as raw bytes.
         path_env: Option<Vec<u8>>,
     },
+    /// Apply the idle policy; sent by the daemon's own timer.
+    Maintain,
+    /// Report the running language servers.
+    Status,
     Shutdown,
 }
 
@@ -99,6 +106,19 @@ pub(crate) fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
     }
 }
 
+/// The running daemon's language servers, or `None` if no daemon runs.
+pub(crate) fn status() -> anyhow::Result<Option<String>> {
+    let socket = socket_path()?;
+    let Ok(mut stream) = UnixStream::connect(&socket) else {
+        return Ok(None);
+    };
+    send(&mut stream, &Request::Status)?;
+    match receive::<Reply>(&mut stream)? {
+        Reply::Done { stdout, .. } => Ok(Some(stdout)),
+        Reply::Restart | Reply::Stopping => Ok(None),
+    }
+}
+
 /// Asks the daemon to exit. Returns whether one was running.
 pub(crate) fn stop() -> anyhow::Result<bool> {
     let socket = socket_path()?;
@@ -111,27 +131,40 @@ pub(crate) fn stop() -> anyhow::Result<bool> {
     Ok(true)
 }
 
-/// Serves commands until idle for `idle_limit`.
-pub(crate) fn serve(idle_limit: Duration) -> anyhow::Result<()> {
+/// Serves commands until idle for the configured time, or `idle_override`.
+/// The config file is read again whenever it changes.
+pub(crate) fn serve(idle_override: Option<Duration>) -> anyhow::Result<()> {
     let socket = socket_path()?;
     let Some(listener) = bind(&socket)? else {
         // Another daemon won the race to start.
         return Ok(());
     };
+    let config_path = config::config_path();
+    let mut settings = Settings::load(config_path.as_deref())?;
     let mut engine = Engine::long_lived();
     let last_request = Arc::new(Mutex::new(Instant::now()));
-    watch_for_idleness(socket.clone(), Arc::clone(&last_request), idle_limit);
+    let idle_limit = idle_override.or(settings.config.idle_exit);
+    if let Some(idle_limit) = idle_limit {
+        watch_for_idleness(socket.clone(), Arc::clone(&last_request), idle_limit);
+    }
+    send_maintenance_ticks(socket.clone());
 
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else {
             continue;
         };
-        *lock(&last_request) = Instant::now();
         let Ok(request) = receive::<Request>(&mut stream) else {
             continue;
         };
         let reply = match request {
             Request::Shutdown => Reply::Stopping,
+            Request::Maintain => {
+                settings.reload_if_changed(config_path.as_deref());
+                let config = &settings.config;
+                engine.maintain(&config.idle_policy, config.warms_up_on_activity);
+                done(String::new())
+            }
+            Request::Status => done(engine.status()),
             Request::Run { ref build, .. } if *build != build_id() => Reply::Restart,
             Request::Run {
                 args,
@@ -139,14 +172,16 @@ pub(crate) fn serve(idle_limit: Duration) -> anyhow::Result<()> {
                 path_env,
                 ..
             } => {
+                *lock(&last_request) = Instant::now();
                 let invocation = Invocation {
                     cwd,
                     path_env: path_env.map(OsString::from_vec),
                 };
-                run(&mut engine, args, &invocation)
+                let reply = run(&mut engine, args, &invocation);
+                *lock(&last_request) = Instant::now();
+                reply
             }
         };
-        *lock(&last_request) = Instant::now();
         let is_exiting = matches!(reply, Reply::Stopping | Reply::Restart);
         // A caller that gave up is not a reason to stop serving others.
         let _ = send(&mut stream, &reply);
@@ -158,6 +193,60 @@ pub(crate) fn serve(idle_limit: Duration) -> anyhow::Result<()> {
     let _ = fs::remove_file(&socket);
     engine.shutdown();
     Ok(())
+}
+
+/// The config in force, and when its file last changed.
+struct Settings {
+    config: Config,
+    modified: Option<SystemTime>,
+}
+
+impl Settings {
+    fn load(path: Option<&Path>) -> anyhow::Result<Self> {
+        Ok(Self {
+            config: config::load(path)?,
+            modified: config::modified(path),
+        })
+    }
+
+    /// Picks up edits to the config file. A file that no longer parses
+    /// keeps the previous settings rather than stopping the daemon.
+    fn reload_if_changed(&mut self, path: Option<&Path>) {
+        let modified = config::modified(path);
+        if modified == self.modified {
+            return;
+        }
+        self.modified = modified;
+        if let Ok(config) = config::load(path) {
+            self.config = config;
+        }
+    }
+}
+
+fn done(stdout: String) -> Reply {
+    Reply::Done {
+        stdout,
+        stderr: String::new(),
+        exit_code: 0,
+    }
+}
+
+/// Asks the daemon to apply its idle policy every
+/// [`MAINTENANCE_INTERVAL`], by sending itself a request, so the accept
+/// loop needs no timeout.
+fn send_maintenance_ticks(socket: PathBuf) {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(MAINTENANCE_INTERVAL);
+            let Ok(mut stream) = UnixStream::connect(&socket) else {
+                return;
+            };
+            if send(&mut stream, &Request::Maintain).is_err() {
+                return;
+            }
+            let _ = receive::<Reply>(&mut stream);
+        }
+    });
 }
 
 /// Runs one forwarded command the way `main` would, capturing its output.

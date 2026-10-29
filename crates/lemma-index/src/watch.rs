@@ -77,6 +77,13 @@ impl Watch {
         })
     }
 
+    /// Whether any change has been reported since the last call to
+    /// [`Watch::changes`]. Does not wait for late reports.
+    pub fn has_pending(&self) -> bool {
+        let state = lock(&self.shared.state);
+        !state.observed.paths.is_empty() || state.observed.needs_full_walk
+    }
+
     /// Every change reported since the last call, once all changes made
     /// before this call are known to have been reported.
     pub fn changes(&mut self) -> Observed {
