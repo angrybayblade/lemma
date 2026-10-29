@@ -1,0 +1,74 @@
+-- Lemma storage format. Positions are zero-based; columns are UTF-8 bytes.
+-- Bump SCHEMA_VERSION in lib.rs whenever this changes.
+-- Ids use AUTOINCREMENT so an id from a replaced snapshot never points at a
+-- different row later.
+
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- One row per indexed state of a directory.
+CREATE TABLE IF NOT EXISTS snapshots (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    root              TEXT NOT NULL,
+    revision          TEXT,
+    is_dirty          INTEGER NOT NULL,
+    fingerprint       TEXT NOT NULL,
+    extractor_version TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS files (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id       INTEGER NOT NULL REFERENCES snapshots (id) ON DELETE CASCADE,
+    path              TEXT NOT NULL,
+    language          TEXT NOT NULL,
+    content_hash      TEXT NOT NULL,
+    has_syntax_errors INTEGER NOT NULL,
+    UNIQUE (snapshot_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS symbols (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id           INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
+    name              TEXT NOT NULL,
+    qualified_name    TEXT NOT NULL,
+    kind              TEXT NOT NULL,
+    start_line        INTEGER NOT NULL,
+    start_column      INTEGER NOT NULL,
+    end_line          INTEGER NOT NULL,
+    end_column        INTEGER NOT NULL,
+    name_start_line   INTEGER NOT NULL,
+    name_start_column INTEGER NOT NULL,
+    name_end_line     INTEGER NOT NULL,
+    name_end_column   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS symbols_by_name ON symbols (name);
+CREATE INDEX IF NOT EXISTS symbols_by_qualified_name ON symbols (qualified_name);
+CREATE INDEX IF NOT EXISTS symbols_by_file ON symbols (file_id, start_line);
+
+-- A provider's answer to "where is this symbol referenced?", keyed by
+-- everything that could change the answer within one snapshot.
+CREATE TABLE IF NOT EXISTS reference_lookups (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol_id           INTEGER NOT NULL REFERENCES symbols (id) ON DELETE CASCADE,
+    provider_id         TEXT NOT NULL,
+    provider_version    TEXT,
+    config_fingerprint  TEXT NOT NULL,
+    include_declaration INTEGER NOT NULL,
+    outcome             TEXT NOT NULL,
+    UNIQUE (symbol_id, provider_id, config_fingerprint, include_declaration)
+);
+
+CREATE TABLE IF NOT EXISTS reference_results (
+    lookup_id    INTEGER NOT NULL REFERENCES reference_lookups (id) ON DELETE CASCADE,
+    path         TEXT NOT NULL,
+    is_external  INTEGER NOT NULL,
+    start_line   INTEGER NOT NULL,
+    start_column INTEGER NOT NULL,
+    end_line     INTEGER NOT NULL,
+    end_column   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS reference_results_by_lookup ON reference_results (lookup_id);
