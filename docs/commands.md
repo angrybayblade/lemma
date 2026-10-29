@@ -1,7 +1,7 @@
 # Commands
 
 ```text
-lemma [--db <file>] [--providers <file>] [--json] <command>
+lemma [--db <file>] [--providers <file>] [--json] [--no-daemon] <command>
 ```
 
 ## Global options
@@ -13,6 +13,9 @@ These work with every command.
 | `--db <file>` | Index database to use. By default, `lemma index` writes `<path>/.lemma/index.db`, and the other commands use the nearest `.lemma/index.db` in the current directory or a parent. |
 | `--providers <file>` | Language server configuration to use instead of the project's `.lemma/providers.toml`. Built-in servers stay available. See [Language servers](providers.md). |
 | `--json` | Print JSON instead of text. See [JSON output](json-output.md). |
+| `--no-daemon` | Run in this process instead of the background daemon. Slower, but nothing stays running. Setting `LEMMA_NO_DAEMON=1` does the same. |
+
+Every command runs in a background daemon that keeps the index open, watches indexed directories for changes, and keeps language servers warm; `lemma` itself only forwards the command. The first command starts the daemon. See [`lemma daemon`](#lemma-daemon).
 
 ## `lemma index [path]`
 
@@ -61,9 +64,10 @@ Names must match exactly. The same filters as `lemma symbols` narrow a name: `--
 | `--include-declaration` | Also count the definition itself. |
 | `--refresh` | Ask the language server again instead of using a cached answer. |
 | `--timeout-secs <n>` | How long to wait for the server to start and to answer (default 60). Large projects can take a while on the first lookup. |
-| `--no-daemon` | Start a language server just for this lookup instead of using the background daemon. |
 
-Lookups that need a live server go through a background daemon that keeps servers warm, so only the first one per language pays the start-up cost. See [`lemma daemon`](#lemma-daemon).
+Lookups are answered by language servers the daemon keeps running, so only the first lookup per language pays the server's start-up cost, and `lemma index` starts them in the background ahead of that.
+
+A TypeScript or Python import statement counts as a reference, since it names the symbol.
 
 Each reference shows its location and, when it sits inside an indexed definition, the name of that definition (`in remove_route`). References outside the indexed directory, such as in installed dependencies, are marked `(external)`.
 
@@ -86,14 +90,14 @@ Lists every configured language server, whether its command was found, and the o
 
 ## `lemma daemon`
 
-Keeps language servers running for the index so `lemma refs` answers in milliseconds after the first lookup. `lemma refs` starts it automatically; you only need this command to run it in the foreground or to stop it.
+Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; you only need this command to run it in the foreground or to stop it.
 
 | Option | Meaning |
 | --- | --- |
-| `--stop` | Stop the running daemon for this index. |
-| `--idle-secs <n>` | Exit after this many seconds without a lookup (default 1800). |
+| `--stop` | Stop the running daemon. |
+| `--idle-secs <n>` | Exit after this many seconds without a command (default 1800). |
 
-There is one daemon per index database. It talks to `lemma` over a Unix socket in the temporary directory that only your user can open. A daemon started by a different build of Lemma is replaced automatically. The daemon is not available on Windows; lookups there always start their own server.
+There is one daemon per user. It talks to `lemma` over a Unix socket in the temporary directory that only your user can open, and finds language servers on the `PATH` of each command it runs. A daemon started by a different build of Lemma is replaced automatically. The daemon is not available on Windows; commands there always run in-process.
 
 ## Exit codes
 

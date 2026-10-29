@@ -21,7 +21,13 @@ Agents re-index after every edit, so a re-index costs roughly what changed, not 
 - Only new, changed and deleted files are rewritten in the index. Symbols in other files keep their ids.
 - Git is asked about every source file only on the first index or after the commit changes. Otherwise it is asked only about the files that changed.
 
-On a 73,000-file repository a re-index with nothing changed takes about 0.15 s, and one after a small edit about 0.2 s. See [Performance](performance.md).
+The daemon goes further. It watches each indexed directory, so it knows which paths changed without walking the tree, and keeps the indexed files in memory:
+
+- Before indexing it confirms that every change made so far has been reported, by writing a marker file to a watched directory and waiting for its event. If that fails, or the operating system dropped events, it walks everything.
+- Only directories with changes are listed again, with the usual ignore rules. A changed `.gitignore` means a full walk.
+- If nothing changed and the commit has not moved, the stored snapshot is returned without reading or writing anything.
+
+On a 73,000-file repository a re-index with nothing changed takes about 32 ms, and one after a small edit about 85 ms. See [Performance](performance.md).
 
 ## Stale results
 
@@ -53,13 +59,15 @@ Each answer is stored with:
 
 A cached answer is reused only when all of these match. Re-indexing after a content change, or changing a provider's configuration, makes the next lookup ask again: an edit in one file can change the references to a symbol defined in another, so every cached answer for the snapshot is dropped. Re-indexing with no content change keeps them. `--refresh` always asks again.
 
-## Warm language servers
+## The daemon and warm language servers
 
-Starting a language server and letting it load a large project takes seconds; asking one that has loaded takes milliseconds. So the first `lemma refs` that needs a server starts a background daemon for the index database, and later lookups reuse its servers. Cached answers never involve the daemon.
+Starting a language server and letting it load a large project takes seconds; asking one that has loaded takes milliseconds. So every command runs in a per-user background daemon, which keeps servers running between lookups. After `lemma index` it starts the server for each indexed language in the background, opening a file from the densest part of the tree so the server loads the project most lookups will need. A lookup that arrives while a server is still starting waits for it.
 
-Before reusing a server, the daemon tells it which files were created, changed or deleted since its last lookup, using the differences between snapshots. Edits become visible to a warm server when you run `lemma index`.
+Before reusing a server, the daemon tells it which files were created, changed or deleted since its last lookup, using the differences between snapshots. Edits become visible to a warm server when you run `lemma index`. Files a server has open for earlier lookups are kept open, and updated or closed when they change.
 
-The daemon exits after 30 minutes without a lookup. `lemma daemon --stop` stops it, and `lemma refs --no-daemon` starts a server just for one lookup.
+The daemon also keeps every symbol name in memory for substring search, rebuilt in the background after each index.
+
+The daemon exits after 30 minutes without a command. `lemma daemon --stop` stops it, and `--no-daemon` runs a command in-process.
 
 ## The index file
 
@@ -70,5 +78,5 @@ The daemon exits after 30 minutes without a lookup. `lemma daemon --stop` stops 
 - Supported languages are TypeScript, TSX, Python, and Go.
 - The only semantic question is "where is this symbol referenced".
 - Lemma waits for a server to finish loading the project before asking. Servers that announce it (pyright, basedpyright, typescript-language-server) are waited for exactly; for others Lemma uses signals such as diagnostics and quiet periods. A server that is still loading when it answers can give an incomplete result; `--refresh` asks again.
-- The daemon answers one lookup at a time; parallel calls queue.
-- The daemon uses the environment, including `PATH`, of the command that started it.
+- The daemon runs one command at a time; parallel calls queue.
+- Language servers keep running, and using memory, while the daemon does.
