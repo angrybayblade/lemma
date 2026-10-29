@@ -45,6 +45,10 @@ pub struct LaunchConfig {
     pub settings: Value,
     /// How long to wait for any single request, including initialization.
     pub request_timeout: Duration,
+    /// Patterns (`*` matches anything) for a `window/logMessage`, or the title
+    /// of a finished `$/progress` report, that mean the server has loaded the
+    /// workspace. Empty to rely on heuristics.
+    pub ready_messages: Vec<String>,
 }
 
 /// What the server said about itself during initialization.
@@ -102,7 +106,7 @@ impl LspClient {
             workspace_folders: json!([{ "uri": root_uri, "name": root_name }]),
         };
 
-        let connection = Arc::new(Connection::new(stdin));
+        let connection = Arc::new(Connection::new(stdin, config.ready_messages.clone()));
         let reader_connection = Arc::clone(&connection);
         thread::Builder::new()
             .name("lsp-reader".to_owned())
@@ -232,12 +236,12 @@ struct Connection {
 }
 
 impl Connection {
-    fn new(stdin: ChildStdin) -> Self {
+    fn new(stdin: ChildStdin, ready_messages: Vec<String>) -> Self {
         Self {
             writer: Mutex::new(stdin),
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicI64::new(1),
-            activity: Mutex::new(Activity::new(Instant::now())),
+            activity: Mutex::new(Activity::new(Instant::now(), ready_messages)),
             activity_changed: Condvar::new(),
         }
     }
