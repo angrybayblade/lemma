@@ -7,6 +7,8 @@
 
 mod cli;
 #[cfg(unix)]
+mod config;
+#[cfg(unix)]
 mod daemon;
 mod engine;
 mod output;
@@ -81,8 +83,13 @@ fn run_daemon(args: &cli::DaemonArgs) -> ExitCode {
                 eprintln!("no lemma daemon is running");
             }
         })
+    } else if args.status {
+        daemon::status().map(|status| match status {
+            Some(text) => print!("{text}"),
+            None => eprintln!("no lemma daemon is running"),
+        })
     } else {
-        daemon::serve(std::time::Duration::from_secs(args.idle_secs))
+        daemon::serve(args.idle_secs.map(std::time::Duration::from_secs))
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
