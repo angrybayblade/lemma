@@ -1,0 +1,15 @@
+[package]
+name = "lemma-store"
+description = "SQLite storage for snapshots, symbols, and provider results."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+lemma-model.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
