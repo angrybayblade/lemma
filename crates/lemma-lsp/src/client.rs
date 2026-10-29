@@ -25,6 +25,7 @@ use crate::LspError;
 use crate::activity::{Activity, Readiness};
 use crate::encoding::PositionEncoding;
 use crate::message::{self, Incoming, ResponseError, ServerRequestContext};
+use crate::process;
 use crate::transport;
 
 /// How long to wait for a polite shutdown before killing the process.
@@ -139,6 +140,23 @@ impl LspClient {
         &self.server
     }
 
+    /// The server's process id, which also names its process group.
+    pub fn process_id(&self) -> u32 {
+        self.process.child.id()
+    }
+
+    /// Pauses the server and every process it started, so an idle server
+    /// uses no CPU and the operating system can compress or swap out its
+    /// memory. Returns whether the pause was delivered.
+    pub fn pause(&self) -> bool {
+        cfg!(unix) && process::signal_group(self.process_id(), "STOP")
+    }
+
+    /// Resumes a paused server. Returns whether the signal was delivered.
+    pub fn resume(&self) -> bool {
+        cfg!(unix) && process::signal_group(self.process_id(), "CONT")
+    }
+
     /// Sends a request and waits for its answer, up to the configured timeout.
     pub fn request<R: Request>(&self, params: R::Params) -> Result<R::Result, LspError> {
         self.connection.request::<R>(params, self.request_timeout)
@@ -184,17 +202,21 @@ struct ServerProcess {
 
 impl ServerProcess {
     fn spawn(config: &LaunchConfig) -> Result<Self, LspError> {
-        let child = Command::new(&config.command)
+        let mut command = Command::new(&config.command);
+        command
             .args(&config.args)
             .current_dir(&config.root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|source| LspError::Spawn {
-                command: config.command.display().to_string(),
-                source,
-            })?;
+            .stderr(Stdio::null());
+        // Its own process group, so pausing or stopping it reaches the
+        // processes it starts as well.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let child = command.spawn().map_err(|source| LspError::Spawn {
+            command: config.command.display().to_string(),
+            source,
+        })?;
         Ok(Self { child })
     }
 
@@ -217,7 +239,11 @@ impl ServerProcess {
 
 impl Drop for ServerProcess {
     fn drop(&mut self) {
-        // Killing an exited process fails harmlessly.
+        // The whole group, so helpers such as tsserver go too. Killing
+        // processes that already exited fails harmlessly.
+        if cfg!(unix) {
+            process::signal_group(self.child.id(), "KILL");
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
