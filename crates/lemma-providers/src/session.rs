@@ -1,18 +1,19 @@
 //! A running provider and the Lemma operations it answers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use lemma_lsp::lsp_types::notification::{
-    DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
+    DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
 };
 use lemma_lsp::lsp_types::request::References;
 use lemma_lsp::lsp_types::{
-    self, DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    FileChangeType, FileEvent, Location, ReferenceContext, ReferenceParams, TextDocumentIdentifier,
-    TextDocumentItem, TextDocumentPositionParams, Url,
+    self, DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, FileChangeType, FileEvent, Location, ReferenceContext,
+    ReferenceParams, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentPositionParams, Url, VersionedTextDocumentIdentifier,
 };
 use lemma_lsp::{LaunchConfig, LspClient, LspError, PositionEncoding, line_text};
 use lemma_model::{Language, Position, Reference, Span};
@@ -54,7 +55,21 @@ pub struct ProviderSession {
     /// Whether the server has been seen ready once. After that it has loaded
     /// the workspace, and later lookups need not wait again.
     has_been_ready: bool,
+    /// Documents left open between lookups. Reopening a file makes a server
+    /// analyse it again, which costs more than the lookup itself.
+    open_documents: HashMap<Url, OpenDocument>,
+    /// Open documents, least recently used first.
+    open_order: VecDeque<Url>,
 }
+
+/// A document the server has open, as Lemma last sent it.
+struct OpenDocument {
+    version: i32,
+    text_hash: blake3::Hash,
+}
+
+/// Most documents kept open at once; the least recently used is closed.
+const MAX_OPEN_DOCUMENTS: usize = 64;
 
 impl ProviderSession {
     /// Starts the provider's server on a workspace root.
@@ -82,7 +97,30 @@ impl ProviderSession {
             root: root.to_owned(),
             client,
             has_been_ready: false,
+            open_documents: HashMap::new(),
+            open_order: VecDeque::new(),
         })
+    }
+
+    /// Gets the server ready before any lookup: opens a file of the
+    /// language so the server loads its project, and waits until it has.
+    /// Path is relative to the root.
+    pub fn warm_up(&mut self, path: &str, language: Language) -> Result<(), ProviderError> {
+        let absolute_path = self.root.join(path);
+        let source =
+            fs::read_to_string(&absolute_path).map_err(|source| ProviderError::ReadSource {
+                path: absolute_path.clone(),
+                source,
+            })?;
+        let uri = Url::from_file_path(&absolute_path).map_err(|()| ProviderError::InvalidPath {
+            path: absolute_path.clone(),
+        })?;
+        let opened_at = Instant::now();
+        self.show_document(&uri, language, source)?;
+        self.client
+            .wait_until_ready(&uri, opened_at, READY_QUIET_PERIOD);
+        self.has_been_ready = true;
+        Ok(())
     }
 
     /// Tells the server about files that changed on disk since it started or
@@ -141,7 +179,7 @@ impl ProviderSession {
         let character = encoding.encode_column(line_text(&source, position.line), position.column);
 
         let opened_at = Instant::now();
-        self.open_document(&uri, language, source)?;
+        self.show_document(&uri, language, source)?;
         // Some servers answer before loading the workspace and return empty
         // results that look real. If readiness times out, ask anyway: the
         // answer is the best available.
@@ -164,9 +202,6 @@ impl ProviderSession {
                 include_declaration,
             },
         });
-        // Close even if the request failed, so the server can drop the buffer.
-        self.close_document(uri)?;
-
         let locations = locations
             .map_err(|source| self.server_error(source))?
             .unwrap_or_default();
@@ -181,6 +216,60 @@ impl ProviderSession {
     /// Stops the server politely.
     pub fn shutdown(self) {
         self.client.shutdown();
+    }
+
+    /// Makes sure the server has the document open with `text`: opens it,
+    /// sends the new text if it changed, or does nothing if it is current.
+    fn show_document(
+        &mut self,
+        uri: &Url,
+        language: Language,
+        text: String,
+    ) -> Result<(), ProviderError> {
+        let text_hash = blake3::hash(text.as_bytes());
+        self.open_order.retain(|open| open != uri);
+        self.open_order.push_back(uri.clone());
+        let Some(open) = self.open_documents.get_mut(uri) else {
+            self.open_documents.insert(
+                uri.clone(),
+                OpenDocument {
+                    version: 1,
+                    text_hash,
+                },
+            );
+            self.open_document(uri, language, text)?;
+            return self.close_least_recent();
+        };
+        if open.text_hash == text_hash {
+            return Ok(());
+        }
+        open.version += 1;
+        open.text_hash = text_hash;
+        let version = open.version;
+        self.client
+            .notify::<DidChangeTextDocument>(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text,
+                }],
+            })
+            .map_err(|source| self.server_error(source))
+    }
+
+    fn close_least_recent(&mut self) -> Result<(), ProviderError> {
+        while self.open_order.len() > MAX_OPEN_DOCUMENTS {
+            let Some(uri) = self.open_order.pop_front() else {
+                break;
+            };
+            self.open_documents.remove(&uri);
+            self.close_document(uri)?;
+        }
+        Ok(())
     }
 
     fn open_document(
