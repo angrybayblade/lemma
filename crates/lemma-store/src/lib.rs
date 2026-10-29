@@ -15,7 +15,7 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 /// Version of `schema.sql`. Databases written with another version are
 /// rejected rather than migrated, since an index can always be rebuilt.
-pub const SCHEMA_VERSION: &str = "1";
+pub const SCHEMA_VERSION: &str = "2";
 
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -40,6 +40,9 @@ pub struct StoredSnapshot {
     pub id: i64,
     /// Version of the extractor that produced the snapshot's symbols.
     pub extractor_version: String,
+    /// Wall-clock time, in nanoseconds since the Unix epoch, when the indexing
+    /// run that produced this snapshot started.
+    pub indexed_at_ns: i64,
     /// The snapshot itself.
     pub snapshot: Snapshot,
 }
@@ -55,6 +58,81 @@ pub struct StoredSymbol {
     pub language: Language,
     /// The symbol itself.
     pub symbol: Symbol,
+}
+
+/// File system metadata recorded when a file was read.
+///
+/// If a file's stamp is unchanged, its contents almost certainly are too, so
+/// indexing can skip reading it. See `lemma-index` for when a stamp is trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FileStamp {
+    /// File size.
+    pub size_bytes: u64,
+    /// Last content modification, in nanoseconds since the Unix epoch.
+    pub modified_ns: i64,
+    /// Last metadata change, such as a rename or permission change, in
+    /// nanoseconds since the Unix epoch. Zero where the platform has none.
+    pub changed_ns: i64,
+    /// File system inode number. Zero where the platform has none.
+    pub inode: u64,
+}
+
+/// A file to store along with its symbols.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StampedFile {
+    /// The file's contents as indexed.
+    pub file: IndexedFile,
+    /// Its metadata when it was read.
+    pub stamp: FileStamp,
+}
+
+/// A stored file, without its symbols.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredFile {
+    /// Path relative to the snapshot root.
+    pub path: String,
+    /// The file's language.
+    pub language: Language,
+    /// Hash of its contents when indexed.
+    pub content_hash: String,
+    /// Whether the parser recovered from syntax errors.
+    pub has_syntax_errors: bool,
+    /// How many symbols it defines.
+    pub symbol_count: usize,
+    /// Its metadata when it was read.
+    pub stamp: FileStamp,
+}
+
+/// A snapshot to store from scratch.
+#[derive(Debug, Clone, Copy)]
+pub struct NewSnapshot<'a> {
+    /// The snapshot itself.
+    pub snapshot: &'a Snapshot,
+    /// Version of the extractor that produced the symbols.
+    pub extractor_version: &'a str,
+    /// When the indexing run started; see [`StoredSnapshot::indexed_at_ns`].
+    pub indexed_at_ns: i64,
+    /// Every file with its symbols.
+    pub files: &'a [StampedFile],
+    /// Source files that differ from the snapshot's revision.
+    pub uncommitted_paths: &'a [String],
+}
+
+/// Changes to bring a stored snapshot up to date with the files on disk.
+#[derive(Debug, Clone, Copy)]
+pub struct SnapshotUpdate<'a> {
+    /// The snapshot as it is now.
+    pub snapshot: &'a Snapshot,
+    /// When the indexing run started; see [`StoredSnapshot::indexed_at_ns`].
+    pub indexed_at_ns: i64,
+    /// Source files that now differ from the snapshot's revision.
+    pub uncommitted_paths: &'a [String],
+    /// Files that are new or whose contents changed.
+    pub changed: &'a [StampedFile],
+    /// Paths of files that no longer exist or can no longer be read.
+    pub removed: &'a [String],
+    /// Files whose contents are unchanged but whose metadata moved on.
+    pub restamped: &'a [(String, FileStamp)],
 }
 
 /// How a symbol search compares names.
@@ -144,29 +222,148 @@ impl Store {
 
     /// Stores a snapshot and its files, replacing earlier snapshots of the
     /// same root along with everything derived from them.
-    pub fn replace_snapshot(
-        &mut self,
-        snapshot: &Snapshot,
-        extractor_version: &str,
-        files: &[IndexedFile],
-    ) -> Result<i64, StoreError> {
+    pub fn replace_snapshot(&mut self, new: &NewSnapshot<'_>) -> Result<i64, StoreError> {
+        let NewSnapshot {
+            snapshot,
+            extractor_version,
+            indexed_at_ns,
+            files,
+            uncommitted_paths,
+        } = *new;
         let transaction = self.connection.transaction()?;
         transaction.execute("DELETE FROM snapshots WHERE root = ?1", [&snapshot.root])?;
         transaction.execute(
-            "INSERT INTO snapshots (root, revision, is_dirty, fingerprint, extractor_version)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO snapshots
+                 (root, revision, is_dirty, fingerprint, extractor_version, indexed_at_ns)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 snapshot.root,
                 snapshot.revision,
                 snapshot.is_dirty,
                 snapshot.fingerprint,
-                extractor_version
+                extractor_version,
+                indexed_at_ns
             ],
         )?;
         let snapshot_id = transaction.last_insert_rowid();
         insert_files(&transaction, snapshot_id, files)?;
+        replace_uncommitted_paths(&transaction, snapshot_id, uncommitted_paths)?;
         transaction.commit()?;
         Ok(snapshot_id)
+    }
+
+    /// Updates a stored snapshot in place, rewriting only the files that
+    /// changed. Symbols of untouched files keep their ids.
+    ///
+    /// When any file's contents changed, every cached provider answer for the
+    /// snapshot is dropped: an edit in one file can change the references to
+    /// a symbol defined in another.
+    pub fn update_snapshot(
+        &mut self,
+        snapshot_id: i64,
+        update: &SnapshotUpdate<'_>,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "UPDATE snapshots
+             SET revision = ?2, is_dirty = ?3, fingerprint = ?4, indexed_at_ns = ?5
+             WHERE id = ?1",
+            params![
+                snapshot_id,
+                update.snapshot.revision,
+                update.snapshot.is_dirty,
+                update.snapshot.fingerprint,
+                update.indexed_at_ns
+            ],
+        )?;
+
+        let contents_changed = !update.changed.is_empty() || !update.removed.is_empty();
+        if contents_changed {
+            // Checked per cached lookup rather than per symbol: there are few
+            // lookups and hundreds of thousands of symbols.
+            transaction.execute(
+                "DELETE FROM reference_lookups WHERE EXISTS
+                     (SELECT 1 FROM symbols s JOIN files f ON f.id = s.file_id
+                      WHERE s.id = reference_lookups.symbol_id AND f.snapshot_id = ?1)",
+                [snapshot_id],
+            )?;
+        }
+
+        let mut delete_file =
+            transaction.prepare_cached("DELETE FROM files WHERE snapshot_id = ?1 AND path = ?2")?;
+        let changed_paths = update.changed.iter().map(|changed| &changed.file.path);
+        for path in update.removed.iter().chain(changed_paths) {
+            delete_file.execute(params![snapshot_id, path])?;
+        }
+        insert_files(&transaction, snapshot_id, update.changed)?;
+
+        let mut restamp = transaction.prepare_cached(
+            "UPDATE files SET size_bytes = ?3, modified_ns = ?4, changed_ns = ?5, inode = ?6
+             WHERE snapshot_id = ?1 AND path = ?2",
+        )?;
+        for (path, stamp) in update.restamped {
+            restamp.execute(params![
+                snapshot_id,
+                path,
+                stamp_integer(stamp.size_bytes),
+                stamp.modified_ns,
+                stamp.changed_ns,
+                stamp_integer(stamp.inode)
+            ])?;
+        }
+        drop((delete_file, restamp));
+        replace_uncommitted_paths(&transaction, snapshot_id, update.uncommitted_paths)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// The stored snapshot of a directory, if it has been indexed.
+    pub fn snapshot_for_root(&self, root: &str) -> Result<Option<StoredSnapshot>, StoreError> {
+        let snapshot = self
+            .connection
+            .query_row(
+                "SELECT id, root, revision, is_dirty, fingerprint, extractor_version, indexed_at_ns
+                 FROM snapshots WHERE root = ?1",
+                [root],
+                read_stored_snapshot,
+            )
+            .optional()?;
+        Ok(snapshot)
+    }
+
+    /// Source files that differed from the snapshot's revision when it was
+    /// taken, sorted.
+    pub fn uncommitted_paths(&self, snapshot_id: i64) -> Result<Vec<String>, StoreError> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT path FROM uncommitted_paths WHERE snapshot_id = ?1 ORDER BY path",
+        )?;
+        let rows = statement.query_map([snapshot_id], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Every file in a snapshot, without symbols, sorted by path.
+    pub fn files(&self, snapshot_id: i64) -> Result<Vec<StoredFile>, StoreError> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT path, language, content_hash, has_syntax_errors, symbol_count,
+                    size_bytes, modified_ns, changed_ns, inode
+             FROM files WHERE snapshot_id = ?1 ORDER BY path",
+        )?;
+        let rows = statement.query_map([snapshot_id], |row| {
+            Ok(StoredFile {
+                path: row.get(0)?,
+                language: parse_column(row, 1)?,
+                content_hash: row.get(2)?,
+                has_syntax_errors: row.get(3)?,
+                symbol_count: row.get(4)?,
+                stamp: FileStamp {
+                    size_bytes: unstamp_integer(row.get(5)?),
+                    modified_ns: row.get(6)?,
+                    changed_ns: row.get(7)?,
+                    inode: unstamp_integer(row.get(8)?),
+                },
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// The most recently stored snapshot.
@@ -174,21 +371,10 @@ impl Store {
         let snapshot = self
             .connection
             .query_row(
-                "SELECT id, root, revision, is_dirty, fingerprint, extractor_version
+                "SELECT id, root, revision, is_dirty, fingerprint, extractor_version, indexed_at_ns
                  FROM snapshots ORDER BY id DESC LIMIT 1",
                 [],
-                |row| {
-                    Ok(StoredSnapshot {
-                        id: row.get(0)?,
-                        extractor_version: row.get(5)?,
-                        snapshot: Snapshot {
-                            root: row.get(1)?,
-                            revision: row.get(2)?,
-                            is_dirty: row.get(3)?,
-                            fingerprint: row.get(4)?,
-                        },
-                    })
-                },
+                read_stored_snapshot,
             )
             .optional()?;
         Ok(snapshot)
@@ -406,11 +592,12 @@ impl Store {
 fn insert_files(
     transaction: &Transaction<'_>,
     snapshot_id: i64,
-    files: &[IndexedFile],
+    files: &[StampedFile],
 ) -> Result<(), StoreError> {
     let mut insert_file = transaction.prepare_cached(
-        "INSERT INTO files (snapshot_id, path, language, content_hash, has_syntax_errors)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO files (snapshot_id, path, language, content_hash, has_syntax_errors,
+                            symbol_count, size_bytes, modified_ns, changed_ns, inode)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     let mut insert_symbol = transaction.prepare_cached(
         "INSERT INTO symbols (file_id, name, qualified_name, kind,
@@ -419,13 +606,18 @@ fn insert_files(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     )?;
 
-    for file in files {
+    for StampedFile { file, stamp } in files {
         insert_file.execute(params![
             snapshot_id,
             file.path,
             file.language.as_str(),
             file.content_hash,
-            file.has_syntax_errors
+            file.has_syntax_errors,
+            file.symbols.len(),
+            stamp_integer(stamp.size_bytes),
+            stamp.modified_ns,
+            stamp.changed_ns,
+            stamp_integer(stamp.inode)
         ])?;
         let file_id = transaction.last_insert_rowid();
         for symbol in &file.symbols {
@@ -444,6 +636,24 @@ fn insert_files(
                 symbol.name_span.end.column,
             ])?;
         }
+    }
+    Ok(())
+}
+
+fn replace_uncommitted_paths(
+    transaction: &Transaction<'_>,
+    snapshot_id: i64,
+    paths: &[String],
+) -> Result<(), StoreError> {
+    transaction.execute(
+        "DELETE FROM uncommitted_paths WHERE snapshot_id = ?1",
+        [snapshot_id],
+    )?;
+    let mut insert = transaction.prepare_cached(
+        "INSERT OR IGNORE INTO uncommitted_paths (snapshot_id, path) VALUES (?1, ?2)",
+    )?;
+    for path in paths {
+        insert.execute(params![snapshot_id, path])?;
     }
     Ok(())
 }
@@ -490,6 +700,33 @@ fn like_pattern(text: &str) -> String {
         .replace('%', r"\%")
         .replace('_', r"\_");
     format!("%{escaped}%")
+}
+
+fn read_stored_snapshot(row: &Row<'_>) -> rusqlite::Result<StoredSnapshot> {
+    Ok(StoredSnapshot {
+        id: row.get(0)?,
+        extractor_version: row.get(5)?,
+        indexed_at_ns: row.get(6)?,
+        snapshot: Snapshot {
+            root: row.get(1)?,
+            revision: row.get(2)?,
+            is_dirty: row.get(3)?,
+            fingerprint: row.get(4)?,
+        },
+    })
+}
+
+/// SQLite integers are signed. Sizes and inode numbers never reach 2^63 in
+/// practice; the bit pattern is kept either way, so equality still holds.
+#[expect(clippy::cast_possible_wrap, reason = "only compared for equality")]
+fn stamp_integer(value: u64) -> i64 {
+    value as i64
+}
+
+/// Reverses [`stamp_integer`].
+#[expect(clippy::cast_sign_loss, reason = "restores the stored bit pattern")]
+fn unstamp_integer(value: i64) -> u64 {
+    value as u64
 }
 
 fn read_stored_symbol(row: &Row<'_>) -> rusqlite::Result<StoredSymbol> {
@@ -572,8 +809,32 @@ mod tests {
         }
     }
 
-    fn sample_files() -> Vec<IndexedFile> {
-        vec![IndexedFile {
+    fn stamped(file: IndexedFile) -> StampedFile {
+        StampedFile {
+            file,
+            stamp: FileStamp {
+                size_bytes: 10,
+                modified_ns: 1,
+                changed_ns: 1,
+                inode: 7,
+            },
+        }
+    }
+
+    fn save(store: &mut Store, snapshot: &Snapshot, files: &[StampedFile]) -> i64 {
+        store
+            .replace_snapshot(&NewSnapshot {
+                snapshot,
+                extractor_version: "1",
+                indexed_at_ns: 100,
+                files,
+                uncommitted_paths: &[],
+            })
+            .unwrap()
+    }
+
+    fn sample_files() -> Vec<StampedFile> {
+        vec![stamped(IndexedFile {
             path: "src/router.py".to_owned(),
             language: Language::Python,
             content_hash: "hash-1".to_owned(),
@@ -593,15 +854,59 @@ mod tests {
                     span(12, 0, 14, 0),
                 ),
             ],
-        }]
+        })]
     }
 
     fn store_with_sample() -> (Store, i64) {
         let mut store = Store::open_in_memory().unwrap();
-        let snapshot_id = store
-            .replace_snapshot(&snapshot("/repo", "fp-1"), "1", &sample_files())
-            .unwrap();
+        let snapshot_id = save(&mut store, &snapshot("/repo", "fp-1"), &sample_files());
         (store, snapshot_id)
+    }
+
+    fn other_file(path: &str, name: &str) -> StampedFile {
+        stamped(IndexedFile {
+            path: path.to_owned(),
+            language: Language::Python,
+            content_hash: format!("hash-{name}"),
+            has_syntax_errors: false,
+            symbols: vec![symbol(name, name, SymbolKind::Function, span(0, 0, 1, 0))],
+        })
+    }
+
+    fn update<'a>(
+        snapshot: &'a Snapshot,
+        changed: &'a [StampedFile],
+        removed: &'a [String],
+        restamped: &'a [(String, FileStamp)],
+    ) -> SnapshotUpdate<'a> {
+        SnapshotUpdate {
+            snapshot,
+            indexed_at_ns: 200,
+            uncommitted_paths: &[],
+            changed,
+            removed,
+            restamped,
+        }
+    }
+
+    fn cache_empty_answer(store: &mut Store, symbol_id: i64) -> ReferenceLookupKey {
+        let key = ReferenceLookupKey {
+            symbol_id,
+            provider_id: "pyright".to_owned(),
+            config_fingerprint: "config".to_owned(),
+            include_declaration: false,
+        };
+        store
+            .save_references(&key, None, &ReferenceOutcome::Empty)
+            .unwrap();
+        key
+    }
+
+    fn symbol_id(store: &Store, snapshot_id: i64, name: &str) -> i64 {
+        store
+            .find_symbols(snapshot_id, &filter(name, NameMatch::Exact))
+            .unwrap()[0]
+            .id
     }
 
     fn filter(text: &str, name_match: NameMatch) -> SymbolFilter {
@@ -635,9 +940,7 @@ mod tests {
     fn replacing_a_snapshot_removes_the_previous_one() {
         let (mut store, first_id) = store_with_sample();
 
-        let second_id = store
-            .replace_snapshot(&snapshot("/repo", "fp-2"), "1", &sample_files())
-            .unwrap();
+        let second_id = save(&mut store, &snapshot("/repo", "fp-2"), &sample_files());
 
         assert_ne!(first_id, second_id);
         assert_eq!(
@@ -646,6 +949,112 @@ mod tests {
                 .unwrap(),
             [] as [StoredSymbol; 0]
         );
+    }
+
+    #[test]
+    fn files_list_stamps_and_symbol_counts() {
+        let (store, snapshot_id) = store_with_sample();
+
+        let files = store.files(snapshot_id).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/router.py");
+        assert_eq!(files[0].symbol_count, 3);
+        assert_eq!(files[0].stamp, sample_files()[0].stamp);
+    }
+
+    #[test]
+    fn updating_rewrites_changed_files_and_keeps_other_symbol_ids() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut files = sample_files();
+        files.push(other_file("src/old.py", "old_helper"));
+        let snapshot_id = save(&mut store, &snapshot("/repo", "fp-1"), &files);
+        let router_id = symbol_id(&store, snapshot_id, "Router");
+
+        let changed = [other_file("src/new.py", "new_helper")];
+        let removed = ["src/old.py".to_owned()];
+        let next = snapshot("/repo", "fp-2");
+        store
+            .update_snapshot(snapshot_id, &update(&next, &changed, &removed, &[]))
+            .unwrap();
+
+        let paths: Vec<_> = store
+            .files(snapshot_id)
+            .unwrap()
+            .into_iter()
+            .map(|file| file.path)
+            .collect();
+        assert_eq!(paths, ["src/new.py", "src/router.py"]);
+        assert_eq!(symbol_id(&store, snapshot_id, "Router"), router_id);
+        assert_eq!(store.latest_snapshot().unwrap().unwrap().snapshot, next);
+    }
+
+    #[test]
+    fn changing_contents_drops_cached_answers() {
+        let (mut store, snapshot_id) = store_with_sample();
+        let router_id = symbol_id(&store, snapshot_id, "Router");
+        let key = cache_empty_answer(&mut store, router_id);
+
+        let changed = [other_file("src/new.py", "new_helper")];
+        let next = snapshot("/repo", "fp-2");
+        store
+            .update_snapshot(snapshot_id, &update(&next, &changed, &[], &[]))
+            .unwrap();
+
+        assert_eq!(store.cached_references(&key).unwrap(), None);
+    }
+
+    #[test]
+    fn restamping_keeps_cached_answers() {
+        let (mut store, snapshot_id) = store_with_sample();
+        let router_id = symbol_id(&store, snapshot_id, "Router");
+        let key = cache_empty_answer(&mut store, router_id);
+        let stamp = FileStamp {
+            modified_ns: 50,
+            ..sample_files()[0].stamp
+        };
+
+        let restamped = [("src/router.py".to_owned(), stamp)];
+        let same = snapshot("/repo", "fp-1");
+        store
+            .update_snapshot(snapshot_id, &update(&same, &[], &[], &restamped))
+            .unwrap();
+
+        assert!(store.cached_references(&key).unwrap().is_some());
+        assert_eq!(store.files(snapshot_id).unwrap()[0].stamp, stamp);
+    }
+
+    #[test]
+    fn uncommitted_paths_are_replaced_on_update() {
+        let (mut store, snapshot_id) = store_with_sample();
+        let same = snapshot("/repo", "fp-1");
+        let uncommitted = ["b.py".to_owned(), "a.py".to_owned()];
+
+        store
+            .update_snapshot(
+                snapshot_id,
+                &SnapshotUpdate {
+                    uncommitted_paths: &uncommitted,
+                    ..update(&same, &[], &[], &[])
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.uncommitted_paths(snapshot_id).unwrap(),
+            ["a.py", "b.py"]
+        );
+    }
+
+    #[test]
+    fn snapshot_for_root_ignores_other_roots() {
+        let (mut store, snapshot_id) = store_with_sample();
+        save(&mut store, &snapshot("/other", "fp-9"), &[]);
+
+        let found = store.snapshot_for_root("/repo").unwrap().unwrap();
+
+        assert_eq!(found.id, snapshot_id);
+        assert_eq!(found.indexed_at_ns, 100);
     }
 
     #[test]

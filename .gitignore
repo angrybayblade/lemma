@@ -1,3 +1,4 @@
 .specs/
 /target/
 .lemma/
+.experiments/

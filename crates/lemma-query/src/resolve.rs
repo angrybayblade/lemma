@@ -61,6 +61,7 @@ fn classify(mut candidates: Vec<StoredSymbol>) -> SymbolResolution {
 mod tests {
     use super::*;
     use lemma_model::{IndexedFile, Position, Snapshot, Span, Symbol};
+    use lemma_store::{FileStamp, NewSnapshot, StampedFile};
 
     fn symbol(name: &str, qualified_name: &str, line: u32) -> Symbol {
         let span = Span {
@@ -87,18 +88,29 @@ mod tests {
             is_dirty: false,
             fingerprint: "fp".to_owned(),
         };
-        let file = |path: &str, symbols| IndexedFile {
-            path: path.to_owned(),
-            language: Language::Python,
-            content_hash: "hash".to_owned(),
-            has_syntax_errors: false,
-            symbols,
+        let file = |path: &str, symbols| StampedFile {
+            file: IndexedFile {
+                path: path.to_owned(),
+                language: Language::Python,
+                content_hash: "hash".to_owned(),
+                has_syntax_errors: false,
+                symbols,
+            },
+            stamp: FileStamp::default(),
         };
         let files = [
             file("a.py", vec![symbol("delete", "Router.delete", 1)]),
             file("b.py", vec![symbol("delete", "Session.delete", 1)]),
         ];
-        let snapshot_id = store.replace_snapshot(&snapshot, "1", &files).unwrap();
+        let snapshot_id = store
+            .replace_snapshot(&NewSnapshot {
+                snapshot: &snapshot,
+                extractor_version: "1",
+                indexed_at_ns: 0,
+                files: &files,
+                uncommitted_paths: &[],
+            })
+            .unwrap();
         (store, snapshot_id)
     }
 
