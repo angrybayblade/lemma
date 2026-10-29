@@ -16,12 +16,15 @@ These work with every command.
 
 ## `lemma index [path]`
 
-Reads the source files under `path` (default: the current directory) and records their definitions as a new snapshot.
+Reads the source files under `path` (default: the current directory) and records their definitions in a snapshot. Re-indexing is incremental: only new or changed files are read and parsed, so running it after every edit is cheap (see [How Lemma works](concepts.md#re-indexing-is-incremental)).
 
 - Supported files: `.ts`, `.mts`, `.cts`, `.tsx`, `.py`, `.pyi`, `.go`.
 - Skipped: anything matched by `.gitignore`, hidden files and directories (including `.lemma/`), and `node_modules`.
-- If no file changed since the last run, the existing snapshot is kept and reported as `unchanged`, and cached answers stay valid.
-- Otherwise the new snapshot replaces the previous one for the same directory, and cached answers for it are dropped.
+- If no file's contents changed since the last run, the snapshot is reported as `unchanged` and cached answers stay valid.
+- Otherwise only the changed files are rewritten, and cached answers for the snapshot are dropped.
+- An index written by an older version of Lemma is rebuilt from scratch.
+
+`revision` is the checked-out commit; "uncommitted changes" means supported source files differ from it, including new untracked ones.
 
 The summary mentions files Lemma could only partly read: files with syntax errors (their symbols are still indexed, but some may be missing) and files that are not valid UTF-8 (skipped).
 
@@ -58,6 +61,9 @@ Names must match exactly. The same filters as `lemma symbols` narrow a name: `--
 | `--include-declaration` | Also count the definition itself. |
 | `--refresh` | Ask the language server again instead of using a cached answer. |
 | `--timeout-secs <n>` | How long to wait for the server to start and to answer (default 60). Large projects can take a while on the first lookup. |
+| `--no-daemon` | Start a language server just for this lookup instead of using the background daemon. |
+
+Lookups that need a live server go through a background daemon that keeps servers warm, so only the first one per language pays the start-up cost. See [`lemma daemon`](#lemma-daemon).
 
 Each reference shows its location and, when it sits inside an indexed definition, the name of that definition (`in remove_route`). References outside the indexed directory, such as in installed dependencies, are marked `(external)`.
 
@@ -77,6 +83,17 @@ Lines starting with `skipped` name servers that could not start before one did.
 ## `lemma providers`
 
 Lists every configured language server, whether its command was found, and the order they are tried in for each language. It reads the configuration of the indexed project if there is one, otherwise `.lemma/providers.toml` in the current directory.
+
+## `lemma daemon`
+
+Keeps language servers running for the index so `lemma refs` answers in milliseconds after the first lookup. `lemma refs` starts it automatically; you only need this command to run it in the foreground or to stop it.
+
+| Option | Meaning |
+| --- | --- |
+| `--stop` | Stop the running daemon for this index. |
+| `--idle-secs <n>` | Exit after this many seconds without a lookup (default 1800). |
+
+There is one daemon per index database. It talks to `lemma` over a Unix socket in the temporary directory that only your user can open. A daemon started by a different build of Lemma is replaced automatically. The daemon is not available on Windows; lookups there always start their own server.
 
 ## Exit codes
 

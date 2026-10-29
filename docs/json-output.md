@@ -52,7 +52,7 @@ Used by `symbols`, `refs`, and ambiguous results.
 }
 ```
 
-`revision` is `null` outside a Git repository. `is_unchanged` is `true` when the files matched the previous snapshot and it was kept.
+`revision` is `null` outside a Git repository. `is_dirty` is `true` when supported source files differ from `revision`, including untracked ones. `is_unchanged` is `true` when no file's contents changed since the previous index.
 
 ## `lemma --json symbols`
 

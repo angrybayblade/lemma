@@ -41,9 +41,20 @@ The server answered, but did not see the uses. Check that:
 - the project's dependencies are installed, so the server can follow imports;
 - the server is looking at the right project root, such as the directory with `tsconfig.json`, `pyproject.toml`, or `go.mod`. Index from that directory;
 - the uses are not dynamic, such as `getattr(obj, "name")` or string-based dispatch, which no server can follow;
-- for TypeScript, the "missing" ones are not import statements, which are not counted.
+- for TypeScript and ty, the "missing" ones are not import statements, which these servers do not count. Pyright does.
 
 Then ask again with `lemma refs <symbol> --refresh`, because the earlier answer is cached.
+
+## The daemon misbehaves
+
+- `lemma daemon --stop` stops it; the next `lemma refs` starts a fresh one.
+- `lemma refs --no-daemon` bypasses it for one lookup.
+- The daemon keeps the environment of the command that started it. If you installed a language server or changed `PATH` since, stop the daemon so the next one sees the change.
+- A warm server learns about edits when you run `lemma index`. If results ignore a recent edit, re-index.
+
+## `index uses schema version ...`
+
+The index was written by another version of Lemma. Run `lemma index`; it rebuilds the index automatically.
 
 ## Results look out of date
 
