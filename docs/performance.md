@@ -1,6 +1,6 @@
 # Performance
 
-Lemma is meant to be called by agents in a tight loop: edit, re-index, ask where something is used. Every step has to be close to free, and the answers have to be right. This page compares Lemma with the text and syntax search tools agents use today, shows where its time goes, and lists what was tried to get there.
+Lemma is meant to be called by agents in a tight loop: edit, re-index, ask where something is used. Every step has to be close to free, and the answers have to be right. This page shows where Lemma's time goes and what was tried to get there; [the comparison](comparison.md) sets it against the text and syntax search tools agents use today.
 
 ## Setup
 
@@ -13,54 +13,12 @@ Times are wall-clock medians from [hyperfine](https://github.com/sharkdp/hyperfi
 
 ## Lemma vs grep, ripgrep and ast-grep
 
-Each tool was asked the same question, "where is this symbol used?", for ten symbols chosen from rare to very common names:
+The full comparison, with method, results, the biases that could skew them and the trade-offs, is in [Lemma vs grep, ripgrep, git grep and ast-grep](comparison.md). In short, on ten symbols across both repositories:
 
-| Tool | Command |
-| --- | --- |
-| grep | `grep -rnw --include=<ext> --exclude-dir=node_modules --exclude-dir=.git NAME .` (BSD grep 2.6) |
-| git grep | `git grep -nw NAME -- <globs>` |
-| ripgrep | `rg -nw -t <type> NAME .` (15.2) |
-| ast-grep | every identifier-like node whose text is `NAME` (0.51) |
-| Lemma | `lemma refs <symbol>`: warm language server, and cached |
-
-The ast-grep query is the best a structural search can do without types: identifiers, member names and type names, so comments and strings drop out. A bare `NAME` pattern misses member access such as `queue.New`.
-
-### Accuracy
-
-Ground truth comes from asking a language server "go to definition" at every place the name appears, and counting it when the answer is the target symbol. Python is checked with pyright, which is independent of ty, the server Lemma uses. TypeScript uses typescript-language-server and Go uses gopls. Two symbols have thousands of matches; for those, 400 random matches were checked, and every match Lemma reported was checked too.
-
-Precision is the share of reported lines that really refer to the symbol; recall is the share of real references reported. Counts are per line, without the definition itself.
-
-| Symbol | Real references | grep | git grep | ripgrep | ast-grep | Lemma |
-| --- | --- | --- | --- | --- | --- | --- |
-| functions Python `get_md5` | 4 | 19% / 100% | 80% / 100% | 80% / 100% | 100% / 100% | **100% / 100%** |
-| functions Python `get_secret` (2 definitions) | 26 | 72% / 100% | 76% / 100% | 76% / 100% | 90% / 100% | **100% / 96%** |
-| functions Python `get_keyring` | 7 | 54% / 100% | 54% / 100% | 54% / 100% | 100% / 100% | **100% / 100%** |
-| functions Python `McpExecuteResult.to_dict` (7 definitions) | 3 | 0% / 100% | 21% / 100% | 21% / 100% | 25% / 100% | **100% / 100%** |
-| functions Python `Action.execute` (500+ definitions) | 0 in 400 sampled matches | 0% (67,602 lines) | 0% (58,643) | 0% (58,635) | 0% (56,744) | **100% (9 lines)** |
-| functions TypeScript `createUrlFieldValidator` | 183 | 97% / 100% | 97% / 100% | 97% / 100% | 100% / 100% | **100% / 100%** |
-| platform TypeScript `getOrgJwtConfig` | 1 | 100% / 100% | 100% / 100% | 100% / 100% | 100% / 100% | **100% / 100%** |
-| platform TypeScript `logger` (7 definitions) | 252 in 400 sampled | 65% / 100% | 65% / 100% | 65% / 100% | 73% / 100% | **100% / 100%** |
-| platform Go `queue.New` (2 definitions) | 15 | 2% / 100% | 2% / 100% | 2% / 100% | 2% / 100% | **100% / 100%** |
-| platform Go `isvcauth.New` (used from another module) | 6 | 1% / 100% | 1% / 100% | 1% / 100% | 1% / 100% | **100% / 50%** |
-
-Text and syntax search always find every use of a name, and everything else with that name. On rare names that is fine; on names agents actually need to trace, such as `execute`, `New` or `to_dict`, almost everything they report is noise. Lemma reports only real references. It misses references a language server cannot see: here, uses of a Go function from a second Go module without a `go.work`, and one alternate definition in a `try/except ImportError` fallback.
-
-### Latency
-
-| Symbol | grep | git grep | ripgrep | ast-grep | Lemma, warm | Lemma, cached |
-| --- | --- | --- | --- | --- | --- | --- |
-| functions Python `get_md5` | 10.9 s | 4.19 s | 2.29 s | 4.04 s | **32 ms** | **17 ms** |
-| functions Python `get_secret` | 7.03 s | 4.20 s | 2.28 s | 4.11 s | **35 ms** | **18 ms** |
-| functions Python `get_keyring` | 10.3 s | 4.16 s | 2.30 s | 3.99 s | **32 ms** | **18 ms** |
-| functions Python `to_dict` | 8.56 s | 4.20 s | 2.32 s | 4.00 s | **33 ms** | **19 ms** |
-| functions Python `execute` | 18.1 s | 4.24 s | 2.02 s | 4.10 s | 342 ms | **18 ms** |
-| functions TypeScript `createUrlFieldValidator` | 914 ms | 139 ms | 80 ms | 102 ms | **32 ms** | **18 ms** |
-| platform TypeScript `getOrgJwtConfig` | 293 ms | 68 ms | 57 ms | 270 ms | **20 ms** | **17 ms** |
-| platform TypeScript `logger` (2,033 references) | 341 ms | 67 ms | 62 ms | 265 ms | 207 ms | **28 ms** |
-| platform Go `queue.New` | 98 ms | 42 ms | 34 ms | 85 ms | **17 ms** | **17 ms** |
-
-"Warm" means the language server was running and the answer was not cached; "cached" means the same question was asked since the code last changed. Text search has to read every file each time, which on this machine costs about 2 seconds for functions's 426 MB. Lemma asks a language server that already holds the project, so the cost is the server's query plus about 3 ms of Lemma, on top of process start-up.
+- Lemma's precision was 100% on every symbol. Text search fell to 0-2% on common names shared by many symbols, and was 80-100% on rare ones. Lemma missed references the language server could not see.
+- On functions, a symbol's first lookup on a running server took about 100-250 ms (up to 11.5 s for a name defined 500 times), and 17-80 ms when asked again. ripgrep took 2.0-2.3 s, but file opens are unusually slow on this machine, which inflates that gap.
+- On platform, ripgrep (34-62 ms) was faster than Lemma's first lookup of a symbol (about 100-470 ms).
+- Lemma needs an index and a running language server first: 1.3-7.1 s to the first answer when nothing is running.
 
 ### Time to the first answer
 
@@ -109,7 +67,7 @@ Each change was measured against the previous best and kept only if it helped wi
 | Walk directories in parallel; run Git, the walk and loading the stored index at the same time | 0.71 s → 0.34 s. |
 | Ask Git about every file only on the first index or a new commit, otherwise only about changed files | 0.34 s → 0.15 s. |
 | Run every command in a per-user daemon; the `lemma` command only forwards it | Cached lookups 43 ms → 16 ms, the process floor. |
-| Keep language servers running in the daemon, telling them which files changed between snapshots | Warm lookups: TypeScript 2.8 s → 32 ms, Python 1.8 s → 32 ms. |
+| Keep language servers running in the daemon, telling them which files changed between snapshots | Lookups after the first: TypeScript 2.8 s → about 100-250 ms for a new symbol and 32-64 ms when repeated; Python similar. |
 | Use ty as the first Python server | functions lookups 6-10 s (pyright) → 2 s cold, under 20 ms warm. |
 | Keep documents open in warm servers instead of reopening them per lookup | Server time per lookup 43 ms → 29 ms. |
 | Watch indexed directories and update the in-memory index per changed file, with an order-independent fingerprint | Re-index on functions: nothing changed 147 ms → 32 ms, one edit 213 ms → 85 ms. |
@@ -142,5 +100,6 @@ Providers can declare the message they send once a project is loaded (`ready_mes
 
 - **Edits** still pay for one `git status` process (about 50 ms here). Comparing file contents with the commit in-process would remove it.
 - **Lookups with thousands of results** spend most of their time naming the enclosing function of each reference, one query each.
+- **The first lookup of each symbol** costs the language server's own search (about 100-250 ms here, seconds for very common names); Lemma cannot make that faster, only cache it.
 - **The first index** of functions takes 5-6 s. Writing to SQLite while parsing, and a hand-written tree walk instead of Tree-sitter queries, could shorten it.
 - **The daemon** runs one command at a time.

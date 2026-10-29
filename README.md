@@ -20,7 +20,7 @@ Add `--json` to any command for machine-readable output.
 
 Lemma does not bundle language servers. Install the ones you need: `typescript-language-server` or TypeScript 7's `tsc`, `ty` (fastest) or `pyright`, and `gopls`.
 
-Lemma is built to be called in a loop by agents. Commands run in a background daemon that watches indexed directories and keeps language servers warm: on a 73,000-file repository, re-indexing after an edit takes 85 ms, a reference lookup 17-35 ms, against 2-4 s for ripgrep or ast-grep, with 100% precision where text search drops to 0-2% on common names. See [Performance](docs/performance.md).
+Lemma is built to be called in a loop by agents. Commands run in a background daemon that watches indexed directories and keeps language servers warm: on a 73,000-file repository, re-indexing after an edit takes 85 ms, and a reference lookup about 100-250 ms the first time a symbol is asked and under 80 ms after. Unlike text search it reports only real references, which matters most for common names, where 98% of grep's matches were other symbols; text search remains better for one-off questions, small repositories, and anything that is not a code reference. See [the comparison](docs/comparison.md) and [Performance](docs/performance.md).
 
 Lemma keeps "no answer" separate from "no references". "No references found" means the server looked and saw nothing; it does not prove a symbol is unused.
 
@@ -31,6 +31,7 @@ Lemma keeps "no answer" separate from "no references". "No references found" mea
 - [Language servers](docs/providers.md): built-in providers, adding your own, how one is chosen.
 - [How Lemma works](docs/concepts.md): snapshots, stale results, caching, current limits.
 - [JSON output](docs/json-output.md): the output contract for scripts and agents.
+- [Comparison](docs/comparison.md): Lemma against grep, ripgrep, git grep and ast-grep, with caveats.
 - [Performance](docs/performance.md): benchmarks, and the approaches that were tried.
 - [Troubleshooting](docs/troubleshooting.md): failed lookups and missing results.
 

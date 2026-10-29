@@ -112,5 +112,6 @@ If a name matches more than one symbol, Lemma lists the candidates and asks you 
 - [Language servers](providers.md): built-in servers, adding your own, and how one is chosen.
 - [How Lemma works](concepts.md): snapshots, stale results, and caching.
 - [JSON output](json-output.md): using Lemma from scripts and agents.
+- [Comparison](comparison.md): when to use Lemma and when to use grep or ripgrep.
 - [Performance](performance.md): how fast Lemma is on large repositories, and why.
 - [Troubleshooting](troubleshooting.md): what to do when a lookup fails or finds nothing.
