@@ -1,0 +1,51 @@
+# Built-in semantic providers, tried in order for each language.
+#
+# A project can add providers or replace these by id in .lemma/providers.toml
+# using the same format. Project entries are tried first. If a provider fails
+# to start, the next installed one for the language is tried.
+#
+#   id                      unique name, used in output and cache keys
+#   languages               typescript, tsx, python, go
+#   command                 executable name on PATH, or an absolute path
+#   args                    command arguments
+#   initialization_options  sent during the LSP initialize handshake
+#   settings                returned when the server asks for workspace/configuration
+
+[[provider]]
+id = "typescript-language-server"
+languages = ["typescript", "tsx"]
+command = "typescript-language-server"
+args = ["--stdio"]
+
+# TypeScript 7's native compiler has its own server. typescript-language-server
+# needs TypeScript 6 or older, so whichever matches the installed TypeScript
+# starts; the other fails to start and is skipped.
+[[provider]]
+id = "typescript-native"
+languages = ["typescript", "tsx"]
+command = "tsc"
+args = ["--lsp", "--stdio"]
+
+[[provider]]
+id = "pyright"
+languages = ["python"]
+command = "pyright-langserver"
+args = ["--stdio"]
+
+[provider.settings.python.analysis]
+diagnosticMode = "openFilesOnly"
+
+[[provider]]
+id = "basedpyright"
+languages = ["python"]
+command = "basedpyright-langserver"
+args = ["--stdio"]
+
+[provider.settings.basedpyright.analysis]
+diagnosticMode = "openFilesOnly"
+
+[[provider]]
+id = "gopls"
+languages = ["go"]
+command = "gopls"
+args = []
