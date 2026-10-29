@@ -1,5 +1,7 @@
 //! The `lemma` command-line tool.
 
+#[cfg(unix)]
+mod daemon;
 mod output;
 
 use std::fs;
@@ -69,6 +71,21 @@ enum Command {
     Refs(RefsArgs),
     /// List configured providers and whether each is installed.
     Providers,
+    /// Keep language servers running for faster `lemma refs`.
+    ///
+    /// `lemma refs` starts this automatically; run it yourself only to keep
+    /// it in the foreground or to stop it.
+    Daemon(DaemonArgs),
+}
+
+#[derive(Args)]
+struct DaemonArgs {
+    /// Stop the running daemon for this index instead of starting one.
+    #[arg(long)]
+    stop: bool,
+    /// Exit after this many seconds without a lookup.
+    #[arg(long, default_value_t = 1800)]
+    idle_secs: u64,
 }
 
 #[derive(Args)]
@@ -101,6 +118,10 @@ struct RefsArgs {
     /// Seconds to wait for the provider to start and to answer.
     #[arg(long, default_value_t = 60)]
     timeout_secs: u64,
+    /// Start a language server just for this lookup instead of using the
+    /// background daemon that keeps servers warm.
+    #[arg(long)]
+    no_daemon: bool,
 }
 
 /// Narrows which symbols a name refers to.
@@ -135,6 +156,7 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<ExitCode> {
         Command::Symbols(args) => symbols(args, cli.db, format),
         Command::Refs(args) => references(args, cli.db, cli.providers.as_deref(), format),
         Command::Providers => providers(cli.db, cli.providers.as_deref(), format),
+        Command::Daemon(args) => run_daemon(&args, cli.db),
     }
 }
 
@@ -147,7 +169,7 @@ fn index(path: &Path, db: Option<PathBuf>, format: Format) -> anyhow::Result<Exi
 }
 
 fn symbols(args: SymbolsArgs, db: Option<PathBuf>, format: Format) -> anyhow::Result<ExitCode> {
-    let (store, snapshot) = open_index(db)?;
+    let (store, snapshot) = open_index(&find_index(db)?)?;
     let filter = SymbolFilter {
         text: args.query,
         name_match: if args.exact {
@@ -177,7 +199,8 @@ fn references(
         request_timeout: Duration::from_secs(args.timeout_secs),
     };
     let symbol = args.symbol.as_str();
-    let (mut store, snapshot) = open_index(db)?;
+    let db_path = find_index(db)?;
+    let (mut store, snapshot) = open_index(&db_path)?;
     let target = match select_symbol(&store, &snapshot, symbol, args.filters)? {
         SymbolResolution::Resolved(target) => target,
         SymbolResolution::Ambiguous(candidates) => {
@@ -193,10 +216,16 @@ fn references(
         registry: &registry,
         options: &options,
     };
-    let mut pool = SessionPool::for_one_lookup();
-    let report = lemma_query::find_references(&mut store, &context, target, &mut pool);
-    pool.shutdown();
-    let report = report?;
+    let report = match lemma_query::answer_without_provider(&store, &context, &target)? {
+        Some(report) => report,
+        None if args.no_daemon || !cfg!(unix) => {
+            let mut pool = SessionPool::for_one_lookup();
+            let report = lemma_query::find_references(&mut store, &context, target, &mut pool);
+            pool.shutdown();
+            report?
+        }
+        None => ask_daemon(&db_path, &snapshot, target, options, providers_file)?,
+    };
     output::reference_report(&report, &snapshot.snapshot.root, format)?;
 
     let answered = matches!(
@@ -208,6 +237,53 @@ fn references(
     } else {
         ExitCode::from(EXIT_NO_ANSWER)
     })
+}
+
+#[cfg(unix)]
+fn ask_daemon(
+    db_path: &Path,
+    snapshot: &StoredSnapshot,
+    symbol: StoredSymbol,
+    options: ReferenceOptions,
+    providers_file: Option<&Path>,
+) -> anyhow::Result<lemma_query::ReferenceReport> {
+    daemon::find_references(daemon::LookupRequest {
+        db_path,
+        root: &snapshot.snapshot.root,
+        symbol,
+        options,
+        providers_file,
+    })
+}
+
+#[cfg(not(unix))]
+fn ask_daemon(
+    _db_path: &Path,
+    _snapshot: &StoredSnapshot,
+    _symbol: StoredSymbol,
+    _options: ReferenceOptions,
+    _providers_file: Option<&Path>,
+) -> anyhow::Result<lemma_query::ReferenceReport> {
+    bail!("the lemma daemon needs Unix sockets; use --no-daemon")
+}
+
+#[cfg(unix)]
+fn run_daemon(args: &DaemonArgs, db: Option<PathBuf>) -> anyhow::Result<ExitCode> {
+    let db_path = find_index(db)?;
+    if args.stop {
+        let was_running = daemon::stop(&db_path)?;
+        if !was_running {
+            eprintln!("no lemma daemon is running for {}", db_path.display());
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    daemon::serve(&db_path, Duration::from_secs(args.idle_secs))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(not(unix))]
+fn run_daemon(_args: &DaemonArgs, _db: Option<PathBuf>) -> anyhow::Result<ExitCode> {
+    bail!("the lemma daemon needs Unix sockets")
 }
 
 fn providers(
@@ -262,9 +338,8 @@ fn default_index_path(root: &Path) -> anyhow::Result<PathBuf> {
     Ok(directory.join(INDEX_FILE))
 }
 
-fn open_index(db: Option<PathBuf>) -> anyhow::Result<(Store, StoredSnapshot)> {
-    let db_path = find_index(db)?;
-    let store = open_store(&db_path)?;
+fn open_index(db_path: &Path) -> anyhow::Result<(Store, StoredSnapshot)> {
+    let store = open_store(db_path)?;
     let Some(snapshot) = store.latest_snapshot()? else {
         bail!(
             "{} has no snapshot; run `lemma index` first",
