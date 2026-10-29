@@ -14,7 +14,7 @@ use clap::{Args, Parser, Subcommand};
 use lemma_model::{Language, ReferenceOutcome, SymbolKind};
 use lemma_providers::ProviderRegistry;
 use lemma_query::{LookupContext, ReferenceOptions, SessionPool, SymbolResolution, SymbolSelector};
-use lemma_store::{NameMatch, Store, StoredSnapshot, StoredSymbol, SymbolFilter};
+use lemma_store::{NameMatch, Store, StoreError, StoredSnapshot, StoredSymbol, SymbolFilter};
 
 use crate::output::Format;
 
@@ -162,7 +162,7 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<ExitCode> {
 
 fn index(path: &Path, db: Option<PathBuf>, format: Format) -> anyhow::Result<ExitCode> {
     let db_path = db.map_or_else(|| default_index_path(path), Ok)?;
-    let mut store = open_store(&db_path)?;
+    let mut store = open_or_rebuild_store(&db_path)?;
     let summary = lemma_index::index_directory(path, &mut store)?;
     output::index_summary(&summary, &db_path, format)?;
     Ok(ExitCode::SUCCESS)
@@ -347,6 +347,26 @@ fn open_index(db_path: &Path) -> anyhow::Result<(Store, StoredSnapshot)> {
         );
     };
     Ok((store, snapshot))
+}
+
+/// Opens the index for writing. One written by another version of Lemma is
+/// deleted and started afresh: an index can always be rebuilt.
+fn open_or_rebuild_store(db_path: &Path) -> anyhow::Result<Store> {
+    match Store::open(db_path) {
+        Err(StoreError::SchemaMismatch { .. }) => {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut file = db_path.as_os_str().to_owned();
+                file.push(suffix);
+                let file = PathBuf::from(file);
+                if file.exists() {
+                    fs::remove_file(&file)
+                        .with_context(|| format!("could not remove {}", file.display()))?;
+                }
+            }
+            open_store(db_path)
+        }
+        opened => opened.with_context(|| format!("could not open index {}", db_path.display())),
+    }
 }
 
 fn open_store(db_path: &Path) -> anyhow::Result<Store> {

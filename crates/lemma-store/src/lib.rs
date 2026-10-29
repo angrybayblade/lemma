@@ -26,7 +26,9 @@ pub enum StoreError {
     #[error("database error")]
     Sqlite(#[from] rusqlite::Error),
     /// The database was written by a different version of Lemma.
-    #[error("index uses schema version {found}, expected {SCHEMA_VERSION}; delete it and re-index")]
+    #[error(
+        "index uses schema version {found}, expected {SCHEMA_VERSION}; run `lemma index` to rebuild it"
+    )]
     SchemaMismatch {
         /// The version recorded in the database.
         found: String,
