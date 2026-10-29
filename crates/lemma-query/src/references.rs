@@ -10,6 +10,7 @@ use lemma_providers::{ProviderDefinition, ProviderRegistry, ProviderSession, Ref
 use lemma_store::{ReferenceLookupKey, Store, StoredSnapshot, StoredSymbol};
 
 use crate::QueryError;
+use crate::sessions::{PoolError, SessionPool};
 
 /// How to run a reference lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,17 @@ pub struct ReferenceOptions {
     pub refresh: bool,
     /// How long to wait for the provider to start and to answer.
     pub request_timeout: Duration,
+}
+
+/// What every reference lookup in a snapshot shares.
+#[derive(Debug, Clone, Copy)]
+pub struct LookupContext<'a> {
+    /// The snapshot the symbol belongs to.
+    pub snapshot: &'a StoredSnapshot,
+    /// The providers that may answer.
+    pub registry: &'a ProviderRegistry,
+    /// How to run the lookup.
+    pub options: &'a ReferenceOptions,
 }
 
 /// The answer to a reference lookup, with where it came from.
@@ -41,63 +53,42 @@ pub struct ReferenceReport {
 /// Finds references to a symbol, using a cached answer when the snapshot,
 /// provider, and configuration are unchanged.
 ///
-/// Installed providers for the language are tried in order. One that fails
-/// to start is skipped; one that starts and then fails is reported, since
-/// silently switching would hide a real problem.
+/// Installed providers for the language are tried in order, through `pool`
+/// so a server already running for an earlier lookup is reused. One that
+/// fails to start is skipped; one that starts and then fails is reported,
+/// since silently switching would hide a real problem.
 pub fn find_references(
     store: &mut Store,
-    snapshot: &StoredSnapshot,
-    registry: &ProviderRegistry,
+    context: &LookupContext<'_>,
     symbol: StoredSymbol,
-    options: &ReferenceOptions,
+    pool: &mut SessionPool,
 ) -> Result<ReferenceReport, QueryError> {
-    let root = Path::new(&snapshot.snapshot.root);
-    if is_stale(store, snapshot.id, root, &symbol.path)? {
-        return Ok(uncached_report(symbol, ReferenceOutcome::Stale, None));
+    if let Some(report) = answer_without_provider(store, context, &symbol)? {
+        return Ok(report);
     }
-
-    let providers = registry.installed(symbol.language);
-    if providers.is_empty() {
-        let candidates = registry.candidate_ids(symbol.language);
-        let outcome = ReferenceOutcome::ProviderUnavailable { candidates };
-        return Ok(uncached_report(symbol, outcome, None));
-    }
-
-    if !options.refresh {
-        for provider in &providers {
-            let key = lookup_key(&symbol, &provider.definition, options);
-            let Some(cached) = store.cached_references(&key)? else {
-                continue;
-            };
-            let outcome = with_enclosing_symbols(store, snapshot.id, cached.outcome)?;
-            let provenance = provenance(&provider.definition, cached.provider_version);
-            return Ok(ReferenceReport {
-                symbol,
-                outcome,
-                provenance: Some(provenance),
-                from_cache: true,
-                skipped_providers: Vec::new(),
-            });
-        }
-    }
+    let LookupContext {
+        snapshot,
+        registry,
+        options,
+    } = *context;
 
     let mut start_failures = Vec::new();
-    for provider in &providers {
+    for provider in registry.installed(symbol.language) {
         let definition = &provider.definition;
-        let session = match ProviderSession::start(
-            definition,
-            &provider.executable,
-            root,
-            options.request_timeout,
-        ) {
+        let session = match pool.session(store, snapshot, &provider, options.request_timeout) {
             Ok(session) => session,
-            Err(error) => {
+            Err(PoolError::Store(error)) => return Err(error.into()),
+            Err(PoolError::Start(error)) => {
                 start_failures.push(format!("{}: {}", definition.id, describe(&error)));
                 continue;
             }
         };
 
         let (provider_version, outcome) = ask_provider(session, &symbol, options);
+        if matches!(outcome, ReferenceOutcome::ProviderFailed { .. }) {
+            // The server may be wedged or gone; start a fresh one next time.
+            pool.discard(snapshot, &provider);
+        }
         let key = lookup_key(&symbol, definition, options);
         store.save_references(&key, provider_version.as_deref(), &outcome)?;
         let outcome = with_enclosing_symbols(store, snapshot.id, outcome)?;
@@ -111,6 +102,53 @@ pub fn find_references(
         message: start_failures.join("; "),
     };
     Ok(uncached_report(symbol, outcome, None))
+}
+
+/// The answer to a lookup when no live provider is needed: the file is
+/// stale, no provider is installed, or an answer is cached. `None` means a
+/// provider has to be asked.
+pub fn answer_without_provider(
+    store: &Store,
+    context: &LookupContext<'_>,
+    symbol: &StoredSymbol,
+) -> Result<Option<ReferenceReport>, QueryError> {
+    let LookupContext {
+        snapshot,
+        registry,
+        options,
+    } = *context;
+    let root = Path::new(&snapshot.snapshot.root);
+    if is_stale(store, snapshot.id, root, &symbol.path)? {
+        let report = uncached_report(symbol.clone(), ReferenceOutcome::Stale, None);
+        return Ok(Some(report));
+    }
+
+    let providers = registry.installed(symbol.language);
+    if providers.is_empty() {
+        let candidates = registry.candidate_ids(symbol.language);
+        let outcome = ReferenceOutcome::ProviderUnavailable { candidates };
+        return Ok(Some(uncached_report(symbol.clone(), outcome, None)));
+    }
+    if options.refresh {
+        return Ok(None);
+    }
+
+    for provider in &providers {
+        let key = lookup_key(symbol, &provider.definition, options);
+        let Some(cached) = store.cached_references(&key)? else {
+            continue;
+        };
+        let outcome = with_enclosing_symbols(store, snapshot.id, cached.outcome)?;
+        let provenance = provenance(&provider.definition, cached.provider_version);
+        return Ok(Some(ReferenceReport {
+            symbol: symbol.clone(),
+            outcome,
+            provenance: Some(provenance),
+            from_cache: true,
+            skipped_providers: Vec::new(),
+        }));
+    }
+    Ok(None)
 }
 
 /// Whether the symbol's file differs from what was indexed. Stored positions
@@ -138,10 +176,10 @@ fn lookup_key(
     }
 }
 
-/// Asks a started provider, then stops it. Failures become outcomes: they
-/// say something about this lookup, not about the index.
+/// Asks a started provider. Failures become outcomes: they say something
+/// about this lookup, not about the index.
 fn ask_provider(
-    session: ProviderSession,
+    session: &mut ProviderSession,
     symbol: &StoredSymbol,
     options: &ReferenceOptions,
 ) -> (Option<String>, ReferenceOutcome) {
@@ -152,7 +190,6 @@ fn ask_provider(
         symbol.symbol.name_span.start,
         options.include_declaration,
     );
-    session.shutdown();
 
     let outcome = match answer {
         Ok(ReferenceAnswer::Found(references)) => ReferenceOutcome::Found { references },
