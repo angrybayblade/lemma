@@ -145,22 +145,14 @@ Where a language idiom conflicts with these conventions, follow the idiom and ke
 git config core.hooksPath .githooks
 ```
 
-**Rust** formatting and lint thresholds live in `rustfmt.toml` and `clippy.toml`. When the Cargo workspace is created, add these to the root `Cargo.toml` and opt in from every crate with `[lints] workspace = true`:
+**Rust** formatting and lint thresholds live in `rustfmt.toml` and `clippy.toml`. Workspace lints are declared in the root `Cargo.toml` and every crate opts in with `[lints] workspace = true`. A few pedantic lints are allowed there because they would force verbose doc sections (`missing_errors_doc`, `missing_panics_doc`) or noise (`must_use_candidate`).
 
-```toml
-[workspace.lints.rust]
-missing_docs = "warn"
-unsafe_code = "forbid"
+Before committing, run:
 
-[workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-unwrap_used = "deny"
-expect_used = "warn"
-panic = "deny"
-dbg_macro = "deny"
-todo = "warn"
-excessive_nesting = "warn"
-allow_attributes_without_reason = "warn"
+```sh
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
-CI should run `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`.
+CI should run the same three commands.
