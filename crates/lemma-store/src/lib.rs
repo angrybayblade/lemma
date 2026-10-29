@@ -137,6 +137,34 @@ pub struct SnapshotUpdate<'a> {
     pub restamped: &'a [(String, FileStamp)],
 }
 
+/// Just enough of a symbol to search and rank it in memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolKey {
+    /// Row id.
+    pub id: i64,
+    /// Row id of the file the symbol is in.
+    pub file_id: i64,
+    /// The symbol's qualified name; its name is the last part.
+    pub qualified_name: String,
+    /// Length of the name, in bytes, at the end of `qualified_name`.
+    pub name_length: usize,
+    /// What kind of symbol it is.
+    pub kind: SymbolKind,
+    /// First line of the definition.
+    pub start_line: u32,
+}
+
+/// A file as needed for searching its symbols.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileKey {
+    /// Row id.
+    pub id: i64,
+    /// Path relative to the snapshot root.
+    pub path: String,
+    /// The file's language.
+    pub language: Language,
+}
+
 /// How a symbol search compares names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NameMatch {
@@ -427,6 +455,56 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Every symbol in a snapshot, in the compact form used for searching
+    /// in memory.
+    pub fn symbol_keys(&self, snapshot_id: i64) -> Result<Vec<SymbolKey>, StoreError> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT s.id, s.file_id, s.qualified_name, length(CAST(s.name AS BLOB)), s.kind,
+                    s.start_line
+             FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE f.snapshot_id = ?1",
+        )?;
+        let rows = statement.query_map([snapshot_id], |row| {
+            Ok(SymbolKey {
+                id: row.get(0)?,
+                file_id: row.get(1)?,
+                qualified_name: row.get(2)?,
+                name_length: row.get(3)?,
+                kind: parse_column(row, 4)?,
+                start_line: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Every file in a snapshot, as needed for searching its symbols.
+    pub fn file_keys(&self, snapshot_id: i64) -> Result<Vec<FileKey>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare_cached("SELECT id, path, language FROM files WHERE snapshot_id = ?1")?;
+        let rows = statement.query_map([snapshot_id], |row| {
+            Ok(FileKey {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                language: parse_column(row, 2)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Symbols by id, in the order given, skipping any not in the snapshot.
+    pub fn symbols_by_ids(
+        &self,
+        snapshot_id: i64,
+        ids: &[i64],
+    ) -> Result<Vec<StoredSymbol>, StoreError> {
+        let mut found = Vec::with_capacity(ids.len());
+        for id in ids {
+            found.extend(self.symbol(snapshot_id, *id)?);
+        }
+        Ok(found)
+    }
+
     /// One symbol by id, if it belongs to the snapshot.
     pub fn symbol(
         &self,
@@ -435,15 +513,14 @@ impl Store {
     ) -> Result<Option<StoredSymbol>, StoreError> {
         let symbol = self
             .connection
-            .query_row(
+            .prepare_cached(
                 "SELECT s.id, f.path, f.language, s.name, s.qualified_name, s.kind,
                         s.start_line, s.start_column, s.end_line, s.end_column,
                         s.name_start_line, s.name_start_column, s.name_end_line, s.name_end_column
                  FROM symbols s JOIN files f ON f.id = s.file_id
                  WHERE f.snapshot_id = ?1 AND s.id = ?2",
-                params![snapshot_id, symbol_id],
-                read_stored_symbol,
-            )
+            )?
+            .query_row(params![snapshot_id, symbol_id], read_stored_symbol)
             .optional()?;
         Ok(symbol)
     }
