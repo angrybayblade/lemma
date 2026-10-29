@@ -28,7 +28,7 @@ If a provider fails to start, Lemma tries the next one and reports the skipped o
 
 Run `lemma providers` to see the order for each language.
 
-Starting a server on a large project can take several seconds, so servers are kept running by a background daemon after the first lookup (see [How Lemma works](concepts.md#warm-language-servers)). Each answer is also cached until the next content change.
+Starting a server on a large project can take several seconds, so servers are kept running by a background daemon after the first lookup (see [How Lemma works](concepts.md#the-daemon-and-warm-language-servers)). Each answer is also cached until the next content change.
 
 ## Adding or overriding a provider
 
