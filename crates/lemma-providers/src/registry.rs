@@ -30,6 +30,11 @@ pub struct ProviderDefinition {
     /// Returned when the server asks for `workspace/configuration`.
     #[serde(default)]
     pub settings: Option<Value>,
+    /// Log messages, or titles of progress reports, that the server finishes
+    /// once it has loaded the workspace (`*` matches anything). Lemma waits
+    /// for one before asking anything.
+    #[serde(default)]
+    pub ready_messages: Vec<String>,
 }
 
 impl ProviderDefinition {
@@ -37,7 +42,11 @@ impl ProviderDefinition {
     /// cached results are not reused after its configuration changes.
     pub fn fingerprint(&self) -> String {
         let mut hasher = blake3::Hasher::new();
-        for part in [&self.command].into_iter().chain(&self.args) {
+        let parts = [&self.command]
+            .into_iter()
+            .chain(&self.args)
+            .chain(&self.ready_messages);
+        for part in parts {
             hasher.update(part.as_bytes());
             hasher.update(b"\0");
         }
@@ -185,6 +194,7 @@ mod tests {
             args: Vec::new(),
             initialization_options: None,
             settings: None,
+            ready_messages: Vec::new(),
         }
     }
 
