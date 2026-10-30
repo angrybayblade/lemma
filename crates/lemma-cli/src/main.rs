@@ -12,12 +12,16 @@ mod config;
 mod daemon;
 mod engine;
 mod output;
+#[cfg(unix)]
+mod service;
 
 use std::io::Write;
 use std::process::ExitCode;
 
 use clap::Parser;
 
+#[cfg(unix)]
+use crate::cli::DaemonAction;
 use crate::cli::{Cli, Command};
 use crate::engine::{Engine, Invocation};
 
@@ -77,19 +81,25 @@ fn forward(_cwd: std::path::PathBuf) -> Option<ExitCode> {
 
 #[cfg(unix)]
 fn run_daemon(args: &cli::DaemonArgs) -> ExitCode {
-    let result = if args.stop {
-        daemon::stop().map(|was_running| {
+    let result = match args.action {
+        // A daemon started on demand would otherwise keep the socket.
+        Some(DaemonAction::Install) => daemon::stop()
+            .and_then(|_| service::install())
+            .map(|done| println!("{done}")),
+        Some(DaemonAction::Uninstall) => service::uninstall().map(|done| println!("{done}")),
+        Some(DaemonAction::Stop) => daemon::stop().map(|was_running| {
             if !was_running {
                 eprintln!("no lemma daemon is running");
             }
-        })
-    } else if args.status {
-        daemon::status().map(|status| match status {
-            Some(text) => print!("{text}"),
-            None => eprintln!("no lemma daemon is running"),
-        })
-    } else {
-        daemon::serve(args.idle_secs.map(std::time::Duration::from_secs))
+        }),
+        Some(DaemonAction::Status) => daemon::status().map(|status| {
+            println!("{}", service::describe());
+            match status {
+                Some(text) => print!("{text}"),
+                None => println!("no lemma daemon is running"),
+            }
+        }),
+        None => daemon::serve(args.idle_secs.map(std::time::Duration::from_secs)),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

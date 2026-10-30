@@ -67,7 +67,7 @@ Before reusing a server, the daemon tells it which files were created, changed o
 
 The daemon also keeps every symbol name in memory for substring search, rebuilt in the background after each index.
 
-The daemon keeps running, and looks after idle servers itself: a server nobody has used for 10 minutes is paused, so it uses no CPU and its memory can be compressed, and one idle for 2 hours is stopped. When files change in a project whose servers were stopped, the daemon starts them again, so they are usually ready by the next lookup. All of this is configurable; see [`lemma daemon`](commands.md#lemma-daemon). `lemma daemon --stop` stops the daemon, and `--no-daemon` runs a command in-process.
+The daemon keeps running, and looks after idle servers itself: a server nobody has used for 10 minutes is paused, so it uses no CPU and its memory can be compressed, and one idle for 2 hours is stopped. When files change in a project whose servers were stopped, the daemon starts them again, so they are usually ready by the next lookup. All of this is configurable; see [`lemma daemon`](commands.md#lemma-daemon). `lemma daemon stop` stops the daemon, and `--no-daemon` runs a command in-process.
 
 ## The index file
 

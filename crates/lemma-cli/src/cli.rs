@@ -53,25 +53,35 @@ pub(crate) enum Command {
     Refs(RefsArgs),
     /// List configured providers and whether each is installed.
     Providers,
-    /// Run or stop the background daemon.
+    /// Run, inspect, stop, or install the background daemon.
     ///
-    /// Every other command starts the daemon automatically; run this only to
-    /// keep it in the foreground or to stop it.
+    /// Every other command starts the daemon automatically; run this to keep
+    /// it in the foreground, check on it, stop it, or start it at login.
     Daemon(DaemonArgs),
 }
 
 #[derive(Args)]
 pub(crate) struct DaemonArgs {
-    /// Stop the running daemon instead of starting one.
-    #[arg(long)]
-    pub stop: bool,
-    /// Show the running daemon's language servers instead of starting one.
-    #[arg(long, conflicts_with = "stop")]
-    pub status: bool,
-    /// Exit after this many seconds without a command, instead of the
-    /// configured `idle_exit`.
+    /// What to do; without one, run the daemon in the foreground.
+    #[command(subcommand)]
+    pub action: Option<DaemonAction>,
+    /// When running: exit after this many seconds without a command,
+    /// instead of the configured `idle_exit`.
     #[arg(long)]
     pub idle_secs: Option<u64>,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum DaemonAction {
+    /// Show the daemon's language servers and whether it runs as a service.
+    Status,
+    /// Stop the running daemon.
+    Stop,
+    /// Run the daemon as a login service (launchd on macOS, systemd on
+    /// Linux), so it is already running when the first command arrives.
+    Install,
+    /// Remove the login service and stop its daemon.
+    Uninstall,
 }
 
 #[derive(Args)]

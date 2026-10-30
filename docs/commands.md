@@ -90,13 +90,15 @@ Lists every configured language server, whether its command was found, and the o
 
 ## `lemma daemon`
 
-Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; you only need this command to run it in the foreground, check on it, or stop it.
+Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground.
 
-| Option | Meaning |
+| Command | Meaning |
 | --- | --- |
-| `--status` | List the daemon's language servers: starting, running or paused, how long idle, and memory. |
-| `--stop` | Stop the running daemon. |
-| `--idle-secs <n>` | Exit after this many seconds without a command, instead of the configured `idle_exit`. |
+| `lemma daemon status` | Whether it runs as a login service, and its language servers: starting, running or paused, how long idle, and memory. |
+| `lemma daemon stop` | Stop the running daemon. |
+| `lemma daemon install` | Run the daemon as a login service (launchd on macOS, systemd on Linux), so it is already up when an agent asks its first question. It is restarted only if it crashes. |
+| `lemma daemon uninstall` | Remove the login service and stop its daemon. |
+| `lemma daemon --idle-secs <n>` | Run in the foreground, exiting after this many seconds without a command instead of the configured `idle_exit`. |
 
 ### Settings
 

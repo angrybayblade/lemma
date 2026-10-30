@@ -47,7 +47,7 @@ Then ask again with `lemma refs <symbol> --refresh`, because the earlier answer 
 
 ## The daemon misbehaves
 
-- `lemma daemon --stop` stops it; the next command starts a fresh one.
+- `lemma daemon stop` stops it; the next command starts a fresh one.
 - `--no-daemon`, or `LEMMA_NO_DAEMON=1`, runs a command in-process.
 - Language servers are found on the `PATH` of the command you run, but a server already running keeps its environment. After changing a server's environment, stop the daemon.
 - A warm server learns about edits when you run `lemma index`. If results ignore a recent edit, re-index.
