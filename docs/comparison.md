@@ -1,103 +1,142 @@
 # Lemma vs grep, ripgrep, git grep and ast-grep
 
-Agents usually answer "where is this used?" with a text search. This page compares Lemma with grep, git grep, ripgrep and ast-grep on that question: where Lemma is better, where it is not, and how far the numbers can be trusted.
+Agents usually answer "where is this used?" with a text search. This page compares Lemma with grep, git grep, ripgrep and ast-grep on that question, measured to a protocol written before any measurement, with symbols drawn at random and the answers checked by language servers independent of Lemma's.
 
 ## Summary
 
-Lemma answers a narrower question than the other tools, and answers it better:
-
-- **It reports only real references.** On a name shared by several symbols, text search reports every one of them; on common names, 98% or more of what it reports is noise. Lemma's precision was 100% on every symbol tested, checked against two independent implementations for TypeScript.
-- **It is faster when a question is asked on a large repository with Lemma already running.** On a 73,000-file repository, a lookup took about 100-250 ms the first time a symbol was asked and 17-84 ms after that, against 2.0-2.3 s for ripgrep on the same machine.
-- **It says where each reference sits**: the enclosing function or class, and exact positions in JSON.
-
-The other tools are better at everything else:
-
-- **One-off questions and small repositories.** Lemma first has to index the code (5-6 s for 73,000 files) and start a language server (1-7 s). On a 5,500-file repository, ripgrep (34-62 ms) beat Lemma's first lookup of a symbol (about 100-470 ms).
-- **Anything that is not a code reference.** Strings, comments, configuration, documentation, other languages, and names built at run time. A rename needs those too, such as `mock.patch("functions.config.get_secret")`, which Lemma does not report.
-- **Very common names.** For `execute`, defined 500 times, the language server took 11.5 s the first time; ripgrep took 2 s, though nearly everything it returned was a different `execute`.
-- **No setup and no state.** Text search needs no index, no language server, no running process, and always sees the files as they are now.
+- **Lemma reports real references; text search mostly does not.** Averaged over 241 random symbols, 96% of the lines Lemma reported were real references, against 31% for ripgrep, grep and git grep, and 35% for ast-grep. For names that appear on more than 50 lines, text search fell to 1-7%.
+- **Text search finds every reference that spells the name; Lemma misses some.** Lemma found 99% of references on average per symbol, but only 90% when counting references across all symbols together, because a few symbols with hundreds of references lost some: calls through interfaces, files outside a TypeScript project, and Python types ty could not infer.
+- **Text search finds strings and comments, which a rename needs.** Counting those as wanted, text search's precision rises to 27% of all lines; Lemma never reports them.
+- **Lemma is faster only when it is already running.** A symbol's first lookup on a running server took 19-126 ms (median per repository); repeating it took 5-37 ms, and a cached answer 1-3 ms. ripgrep took 11-86 ms with the files in memory and 55 ms-1 s from disk. From nothing running, Lemma needed 0.5-6.6 s for the first answer, against 0.06-1 s for ripgrep, and never caught up within 32 questions.
+- **Lemma needs memory.** On a 71,000-file Python repository, ty, Lemma's Python server, needed more than 6.6 GB; on a 7 GB machine it was killed.
 
 ## How it was measured
 
-Ten symbols from two private monorepos, from rare to very common names:
+The protocol ([`PROTOCOL`](#protocol)) was written and its hash recorded before any measurement; every change made afterwards is listed with its reason.
 
-- **functions**: 73,620 indexed files (71,506 Python, 2,113 TypeScript), 426 MB, 538,062 symbols.
-- **platform**: 5,507 files (3,667 TypeScript, 1,257 Python, 583 Go), 36 MB.
+**Machine**: an exe.dev virtual machine, AMD EPYC 9554P, 8 vCPUs, Ubuntu 24.04, kernel 6.12, no security software, nothing else running. 7 GB of memory, resized to 31 GB for the last repository (see below).
+
+**Repositories**, at fixed commits, with no dependencies installed for any tool:
+
+| Repository | Languages | Commit |
+| --- | --- | --- |
+| django/django | Python | `817df1c` |
+| hashicorp/terraform | Go | `becd281` |
+| nestjs/nest | TypeScript | `b7f8501` |
+| functions (private) | Python, TypeScript | `a5ffba0` |
+| platform (private) | TypeScript, Python, Go | `d81c7ef` |
+
+**Symbols**: for each repository and language, every function, method and class Lemma indexed, bucketed by how many lines contain its name as a word (1-5, 6-50, 51-500, more than 500), then 8 drawn at random per bucket (seed 3): 241 symbols in all. A drawn symbol whose own definition an oracle could not resolve was replaced by the next random draw; 19 were (16 of them methods).
+
+**Tools**:
 
 | Tool | Command |
 | --- | --- |
-| grep | `grep -rnw --include=<ext> --exclude-dir=node_modules --exclude-dir=.git NAME .` (BSD grep 2.6) |
+| grep | `grep -rnw --include=<ext> --exclude-dir=node_modules --exclude-dir=.git NAME .` (GNU grep 3.11) |
 | git grep | `git grep -nw NAME -- <globs>` |
-| ripgrep | `rg -nw -t <type> NAME .` (15.2) |
+| ripgrep | `rg -nw -t <type> NAME .` (14.1) |
 | ast-grep | every identifier-like node whose text is `NAME` (0.51) |
-| Lemma | `lemma refs <symbol>`, with ty (Python), typescript-language-server (TypeScript) and gopls (Go) |
+| Lemma | `lemma refs <symbol>` (commit `831de14`), with ty, typescript-language-server and gopls |
 
-**Ground truth**: every place the name appears as a word was checked by asking a language server "go to definition" there; it counts as a reference if the answer is the target symbol. Python was checked with pyright, a different implementation from ty, which Lemma uses. TypeScript was checked twice: with typescript-language-server, and with TypeScript 7's separate native implementation (`tsc --lsp`). Go was checked with gopls only. For the two symbols with thousands of matches, 400 random matches were checked, plus every line Lemma reported.
+**Ground truth**: every place the name appears as a word is a candidate. It is a **reference** if a language server's "go to definition" there returns the target; otherwise a **mention** if it is in a string or comment, or **another symbol** if it is code. Each language was checked by servers other than the one Lemma uses where possible:
 
-Precision is the share of reported lines that are real references; recall is the share of real references reported. The definition line itself is not counted.
+| Language | Lemma uses | Checked with | Agreement |
+| --- | --- | --- | --- |
+| Python | ty | pyright and jedi | 100% of 19,764 candidates |
+| TypeScript | typescript-language-server | typescript-language-server and TypeScript 7's native compiler | 100% of 12,906 |
+| Go | gopls | gopls only | not independent |
 
-All timings are medians on one machine, an Apple M4 Max (14 cores) running macOS 15, with file contents cached in memory.
+Symbols with more than 1,200 candidates were checked on 400 random candidates, plus every line Lemma reported.
+
+**Metrics**, per line, without the definition itself: precision (share of reported lines that are references), precision with mentions (strings and comments also count as wanted), and recall (share of references reported). "Pooled" adds up lines across symbols, so symbols with many references weigh more; "per symbol" averages each symbol's figure.
+
+**Latency**: medians of repeated runs. Text tools were timed with files cached in memory ("warm") and after dropping the page cache ("cold"). Lemma was timed on each symbol's first lookup on a running, loaded server (asked in random order), a repeat of it, and its cached answer. Sessions started from no Lemma daemon and a dropped cache.
 
 ## Results
 
-### Accuracy
+### Precision and recall by how common the name is
 
-Precision / recall per tool:
+Precision / with mentions / recall, pooled:
 
-| Symbol | Real references | grep | git grep | ripgrep | ast-grep | Lemma |
-| --- | --- | --- | --- | --- | --- | --- |
-| Python `get_md5` | 4 | 19% / 100% | 80% / 100% | 80% / 100% | 100% / 100% | 100% / 100% |
-| Python `get_secret` (2 definitions) | 26 | 72% / 100% | 76% / 100% | 76% / 100% | 90% / 100% | 100% / 96% |
-| Python `get_keyring` | 7 | 54% / 100% | 54% / 100% | 54% / 100% | 100% / 100% | 100% / 100% |
-| Python `McpExecuteResult.to_dict` (7 definitions) | 3 | 0% / 100% | 21% / 100% | 21% / 100% | 25% / 100% | 100% / 100% |
-| Python `Action.execute` (500+ definitions) | none in 400 sampled matches | 0% | 0% | 0% | 0% | 100% (9 lines) |
-| TypeScript `createUrlFieldValidator` | 183 | 97% / 100% | 97% / 100% | 97% / 100% | 100% / 100% | 100% / 100% |
-| TypeScript `getOrgJwtConfig` | 1 | 100% / 100% | 100% / 100% | 100% / 100% | 100% / 100% | 100% / 100% |
-| TypeScript `logger` (7 definitions) | 252 of 400 sampled | 65% / 100% | 65% / 100% | 65% / 100% | 73% / 100% | 100% / 100% |
-| Go `queue.New` (2 definitions) | 15 | 2% / 100% | 2% / 100% | 2% / 100% | 2% / 100% | 100% / 100% |
-| Go `isvcauth.New` (used from another module) | 6 | 1% / 100% | 1% / 100% | 1% / 100% | 1% / 100% | 100% / 50% |
+| Lines containing the name | grep, git grep, ripgrep | ast-grep | Lemma |
+| --- | --- | --- | --- |
+| 1-5 | 76% / 89% / 100% | 88% / 88% / 100% | 100% / 100% / 100% |
+| 6-50 | 29-30% / 45% / 100% | 35% / 35% / 100% | 99% / 99% / 100% |
+| 51-500 | 7% / 34% / 100% | 9% / 10% / 100% | 93% / 93% / 100% |
+| more than 500 | 1% / 24% / 100% | 1% / 2% / 100% | 96% / 96% / 61% |
 
-With TypeScript's native implementation as the oracle instead, `createUrlFieldValidator` and `getOrgJwtConfig` came out the same, and `logger` gave text search 59% (ast-grep 65%) and Lemma 100% / 100%.
+### By language
 
-The gap between ripgrep and ast-grep is matches in comments and strings. The gap between ast-grep and the truth is other symbols with the same name, which only type information can tell apart.
+| Language | grep, git grep, ripgrep | ast-grep | Lemma |
+| --- | --- | --- | --- |
+| Python | 3% / 29% / 100% | 3% / 4% / 100% | 100% / 100% / 70% |
+| TypeScript | 5% / 33% / 100% | 7% / 7% / 100% | 95% / 95% / 99% |
+| Go | 2% / 18% / 100% | 3% / 3% / 100% | 91% / 91% / 100% |
+
+### Overall
+
+| | grep, git grep, ripgrep | ast-grep | Lemma |
+| --- | --- | --- | --- |
+| Precision, per symbol | 31% | 35% | 96% |
+| Recall, per symbol | 100% | 100% | 99% |
+| Precision, pooled | 3% (27% with mentions) | 4% (5%) | 95% |
+| Recall, pooled | 100% | 100% | 90% |
+
+Against the second oracle, Lemma's precision was 97% for Python and 95% for TypeScript.
+
+### Why Lemma loses where it does
+
+- **Calls through an interface.** Every symbol where Lemma reported non-references was a method implementing an interface (Go and TypeScript): the language server counts calls through the interface as uses of the method, while "go to definition" at those calls returns the interface. Such a call may reach this method or another implementation. This is why Go's precision is 91%, and nest's TypeScript 71%.
+- **Type inference.** ty found 189 of the 334 calls to django's `Template.render`; the others need type inference ty does not do. That one symbol accounts for most of Python's 70% pooled recall; averaged per symbol, Lemma's recall across all languages was 99%.
+- **Project boundaries.** In TypeScript, the language server searches the project it loaded; references in test files outside that `tsconfig.json` were missed.
 
 ### Latency
 
-| Symbol | grep | git grep | ripgrep | ast-grep | Lemma, first ask | Lemma, asked again | Lemma, cached |
+| Repository | grep warm / cold | git grep warm / cold | ripgrep warm / cold | ast-grep warm / cold | Lemma first lookup (median, 90th percentile) | Lemma repeat | Lemma cached |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Python `get_md5` | 10.9 s | 4.19 s | 2.29 s | 4.04 s | 1.90 s* | 32-84 ms | 17 ms |
-| Python `get_secret` | 7.03 s | 4.20 s | 2.28 s | 4.11 s | 128 ms | 35-67 ms | 18 ms |
-| Python `get_keyring` | 10.3 s | 4.16 s | 2.30 s | 3.99 s | 99 ms | 32-62 ms | 18 ms |
-| Python `to_dict` | 8.56 s | 4.20 s | 2.32 s | 4.00 s | 119 ms | 33-65 ms | 19 ms |
-| Python `execute` | 18.1 s | 4.24 s | 2.02 s | 4.10 s | 11.5 s | 342-617 ms | 18 ms |
-| TypeScript `createUrlFieldValidator` | 914 ms | 139 ms | 80 ms | 102 ms | 234 ms | 32-64 ms | 18 ms |
-| TypeScript `getOrgJwtConfig` | 293 ms | 68 ms | 57 ms | 270 ms | 108 ms | 20-48 ms | 17 ms |
-| TypeScript `logger` (2,046 references) | 341 ms | 67 ms | 62 ms | 265 ms | 1.17 s | 207-420 ms | 28 ms |
-| Go `queue.New` | 98 ms | 42 ms | 34 ms | 85 ms | 112 ms | 17-50 ms | 17 ms |
+| django Python | 39 ms / 507 ms | 17 ms / 97 ms | 15 ms / 108 ms | 318 ms / 430 ms | 52 ms, 99 ms | 16 ms | 2 ms |
+| terraform Go | 32 ms / 462 ms | 11 ms / 53 ms | 14 ms / 94 ms | 392 ms / 477 ms | 95 ms, 174 ms | 7 ms | 2 ms |
+| nest TypeScript | 15 ms / 272 ms | 9 ms / 103 ms | 11 ms / 69 ms | 179 ms / 244 ms | 77 ms, 502 ms | 12 ms | 2 ms |
+| platform TypeScript | 40 ms / 480 ms | 19 ms / 140 ms | 17 ms / 102 ms | 422 ms / 513 ms | 73 ms, 134 ms | 8 ms | 3 ms |
+| platform Python | 17 ms / 274 ms | 7 ms / 41 ms | 16 ms / 64 ms | 107 ms / 172 ms | 23 ms, 48 ms | 9 ms | 2 ms |
+| platform Go | 21 ms / 210 ms | 7 ms / 37 ms | 16 ms / 55 ms | 123 ms / 182 ms | 58 ms, 274 ms | 5 ms | 2 ms |
+| functions TypeScript | 90 ms / 804 ms | 160 ms / 383 ms | 33 ms / 156 ms | 95 ms / 237 ms | 19 ms, 79 ms | 8 ms | 3 ms |
+| functions Python (71,000 files) | 483 ms / 6.56 s | 5.29 s / 5.92 s | 86 ms / 1.03 s | 6.33 s / 8.18 s | 126 ms, 240 ms | 37 ms | 1 ms |
 
-- **First ask**: the first time this symbol was asked, on a language server already running and loaded. This is the number that matters most for an agent exploring code.
-- **Asked again**: the same question again without the cache (`--refresh`). Servers keep internal caches, so this is faster than the first ask. The low end is from repeated runs; the high end from a single repeat.
-- **Cached**: Lemma's own cache, valid until the code changes.
-- \* The first Python question after the server started; ty was still loading parts of the project.
+On repositories of a few thousand files, ripgrep with warm caches is faster than a symbol's first Lemma lookup, and about as fast as a repeated one. On the 71,000-file repository, ripgrep took 86 ms warm and about 1 s cold, Lemma's first lookup 126 ms and a repeat 37 ms. Lemma's cached answers (1-3 ms) were faster than every text tool on every repository.
 
-Before any of this, Lemma needs an index and a running server. From nothing running, with the index already built, `lemma index` and the first lookup took 2.4 s (functions Python), 3.4 s (functions TypeScript), 7.1 s (platform TypeScript) and 1.3 s (platform Go). Building the index from scratch takes 5-6 s for functions.
+### Sessions from nothing running
 
-## Where the numbers could be biased
+From a stopped daemon and an empty file cache: `lemma index` followed by N lookups, against N ripgrep searches.
 
-| Possible bias | Effect | What was done |
-| --- | --- | --- |
-| The ground truth for TypeScript and Go comes from the same servers Lemma uses, so their mistakes would agree. | Lemma's precision there could look better than it is. | TypeScript was rechecked with an independent implementation; the conclusions held. Go was not rechecked. Python always used an independent server. |
-| The ground truth only considers places where the name appears. | Text search's 100% recall holds by construction. References that do not spell the name (`import f as g` then `g()`, `getattr`, re-exports under another name) are invisible to every tool here, including any Lemma would find. | Not measured. |
-| A string or comment naming the symbol does not count as a reference. | Text search is marked down for matches a rename or deletion would need, such as `mock.patch("functions.config.get_secret")`. | Called out as a trade-off below. ast-grep's column shows the effect of removing comments and strings alone. |
-| The symbols were chosen by hand, half of them for being ambiguous, and two after seeing how Lemma behaved on them. | The 0-2% precision of text search applies to common, shared names, not to code in general. On rare names text search scored 80-100%. | All ten are reported, including the two where Lemma loses recall. |
-| The first published "warm" Lemma figures repeated the same question 10 times. | They showed 17-35 ms; a symbol's first ask is usually 100-250 ms and can take seconds. | Corrected here: first ask, repeated and cached are reported separately. |
-| Lemma's set-up costs are not in the per-question numbers. | One question from nothing running costs Lemma 1.3-7.1 s, about the same as or more than ripgrep. | Reported above as time to the first answer. |
-| File opens on this machine barely scale across threads: ripgrep with 14 threads took 1.24 s for a search with no matches, and 1.57 s with one thread. Security software checking each file open is the likely cause. | Text search is slower here than on a typical machine, so Lemma's lead on functions is overstated, perhaps several times. Lemma rarely opens files per question, so it is barely affected. | Not corrected; no other machine was measured. On the smaller repository, where this matters less, ripgrep already beats Lemma's first ask. |
-| grep searched ignored directories such as `build/`. | It reported copies of files (1,358 lines for `to_dict`) and was the slowest. | It stands for naive use; ripgrep and git grep are the fair text baselines. |
-| The ast-grep query was written for this comparison. | ast-grep is a structural search and rewrite tool, not a reference finder; a different rule could score differently. | The rule matches every identifier, member and type name equal to the symbol, the most a type-blind search can do. |
-| Two symbols were sampled (400 matches each). | Their figures have sampling error; `execute`'s recall could not be estimated, because no real reference fell in the sample. | Every line Lemma reported for them was checked, so its precision is exact. |
-| Python ground truth comes from pyright, which treats some things differently from ty. | `get_secret`'s 96% is an alternative definition in a `try/except ImportError` block that pyright merges with the real one and ty does not. | Reported as is. |
-| Results are counted per line, from one run, on one machine. | Several uses on one line count once; run-to-run variation is not shown beyond the ranges given. | Same for all tools. |
+| Repository | 1 question: Lemma / ripgrep | 10 questions | 32 questions |
+| --- | --- | --- | --- |
+| django Python | 0.77 s / 0.11 s | 1.59 s / 0.30 s | 3.37 s / 0.69 s |
+| terraform Go | 3.54 s / 0.10 s | 3.39 s / 0.25 s | 6.65 s / 0.57 s |
+| nest TypeScript | 3.16 s / 0.08 s | 8.52 s / 0.20 s | 11.70 s / 0.50 s |
+| platform TypeScript | 6.64 s / 0.13 s | 7.42 s / 0.33 s | 9.51 s / 0.79 s |
+| platform Python | 0.51 s / 0.09 s | 1.37 s / 0.27 s | 2.59 s / 0.81 s |
+| platform Go | 1.56 s / 0.06 s | 3.31 s / 0.29 s | 5.25 s / 0.55 s |
+| functions TypeScript | 5.23 s / 0.16 s | 4.99 s / 0.50 s | 5.14 s / 0.83 s (17 questions) |
+| functions Python | 3.41 s / 1.03 s | 7.12 s / 1.96 s | 11.43 s / 4.27 s |
+
+Most of a cold session is the language server starting and loading the project (1-3 s for TypeScript and Go, about 0.1-0.2 s for ty) and indexing with an empty cache (0.2-0.5 s). Keeping the daemon running removes both; see [How Lemma works](concepts.md#the-daemon-and-warm-language-servers).
+
+## Remaining biases and limits
+
+| Issue | Effect |
+| --- | --- |
+| Go was checked only with gopls, which Lemma also uses. | Go precision and recall could be off in ways both share. |
+| 19 drawn symbols were replaced because an oracle could not resolve their own definition, 16 of them methods (often overrides). | The sample likely has fewer polymorphic methods, Lemma's weakest case, than the code does. |
+| Ground truth only considers places that spell the name. | Text search's 100% recall holds by construction; references through another name (aliases, re-exports, dynamic code) are not measured for any tool. |
+| No dependencies were installed. | References through third-party packages are out of scope; with dependencies installed, servers may find more, and load more slowly. |
+| functions Python ran with 31 GB of memory, the other seven with 7 GB. | ty needed more than 6.6 GB there; with 7 GB it was killed. File caching for that pair also had more room. |
+| Pooled and per-symbol figures differ a lot. | Pooled figures are dominated by a few symbols with hundreds of references; both are reported. |
+| One machine, one run per symbol for accuracy. | Run-to-run variation in latency is only partly visible. |
+
+## Earlier measurements
+
+An earlier, smaller comparison (10 hand-picked symbols, on a Mac) showed Lemma 60-130 times faster than ripgrep on functions. That was mostly the Mac: opening files there barely scaled across threads, so ripgrep took 2.3 s on functions, against 86 ms on this machine. Its "warm" Lemma figures also repeated the same question, which language servers cache.
 
 ## Trade-offs
 
@@ -105,19 +144,29 @@ Before any of this, Lemma needs an index and a running server. From nothing runn
 | --- | --- | --- | --- |
 | What it matches | Text | Syntax nodes | Symbols, resolved by a language server |
 | Same name, different symbol | Reported | Reported | Not reported |
-| Comments, strings, config, docs | Reported | Not reported | Not reported |
+| Strings and comments | Reported | Not reported | Not reported |
 | Languages | Any text | About 25 | TypeScript, Python, Go |
-| Set-up | None | None | Index (seconds), language servers installed |
-| First question | Full cost every time | Full cost every time | Seconds while servers start; ~100-250 ms per new symbol after |
-| Repeated questions | Full cost every time | Full cost every time | 17-80 ms |
-| Freshness | Always current | Always current | As of the last `lemma index`, which is cheap (25-85 ms) but must be run |
-| Background cost | None | None | A daemon and one language server per language and project, holding memory (12 MB for the daemon and 14-140 MB per server as measured here; macOS compresses memory, so the true footprint may be larger) |
-| Failure mode | Too much output, never a missed spelling | Misses names in strings | Misses what the language server cannot see: other modules without `go.work`, dynamic code, projects that fail to load |
+| Set-up | None | None | An index, and language servers installed |
+| First question, nothing running | Full cost | Full cost | 0.5-6.6 s here |
+| Later questions | Full cost each time | Full cost each time | 19-126 ms for a new symbol (median), 5-37 ms repeated, 1-3 ms cached |
+| Freshness | Always current | Always current | As of the last `lemma index` (25-85 ms) |
+| Memory | None kept | None kept | A daemon plus a language server per language and project; ty needed more than 6.6 GB on 71,000 Python files |
+| Misses | Never misses a spelling | Names in strings | Calls through interfaces (over-reports), files outside a TypeScript project, references needing deeper type inference |
 
 ## Which to use
 
-- **Use Lemma** to trace a function, method or class through code before changing it, especially when its name is common or shared, and when asking many questions about the same repository.
-- **Use ripgrep** for one-off questions, small repositories, text that is not a code reference (log messages, configuration keys, strings), languages Lemma does not support, and as a cross-check before deleting or renaming anything: a rename has to update strings and documentation too.
-- **Use ast-grep** to match or rewrite code shapes; for finding uses of one name it sits between the two, removing comments and strings but not same-named symbols.
+- **Lemma** to trace a function, method or class through code before changing it, especially when its name is common, and when asking many questions about one repository with Lemma already running.
+- **ripgrep** for one-off questions, small repositories, strings, configuration and other text, languages Lemma does not support, and as a cross-check before renaming or deleting anything.
+- **ast-grep** to match or rewrite code shapes. For finding uses of one name it removes comments and strings, but not other symbols with the same name.
 
-An agent gets the best of both by asking Lemma for references and ripgrep for any mentions Lemma does not cover, such as strings and other file types.
+## Protocol
+
+The protocol, harness and per-symbol results live in the experiment workspace, not in this repository, since they include private code. The protocol's SHA-256 before any measurement was `7197f0ff4f6e3354e2f18c23f772397acf9b54ac8456bf6d5bbde892ee806e33`; the changes made afterwards, each with its reason, are:
+
+1. The oracle closes documents it no longer needs and restarts a server that exits (typescript-language-server exited once in the pilot).
+2. Text tools are timed on two symbols per bucket; their time depends on the repository, not the symbol.
+3. Lemma-only lines are checked up to 1,500 per symbol (no symbol reached the cap).
+4. ast-grep searches `.ts` files only, not `.tsx` (3 files in platform).
+5. Phases are saved so a failure does not repeat earlier ones.
+6. functions Python was rerun with 31 GB of memory after ty was killed at 7 GB.
+7. Language server helpers left running by the Lemma build under test were stopped by hand before that rerun.
