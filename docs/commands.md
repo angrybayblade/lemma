@@ -98,6 +98,8 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 | `lemma daemon stop` | Stop the running daemon. |
 | `lemma daemon install` | Run the daemon as a login service (launchd on macOS, systemd on Linux), so it is already up when an agent asks its first question. It is restarted only if it crashes. |
 | `lemma daemon uninstall` | Remove the login service and stop its daemon. |
+
+On Linux, `install` uses a systemd user unit. On a server you reach over SSH there may be no user session to run it in; `sudo loginctl enable-linger $USER` gives you one that starts at boot and outlives your logins.
 | `lemma daemon --idle-secs <n>` | Run in the foreground, exiting after this many seconds without a command instead of the configured `idle_exit`. |
 
 ### Settings
