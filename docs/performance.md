@@ -13,12 +13,13 @@ Times are wall-clock medians from [hyperfine](https://github.com/sharkdp/hyperfi
 
 ## Lemma vs grep, ripgrep and ast-grep
 
-The full comparison, with method, results, the biases that could skew them and the trade-offs, is in [Lemma vs grep, ripgrep, git grep and ast-grep](comparison.md). In short, on ten symbols across both repositories:
+The full comparison, measured on a clean Linux machine to a protocol fixed beforehand, with 241 randomly drawn symbols checked by independent language servers, is in [Lemma vs grep, ripgrep, git grep and ast-grep](comparison.md). In short:
 
-- Lemma's precision was 100% on every symbol. Text search fell to 0-2% on common names shared by many symbols, and was 80-100% on rare ones. Lemma missed references the language server could not see.
-- On functions, a symbol's first lookup on a running server took about 100-250 ms (up to 11.5 s for a name defined 500 times), and 17-80 ms when asked again. ripgrep took 2.0-2.3 s, but file opens are unusually slow on this machine, which inflates that gap.
-- On platform, ripgrep (34-62 ms) was faster than Lemma's first lookup of a symbol (about 100-470 ms).
-- Lemma needs an index and a running language server first: 1.3-7.1 s to the first answer when nothing is running.
+- Lemma's precision was 96% per symbol, against 31% for ripgrep, grep and git grep and 35% for ast-grep; recall was 99% per symbol against 100%. Lemma misses calls through interfaces, files outside a TypeScript project, and references needing deeper type inference than ty does.
+- With Lemma running, a symbol's first lookup took 19-126 ms (median per repository), a repeat 5-37 ms and a cached answer 1-3 ms. ripgrep took 11-86 ms with files in memory and up to about 1 s from disk.
+- From nothing running, Lemma took 0.5-6.6 s to its first answer; ripgrep was faster for every session of up to 32 questions.
+
+The Mac figures on this page come from a machine where opening files is unusually slow, which made text search look slower than it is; on the Linux machine, ripgrep searched functions in 86 ms rather than 2.3 s.
 
 ### Time to the first answer
 
