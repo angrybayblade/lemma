@@ -11,6 +11,7 @@ mod config;
 #[cfg(unix)]
 mod daemon;
 mod engine;
+mod mcp;
 mod output;
 #[cfg(unix)]
 mod service;
@@ -30,6 +31,9 @@ fn main() -> ExitCode {
     if let Command::Daemon(args) = &cli.command {
         return run_daemon(args);
     }
+    if matches!(cli.command, Command::Mcp) {
+        return run_mcp(!cli.no_daemon && !daemon_disabled_by_environment());
+    }
     let Ok(cwd) = std::env::current_dir() else {
         eprintln!("error: could not read the current directory");
         return ExitCode::FAILURE;
@@ -40,6 +44,16 @@ fn main() -> ExitCode {
         }
     }
     run_in_process(cli, cwd)
+}
+
+fn run_mcp(uses_daemon: bool) -> ExitCode {
+    match mcp::serve(uses_daemon) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn daemon_disabled_by_environment() -> bool {
