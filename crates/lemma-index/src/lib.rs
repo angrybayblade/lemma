@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lemma_model::{Language, Snapshot};
-use lemma_store::{NewSnapshot, SnapshotUpdate, Store, StoreError, StoredSnapshot};
+use lemma_store::{FactStore, NewSnapshot, SnapshotUpdate, Store, StoreError, StoredSnapshot};
 use lemma_syntax::{EXTRACTOR_VERSION, SyntaxError};
 
 use crate::scan::{ExtractorPool, ReusePolicy};

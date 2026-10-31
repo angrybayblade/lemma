@@ -8,11 +8,14 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use lemma_index::IndexSummary;
-use lemma_model::{Language, Position, Provenance, ReferenceOutcome, Span, SymbolKind};
+use lemma_model::{Language, Position, Span, SymbolKind};
 use lemma_providers::ProviderRegistry;
-use lemma_query::ReferenceReport;
 use lemma_store::StoredSymbol;
 use serde::Serialize;
+
+mod answers;
+
+pub(crate) use answers::reference_report;
 
 /// How results are printed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,15 +64,6 @@ struct IndexView<'a> {
     symbol_count: usize,
     files_with_syntax_errors: &'a [String],
     unreadable_files: &'a [String],
-}
-
-#[derive(Serialize)]
-struct ReferenceView<'a> {
-    symbol: SymbolView<'a>,
-    provenance: Option<&'a Provenance>,
-    from_cache: bool,
-    skipped_providers: &'a [String],
-    outcome: &'a ReferenceOutcome,
 }
 
 #[derive(Serialize)]
@@ -189,86 +183,6 @@ pub(crate) fn ambiguous(
         writeln!(out, "  {}", symbol_line(stored))?;
     }
     Ok(())
-}
-
-pub(crate) fn reference_report(
-    out: &mut dyn Write,
-    report: &ReferenceReport,
-    root: &str,
-    format: Format,
-) -> io::Result<()> {
-    if format == Format::Json {
-        return print_json(
-            out,
-            &ReferenceView {
-                symbol: SymbolView::new(&report.symbol),
-                provenance: report.provenance.as_ref(),
-                from_cache: report.from_cache,
-                skipped_providers: &report.skipped_providers,
-                outcome: &report.outcome,
-            },
-        );
-    }
-
-    writeln!(out, "{}", symbol_line(&report.symbol))?;
-    if let Some(provenance) = &report.provenance {
-        let version = provenance
-            .provider_version
-            .as_deref()
-            .unwrap_or("unknown version");
-        let cached = if report.from_cache { ", cached" } else { "" };
-        writeln!(out, "via {} {version}{cached}", provenance.provider_id)?;
-    }
-    for skipped in &report.skipped_providers {
-        writeln!(out, "skipped {skipped}")?;
-    }
-    write_outcome(out, report, root)
-}
-
-fn write_outcome(out: &mut dyn Write, report: &ReferenceReport, root: &str) -> io::Result<()> {
-    let provider = report
-        .provenance
-        .as_ref()
-        .map_or("the provider", |p| p.provider_id.as_str());
-
-    match &report.outcome {
-        ReferenceOutcome::Found { references } => {
-            writeln!(out, "{} references", references.len())?;
-            for reference in references {
-                let location = format!(
-                    "{}:{}",
-                    reference.path,
-                    display_position(reference.span.start)
-                );
-                match (&reference.enclosing_symbol, reference.is_external) {
-                    (_, true) => writeln!(out, "  {location}  (external)")?,
-                    (Some(enclosing), false) => writeln!(out, "  {location}  in {enclosing}")?,
-                    (None, false) => writeln!(out, "  {location}")?,
-                }
-            }
-            Ok(())
-        }
-        ReferenceOutcome::Empty => writeln!(
-            out,
-            "no references found by {provider}. This covers only what it could see from {root}; \
-             it does not prove the symbol is unused."
-        ),
-        ReferenceOutcome::Unsupported => {
-            writeln!(out, "{provider} does not support reference lookup")
-        }
-        ReferenceOutcome::ProviderUnavailable { candidates } => writeln!(
-            out,
-            "no {} provider is installed (tried: {}). Install one or configure it in .lemma/providers.toml",
-            report.symbol.language,
-            candidates.join(", ")
-        ),
-        ReferenceOutcome::Stale => writeln!(
-            out,
-            "{} changed since it was indexed; run `lemma index` again",
-            report.symbol.path
-        ),
-        ReferenceOutcome::ProviderFailed { message } => writeln!(out, "lookup failed: {message}"),
-    }
 }
 
 pub(crate) fn providers(

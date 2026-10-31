@@ -8,14 +8,14 @@ use std::path::Path;
 use std::str::FromStr;
 
 use lemma_model::{
-    IndexedFile, Language, Position, Reference, ReferenceOutcome, Snapshot, Span, Symbol,
-    SymbolKind,
+    IndexedFile, Language, Location, LocationQuery, Position, ProviderAnswer, Snapshot, Span,
+    Symbol, SymbolKind,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 /// Version of `schema.sql`. Databases written with another version are
 /// rejected rather than migrated, since an index can always be rebuilt.
-pub const SCHEMA_VERSION: &str = "2";
+pub const SCHEMA_VERSION: &str = "3";
 
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -191,26 +191,137 @@ pub struct SymbolFilter {
     pub limit: u32,
 }
 
-/// Everything that identifies a reference lookup within one snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReferenceLookupKey {
-    /// The symbol whose references were requested.
-    pub symbol_id: i64,
+/// A question asked of a provider, as the store files its answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Question {
+    /// A question answered with locations.
+    Locations(LocationQuery),
+    /// What the provider shows for a symbol.
+    Hover,
+}
+
+impl Question {
+    /// The name stored in the `answers` table.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Locations(query) => query.as_str(),
+            Self::Hover => "hover",
+        }
+    }
+}
+
+/// Everything that identifies a provider's answer within one snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnswerKey<'a> {
+    /// The snapshot the question was asked in.
+    pub snapshot_id: i64,
+    /// What was asked.
+    pub question: Question,
+    /// The file the question was asked about, relative to the root.
+    pub path: &'a str,
+    /// The position the question was asked at, such as a symbol's name.
+    pub position: Position,
     /// The provider that answered.
-    pub provider_id: String,
+    pub provider_id: &'a str,
     /// Fingerprint of the provider's configuration.
-    pub config_fingerprint: String,
-    /// Whether the declaration itself counts as a reference.
-    pub include_declaration: bool,
+    pub config_fingerprint: &'a str,
 }
 
 /// A previously stored provider answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CachedReferences {
+pub struct StoredAnswer<T> {
     /// The version the provider reported when it answered.
     pub provider_version: Option<String>,
-    /// The answer. Enclosing symbols are not stored; callers fill them in.
-    pub outcome: ReferenceOutcome,
+    /// The answer.
+    pub answer: ProviderAnswer<T>,
+}
+
+/// The facts the query layer reads and records: symbols from the syntax
+/// index and answers from providers.
+///
+/// SQLite ([`Store`]) is the first implementation. The trait marks the
+/// boundary a faster one, such as memory-mapped tables, has to fill.
+pub trait FactStore {
+    /// Every file in a snapshot, without symbols, sorted by path.
+    fn files(&self, snapshot_id: i64) -> Result<Vec<StoredFile>, StoreError>;
+
+    /// Symbols matching a filter. Exact name matches come first, then
+    /// shorter qualified names, then by path and line.
+    fn find_symbols(
+        &self,
+        snapshot_id: i64,
+        filter: &SymbolFilter,
+    ) -> Result<Vec<StoredSymbol>, StoreError>;
+
+    /// One symbol by id, if it belongs to the snapshot.
+    fn symbol(&self, snapshot_id: i64, symbol_id: i64) -> Result<Option<StoredSymbol>, StoreError>;
+
+    /// Every symbol defined in a file, in source order.
+    fn symbols_in_file(
+        &self,
+        snapshot_id: i64,
+        path: &str,
+    ) -> Result<Vec<StoredSymbol>, StoreError>;
+
+    /// The symbol whose name is at a position, such as where a provider
+    /// says something is defined.
+    fn symbol_named_at(
+        &self,
+        snapshot_id: i64,
+        path: &str,
+        position: Position,
+    ) -> Result<Option<StoredSymbol>, StoreError>;
+
+    /// The content hash a file had when the snapshot was taken.
+    fn file_hash(&self, snapshot_id: i64, path: &str) -> Result<Option<String>, StoreError>;
+
+    /// The qualified name of the innermost symbol whose definition contains
+    /// a position, such as the function a call sits in.
+    fn enclosing_symbol(
+        &self,
+        snapshot_id: i64,
+        path: &str,
+        position: Position,
+    ) -> Result<Option<String>, StoreError>;
+
+    /// A stored answer made of locations, if this exact question was asked.
+    fn cached_locations(
+        &self,
+        key: &AnswerKey<'_>,
+    ) -> Result<Option<StoredAnswer<Vec<Location>>>, StoreError>;
+
+    /// Stores an answer made of locations, replacing any earlier one.
+    fn save_locations(
+        &mut self,
+        key: &AnswerKey<'_>,
+        provider_version: Option<&str>,
+        answer: &ProviderAnswer<Vec<Location>>,
+    ) -> Result<(), StoreError>;
+
+    /// A stored text answer, if this exact question was asked.
+    fn cached_text(&self, key: &AnswerKey<'_>) -> Result<Option<StoredAnswer<String>>, StoreError>;
+
+    /// Stores a text answer, replacing any earlier one.
+    fn save_text(
+        &mut self,
+        key: &AnswerKey<'_>,
+        provider_version: Option<&str>,
+        answer: &ProviderAnswer<String>,
+    ) -> Result<(), StoreError>;
+}
+
+/// The columns [`read_stored_symbol`] reads, with the join they need.
+const SYMBOL_COLUMNS: &str = "SELECT s.id, f.path, f.language, s.name, s.qualified_name, s.kind,
+        s.start_line, s.start_column, s.end_line, s.end_column,
+        s.name_start_line, s.name_start_column, s.name_end_line, s.name_end_column
+ FROM symbols s JOIN files f ON f.id = s.file_id";
+
+/// An `answers` row, before its state is interpreted.
+struct AnswerRow {
+    id: i64,
+    provider_version: Option<String>,
+    state: String,
+    text: Option<String>,
 }
 
 /// An open Lemma database.
@@ -309,14 +420,7 @@ impl Store {
 
         let contents_changed = !update.changed.is_empty() || !update.removed.is_empty();
         if contents_changed {
-            // Checked per cached lookup rather than per symbol: there are few
-            // lookups and hundreds of thousands of symbols.
-            transaction.execute(
-                "DELETE FROM reference_lookups WHERE EXISTS
-                     (SELECT 1 FROM symbols s JOIN files f ON f.id = s.file_id
-                      WHERE s.id = reference_lookups.symbol_id AND f.snapshot_id = ?1)",
-                [snapshot_id],
-            )?;
+            transaction.execute("DELETE FROM answers WHERE snapshot_id = ?1", [snapshot_id])?;
         }
 
         let mut delete_file =
@@ -371,31 +475,6 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Every file in a snapshot, without symbols, sorted by path.
-    pub fn files(&self, snapshot_id: i64) -> Result<Vec<StoredFile>, StoreError> {
-        let mut statement = self.connection.prepare_cached(
-            "SELECT path, language, content_hash, has_syntax_errors, symbol_count,
-                    size_bytes, modified_ns, changed_ns, inode
-             FROM files WHERE snapshot_id = ?1 ORDER BY path",
-        )?;
-        let rows = statement.query_map([snapshot_id], |row| {
-            Ok(StoredFile {
-                path: row.get(0)?,
-                language: parse_column(row, 1)?,
-                content_hash: row.get(2)?,
-                has_syntax_errors: row.get(3)?,
-                symbol_count: row.get(4)?,
-                stamp: FileStamp {
-                    size_bytes: unstamp_integer(row.get(5)?),
-                    modified_ns: row.get(6)?,
-                    changed_ns: row.get(7)?,
-                    inode: unstamp_integer(row.get(8)?),
-                },
-            })
-        })?;
-        Ok(rows.collect::<Result<_, _>>()?)
-    }
-
     /// The most recently stored snapshot.
     pub fn latest_snapshot(&self) -> Result<Option<StoredSnapshot>, StoreError> {
         let snapshot = self
@@ -408,51 +487,6 @@ impl Store {
             )
             .optional()?;
         Ok(snapshot)
-    }
-
-    /// Symbols matching a filter. Exact name matches come first, then shorter
-    /// qualified names, then by path and line.
-    pub fn find_symbols(
-        &self,
-        snapshot_id: i64,
-        filter: &SymbolFilter,
-    ) -> Result<Vec<StoredSymbol>, StoreError> {
-        // Separate statements, so an exact search can use the name indexes
-        // instead of scanning every symbol.
-        let name_condition = match filter.name_match {
-            NameMatch::Exact => "(s.name = ?2 OR s.qualified_name = ?2)",
-            // A name is always the end of its qualified name, so searching
-            // the qualified name alone finds both.
-            NameMatch::Contains => r"s.qualified_name LIKE ?3 ESCAPE '\'",
-        };
-        let sql = format!(
-            r"SELECT s.id, f.path, f.language, s.name, s.qualified_name, s.kind,
-                     s.start_line, s.start_column, s.end_line, s.end_column,
-                     s.name_start_line, s.name_start_column, s.name_end_line, s.name_end_column
-              FROM symbols s JOIN files f ON f.id = s.file_id
-              WHERE f.snapshot_id = ?1
-                AND {name_condition}
-                AND (?4 IS NULL OR s.kind = ?4)
-                AND (?5 IS NULL OR f.language = ?5)
-                AND (?6 IS NULL OR instr(f.path, ?6) > 0)
-              ORDER BY (s.name = ?2 OR s.qualified_name = ?2) DESC,
-                       length(s.qualified_name), f.path, s.start_line
-              LIMIT ?7"
-        );
-        let mut statement = self.connection.prepare_cached(&sql)?;
-        let rows = statement.query_map(
-            params![
-                snapshot_id,
-                filter.text,
-                like_pattern(&filter.text),
-                filter.kind.map(SymbolKind::as_str),
-                filter.language.map(Language::as_str),
-                filter.path_contains,
-                filter.limit,
-            ],
-            read_stored_symbol,
-        )?;
-        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Every symbol in a snapshot, in the compact form used for searching
@@ -505,12 +539,124 @@ impl Store {
         Ok(found)
     }
 
-    /// One symbol by id, if it belongs to the snapshot.
-    pub fn symbol(
+    fn answer_row(&self, key: &AnswerKey<'_>) -> Result<Option<AnswerRow>, StoreError> {
+        let row = self
+            .connection
+            .prepare_cached(
+                "SELECT id, provider_version, state, text FROM answers
+                 WHERE snapshot_id = ?1 AND question = ?2 AND path = ?3
+                   AND line = ?4 AND column = ?5
+                   AND provider_id = ?6 AND config_fingerprint = ?7",
+            )?
+            .query_row(
+                params![
+                    key.snapshot_id,
+                    key.question.as_str(),
+                    key.path,
+                    key.position.line,
+                    key.position.column,
+                    key.provider_id,
+                    key.config_fingerprint
+                ],
+                |row| {
+                    Ok(AnswerRow {
+                        id: row.get(0)?,
+                        provider_version: row.get(1)?,
+                        state: row.get(2)?,
+                        text: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    fn answer_locations(&self, answer_id: i64) -> Result<Vec<Location>, StoreError> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT path, is_external, start_line, start_column, end_line, end_column
+             FROM answer_locations WHERE answer_id = ?1
+             ORDER BY path, start_line, start_column",
+        )?;
+        let rows = statement.query_map([answer_id], |row| {
+            Ok(Location {
+                path: row.get(0)?,
+                is_external: row.get(1)?,
+                span: read_span(row, 2)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+}
+
+impl FactStore for Store {
+    fn files(&self, snapshot_id: i64) -> Result<Vec<StoredFile>, StoreError> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT path, language, content_hash, has_syntax_errors, symbol_count,
+                    size_bytes, modified_ns, changed_ns, inode
+             FROM files WHERE snapshot_id = ?1 ORDER BY path",
+        )?;
+        let rows = statement.query_map([snapshot_id], |row| {
+            Ok(StoredFile {
+                path: row.get(0)?,
+                language: parse_column(row, 1)?,
+                content_hash: row.get(2)?,
+                has_syntax_errors: row.get(3)?,
+                symbol_count: row.get(4)?,
+                stamp: FileStamp {
+                    size_bytes: unstamp_integer(row.get(5)?),
+                    modified_ns: row.get(6)?,
+                    changed_ns: row.get(7)?,
+                    inode: unstamp_integer(row.get(8)?),
+                },
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn find_symbols(
         &self,
         snapshot_id: i64,
-        symbol_id: i64,
-    ) -> Result<Option<StoredSymbol>, StoreError> {
+        filter: &SymbolFilter,
+    ) -> Result<Vec<StoredSymbol>, StoreError> {
+        // Separate statements, so an exact search can use the name indexes
+        // instead of scanning every symbol.
+        let name_condition = match filter.name_match {
+            NameMatch::Exact => "(s.name = ?2 OR s.qualified_name = ?2)",
+            // A name is always the end of its qualified name, so searching
+            // the qualified name alone finds both.
+            NameMatch::Contains => r"s.qualified_name LIKE ?3 ESCAPE '\'",
+        };
+        let sql = format!(
+            r"SELECT s.id, f.path, f.language, s.name, s.qualified_name, s.kind,
+                     s.start_line, s.start_column, s.end_line, s.end_column,
+                     s.name_start_line, s.name_start_column, s.name_end_line, s.name_end_column
+              FROM symbols s JOIN files f ON f.id = s.file_id
+              WHERE f.snapshot_id = ?1
+                AND {name_condition}
+                AND (?4 IS NULL OR s.kind = ?4)
+                AND (?5 IS NULL OR f.language = ?5)
+                AND (?6 IS NULL OR instr(f.path, ?6) > 0)
+              ORDER BY (s.name = ?2 OR s.qualified_name = ?2) DESC,
+                       length(s.qualified_name), f.path, s.start_line
+              LIMIT ?7"
+        );
+        let mut statement = self.connection.prepare_cached(&sql)?;
+        let rows = statement.query_map(
+            params![
+                snapshot_id,
+                filter.text,
+                like_pattern(&filter.text),
+                filter.kind.map(SymbolKind::as_str),
+                filter.language.map(Language::as_str),
+                filter.path_contains,
+                filter.limit,
+            ],
+            read_stored_symbol,
+        )?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn symbol(&self, snapshot_id: i64, symbol_id: i64) -> Result<Option<StoredSymbol>, StoreError> {
         let symbol = self
             .connection
             .prepare_cached(
@@ -525,8 +671,7 @@ impl Store {
         Ok(symbol)
     }
 
-    /// The content hash a file had when the snapshot was taken.
-    pub fn file_hash(&self, snapshot_id: i64, path: &str) -> Result<Option<String>, StoreError> {
+    fn file_hash(&self, snapshot_id: i64, path: &str) -> Result<Option<String>, StoreError> {
         let hash = self
             .connection
             .query_row(
@@ -538,9 +683,7 @@ impl Store {
         Ok(hash)
     }
 
-    /// The qualified name of the innermost symbol whose definition contains a
-    /// position, such as the function a call sits in.
-    pub fn enclosing_symbol(
+    fn enclosing_symbol(
         &self,
         snapshot_id: i64,
         path: &str,
@@ -565,112 +708,107 @@ impl Store {
         Ok(name)
     }
 
-    /// A stored provider answer for this exact lookup, if one exists.
-    pub fn cached_references(
+    fn symbols_in_file(
         &self,
-        key: &ReferenceLookupKey,
-    ) -> Result<Option<CachedReferences>, StoreError> {
-        let lookup: Option<(i64, Option<String>, String)> = self
+        snapshot_id: i64,
+        path: &str,
+    ) -> Result<Vec<StoredSymbol>, StoreError> {
+        let mut statement = self.connection.prepare_cached(&format!(
+            "{SYMBOL_COLUMNS} WHERE f.snapshot_id = ?1 AND f.path = ?2
+             ORDER BY s.start_line, s.start_column"
+        ))?;
+        let rows = statement.query_map(params![snapshot_id, path], read_stored_symbol)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn symbol_named_at(
+        &self,
+        snapshot_id: i64,
+        path: &str,
+        position: Position,
+    ) -> Result<Option<StoredSymbol>, StoreError> {
+        let symbol = self
             .connection
+            .prepare_cached(&format!(
+                "{SYMBOL_COLUMNS} WHERE f.snapshot_id = ?1 AND f.path = ?2
+                   AND (s.name_start_line, s.name_start_column) <= (?3, ?4)
+                   AND (s.name_end_line, s.name_end_column) > (?3, ?4)
+                 LIMIT 1"
+            ))?
             .query_row(
-                "SELECT id, provider_version, outcome FROM reference_lookups
-                 WHERE symbol_id = ?1 AND provider_id = ?2
-                   AND config_fingerprint = ?3 AND include_declaration = ?4",
-                params![
-                    key.symbol_id,
-                    key.provider_id,
-                    key.config_fingerprint,
-                    key.include_declaration
-                ],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                params![snapshot_id, path, position.line, position.column],
+                read_stored_symbol,
             )
             .optional()?;
-        let Some((lookup_id, provider_version, label)) = lookup else {
+        Ok(symbol)
+    }
+
+    fn cached_locations(
+        &self,
+        key: &AnswerKey<'_>,
+    ) -> Result<Option<StoredAnswer<Vec<Location>>>, StoreError> {
+        let Some(row) = self.answer_row(key)? else {
             return Ok(None);
         };
-
-        let outcome = match label.as_str() {
-            "found" => ReferenceOutcome::Found {
-                references: self.reference_results(lookup_id)?,
-            },
-            "empty" => ReferenceOutcome::Empty,
-            "unsupported" => ReferenceOutcome::Unsupported,
-            // An unknown label means the row predates the current meaning of
-            // the column; treat it as a miss so the lookup is redone.
+        let answer = match row.state.as_str() {
+            "found" => ProviderAnswer::Found(self.answer_locations(row.id)?),
+            "empty" => ProviderAnswer::Empty,
+            "unsupported" => ProviderAnswer::Unsupported,
+            // An unknown state means the row predates the current meaning of
+            // the column; treat it as a miss so the provider is asked again.
             _ => return Ok(None),
         };
-        Ok(Some(CachedReferences {
-            provider_version,
-            outcome,
+        Ok(Some(StoredAnswer {
+            provider_version: row.provider_version,
+            answer,
         }))
     }
 
-    /// Stores a provider answer, replacing any earlier one for the same key.
-    ///
-    /// Only definitive answers are kept. Failures, stale files, and missing
-    /// providers are not facts about the code, so they return `false` and are
-    /// not stored.
-    pub fn save_references(
+    fn save_locations(
         &mut self,
-        key: &ReferenceLookupKey,
+        key: &AnswerKey<'_>,
         provider_version: Option<&str>,
-        outcome: &ReferenceOutcome,
-    ) -> Result<bool, StoreError> {
-        let Some(label) = cacheable_label(outcome) else {
-            return Ok(false);
-        };
-
+        answer: &ProviderAnswer<Vec<Location>>,
+    ) -> Result<(), StoreError> {
         let transaction = self.connection.transaction()?;
-        // Delete explicitly so the cascade removes old results; REPLACE does
-        // not reliably fire foreign key actions.
-        transaction.execute(
-            "DELETE FROM reference_lookups
-             WHERE symbol_id = ?1 AND provider_id = ?2
-               AND config_fingerprint = ?3 AND include_declaration = ?4",
-            params![
-                key.symbol_id,
-                key.provider_id,
-                key.config_fingerprint,
-                key.include_declaration
-            ],
-        )?;
-        transaction.execute(
-            "INSERT INTO reference_lookups
-                 (symbol_id, provider_id, provider_version, config_fingerprint,
-                  include_declaration, outcome)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                key.symbol_id,
-                key.provider_id,
-                provider_version,
-                key.config_fingerprint,
-                key.include_declaration,
-                label
-            ],
-        )?;
-        let lookup_id = transaction.last_insert_rowid();
-        if let ReferenceOutcome::Found { references } = outcome {
-            insert_reference_results(&transaction, lookup_id, references)?;
+        let answer_id = replace_answer(&transaction, key, provider_version, answer, None)?;
+        if let ProviderAnswer::Found(locations) = answer {
+            insert_answer_locations(&transaction, answer_id, locations)?;
         }
         transaction.commit()?;
-        Ok(true)
+        Ok(())
     }
 
-    fn reference_results(&self, lookup_id: i64) -> Result<Vec<Reference>, StoreError> {
-        let mut statement = self.connection.prepare_cached(
-            "SELECT path, is_external, start_line, start_column, end_line, end_column
-             FROM reference_results WHERE lookup_id = ?1
-             ORDER BY path, start_line, start_column",
-        )?;
-        let rows = statement.query_map([lookup_id], |row| {
-            Ok(Reference {
-                path: row.get(0)?,
-                is_external: row.get(1)?,
-                span: read_span(row, 2)?,
-                enclosing_symbol: None,
-            })
-        })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+    fn cached_text(&self, key: &AnswerKey<'_>) -> Result<Option<StoredAnswer<String>>, StoreError> {
+        let Some(row) = self.answer_row(key)? else {
+            return Ok(None);
+        };
+        let answer = match (row.state.as_str(), row.text) {
+            ("found", Some(text)) => ProviderAnswer::Found(text),
+            ("empty", _) => ProviderAnswer::Empty,
+            ("unsupported", _) => ProviderAnswer::Unsupported,
+            _ => return Ok(None),
+        };
+        Ok(Some(StoredAnswer {
+            provider_version: row.provider_version,
+            answer,
+        }))
+    }
+
+    fn save_text(
+        &mut self,
+        key: &AnswerKey<'_>,
+        provider_version: Option<&str>,
+        answer: &ProviderAnswer<String>,
+    ) -> Result<(), StoreError> {
+        let text = match answer {
+            ProviderAnswer::Found(text) => Some(text.as_str()),
+            ProviderAnswer::Empty | ProviderAnswer::Unsupported => None,
+        };
+        let transaction = self.connection.transaction()?;
+        replace_answer(&transaction, key, provider_version, answer, text)?;
+        transaction.commit()?;
+        Ok(())
     }
 }
 
@@ -743,39 +881,78 @@ fn replace_uncommitted_paths(
     Ok(())
 }
 
-fn insert_reference_results(
+/// Replaces the stored answer for a key and returns the new row's id.
+fn replace_answer<T>(
     transaction: &Transaction<'_>,
-    lookup_id: i64,
-    references: &[Reference],
+    key: &AnswerKey<'_>,
+    provider_version: Option<&str>,
+    answer: &ProviderAnswer<T>,
+    text: Option<&str>,
+) -> Result<i64, StoreError> {
+    let state = match answer {
+        ProviderAnswer::Found(_) => "found",
+        ProviderAnswer::Empty => "empty",
+        ProviderAnswer::Unsupported => "unsupported",
+    };
+    let identity = params![
+        key.snapshot_id,
+        key.question.as_str(),
+        key.path,
+        key.position.line,
+        key.position.column,
+        key.provider_id,
+        key.config_fingerprint
+    ];
+    // Delete explicitly so the cascade removes old locations; REPLACE does
+    // not reliably fire foreign key actions.
+    transaction.execute(
+        "DELETE FROM answers
+         WHERE snapshot_id = ?1 AND question = ?2 AND path = ?3 AND line = ?4
+           AND column = ?5 AND provider_id = ?6 AND config_fingerprint = ?7",
+        identity,
+    )?;
+    transaction.execute(
+        "INSERT INTO answers (snapshot_id, question, path, line, column, provider_id,
+                              config_fingerprint, provider_version, state, text)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            key.snapshot_id,
+            key.question.as_str(),
+            key.path,
+            key.position.line,
+            key.position.column,
+            key.provider_id,
+            key.config_fingerprint,
+            provider_version,
+            state,
+            text
+        ],
+    )?;
+    Ok(transaction.last_insert_rowid())
+}
+
+fn insert_answer_locations(
+    transaction: &Transaction<'_>,
+    answer_id: i64,
+    locations: &[Location],
 ) -> Result<(), StoreError> {
     let mut insert = transaction.prepare_cached(
-        "INSERT INTO reference_results
-             (lookup_id, path, is_external, start_line, start_column, end_line, end_column)
+        "INSERT INTO answer_locations
+             (answer_id, path, is_external, start_line, start_column, end_line, end_column)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
-    for reference in references {
+    for location in locations {
         insert.execute(params![
-            lookup_id,
-            reference.path,
-            reference.is_external,
-            reference.span.start.line,
-            reference.span.start.column,
-            reference.span.end.line,
-            reference.span.end.column,
+            answer_id,
+            location.path,
+            location.is_external,
+            location.span.start.line,
+            location.span.start.column,
+            location.span.end.line,
+            location.span.end.column,
         ])?;
     }
     Ok(())
-}
-
-fn cacheable_label(outcome: &ReferenceOutcome) -> Option<&'static str> {
-    match outcome {
-        ReferenceOutcome::Found { .. } => Some("found"),
-        ReferenceOutcome::Empty => Some("empty"),
-        ReferenceOutcome::Unsupported => Some("unsupported"),
-        ReferenceOutcome::ProviderUnavailable { .. }
-        | ReferenceOutcome::Stale
-        | ReferenceOutcome::ProviderFailed { .. } => None,
-    }
 }
 
 /// Wraps search text for `LIKE`, escaping its wildcards so they match literally.
@@ -974,15 +1151,33 @@ mod tests {
         }
     }
 
-    fn cache_empty_answer(store: &mut Store, symbol_id: i64) -> ReferenceLookupKey {
-        let key = ReferenceLookupKey {
-            symbol_id,
-            provider_id: "pyright".to_owned(),
-            config_fingerprint: "config".to_owned(),
-            include_declaration: false,
-        };
+    fn key(snapshot_id: i64, question: Question) -> AnswerKey<'static> {
+        AnswerKey {
+            snapshot_id,
+            question,
+            path: "src/router.py",
+            position: Position { line: 2, column: 8 },
+            provider_id: "pyright",
+            config_fingerprint: "cfg",
+        }
+    }
+
+    fn references_key(snapshot_id: i64) -> AnswerKey<'static> {
+        key(snapshot_id, Question::Locations(LocationQuery::References))
+    }
+
+    fn location(path: &str, line: u32) -> Location {
+        Location {
+            path: path.to_owned(),
+            span: span(line, 2, line, 8),
+            is_external: false,
+        }
+    }
+
+    fn cache_empty_answer(store: &mut Store, snapshot_id: i64) -> AnswerKey<'static> {
+        let key = references_key(snapshot_id);
         store
-            .save_references(&key, None, &ReferenceOutcome::Empty)
+            .save_locations(&key, None, &ProviderAnswer::Empty)
             .unwrap();
         key
     }
@@ -1077,8 +1272,7 @@ mod tests {
     #[test]
     fn changing_contents_drops_cached_answers() {
         let (mut store, snapshot_id) = store_with_sample();
-        let router_id = symbol_id(&store, snapshot_id, "Router");
-        let key = cache_empty_answer(&mut store, router_id);
+        let key = cache_empty_answer(&mut store, snapshot_id);
 
         let changed = [other_file("src/new.py", "new_helper")];
         let next = snapshot("/repo", "fp-2");
@@ -1086,14 +1280,13 @@ mod tests {
             .update_snapshot(snapshot_id, &update(&next, &changed, &[], &[]))
             .unwrap();
 
-        assert_eq!(store.cached_references(&key).unwrap(), None);
+        assert_eq!(store.cached_locations(&key).unwrap(), None);
     }
 
     #[test]
     fn restamping_keeps_cached_answers() {
         let (mut store, snapshot_id) = store_with_sample();
-        let router_id = symbol_id(&store, snapshot_id, "Router");
-        let key = cache_empty_answer(&mut store, router_id);
+        let key = cache_empty_answer(&mut store, snapshot_id);
         let stamp = FileStamp {
             modified_ns: 50,
             ..sample_files()[0].stamp
@@ -1105,7 +1298,7 @@ mod tests {
             .update_snapshot(snapshot_id, &update(&same, &[], &[], &restamped))
             .unwrap();
 
-        assert!(store.cached_references(&key).unwrap().is_some());
+        assert!(store.cached_locations(&key).unwrap().is_some());
         assert_eq!(store.files(snapshot_id).unwrap()[0].stamp, stamp);
     }
 
@@ -1216,94 +1409,95 @@ mod tests {
     }
 
     #[test]
-    fn found_references_round_trip_through_the_cache() {
-        let (mut store, snapshot_id) = store_with_sample();
-        let symbol_id = store
-            .find_symbols(snapshot_id, &filter("delete", NameMatch::Exact))
-            .unwrap()[0]
-            .id;
-        let key = ReferenceLookupKey {
-            symbol_id,
-            provider_id: "pyright".to_owned(),
-            config_fingerprint: "cfg".to_owned(),
-            include_declaration: false,
-        };
-        let outcome = ReferenceOutcome::Found {
-            references: vec![Reference {
-                path: "src/app.py".to_owned(),
-                span: span(4, 2, 4, 8),
-                is_external: false,
-                enclosing_symbol: None,
-            }],
-        };
+    fn symbols_in_file_are_in_source_order() {
+        let (store, snapshot_id) = store_with_sample();
 
-        assert!(
-            store
-                .save_references(&key, Some("1.1.400"), &outcome)
-                .unwrap()
+        let found = store.symbols_in_file(snapshot_id, "src/router.py").unwrap();
+
+        assert_eq!(
+            qualified_names(&found),
+            ["Router", "Router.delete", "delete_all"]
         );
-        let cached = store.cached_references(&key).unwrap().unwrap();
-
-        assert_eq!(cached.provider_version.as_deref(), Some("1.1.400"));
-        assert_eq!(cached.outcome, outcome);
     }
 
     #[test]
-    fn saving_again_replaces_earlier_results() {
-        let (mut store, snapshot_id) = store_with_sample();
-        let symbol_id = store
-            .find_symbols(snapshot_id, &filter("delete", NameMatch::Exact))
-            .unwrap()[0]
-            .id;
-        let key = ReferenceLookupKey {
-            symbol_id,
-            provider_id: "pyright".to_owned(),
-            config_fingerprint: "cfg".to_owned(),
-            include_declaration: false,
-        };
-        let first = ReferenceOutcome::Found {
-            references: vec![Reference {
-                path: "src/old.py".to_owned(),
-                span: span(1, 0, 1, 6),
-                is_external: false,
-                enclosing_symbol: None,
-            }],
+    fn symbol_named_at_matches_only_the_name() {
+        let mut files = sample_files();
+        files[0].file.symbols[0].name_span = span(0, 6, 0, 12);
+        files[0].file.symbols[1].name_span = span(2, 8, 2, 14);
+        let mut store = Store::open_in_memory().unwrap();
+        let snapshot_id = save(&mut store, &snapshot("/repo", "fp-1"), &files);
+
+        let named = |line, column| {
+            store
+                .symbol_named_at(snapshot_id, "src/router.py", Position { line, column })
+                .unwrap()
+                .map(|stored| stored.symbol.qualified_name)
         };
 
-        store.save_references(&key, None, &first).unwrap();
+        assert_eq!(named(2, 10).as_deref(), Some("Router.delete"));
+        assert_eq!(named(3, 10), None);
+    }
+
+    #[test]
+    fn found_locations_round_trip_through_the_cache() {
+        let (mut store, snapshot_id) = store_with_sample();
+        let key = references_key(snapshot_id);
+        let answer = ProviderAnswer::Found(vec![location("src/app.py", 4)]);
+
         store
-            .save_references(&key, None, &ReferenceOutcome::Empty)
+            .save_locations(&key, Some("1.1.400"), &answer)
+            .unwrap();
+        let cached = store.cached_locations(&key).unwrap().unwrap();
+
+        assert_eq!(cached.provider_version.as_deref(), Some("1.1.400"));
+        assert_eq!(cached.answer, answer);
+    }
+
+    #[test]
+    fn answers_to_different_questions_are_kept_apart() {
+        let (mut store, snapshot_id) = store_with_sample();
+        let references = references_key(snapshot_id);
+        let definitions = key(snapshot_id, Question::Locations(LocationQuery::Definitions));
+
+        store
+            .save_locations(&references, None, &ProviderAnswer::Empty)
             .unwrap();
 
-        let cached = store.cached_references(&key).unwrap().unwrap();
-        assert_eq!(cached.outcome, ReferenceOutcome::Empty);
+        assert!(store.cached_locations(&references).unwrap().is_some());
+        assert_eq!(store.cached_locations(&definitions).unwrap(), None);
+    }
+
+    #[test]
+    fn text_answers_round_trip_through_the_cache() {
+        let (mut store, snapshot_id) = store_with_sample();
+        let hover = key(snapshot_id, Question::Hover);
+        let answer = ProviderAnswer::Found("def delete(self) -> None".to_owned());
+
+        store.save_text(&hover, None, &answer).unwrap();
+
+        assert_eq!(store.cached_text(&hover).unwrap().unwrap().answer, answer);
+    }
+
+    #[test]
+    fn saving_again_replaces_earlier_locations() {
+        let (mut store, snapshot_id) = store_with_sample();
+        let key = references_key(snapshot_id);
+        let first = ProviderAnswer::Found(vec![location("src/old.py", 1)]);
+
+        store.save_locations(&key, None, &first).unwrap();
+        store
+            .save_locations(&key, None, &ProviderAnswer::Empty)
+            .unwrap();
+
+        let cached = store.cached_locations(&key).unwrap().unwrap();
+        assert_eq!(cached.answer, ProviderAnswer::Empty);
         let orphaned: i64 = store
             .connection
-            .query_row("SELECT count(*) FROM reference_results", [], |row| {
+            .query_row("SELECT count(*) FROM answer_locations", [], |row| {
                 row.get(0)
             })
             .unwrap();
         assert_eq!(orphaned, 0);
-    }
-
-    #[test]
-    fn failures_are_not_cached() {
-        let (mut store, snapshot_id) = store_with_sample();
-        let symbol_id = store
-            .find_symbols(snapshot_id, &filter("delete", NameMatch::Exact))
-            .unwrap()[0]
-            .id;
-        let key = ReferenceLookupKey {
-            symbol_id,
-            provider_id: "pyright".to_owned(),
-            config_fingerprint: "cfg".to_owned(),
-            include_declaration: false,
-        };
-        let failure = ReferenceOutcome::ProviderFailed {
-            message: "timed out".to_owned(),
-        };
-
-        assert!(!store.save_references(&key, None, &failure).unwrap());
-        assert!(store.cached_references(&key).unwrap().is_none());
     }
 }
