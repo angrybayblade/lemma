@@ -49,6 +49,16 @@ pub fn resolve_symbol(
     Ok(classify(store.find_symbols(snapshot_id, &filter)?))
 }
 
+/// Every symbol defined in a file, in source order. `path` is relative to
+/// the snapshot root.
+pub fn symbols_in_file(
+    store: &dyn FactStore,
+    snapshot_id: i64,
+    path: &str,
+) -> Result<Vec<StoredSymbol>, QueryError> {
+    Ok(store.symbols_in_file(snapshot_id, path)?)
+}
+
 fn classify(mut candidates: Vec<StoredSymbol>) -> SymbolResolution {
     match candidates.len() {
         0 => SymbolResolution::Unresolved,

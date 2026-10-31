@@ -9,7 +9,7 @@ use lemma_model::{Language, SymbolKind};
 #[command(
     name = "lemma",
     version,
-    about = "Index code and query symbol references"
+    about = "Index code and ask about its symbols"
 )]
 pub(crate) struct Cli {
     /// Index database to use. Defaults to `.lemma/index.db` in the nearest
@@ -46,11 +46,31 @@ pub(crate) enum Command {
     },
     /// Search indexed symbols by name.
     Symbols(SymbolsArgs),
+    /// List the symbols defined in a file, in source order.
+    Outline {
+        /// The file, relative to the current directory.
+        path: PathBuf,
+    },
     /// Find references to a symbol with its language's provider.
     ///
     /// Exits with 2 if the name matches several symbols and 3 if no provider
     /// could answer.
     Refs(RefsArgs),
+    /// Find where the symbol used at a position is defined.
+    ///
+    /// Exits with 3 if no provider could answer.
+    Definition(DefinitionArgs),
+    /// Find what implements an interface or abstract method, or overrides a
+    /// method.
+    ///
+    /// Exits with 2 if the name matches several symbols and 3 if no provider
+    /// could answer.
+    Implementations(SymbolLookupArgs),
+    /// Show a symbol's declaration and what its provider says about it.
+    ///
+    /// Exits with 2 if the name matches several symbols and 3 if neither the
+    /// source nor a provider could describe it.
+    Signature(SymbolLookupArgs),
     /// List configured providers and whether each is installed.
     Providers,
     /// Run, inspect, stop, or install the background daemon.
@@ -100,15 +120,46 @@ pub(crate) struct SymbolsArgs {
 
 #[derive(Args)]
 pub(crate) struct RefsArgs {
+    #[command(flatten)]
+    pub target: SymbolTarget,
+    /// Count the definition itself as a reference.
+    #[arg(long)]
+    pub include_declaration: bool,
+    #[command(flatten)]
+    pub lookup: LookupArgs,
+}
+
+#[derive(Args)]
+pub(crate) struct SymbolLookupArgs {
+    #[command(flatten)]
+    pub target: SymbolTarget,
+    #[command(flatten)]
+    pub lookup: LookupArgs,
+}
+
+#[derive(Args)]
+pub(crate) struct DefinitionArgs {
+    /// Where the symbol is used, as `file:line:column`, counting lines and
+    /// columns from 1 as editors do.
+    pub location: String,
+    #[command(flatten)]
+    pub lookup: LookupArgs,
+}
+
+/// Which symbol a command is about.
+#[derive(Args)]
+pub(crate) struct SymbolTarget {
     /// A name, a qualified name such as `Router.delete`, or `#<id>` from
     /// `lemma symbols`.
     pub symbol: String,
     #[command(flatten)]
     pub filters: Filters,
-    /// Count the definition itself as a reference.
-    #[arg(long)]
-    pub include_declaration: bool,
-    /// Ask the provider again instead of using a cached answer.
+}
+
+/// How to ask a provider.
+#[derive(Args)]
+pub(crate) struct LookupArgs {
+    /// Ask the provider again instead of using a stored answer.
     #[arg(long)]
     pub refresh: bool,
     /// Seconds to wait for the provider to start and to answer.

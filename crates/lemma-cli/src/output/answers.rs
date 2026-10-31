@@ -1,4 +1,4 @@
-//! Printing answers to semantic questions.
+//! Printing answers to semantic questions and file outlines.
 //!
 //! Every provider-backed answer shares one JSON shape: where it came from
 //! (`provenance`, `from_cache`, `skipped_providers`) and an `outcome` with
@@ -7,8 +7,10 @@
 
 use std::io::{self, Write};
 
-use lemma_model::{Outcome, Provenance, Reference};
-use lemma_query::{Answered, ReferenceReport};
+use lemma_model::{Outcome, Position, Provenance, Reference, Span};
+use lemma_query::{
+    Answered, DefinitionReport, ImplementationReport, ReferenceReport, SignatureReport, Target,
+};
 use lemma_store::StoredSymbol;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -41,6 +43,66 @@ struct SymbolAnswerView<'a> {
     symbol: SymbolView<'a>,
     #[serde(flatten)]
     answer: AnsweredView<'a>,
+}
+
+#[derive(Serialize)]
+struct DefinitionView<'a> {
+    path: &'a str,
+    position: Position,
+    #[serde(flatten)]
+    answer: AnsweredView<'a>,
+}
+
+#[derive(Serialize)]
+struct TargetView<'a> {
+    path: &'a str,
+    span: Span,
+    is_external: bool,
+    symbol: Option<SymbolView<'a>>,
+}
+
+impl<'a> TargetView<'a> {
+    fn new(target: &'a Target) -> Self {
+        Self {
+            path: &target.location.path,
+            span: target.location.span,
+            is_external: target.location.is_external,
+            symbol: target.symbol.as_ref().map(SymbolView::new),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SignatureView<'a> {
+    symbol: SymbolView<'a>,
+    declaration: Option<&'a str>,
+    hover: AnsweredView<'a>,
+}
+
+#[derive(Serialize)]
+struct OutlineView<'a> {
+    path: &'a str,
+    symbols: Vec<SymbolView<'a>>,
+}
+
+pub(crate) fn outline(
+    out: &mut dyn Write,
+    path: &str,
+    symbols: &[StoredSymbol],
+    format: Format,
+) -> io::Result<()> {
+    if format == Format::Json {
+        let symbols = symbols.iter().map(SymbolView::new).collect();
+        return print_json(out, &OutlineView { path, symbols });
+    }
+    if symbols.is_empty() {
+        return writeln!(out, "no symbols indexed in {path}");
+    }
+    for stored in symbols {
+        let depth = stored.symbol.qualified_name.matches('.').count();
+        writeln!(out, "{}{}", "  ".repeat(depth), symbol_line(stored))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn reference_report(
@@ -81,6 +143,124 @@ pub(crate) fn reference_report(
         match (&reference.enclosing_symbol, reference.is_external) {
             (_, true) => writeln!(out, "  {location}  (external)")?,
             (Some(enclosing), false) => writeln!(out, "  {location}  in {enclosing}")?,
+            (None, false) => writeln!(out, "  {location}")?,
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn definition_report(
+    out: &mut dyn Write,
+    report: &DefinitionReport,
+    format: Format,
+) -> io::Result<()> {
+    let answer = &report.answer;
+    if format == Format::Json {
+        return print_json(
+            out,
+            &DefinitionView {
+                path: &report.path,
+                position: report.position,
+                answer: AnsweredView::new(answer, "definitions", targets_json),
+            },
+        );
+    }
+
+    writeln!(out, "{}:{}", report.path, display_position(report.position))?;
+    write_provenance(out, answer)?;
+    let Outcome::Found(targets) = &answer.outcome else {
+        let nothing = format!("no definition found by {}", provider_name(answer));
+        return write_outcome(out, answer, &report.path, "definition lookup", &nothing);
+    };
+    write_targets(out, targets, ["definition", "definitions"])
+}
+
+pub(crate) fn implementation_report(
+    out: &mut dyn Write,
+    report: &ImplementationReport,
+    format: Format,
+) -> io::Result<()> {
+    let answer = &report.answer;
+    if format == Format::Json {
+        return print_json(
+            out,
+            &SymbolAnswerView {
+                symbol: SymbolView::new(&report.symbol),
+                answer: AnsweredView::new(answer, "implementations", targets_json),
+            },
+        );
+    }
+
+    writeln!(out, "{}", symbol_line(&report.symbol))?;
+    write_provenance(out, answer)?;
+    let Outcome::Found(targets) = &answer.outcome else {
+        let nothing = format!("no implementations found by {}", provider_name(answer));
+        return write_unanswered(
+            out,
+            answer,
+            &report.symbol,
+            "implementation lookup",
+            &nothing,
+        );
+    };
+    write_targets(out, targets, ["implementation", "implementations"])
+}
+
+pub(crate) fn signature_report(
+    out: &mut dyn Write,
+    report: &SignatureReport,
+    format: Format,
+) -> io::Result<()> {
+    let hover = &report.hover;
+    if format == Format::Json {
+        let text = |text: &String| Value::from(text.as_str());
+        return print_json(
+            out,
+            &SignatureView {
+                symbol: SymbolView::new(&report.symbol),
+                declaration: report.declaration.as_deref(),
+                hover: AnsweredView::new(hover, "text", text),
+            },
+        );
+    }
+
+    writeln!(out, "{}", symbol_line(&report.symbol))?;
+    if let Some(declaration) = &report.declaration {
+        writeln!(out)?;
+        for line in declaration.lines() {
+            writeln!(out, "    {line}")?;
+        }
+        writeln!(out)?;
+    }
+    write_provenance(out, hover)?;
+    let Outcome::Found(text) = &hover.outcome else {
+        let nothing = format!("{} has nothing to show for it", provider_name(hover));
+        return write_unanswered(out, hover, &report.symbol, "hover", &nothing);
+    };
+    writeln!(out, "{}", text.trim_end())
+}
+
+/// `nouns` is the singular and plural of what the targets are.
+fn write_targets(out: &mut dyn Write, targets: &[Target], nouns: [&str; 2]) -> io::Result<()> {
+    let noun = if targets.len() == 1 {
+        nouns[0]
+    } else {
+        nouns[1]
+    };
+    writeln!(out, "{} {noun}", targets.len())?;
+    for target in targets {
+        let location = format!(
+            "{}:{}",
+            target.location.path,
+            display_position(target.location.span.start)
+        );
+        match (&target.symbol, target.location.is_external) {
+            (_, true) => writeln!(out, "  {location}  (external)")?,
+            (Some(symbol), false) => writeln!(
+                out,
+                "  {location}  {} #{}",
+                symbol.symbol.qualified_name, symbol.id
+            )?,
             (None, false) => writeln!(out, "  {location}")?,
         }
     }
@@ -171,6 +351,14 @@ fn outcome_json<T>(outcome: &Outcome<T>, field: &str, found: impl FnOnce(&T) -> 
         Outcome::Empty | Outcome::Unsupported | Outcome::Stale => {}
     }
     Value::Object(object)
+}
+
+#[expect(
+    clippy::ptr_arg,
+    reason = "matches the `Answered<Vec<Target>>` it renders"
+)]
+fn targets_json(targets: &Vec<Target>) -> Value {
+    json_value(&targets.iter().map(TargetView::new).collect::<Vec<_>>())
 }
 
 /// Serializes plain data. Lemma's own views always serialize, so a failure

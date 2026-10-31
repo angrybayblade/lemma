@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use lemma_index::LiveIndex;
-use lemma_model::Language;
+use lemma_model::{Language, Outcome, Position};
 use lemma_providers::ProviderRegistry;
 use lemma_query::{
     IdlePolicy, LookupContext, LookupOptions, ServerState, SessionPool, SymbolResolution,
@@ -28,7 +28,9 @@ use lemma_store::{
     FactStore, NameMatch, Store, StoreError, StoredSnapshot, StoredSymbol, SymbolFilter,
 };
 
-use crate::cli::{Cli, Command, Filters, RefsArgs, SymbolsArgs};
+use crate::cli::{
+    Cli, Command, DefinitionArgs, LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget, SymbolsArgs,
+};
 use crate::output::{self, Format};
 
 /// Directory, relative to an indexed root, where Lemma keeps its files.
@@ -170,7 +172,11 @@ impl Engine {
         match cli.command {
             Command::Index { path } => self.index(&request, &invocation.resolve(&path), out),
             Command::Symbols(args) => self.symbols(&request, args, out),
+            Command::Outline { path } => self.outline(&request, &path, out),
             Command::Refs(args) => self.references(&request, args, out),
+            Command::Definition(args) => self.definition(&request, &args, out),
+            Command::Implementations(args) => self.implementations(&request, args, out),
+            Command::Signature(args) => self.signature(&request, args, out),
             Command::Providers => self.providers(&request, out),
             Command::Daemon(_) => bail!("`lemma daemon` cannot run inside the daemon"),
         }
@@ -252,28 +258,35 @@ impl Engine {
         Ok(0)
     }
 
+    fn outline(
+        &mut self,
+        request: &Request<'_>,
+        path: &Path,
+        out: &mut dyn Write,
+    ) -> anyhow::Result<u8> {
+        let db_path = request.find_index()?;
+        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
+        let relative = relative_to_root(&snapshot, &request.invocation.resolve(path))?;
+        let symbols = lemma_query::symbols_in_file(store, snapshot.id, &relative)?;
+        output::outline(out, &relative, &symbols, request.format)?;
+        Ok(0)
+    }
+
     fn references(
         &mut self,
         request: &Request<'_>,
         args: RefsArgs,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
-        let options = LookupOptions {
-            refresh: args.refresh,
-            request_timeout: Duration::from_secs(args.timeout_secs),
-        };
         let db_path = request.find_index()?;
         let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
-        let symbol = args.symbol.as_str();
-        let target = match select_symbol(store, &snapshot, symbol, args.filters)? {
-            SymbolResolution::Resolved(target) => target,
-            SymbolResolution::Ambiguous(candidates) => {
-                output::ambiguous(out, symbol, &candidates, request.format)?;
-                return Ok(EXIT_AMBIGUOUS);
-            }
-            SymbolResolution::Unresolved => bail!("no indexed symbol matches `{symbol}`"),
+        let Some(target) = choose_symbol(store, &snapshot, args.target, request.format, out)?
+        else {
+            return Ok(EXIT_AMBIGUOUS);
         };
-        let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
+        let root = snapshot.snapshot.root.clone();
+        let registry = request.registry(Path::new(&root))?;
+        let options = lookup_options(&args.lookup);
         let context = LookupContext {
             snapshot: &snapshot,
             registry: &registry,
@@ -286,12 +299,80 @@ impl Engine {
             args.include_declaration,
             &mut self.pool,
         )?;
-        output::reference_report(out, &report, &snapshot.snapshot.root, request.format)?;
-        Ok(if report.answer.outcome.is_answered() {
-            0
-        } else {
-            EXIT_NO_ANSWER
-        })
+        output::reference_report(out, &report, &root, request.format)?;
+        Ok(exit_code(&report.answer.outcome))
+    }
+
+    fn definition(
+        &mut self,
+        request: &Request<'_>,
+        args: &DefinitionArgs,
+        out: &mut dyn Write,
+    ) -> anyhow::Result<u8> {
+        let (path, position) = parse_location(&args.location)?;
+        let db_path = request.find_index()?;
+        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
+        let relative = relative_to_root(&snapshot, &request.invocation.resolve(&path))?;
+        let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
+        let options = lookup_options(&args.lookup);
+        let context = LookupContext {
+            snapshot: &snapshot,
+            registry: &registry,
+            options: &options,
+        };
+        let report =
+            lemma_query::find_definitions(store, &context, &relative, position, &mut self.pool)?;
+        output::definition_report(out, &report, request.format)?;
+        Ok(exit_code(&report.answer.outcome))
+    }
+
+    fn implementations(
+        &mut self,
+        request: &Request<'_>,
+        args: SymbolLookupArgs,
+        out: &mut dyn Write,
+    ) -> anyhow::Result<u8> {
+        let db_path = request.find_index()?;
+        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
+        let Some(target) = choose_symbol(store, &snapshot, args.target, request.format, out)?
+        else {
+            return Ok(EXIT_AMBIGUOUS);
+        };
+        let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
+        let options = lookup_options(&args.lookup);
+        let context = LookupContext {
+            snapshot: &snapshot,
+            registry: &registry,
+            options: &options,
+        };
+        let report = lemma_query::find_implementations(store, &context, target, &mut self.pool)?;
+        output::implementation_report(out, &report, request.format)?;
+        Ok(exit_code(&report.answer.outcome))
+    }
+
+    fn signature(
+        &mut self,
+        request: &Request<'_>,
+        args: SymbolLookupArgs,
+        out: &mut dyn Write,
+    ) -> anyhow::Result<u8> {
+        let db_path = request.find_index()?;
+        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
+        let Some(target) = choose_symbol(store, &snapshot, args.target, request.format, out)?
+        else {
+            return Ok(EXIT_AMBIGUOUS);
+        };
+        let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
+        let options = lookup_options(&args.lookup);
+        let context = LookupContext {
+            snapshot: &snapshot,
+            registry: &registry,
+            options: &options,
+        };
+        let report = lemma_query::signature_of(store, &context, target, &mut self.pool)?;
+        output::signature_report(out, &report, request.format)?;
+        let is_described = report.declaration.is_some() || report.hover.outcome.is_answered();
+        Ok(if is_described { 0 } else { EXIT_NO_ANSWER })
     }
 
     fn providers(&mut self, request: &Request<'_>, out: &mut dyn Write) -> anyhow::Result<u8> {
@@ -541,12 +622,32 @@ impl Request<'_> {
     }
 }
 
+/// The symbol a command is about. Prints the candidates and returns
+/// `None` when the name matches several.
+fn choose_symbol(
+    store: &Store,
+    snapshot: &StoredSnapshot,
+    target: SymbolTarget,
+    format: output::Format,
+    out: &mut dyn Write,
+) -> anyhow::Result<Option<StoredSymbol>> {
+    let name = target.symbol;
+    match select_symbol(store, snapshot, &name, target.filters)? {
+        SymbolResolution::Resolved(symbol) => Ok(Some(symbol)),
+        SymbolResolution::Ambiguous(candidates) => {
+            output::ambiguous(out, &name, &candidates, format)?;
+            Ok(None)
+        }
+        SymbolResolution::Unresolved => bail!("no indexed symbol matches `{name}`"),
+    }
+}
+
 /// A `#<id>` selects one symbol directly; anything else is resolved by name.
 fn select_symbol(
     store: &Store,
     snapshot: &StoredSnapshot,
     symbol: &str,
-    filters: Filters,
+    filters: crate::cli::Filters,
 ) -> anyhow::Result<SymbolResolution> {
     if let Some(id) = symbol.strip_prefix('#') {
         let id: i64 = id
@@ -562,6 +663,60 @@ fn select_symbol(
         path_contains: filters.path,
     };
     Ok(lemma_query::resolve_symbol(store, snapshot.id, &selector)?)
+}
+
+fn lookup_options(args: &LookupArgs) -> LookupOptions {
+    LookupOptions {
+        refresh: args.refresh,
+        request_timeout: Duration::from_secs(args.timeout_secs),
+    }
+}
+
+/// 0 when a provider answered, with something or nothing.
+fn exit_code<T>(outcome: &Outcome<T>) -> u8 {
+    if outcome.is_answered() {
+        0
+    } else {
+        EXIT_NO_ANSWER
+    }
+}
+
+/// A file as the index names it: relative to the snapshot root, with `/`.
+fn relative_to_root(snapshot: &StoredSnapshot, file: &Path) -> anyhow::Result<String> {
+    let file = file
+        .canonicalize()
+        .with_context(|| format!("cannot read {}", file.display()))?;
+    let root = Path::new(&snapshot.snapshot.root);
+    let relative = file.strip_prefix(root).with_context(|| {
+        format!(
+            "{} is outside the indexed directory {}",
+            file.display(),
+            root.display()
+        )
+    })?;
+    let parts: Vec<_> = relative
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect();
+    Ok(parts.join("/"))
+}
+
+/// Splits `file:line:column`, counted from 1, into a path and a zero-based
+/// position.
+fn parse_location(location: &str) -> anyhow::Result<(PathBuf, Position)> {
+    let invalid = || format!("`{location}` is not `file:line:column`");
+    let (rest, column) = location.rsplit_once(':').with_context(invalid)?;
+    let (path, line) = rest.rsplit_once(':').with_context(invalid)?;
+    let line: u32 = line.parse().with_context(invalid)?;
+    let column: u32 = column.parse().with_context(invalid)?;
+    if path.is_empty() || line == 0 || column == 0 {
+        bail!("{}; lines and columns count from 1", invalid());
+    }
+    let position = Position {
+        line: line - 1,
+        column: column - 1,
+    };
+    Ok((PathBuf::from(path), position))
 }
 
 /// `45s`, `12m`, `3h`: the largest whole unit.
@@ -604,4 +759,29 @@ fn inode_of(path: &Path) -> Option<u64> {
 #[cfg(not(unix))]
 fn inode_of(_path: &Path) -> Option<u64> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locations_count_from_one() {
+        let (path, position) = parse_location("src/app.py:12:5").unwrap();
+
+        assert_eq!(path, PathBuf::from("src/app.py"));
+        assert_eq!(
+            position,
+            Position {
+                line: 11,
+                column: 4
+            }
+        );
+    }
+
+    #[test]
+    fn locations_need_a_line_and_column() {
+        assert!(parse_location("src/app.py:12").is_err());
+        assert!(parse_location("src/app.py:0:1").is_err());
+    }
 }
