@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -24,10 +25,36 @@ from .prompts import prompt_for, schema_for
 from .tasks import Task
 
 BASELINE = "baseline"
-LEMMA = "lemma"
-GUIDED = "lemma-guided"
-ARMS = (BASELINE, LEMMA, GUIDED)
-LEMMA_ARMS = (LEMMA, GUIDED)
+
+
+@dataclass(frozen=True)
+class Arm:
+    """The tools an agent gets."""
+
+    shell: bool
+    """Codex's own shell. Arms without it are read-only and cannot run code."""
+    lemma: bool
+    """Lemma's MCP server, with the project indexed before the agent starts."""
+    search: str | None = None
+    """The bench tool server: `read_file` and `list_files`, plus this search
+    tool (`grep`, `ripgrep`, `ast-grep`, or `none`)."""
+    guided: bool = False
+    """One line of guidance to prefer Lemma, as a user would put in AGENTS.md."""
+
+
+ARMS = {
+    BASELINE: Arm(shell=True, lemma=False),
+    "lemma": Arm(shell=True, lemma=True),
+    "lemma-guided": Arm(shell=True, lemma=True, guided=True),
+    "grep": Arm(shell=False, lemma=False, search="grep"),
+    "ripgrep": Arm(shell=False, lemma=False, search="ripgrep"),
+    "ast-grep": Arm(shell=False, lemma=False, search="ast-grep"),
+    "lemma-only": Arm(shell=False, lemma=True, search="none"),
+}
+
+NO_SHELL_FEATURES = ("shell_tool", "unified_exec", "code_mode_host", "multi_agent")
+"""Codex features that can run commands; arms without a shell disable all of them."""
+BENCH_ROOT = Path(__file__).resolve().parent.parent
 
 GUIDANCE = (
     "\n\nThis repository is indexed by Lemma. To find where a symbol is defined, used or implemented, "
@@ -131,7 +158,7 @@ def lay_out(setup: Setup, task: Task, arm: str, directory: Path) -> Path:
     (directory / "tmp").mkdir()
     path = ":".join([*setup.tool_path, "/usr/local/bin", "/usr/bin", "/bin"])
     (codex_home / "config.toml").write_text(codex_config(setup, arm, directory, path))
-    guidance = GUIDANCE if arm == GUIDED else ""
+    guidance = GUIDANCE if ARMS[arm].guided else ""
     (directory / "prompt.txt").write_text(prompt_for(task) + guidance)
     (directory / "schema.json").write_text(json.dumps(schema_for(task)))
     script = directory / "run.sh"
@@ -141,23 +168,34 @@ def lay_out(setup: Setup, task: Task, arm: str, directory: Path) -> Path:
 
 
 def codex_config(setup: Setup, arm: str, directory: Path, path: str) -> str:
-    """Codex settings for the run. Only the Lemma arm gets the MCP server."""
-    lines = ['approval_policy = "never"', 'sandbox_mode = "workspace-write"']
-    if arm in LEMMA_ARMS:
-        env = {"PATH": path, "TMPDIR": str(directory / "tmp"), "HOME": str(Path.home())}
-        lines += [
-            "",
-            "[mcp_servers.lemma]",
-            f"command = {json.dumps(str(setup.lemma))}",
-            'args = ["mcp"]',
-            f"cwd = {json.dumps(str(directory / 'workspace'))}",
-            "startup_timeout_sec = 60",
-            # Runs are unattended: an approval prompt would reject the call.
-            'default_tools_approval_mode = "approve"',
-            "tool_timeout_sec = 300",
-            "env = { " + ", ".join(f"{key} = {json.dumps(value)}" for key, value in env.items()) + " }",
-        ]
+    """Codex settings for the run: sandbox and the arm's MCP servers."""
+    spec = ARMS[arm]
+    sandbox = "workspace-write" if spec.shell else "read-only"
+    lines = ['approval_policy = "never"', f'sandbox_mode = "{sandbox}"']
+    workspace = str(directory / "workspace")
+    env = {"PATH": path, "TMPDIR": str(directory / "tmp"), "HOME": str(Path.home())}
+    if spec.lemma:
+        lines += mcp_server("lemma", str(setup.lemma), ["mcp"], workspace, env)
+    if spec.search:
+        args = ["-m", "lemmabench.toolserver", "--search", spec.search, "--root", workspace]
+        tool_env = {**env, "PYTHONPATH": str(BENCH_ROOT)}
+        lines += mcp_server("tools", sys.executable, args, workspace, tool_env)
     return "\n".join(lines) + "\n"
+
+
+def mcp_server(name: str, command: str, args: list[str], cwd: str, env: dict[str, str]) -> list[str]:
+    return [
+        "",
+        f"[mcp_servers.{name}]",
+        f"command = {json.dumps(command)}",
+        f"args = {json.dumps(args)}",
+        f"cwd = {json.dumps(cwd)}",
+        "startup_timeout_sec = 60",
+        # Runs are unattended: an approval prompt would reject the call.
+        'default_tools_approval_mode = "approve"',
+        "tool_timeout_sec = 300",
+        "env = { " + ", ".join(f"{key} = {json.dumps(value)}" for key, value in env.items()) + " }",
+    ]
 
 
 def run_script(setup: Setup, arm: str, directory: Path, path: str) -> str:
@@ -167,7 +205,7 @@ def run_script(setup: Setup, arm: str, directory: Path, path: str) -> str:
     lemma = quoted(str(setup.lemma))
     index = ""
     stop = ""
-    if arm in LEMMA_ARMS:
+    if ARMS[arm].lemma:
         # Index before the agent starts, as a project an agent works in
         # would already be; the time is recorded separately.
         index = (
@@ -188,6 +226,7 @@ def run_script(setup: Setup, arm: str, directory: Path, path: str) -> str:
             str(directory / "schema.json"),
             "-o",
             str(directory / "answer.json"),
+            *(flag for feature in disabled_features(arm) for flag in ("--disable", feature)),
             *setup.codex_args,
             "-",
         ]
@@ -206,6 +245,10 @@ cgroup=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)
 cat "$cgroup/memory.peak" > {quoted(str(directory / "memory.peak"))} 2>/dev/null
 cat "$cgroup/cpu.stat" > {quoted(str(directory / "cpu.stat"))} 2>/dev/null
 """
+
+
+def disabled_features(arm: str) -> tuple[str, ...]:
+    return () if ARMS[arm].shell else NO_SHELL_FEATURES
 
 
 def systemd_command(limits: Limits, unit: str, directory: Path) -> list[str]:
