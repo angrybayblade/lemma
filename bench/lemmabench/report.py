@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .events import read_activity
-from .runner import BASELINE, LEMMA, RunResult, Setup, run_dir
+from .runner import BASELINE, RunResult, Setup, run_dir
 from .scoring import score
 from .tasks import LOCALIZATION, Task
 
@@ -80,14 +80,12 @@ def per_task_means(rows: list[RunRow], field: str) -> dict[tuple[str, str], floa
     return {key: statistics.fmean(values) for key, values in groups.items()}
 
 
-def paired_effect(rows: list[RunRow], field: str, seed: int = 0) -> tuple[float, float, float] | None:
-    """Mean per-task difference (Lemma minus baseline) with a bootstrap 95%
+def paired_effect(rows: list[RunRow], field: str, arm: str, seed: int = 0) -> tuple[float, float, float] | None:
+    """Mean per-task difference (arm minus baseline) with a bootstrap 95%
     interval over tasks."""
     means = per_task_means(rows, field)
     task_ids = sorted({task_id for task_id, _ in means})
-    diffs = [
-        means[(t, LEMMA)] - means[(t, BASELINE)] for t in task_ids if (t, LEMMA) in means and (t, BASELINE) in means
-    ]
+    diffs = [means[(t, arm)] - means[(t, BASELINE)] for t in task_ids if (t, arm) in means and (t, BASELINE) in means]
     if not diffs:
         return None
     generator = random.Random(seed)
@@ -128,27 +126,30 @@ def render(rows: list[RunRow], arms: list[str]) -> str:
 
 
 def table(rows: list[RunRow], arms: list[str], fields: list[str]) -> list[str]:
-    header = "| Metric | " + " | ".join(arms) + " | Lemma − baseline (95% CI) |"
-    lines = [header, "|" + " --- |" * (len(arms) + 2)]
+    """Each arm's mean, then each other arm's paired effect against the baseline."""
+    compared = [arm for arm in arms if arm != BASELINE] if BASELINE in arms else []
+    header = "| Metric | " + " | ".join(arms) + "".join(f" | {arm} − baseline (95% CI)" for arm in compared) + " |"
+    lines = [header, "|" + " --- |" * (len(arms) + len(compared) + 1)]
     answered = {
         arm: sum(r.answered for r in rows if r.arm == arm) / max(1, sum(r.arm == arm for r in rows)) for arm in arms
     }
-    lines.append("| answered | " + " | ".join(f"{answered[a]:.0%}" for a in arms) + " | |")
+    lines.append("| answered | " + " | ".join(f"{answered[a]:.0%}" for a in arms) + " |" * (len(compared) + 1))
     for field in fields:
         means = per_task_means(rows, field)
         cells = []
         for arm in arms:
             values = [v for (task_id, a), v in means.items() if a == arm]
             cells.append(fmt(field, statistics.fmean(values)) if values else "–")
-        effect = paired_effect(rows, field) if {BASELINE, LEMMA} <= set(arms) else None
-        effect_cell = (
-            f"{fmt(field, effect[0], signed=True)} ({fmt(field, effect[1], signed=True)}, "
-            f"{fmt(field, effect[2], signed=True)})"
-            if effect
-            else ""
-        )
-        lines.append(f"| {field} | " + " | ".join(cells) + f" | {effect_cell} |")
+        cells += [effect_cell(field, paired_effect(rows, field, arm)) for arm in compared]
+        lines.append(f"| {field} | " + " | ".join(cells) + " |")
     return lines
+
+
+def effect_cell(field: str, effect: tuple[float, float, float] | None) -> str:
+    if effect is None:
+        return ""
+    mean, low, high = (fmt(field, value, signed=True) for value in effect)
+    return f"{mean} ({low}, {high})"
 
 
 def per_task_table(rows: list[RunRow], arms: list[str], field: str) -> list[str]:

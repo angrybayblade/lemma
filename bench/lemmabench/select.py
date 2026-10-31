@@ -9,6 +9,7 @@ import json
 import random
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 from .gold import is_test_path
@@ -127,11 +128,21 @@ def true_references(result: dict, symbol: dict) -> set[tuple[str, int]] | None:
     return confirmed
 
 
-def select_impact(
-    results_dir: Path, corpora: dict[str, Source], per_corpus: int, min_references: int, max_references: int, seed: int
-) -> list[Task]:
+@dataclass(frozen=True)
+class ImpactCriteria:
+    """Which round-3 symbols make useful impact tasks."""
+
+    per_corpus: int = 3
+    min_references: int = 5
+    max_references: int = 150
+    min_name_bucket: int = 2
+    """Round 3's name-frequency bucket: 0 is 1-5 occurrences, 1 is 6-50, 2 is
+    51-500, 3 is more. Common names are where text search goes wrong."""
+
+
+def select_impact(results_dir: Path, corpora: dict[str, Source], criteria: ImpactCriteria, seed: int) -> list[Task]:
     """Symbols from round 3 whose references were fully checked, with a
-    useful number of them."""
+    useful number of them and a common name."""
     random.seed(seed)
     tasks: list[Task] = []
     for corpus, source in sorted(corpora.items()):
@@ -140,11 +151,13 @@ def select_impact(
             result = json.loads(path.read_text())
             by_id = {symbol["id"]: symbol for symbol in result["symbols"]}
             for symbol in (by_id[symbol_id] for symbol_id in result["final"]):
+                if symbol["bucket"] < criteria.min_name_bucket:
+                    continue
                 truth = true_references(result, symbol)
-                if truth and min_references <= len(truth) <= max_references:
+                if truth and criteria.min_references <= len(truth) <= criteria.max_references:
                     candidates.append((result["language"], symbol, truth))
         candidates.sort(key=lambda item: item[1]["id"])
-        for language, symbol, truth in random.sample(candidates, min(per_corpus, len(candidates))):
+        for language, symbol, truth in random.sample(candidates, min(criteria.per_corpus, len(candidates))):
             tasks.append(impact_task(corpus, source, language, symbol, truth))
     return tasks
 
