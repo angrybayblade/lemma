@@ -52,8 +52,12 @@ ARMS = {
     "lemma-only": Arm(shell=False, lemma=True, search="none"),
 }
 
-NO_SHELL_FEATURES = ("shell_tool", "unified_exec", "code_mode_host", "multi_agent")
-"""Codex features that can run commands; arms without a shell disable all of them."""
+NO_SHELL_FEATURES = ("shell_tool", "unified_exec", "multi_agent")
+"""Codex features that run commands or start helpers; arms without a shell
+disable them. Code mode stays on: Codex calls MCP tools through it, and
+without a shell tool it cannot run commands."""
+ALWAYS_DISABLED = ("apps",)
+"""ChatGPT app tools (web, image generation, spaces): no arm gets them."""
 BENCH_ROOT = Path(__file__).resolve().parent.parent
 
 GUIDANCE = (
@@ -171,7 +175,7 @@ def codex_config(setup: Setup, arm: str, directory: Path, path: str) -> str:
     """Codex settings for the run: sandbox and the arm's MCP servers."""
     spec = ARMS[arm]
     sandbox = "workspace-write" if spec.shell else "read-only"
-    lines = ['approval_policy = "never"', f'sandbox_mode = "{sandbox}"']
+    lines = ['approval_policy = "never"', f'sandbox_mode = "{sandbox}"', 'web_search = "disabled"']
     workspace = str(directory / "workspace")
     env = {"PATH": path, "TMPDIR": str(directory / "tmp"), "HOME": str(Path.home())}
     if spec.lemma:
@@ -248,7 +252,7 @@ cat "$cgroup/cpu.stat" > {quoted(str(directory / "cpu.stat"))} 2>/dev/null
 
 
 def disabled_features(arm: str) -> tuple[str, ...]:
-    return () if ARMS[arm].shell else NO_SHELL_FEATURES
+    return ALWAYS_DISABLED + (() if ARMS[arm].shell else NO_SHELL_FEATURES)
 
 
 def systemd_command(limits: Limits, unit: str, directory: Path) -> list[str]:
