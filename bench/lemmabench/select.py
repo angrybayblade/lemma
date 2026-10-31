@@ -138,7 +138,8 @@ def select_impact(
         candidates = []
         for path in sorted(results_dir.glob(f"{corpus}-*.json")):
             result = json.loads(path.read_text())
-            for symbol in result["final"]:
+            by_id = {symbol["id"]: symbol for symbol in result["symbols"]}
+            for symbol in (by_id[symbol_id] for symbol_id in result["final"]):
                 truth = true_references(result, symbol)
                 if truth and min_references <= len(truth) <= max_references:
                     candidates.append((result["language"], symbol, truth))
