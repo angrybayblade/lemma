@@ -98,7 +98,7 @@ def execute(setup: Setup, task: Task, arm: str, repeat: int) -> RunResult:
         wall_seconds=wall,
         index_seconds=read_float(directory / "index.seconds"),
         answer=read_answer(directory / "answer.json"),
-        resources=parse_resources(completed.stderr),
+        resources={**parse_resources(completed.stderr), **read_cgroup_stats(directory)},
     )
     if result.answer is None:
         result.error = (completed.stderr[-500:] or "no answer").strip()
@@ -209,6 +209,24 @@ def systemd_command(limits: Limits, unit: str, directory: Path) -> list[str]:
         "/bin/bash",
         str(directory / "run.sh"),
     ]
+
+
+def read_cgroup_stats(directory: Path) -> dict:
+    """Peak memory and CPU time the run's cgroup recorded, if the script got
+    to read them."""
+    stats: dict = {}
+    peak = read_float(directory / "memory.peak")
+    if peak is not None:
+        stats["memory_peak_bytes"] = int(peak)
+    try:
+        lines = (directory / "cpu.stat").read_text().splitlines()
+    except OSError:
+        return stats
+    for line in lines:
+        name, _, value = line.partition(" ")
+        if name == "usage_usec":
+            stats["cpu_seconds"] = int(value) / 1e6
+    return stats
 
 
 def read_answer(path: Path) -> dict | None:
