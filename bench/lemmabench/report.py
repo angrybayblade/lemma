@@ -122,7 +122,8 @@ def render(rows: list[RunRow], arms: list[str]) -> str:
         tasks = sorted({row.task.id for row in track_rows})
         lines += [f"## {track} ({len(tasks)} tasks, {len(track_rows)} runs)", ""]
         lines += table(track_rows, arms, SCORE_FIELDS[track] + COST_FIELDS)
-        lines += [""] + per_task_table(track_rows, arms, SCORE_FIELDS[track][-1]) + [""]
+        primary = "symbol_f1" if track == "localization" else "location_f1"
+        lines += [""] + per_task_table(track_rows, arms, primary) + [""]
     return "\n".join(lines) + "\n"
 
 
