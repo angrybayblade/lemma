@@ -10,6 +10,13 @@
           "description": "Directory to index, relative to the current one. Defaults to the current directory."
         }
       }
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "title": "Index code"
     }
   },
   {
@@ -64,6 +71,12 @@
       "required": [
         "query"
       ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -80,6 +93,12 @@
       "required": [
         "file"
       ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -133,6 +152,12 @@
       "required": [
         "symbol"
       ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -165,6 +190,12 @@
         "line",
         "column"
       ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -214,6 +245,12 @@
       "required": [
         "symbol"
       ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -263,6 +300,12 @@
       "required": [
         "symbol"
       ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   }
 ]
