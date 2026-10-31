@@ -8,33 +8,24 @@ use std::time::{Duration, Instant};
 use lemma_lsp::lsp_types::notification::{
     DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
 };
-use lemma_lsp::lsp_types::request::References;
+use lemma_lsp::lsp_types::request::{GotoDefinition, GotoImplementation, HoverRequest, References};
 use lemma_lsp::lsp_types::{
     self, DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, FileChangeType, FileEvent, Location, ReferenceContext,
+    DidOpenTextDocumentParams, FileChangeType, FileEvent, GotoDefinitionParams,
+    GotoDefinitionResponse, HoverContents, HoverParams, MarkedString, ReferenceContext,
     ReferenceParams, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
     TextDocumentPositionParams, Url, VersionedTextDocumentIdentifier,
 };
 use lemma_lsp::{LaunchConfig, LspClient, LspError, PositionEncoding, line_text};
-use lemma_model::{Language, Position, Reference, Span};
+use lemma_model::{Language, Location, LocationQuery, Position, ProviderAnswer, Span};
 use serde_json::Value;
 
+use crate::semantic::{SemanticProvider, SourcePoint};
 use crate::{ProviderDefinition, ProviderError};
 
 /// How long a server must stay silent, with no work in progress, before it is
 /// treated as ready. Only used when it does not publish diagnostics first.
 const READY_QUIET_PERIOD: Duration = Duration::from_millis(500);
-
-/// A provider's answer to a reference lookup, before Lemma adds context.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReferenceAnswer {
-    /// References, sorted and without duplicates.
-    Found(Vec<Reference>),
-    /// The server answered with nothing.
-    Empty,
-    /// The server does not support reference lookup.
-    Unsupported,
-}
 
 /// How a file changed since a server last looked at it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,66 +160,6 @@ impl ProviderSession {
             .map(normalize_version)
     }
 
-    /// Finds references to the symbol whose identifier is at `position` in a
-    /// file relative to the root.
-    pub fn references(
-        &mut self,
-        path: &str,
-        language: Language,
-        position: Position,
-        include_declaration: bool,
-    ) -> Result<ReferenceAnswer, ProviderError> {
-        if !self.client.server().supports_references() {
-            return Ok(ReferenceAnswer::Unsupported);
-        }
-
-        let absolute_path = self.root.join(path);
-        let source =
-            fs::read_to_string(&absolute_path).map_err(|source| ProviderError::ReadSource {
-                path: absolute_path.clone(),
-                source,
-            })?;
-        let uri = Url::from_file_path(&absolute_path).map_err(|()| ProviderError::InvalidPath {
-            path: absolute_path.clone(),
-        })?;
-        let encoding = self.client.server().position_encoding;
-        let character = encoding.encode_column(line_text(&source, position.line), position.column);
-
-        let opened_at = Instant::now();
-        self.show_document(&uri, language, source)?;
-        // Some servers answer before loading the workspace and return empty
-        // results that look real. If readiness times out, ask anyway: the
-        // answer is the best available.
-        if !self.has_been_ready {
-            self.client
-                .wait_until_ready(&uri, opened_at, READY_QUIET_PERIOD);
-            self.has_been_ready = true;
-        }
-        let locations = self.client.request::<References>(ReferenceParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                position: lsp_types::Position {
-                    line: position.line,
-                    character,
-                },
-            },
-            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
-            partial_result_params: lsp_types::PartialResultParams::default(),
-            context: ReferenceContext {
-                include_declaration,
-            },
-        });
-        let locations = locations
-            .map_err(|source| self.server_error(source))?
-            .unwrap_or_default();
-        if locations.is_empty() {
-            return Ok(ReferenceAnswer::Empty);
-        }
-        Ok(ReferenceAnswer::Found(
-            self.to_references(locations, encoding),
-        ))
-    }
-
     /// Stops the server politely.
     pub fn shutdown(self) {
         self.client.shutdown();
@@ -314,13 +245,98 @@ impl ProviderSession {
             .map_err(|source| self.server_error(source))
     }
 
-    fn to_references(
+    /// Opens the file at `at` in the server, waits for the server to load
+    /// its project the first time, and returns where to point a request.
+    fn prepare(
+        &mut self,
+        at: SourcePoint<'_>,
+    ) -> Result<TextDocumentPositionParams, ProviderError> {
+        let absolute_path = self.root.join(at.path);
+        let source =
+            fs::read_to_string(&absolute_path).map_err(|source| ProviderError::ReadSource {
+                path: absolute_path.clone(),
+                source,
+            })?;
+        let uri = Url::from_file_path(&absolute_path).map_err(|()| ProviderError::InvalidPath {
+            path: absolute_path.clone(),
+        })?;
+        let encoding = self.client.server().position_encoding;
+        let character =
+            encoding.encode_column(line_text(&source, at.position.line), at.position.column);
+
+        let opened_at = Instant::now();
+        self.show_document(&uri, at.language, source)?;
+        // Some servers answer before loading the workspace and return empty
+        // results that look real. If readiness times out, ask anyway: the
+        // answer is the best available.
+        if !self.has_been_ready {
+            self.client
+                .wait_until_ready(&uri, opened_at, READY_QUIET_PERIOD);
+            self.has_been_ready = true;
+        }
+        Ok(TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: lsp_types::Position {
+                line: at.position.line,
+                character,
+            },
+        })
+    }
+
+    fn supports(&self, query: LocationQuery) -> bool {
+        let server = self.client.server();
+        match query {
+            LocationQuery::References => server.supports_references(),
+            LocationQuery::Definitions => server.supports_definitions(),
+            LocationQuery::Implementations => server.supports_implementations(),
+        }
+    }
+
+    fn request_locations(
         &self,
-        locations: Vec<Location>,
+        query: LocationQuery,
+        position: TextDocumentPositionParams,
+    ) -> Result<Vec<lsp_types::Location>, LspError> {
+        let work_done_progress_params = lsp_types::WorkDoneProgressParams::default();
+        let partial_result_params = lsp_types::PartialResultParams::default();
+        let response = match query {
+            LocationQuery::References => {
+                let found = self.client.request::<References>(ReferenceParams {
+                    text_document_position: position,
+                    work_done_progress_params,
+                    partial_result_params,
+                    context: ReferenceContext {
+                        include_declaration: true,
+                    },
+                })?;
+                return Ok(found.unwrap_or_default());
+            }
+            LocationQuery::Definitions => {
+                self.client
+                    .request::<GotoDefinition>(GotoDefinitionParams {
+                        text_document_position_params: position,
+                        work_done_progress_params,
+                        partial_result_params,
+                    })?
+            }
+            LocationQuery::Implementations => self.client.request::<GotoImplementation>(
+                lsp_types::request::GotoImplementationParams {
+                    text_document_position_params: position,
+                    work_done_progress_params,
+                    partial_result_params,
+                },
+            )?,
+        };
+        Ok(response.map(flatten_goto).unwrap_or_default())
+    }
+
+    fn to_locations(
+        &self,
+        found: Vec<lsp_types::Location>,
         encoding: PositionEncoding,
-    ) -> Vec<Reference> {
+    ) -> Vec<Location> {
         let mut sources = SourceCache::default();
-        let mut references: Vec<_> = locations
+        let mut locations: Vec<_> = found
             .into_iter()
             .map(|location| {
                 let (path, is_external) = self.display_path(&location.uri);
@@ -329,17 +345,16 @@ impl ProviderSession {
                     .to_file_path()
                     .ok()
                     .and_then(|file| sources.get(file));
-                Reference {
+                Location {
                     path,
                     span: decode_range(location.range, encoding, source),
                     is_external,
-                    enclosing_symbol: None,
                 }
             })
             .collect();
-        references.sort();
-        references.dedup();
-        references
+        locations.sort();
+        locations.dedup();
+        locations
     }
 
     /// The path to show for a URI: relative to the root when inside it.
@@ -358,6 +373,87 @@ impl ProviderSession {
             provider: self.provider_id.clone(),
             source,
         }
+    }
+}
+
+impl SemanticProvider for ProviderSession {
+    fn version(&self) -> Option<String> {
+        self.provider_version()
+    }
+
+    fn locations(
+        &mut self,
+        query: LocationQuery,
+        at: SourcePoint<'_>,
+    ) -> Result<ProviderAnswer<Vec<Location>>, ProviderError> {
+        if !self.supports(query) {
+            return Ok(ProviderAnswer::Unsupported);
+        }
+        let position = self.prepare(at)?;
+        let found = self
+            .request_locations(query, position)
+            .map_err(|source| self.server_error(source))?;
+        if found.is_empty() {
+            return Ok(ProviderAnswer::Empty);
+        }
+        let encoding = self.client.server().position_encoding;
+        Ok(ProviderAnswer::Found(self.to_locations(found, encoding)))
+    }
+
+    fn hover(&mut self, at: SourcePoint<'_>) -> Result<ProviderAnswer<String>, ProviderError> {
+        if !self.client.server().supports_hover() {
+            return Ok(ProviderAnswer::Unsupported);
+        }
+        let position = self.prepare(at)?;
+        let hover = self
+            .client
+            .request::<HoverRequest>(HoverParams {
+                text_document_position_params: position,
+                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            })
+            .map_err(|source| self.server_error(source))?;
+        let text = hover
+            .map(|hover| hover_text(hover.contents))
+            .unwrap_or_default();
+        if text.trim().is_empty() {
+            return Ok(ProviderAnswer::Empty);
+        }
+        Ok(ProviderAnswer::Found(text))
+    }
+}
+
+/// Definition and implementation answers come in three shapes; links point
+/// at the name inside the target, which is what Lemma reports.
+fn flatten_goto(response: GotoDefinitionResponse) -> Vec<lsp_types::Location> {
+    match response {
+        GotoDefinitionResponse::Scalar(location) => vec![location],
+        GotoDefinitionResponse::Array(locations) => locations,
+        GotoDefinitionResponse::Link(links) => links
+            .into_iter()
+            .map(|link| lsp_types::Location {
+                uri: link.target_uri,
+                range: link.target_selection_range,
+            })
+            .collect(),
+    }
+}
+
+/// Hover contents as one Markdown string.
+fn hover_text(contents: HoverContents) -> String {
+    let marked = |marked: MarkedString| match marked {
+        MarkedString::String(text) => text,
+        MarkedString::LanguageString(code) => {
+            format!("```{}\n{}\n```", code.language, code.value)
+        }
+    };
+    match contents {
+        HoverContents::Scalar(single) => marked(single),
+        HoverContents::Array(parts) => parts
+            .into_iter()
+            .map(marked)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        HoverContents::Markup(markup) => markup.value,
     }
 }
 

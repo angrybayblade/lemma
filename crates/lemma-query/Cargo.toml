@@ -1,6 +1,6 @@
 [package]
 name = "lemma-query"
-description = "Symbol resolution and reference lookups over an indexed snapshot."
+description = "The operations Lemma answers over an indexed snapshot."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
