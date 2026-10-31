@@ -69,7 +69,7 @@ class Criteria:
     max_occurrences: int = 500
     min_references: int = 5
     max_references: int = 150
-    attempts: int = 12
+    attempts: int = 24
     """Symbols to check before giving up on finding `count`."""
 
 
