@@ -607,6 +607,7 @@ dependencies = [
  "lemma-model",
  "lemma-providers",
  "lemma-store",
+ "lemma-syntax",
  "memchr",
  "thiserror",
 ]

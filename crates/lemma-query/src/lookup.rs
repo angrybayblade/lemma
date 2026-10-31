@@ -141,6 +141,43 @@ impl Ask for LocationQuery {
     }
 }
 
+/// What the provider shows for a symbol.
+pub(crate) struct Hover;
+
+impl Ask for Hover {
+    type Facts = String;
+
+    fn question(&self) -> Question {
+        Question::Hover
+    }
+
+    fn ask(
+        &self,
+        provider: &mut dyn SemanticProvider,
+        at: SourcePoint<'_>,
+    ) -> Result<ProviderAnswer<String>, ProviderError> {
+        provider.hover(at)
+    }
+
+    fn load(
+        &self,
+        store: &dyn FactStore,
+        key: &AnswerKey<'_>,
+    ) -> Result<Option<StoredAnswer<String>>, StoreError> {
+        store.cached_text(key)
+    }
+
+    fn save(
+        &self,
+        store: &mut dyn FactStore,
+        key: &AnswerKey<'_>,
+        provider_version: Option<&str>,
+        answer: &ProviderAnswer<String>,
+    ) -> Result<(), StoreError> {
+        store.save_text(key, provider_version, answer)
+    }
+}
+
 /// Asks the question at `at`, from the store if possible.
 ///
 /// Installed providers for the language are tried in order, through `pool`

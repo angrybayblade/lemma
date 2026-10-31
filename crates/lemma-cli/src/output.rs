@@ -15,7 +15,9 @@ use serde::Serialize;
 
 mod answers;
 
-pub(crate) use answers::reference_report;
+pub(crate) use answers::{
+    definition_report, implementation_report, outline, reference_report, signature_report,
+};
 
 /// How results are printed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

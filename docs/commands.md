@@ -47,6 +47,10 @@ Qualified names join enclosing definitions with dots: a method `delete` in class
 
 Ids (`#412`) are valid until the next `lemma index` that records a change.
 
+## `lemma outline <file>`
+
+Lists the symbols defined in one file, in source order, indented by nesting. Needs no language server. `<file>` is relative to the current directory and must be inside the indexed directory.
+
 ## `lemma refs <symbol>`
 
 Finds references to one symbol by asking a language server for its language.
@@ -83,6 +87,27 @@ Each reference shows its location and, when it sits inside an indexed definition
 | lookup failed | A server started but failed, or none could start. The message says why. |
 
 Lines starting with `skipped` name servers that could not start before one did.
+
+## `lemma definition <file:line:column>`
+
+Finds where the symbol used at a position is defined, such as the function a call goes to. Lines and columns count from 1, as editors show them: `lemma definition src/app.py:12:5`.
+
+Each definition shows its location and, when it is an indexed symbol, its qualified name and id, so you can ask about it next (`lemma refs '#415'`). It takes `--refresh` and `--timeout-secs` like `refs`, and exits with 3 when no server could answer.
+
+## `lemma implementations <symbol>`
+
+Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters work as for `refs`, and so do `--refresh` and `--timeout-secs`.
+
+Interface methods are indexed as symbols qualified by their interface (`Shape.area`), so you can ask about them directly. Support varies by server: gopls and the TypeScript servers answer; pyright and ty say they do not support it (`does not support implementation lookup`), which is not the same as finding none.
+
+## `lemma signature <symbol>`
+
+Shows a symbol's declaration and what its language server says about it. These come from two places and are kept apart:
+
+- The **declaration** is the definition's header as written, without its body, such as `def delete(self, id: str) -> None:`. It comes from the index and needs no server. It is left out if the file changed since it was indexed.
+- The **description** is the server's hover text, usually Markdown: the signature with inferred types, and the documentation comment. It is display text and is not parsed into types.
+
+It exits with 0 if either part was found, and 3 if neither was.
 
 ## `lemma providers`
 

@@ -15,4 +15,5 @@ memchr.workspace = true
 lemma-model.workspace = true
 lemma-providers.workspace = true
 lemma-store.workspace = true
+lemma-syntax.workspace = true
 thiserror.workspace = true
