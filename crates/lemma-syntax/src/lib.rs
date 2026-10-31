@@ -16,7 +16,7 @@ use crate::nesting::Definition;
 
 /// Changes whenever extraction output could change, so snapshots built by an
 /// older extractor get a different fingerprint.
-pub const EXTRACTOR_VERSION: &str = "1";
+pub const EXTRACTOR_VERSION: &str = "2";
 
 /// Why the extractor could not be set up or could not parse a file.
 #[derive(Debug, thiserror::Error)]
@@ -326,10 +326,37 @@ func New() *Router { return &Router{} }
                 ("client", SymbolKind::Variable),
                 ("Router", SymbolKind::Struct),
                 ("Deleter", SymbolKind::Interface),
+                ("Deleter.Delete", SymbolKind::Method),
                 ("ID", SymbolKind::TypeAlias),
                 ("Count", SymbolKind::TypeAlias),
                 ("Router.Delete", SymbolKind::Method),
                 ("New", SymbolKind::Function),
+            ])
+        );
+    }
+
+    #[test]
+    fn interface_methods_are_qualified_by_their_interface() {
+        let typescript = "interface Shape {\n  area(): number;\n}\nabstract class Base {\n  abstract size(): number;\n}\n";
+        let go = "package shapes\n\ntype Shape interface {\n\tArea() float64\n}\n";
+
+        let typescript_symbols = extract(Language::TypeScript, typescript);
+        let go_symbols = extract(Language::Go, go);
+
+        assert_eq!(
+            typescript_symbols,
+            named(&[
+                ("Shape", SymbolKind::Interface),
+                ("Shape.area", SymbolKind::Method),
+                ("Base", SymbolKind::Class),
+                ("Base.size", SymbolKind::Method),
+            ])
+        );
+        assert_eq!(
+            go_symbols,
+            named(&[
+                ("Shape", SymbolKind::Interface),
+                ("Shape.Area", SymbolKind::Method),
             ])
         );
     }

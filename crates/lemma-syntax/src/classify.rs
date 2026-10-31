@@ -10,7 +10,11 @@ pub(crate) fn kind_of(definition: Node<'_>, source: &str) -> Option<SymbolKind> 
         "function_declaration" | "generator_function_declaration" | "function_definition" => {
             SymbolKind::Function
         }
-        "method_definition" | "method_declaration" => SymbolKind::Method,
+        "method_definition"
+        | "method_declaration"
+        | "method_elem"
+        | "method_signature"
+        | "abstract_method_signature" => SymbolKind::Method,
         "class_declaration" | "abstract_class_declaration" | "class_definition" => {
             SymbolKind::Class
         }
