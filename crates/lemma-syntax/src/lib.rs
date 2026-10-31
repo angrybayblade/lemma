@@ -5,11 +5,13 @@
 //! from semantic providers.
 
 mod classify;
+mod declaration;
 mod nesting;
 
 use lemma_model::{Language, Position, Span, Symbol};
 use tree_sitter::{Node, Parser, Query, QueryCursor, QueryMatch, StreamingIterator};
 
+pub use crate::declaration::declaration_text;
 use crate::nesting::Definition;
 
 /// Changes whenever extraction output could change, so snapshots built by an
