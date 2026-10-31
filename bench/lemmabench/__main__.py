@@ -18,8 +18,9 @@ from pathlib import Path
 from . import prepare as preparing
 from . import report as reporting
 from .runner import ARMS, Limits, Setup, execute
-from .select import ImpactCriteria, localization_candidates, select_impact
+from .select import impact_tasks, localization_candidates
 from .tasks import Source, Task, load_tasks, save_tasks
+from .truth import Criteria
 
 HERE = Path(__file__).resolve().parent.parent
 DEFAULT_TASKS = HERE / "tasks"
@@ -36,13 +37,11 @@ def main() -> int:
     select = commands.add_parser("select", help="choose tasks and write them to --tasks")
     select.add_argument("--lemma", type=Path, required=True)
     select.add_argument("--per-language", type=int, default=4)
-    select.add_argument("--impact-per-corpus", type=int, default=3)
-    select.add_argument("--min-name-bucket", type=int, default=ImpactCriteria.min_name_bucket)
+    select.add_argument("--impact-per-corpus", type=int, default=Criteria.count)
     select.add_argument("--impact-only", action="store_true", help="keep the localization tasks as they are")
-    select.add_argument("--round3-results", type=Path, default=Path.home() / "bench" / "results")
     select.add_argument("--corpora", type=Path, default=Path.home() / "corpora")
     select.add_argument("--corpus-commits", type=Path, default=Path.home() / "bench" / "corpora.txt")
-    select.add_argument("--impact-corpora", default="django,nest,terraform")
+    select.add_argument("--impact-corpora", default="django:python,nest:typescript,terraform:go")
     select.add_argument("--seed", type=int, default=11)
 
     prepare = commands.add_parser("prepare", help="snapshot every task")
@@ -81,12 +80,12 @@ def cmd_select(args: argparse.Namespace) -> int:
         localization = select_localization_tasks(cache, args.lemma.resolve(), args.per_language, args.seed)
         save_tasks(args.tasks / "localization.jsonl", localization)
     commits = dict(line.split() for line in args.corpus_commits.read_text().splitlines() if line.strip())
-    corpora = {
-        name: Source(repo=name, commit=commits[name], url=str(args.corpora / name))
-        for name in args.impact_corpora.split(",")
-    }
-    criteria = ImpactCriteria(per_corpus=args.impact_per_corpus, min_name_bucket=args.min_name_bucket)
-    impact = select_impact(args.round3_results, corpora, criteria, seed=args.seed)
+    corpora = {}
+    for entry in args.impact_corpora.split(","):
+        name, language = entry.split(":")
+        corpora[name] = (Source(repo=name, commit=commits[name], url=str(args.corpora / name)), language)
+    criteria = Criteria(count=args.impact_per_corpus)
+    impact = impact_tasks(cache, args.lemma.resolve(), corpora, criteria, seed=args.seed)
     save_tasks(args.tasks / "impact.jsonl", impact)
     print(f"impact: {len(impact)} tasks", file=sys.stderr)
     return 0
