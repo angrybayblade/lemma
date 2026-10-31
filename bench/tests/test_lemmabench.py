@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from lemmabench.events import command_name, read_activity
-from lemmabench.gold import Definition, changed_definitions, is_test_path
+from lemmabench.gold import Definition, added_definitions, changed_definitions, from_polybench, is_test_path
 from lemmabench.patches import parse_diff
 from lemmabench.runner import parse_resources
 from lemmabench.scoring import score
@@ -66,6 +66,19 @@ class GoldTests(unittest.TestCase):
         change.insertions = {20}
 
         self.assertEqual(changed_definitions(change, self.definitions), set())
+
+    def test_added_definitions_count(self):
+        after = [*self.definitions, Definition("Router.__str__", 13, 14, "method")]
+
+        self.assertEqual(added_definitions(self.definitions, after), {"Router.__str__"})
+
+    def test_polybench_nodes_become_qualified_names(self):
+        nodes = [
+            "a/b.py->module->class_definition:Event->function_definition:__str__",
+            "c.ts->program->function_declaration:dom",
+        ]
+
+        self.assertEqual(from_polybench(nodes), {"a/b.py::Event.__str__", "c.ts::dom"})
 
     def test_test_files_are_recognized(self):
         self.assertTrue(is_test_path("tests/test_router.py"))
