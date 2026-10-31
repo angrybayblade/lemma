@@ -1,4 +1,4 @@
-"""Choosing tasks: public issues for localization, round-3 symbols for impact.
+"""Choosing tasks: public issues for localization, common-named symbols for impact.
 
 Selection is seeded, so the same inputs always give the same tasks.
 """
@@ -9,12 +9,13 @@ import json
 import random
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
 
 from .gold import is_test_path
 from .patches import parse_diff
+from .prepare import make_snapshot
 from .tasks import IMPACT, LOCALIZATION, Source, Task
+from .truth import ORACLES, Checked, Criteria, check_symbols, index_snapshot
 
 ROWS_API = "https://datasets-server.huggingface.co/rows"
 POLYBENCH = "AmazonScience/SWE-PolyBench_500"
@@ -107,62 +108,24 @@ def localization_candidates(seed: int) -> dict[str, list[Task]]:
     return candidates
 
 
-def true_references(result: dict, symbol: dict) -> set[tuple[str, int]] | None:
-    """Lines both oracles confirmed as references (only one oracle for Go),
-    zero-based. `None` if some candidates went unjudged or were sampled."""
-    key = str(symbol["id"])
-    data = result["data"][key]
-    if data["sampled"]:
-        return None
-    position = [s["id"] for s in result["symbols"]].index(symbol["id"])
-    oracles = [result["verdicts"][name]["verdicts"][position] for name in ("A", "B") if name in result["verdicts"]]
-    confirmed: set[tuple[str, int]] = set()
-    for index, candidate in enumerate(data["checked"]):
-        if index == 0:
-            continue  # the definition itself
-        verdicts = [oracle[index] for oracle in oracles]
-        if any(verdict is None for verdict in verdicts):
-            return None
-        if all(verdicts):
-            confirmed.add((candidate["path"], candidate["line"]))
-    return confirmed
-
-
-@dataclass(frozen=True)
-class ImpactCriteria:
-    """Which round-3 symbols make useful impact tasks."""
-
-    per_corpus: int = 3
-    min_references: int = 5
-    max_references: int = 150
-    min_name_bucket: int = 2
-    """Round 3's name-frequency bucket: 0 is 1-5 occurrences, 1 is 6-50, 2 is
-    51-500, 3 is more. Common names are where text search goes wrong."""
-
-
-def select_impact(results_dir: Path, corpora: dict[str, Source], criteria: ImpactCriteria, seed: int) -> list[Task]:
-    """Symbols from round 3 whose references were fully checked, with a
-    useful number of them and a common name."""
-    random.seed(seed)
+def impact_tasks(
+    cache: Path, lemma: Path, corpora: dict[str, tuple[Source, str]], criteria: Criteria, seed: int
+) -> list[Task]:
+    """Impact tasks for each corpus (source and language), with answer keys
+    checked by the oracle servers."""
     tasks: list[Task] = []
-    for corpus, source in sorted(corpora.items()):
-        candidates = []
-        for path in sorted(results_dir.glob(f"{corpus}-*.json")):
-            result = json.loads(path.read_text())
-            by_id = {symbol["id"]: symbol for symbol in result["symbols"]}
-            for symbol in (by_id[symbol_id] for symbol_id in result["final"]):
-                if symbol["bucket"] < criteria.min_name_bucket:
-                    continue
-                truth = true_references(result, symbol)
-                if truth and criteria.min_references <= len(truth) <= criteria.max_references:
-                    candidates.append((result["language"], symbol, truth))
-        candidates.sort(key=lambda item: item[1]["id"])
-        for language, symbol, truth in random.sample(candidates, min(criteria.per_corpus, len(candidates))):
-            tasks.append(impact_task(corpus, source, language, symbol, truth))
+    for corpus, (source, language) in sorted(corpora.items()):
+        placeholder = Task(id=f"imp-{corpus}", track=IMPACT, language=language, source=source, brief="")
+        root = make_snapshot(cache, placeholder)
+        db = cache / "truth" / f"{corpus}.db"
+        index_snapshot(lemma, db, root)
+        for checked in check_symbols(root, db, language, criteria, seed):
+            tasks.append(impact_task(corpus, source, language, checked))
     return tasks
 
 
-def impact_task(corpus: str, source: Source, language: str, symbol: dict, truth: set[tuple[str, int]]) -> Task:
+def impact_task(corpus: str, source: Source, language: str, checked: Checked) -> Task:
+    symbol = checked.symbol
     line = symbol["line"] + 1
     brief = (
         f"The {symbol['kind']} `{symbol['qualified_name']}` is defined at "
@@ -172,11 +135,15 @@ def impact_task(corpus: str, source: Source, language: str, symbol: dict, truth:
         "other symbols that share its name, and mentions in comments or strings."
     )
     return Task(
-        id=f"imp-{corpus}-{symbol['id']}",
+        id=f"imp-{corpus}-{symbol['name']}-{line}",
         track=IMPACT,
         language=language,
         source=source,
         brief=brief,
-        gold={"locations": sorted(f"{path}:{line + 1}" for path, line in truth)},
-        origin={"experiment": "round3", "symbol": symbol},
+        gold={"locations": [f"{path}:{number}" for path, number in checked.references]},
+        origin={
+            "oracles": [server["command"][0] for server in ORACLES[language]["servers"]],
+            "name_occurrences": checked.occurrences,
+            "symbol": symbol,
+        },
     )
