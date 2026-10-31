@@ -85,11 +85,18 @@ def candidate_symbols(db: Path, language: str, seed: int) -> list[dict]:
     """Definitions in the index, outside tests, in a seeded random order."""
     languages = ("typescript", "tsx") if language == "typescript" else (language,)
     connection = sqlite3.connect(db)
+    # Interface methods are left out: whether a call through an
+    # implementation "refers to" the interface method is a matter of
+    # definition, and the oracles and servers disagree on it.
     rows = connection.execute(
         "SELECT s.id, s.name, s.qualified_name, s.kind, f.path, s.name_start_line, s.name_start_column "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
         f"WHERE f.language IN ({','.join('?' * len(languages))}) "
-        f"AND s.kind IN ({','.join('?' * len(KINDS))}) ORDER BY s.id",
+        f"AND s.kind IN ({','.join('?' * len(KINDS))}) "
+        "AND NOT EXISTS (SELECT 1 FROM symbols c WHERE c.file_id = s.file_id AND c.kind = 'interface' "
+        "AND c.id != s.id AND (c.start_line, c.start_column) <= (s.start_line, s.start_column) "
+        "AND (c.end_line, c.end_column) >= (s.end_line, s.end_column)) "
+        "ORDER BY s.id",
         (*languages, *KINDS),
     ).fetchall()
     connection.close()
