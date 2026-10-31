@@ -54,6 +54,7 @@ def main() -> int:
     run.add_argument("--parallel", type=int, default=4)
     run.add_argument("--only", default="", help="comma-separated task ids")
     run.add_argument("--codex-arg", action="append", default=[], help="extra `codex exec` argument")
+    run.add_argument("--codex", default="codex", help="Codex executable")
     run.add_argument("--cpu-quota", default=Limits.cpu_quota)
     run.add_argument("--memory-max", default=Limits.memory_max)
     run.add_argument("--timeout", type=int, default=Limits.timeout_seconds)
@@ -120,6 +121,7 @@ def make_setup(args: argparse.Namespace) -> Setup:
         limits=limits,
         tool_path=tool_path,
         codex_args=tuple(args.codex_arg),
+        codex=args.codex,
     )
 
 

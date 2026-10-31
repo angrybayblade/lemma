@@ -51,6 +51,8 @@ class Setup:
     """Directories with language servers and search tools, put on `PATH`."""
     codex_args: tuple[str, ...] = ()
     """Extra arguments for `codex exec`, such as `-m <model>`."""
+    codex: str = "codex"
+    """The Codex executable; a stand-in can replace it to test the harness."""
 
 
 @dataclass
