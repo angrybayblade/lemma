@@ -11,6 +11,15 @@ Measured on an Apple M4 Max (14 cores), macOS 15, with two private monorepos:
 
 Times are wall-clock medians from [hyperfine](https://github.com/sharkdp/hyperfine), with warm file system caches. On this machine starting any process, even `/usr/bin/true`, takes about 15 ms, so that is the floor for any command, Lemma's included.
 
+## How the numbers were produced
+
+The work ran in four rounds, each checking the one before:
+
+1. **Speed.** Each command was profiled, one change was tried at a time against the previous best, and a change was kept only if it helped without hurting correctness. The tables on this page come from this round.
+2. **Head to head.** Lemma against grep, ripgrep, git grep and ast-grep, on 10 hand-picked symbols, on the same Mac.
+3. **Bias check.** Two problems turned up. Opening files on that Mac barely scales across threads, so text search looked about 25 times slower than it is (ripgrep on functions: 2.3 s there, 86 ms on Linux). And "warm" Lemma figures repeated the same question, which language servers cache; the first ask for a symbol is slower.
+4. **Fixed protocol.** On a clean Linux machine, with the protocol written and fingerprinted before measuring: 241 randomly drawn symbols bucketed by how common their names are, every reported line checked by two independent language servers, cold and warm caches. That is [the comparison](comparison.md), and it replaces round 2's figures.
+
 ## Lemma vs grep, ripgrep and ast-grep
 
 The full comparison, measured on a clean Linux machine to a protocol fixed beforehand, with 241 randomly drawn symbols checked by independent language servers, is in [Lemma vs grep, ripgrep, git grep and ast-grep](comparison.md). In short:
@@ -76,6 +85,32 @@ Each change was measured against the previous best and kept only if it helped wi
 | Start language servers in the background after indexing, opening a file from the densest directory | First lookup after a short pause: seconds → 72-136 ms. |
 | Use the name indexes for exact search; search substrings in memory with a vectorised scan | Exact 97 ms → 16 ms, substring 120 ms → 19 ms. |
 
+## Idle language servers
+
+A warm server is what makes lookups fast, so the daemon keeps them, and looks after them when nobody asks anything (see [`lemma daemon`](commands.md#lemma-daemon)):
+
+| Measured | Result |
+| --- | --- |
+| Resuming a paused gopls on the next lookup | About 45 ms (115 ms against 70 ms for a running server) |
+| Paused server's CPU use | None; the whole process group is stopped with `SIGSTOP` |
+| Starting servers again after an edit in a project whose servers were stopped | Ready about 20 s later, before the next lookup in most agent loops |
+| Login service on Linux (systemd user unit) | Starts at login, restarts after a crash, stays stopped after `lemma daemon stop` |
+
+## Python servers measured
+
+Python is where server choice matters most. Besides ty (the default), pyright and the jedi library were measured on Linux, on django (about 2,900 files) and functions (71,500 Python files), with the same random symbols as the comparison:
+
+| Repository | pyright mode | Load | Peak memory | First lookup, median / p90 | Repeat |
+| --- | --- | --- | --- | --- | --- |
+| django | open files only (Lemma's setting) | 1.6 s | 1.5 GB | 400 ms / 1.2 s | 76 ms |
+| django | whole workspace | 69 s | 2.8 GB | 49 ms / 143 ms | 40 ms |
+| functions | open files only | 4 s | 4.1 GB | 1.1 s / 128 s | 947 ms |
+| functions | whole workspace | 30 min | 4.2 GB | 1.5 s / 183 s | 1.5 s |
+
+- pyright keeps no reference index. Every lookup searches the project's text for the name and then checks each candidate, so analysing the workspace up front helps on a few thousand files and not at all on functions.
+- jedi resolves one position in 3-8 ms, but its project-wide reference search is capped internally (30 parsed files) and missed references for 2 of 32 django symbols and 4 of 32 functions symbols. Resolving every identifier in functions (40.8 million) one at a time would take about 38 hours on one core.
+- ty answered functions lookups in about 2 s cold and under 20 ms warm, with the most memory (more than 6.6 GB). It stays the default; pyright in workspace mode is a reasonable choice for repositories of a few thousand files.
+
 ## Correctness bugs found by benchmarking
 
 - **pyright** published diagnostics for the opened file before it had found the project's files, and answered from the files it knew. On functions it returned 1 of 4 references, and Lemma cached that.
@@ -95,12 +130,14 @@ Providers can declare the message they send once a project is loaded (`ready_mes
 | Killing an unneeded `git status` | Left a stale `.git/index.lock`. Lemma now runs Git with `--no-optional-locks`, so it never writes the user's index. |
 | pyrefly as the Python server | Returned references from the open file only. |
 | basedpyright, or pyright kept warm | About 5.5 s per lookup on functions even when warm: it re-reads the project for every request. |
+| pyright analysing the whole workspace up front | 30 minutes to load functions, and lookups no faster (see above). |
+| jedi's project-wide reference search | Fast, but capped internally and missed references. |
 | Opening the first file by path to warm a server | On platform it opened a configuration file at the root, so the server loaded the wrong project first: the first lookup took 15.8 s instead of 6.9 s. |
 
 ## Open opportunities
 
 - **Edits** still pay for one `git status` process (about 50 ms here). Comparing file contents with the commit in-process would remove it.
 - **Lookups with thousands of results** spend most of their time naming the enclosing function of each reference, one query each.
-- **The first lookup of each symbol** costs the language server's own search (about 100-250 ms here, seconds for very common names); Lemma cannot make that faster, only cache it.
+- **The first lookup of each symbol** costs the language server's own search (about 100-250 ms here, seconds for very common names). Lemma cannot make the server faster, but it could store answers as symbol occurrences shared across lookups and fill them in while idle, so most lookups never reach a server.
 - **The first index** of functions takes 5-6 s. Writing to SQLite while parsing, and a hand-written tree walk instead of Tree-sitter queries, could shorten it.
 - **The daemon** runs one command at a time.
