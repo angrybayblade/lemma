@@ -14,10 +14,11 @@ use lsp_types::notification::{Cancel, Exit, Initialized, Notification};
 use lsp_types::request::{Initialize, Request, Shutdown};
 use lsp_types::{
     CancelParams, ClientCapabilities, ClientInfo, DynamicRegistrationClientCapabilities,
-    GeneralClientCapabilities, InitializeParams, InitializedParams, NumberOrString, OneOf,
-    PositionEncodingKind, ServerCapabilities, TextDocumentClientCapabilities,
-    TextDocumentSyncClientCapabilities, Url, WindowClientCapabilities, WorkspaceClientCapabilities,
-    WorkspaceFolder,
+    GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, HoverProviderCapability,
+    ImplementationProviderCapability, InitializeParams, InitializedParams, MarkupKind,
+    NumberOrString, OneOf, PositionEncodingKind, ServerCapabilities,
+    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, Url,
+    WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 
@@ -71,6 +72,33 @@ impl ServerDetails {
         matches!(
             self.capabilities.references_provider,
             Some(OneOf::Left(true) | OneOf::Right(_))
+        )
+    }
+
+    /// Whether the server answers `textDocument/definition`.
+    pub fn supports_definitions(&self) -> bool {
+        matches!(
+            self.capabilities.definition_provider,
+            Some(OneOf::Left(true) | OneOf::Right(_))
+        )
+    }
+
+    /// Whether the server answers `textDocument/implementation`.
+    pub fn supports_implementations(&self) -> bool {
+        matches!(
+            self.capabilities.implementation_provider,
+            Some(
+                ImplementationProviderCapability::Simple(true)
+                    | ImplementationProviderCapability::Options(_)
+            )
+        )
+    }
+
+    /// Whether the server answers `textDocument/hover`.
+    pub fn supports_hover(&self) -> bool {
+        matches!(
+            self.capabilities.hover_provider,
+            Some(HoverProviderCapability::Simple(true) | HoverProviderCapability::Options(_))
         )
     }
 }
@@ -457,6 +485,18 @@ fn client_capabilities() -> ClientCapabilities {
             }),
             references: Some(DynamicRegistrationClientCapabilities {
                 dynamic_registration: Some(false),
+            }),
+            definition: Some(GotoCapability {
+                dynamic_registration: Some(false),
+                link_support: Some(true),
+            }),
+            implementation: Some(GotoCapability {
+                dynamic_registration: Some(false),
+                link_support: Some(true),
+            }),
+            hover: Some(HoverClientCapabilities {
+                dynamic_registration: Some(false),
+                content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
             }),
             ..TextDocumentClientCapabilities::default()
         }),
