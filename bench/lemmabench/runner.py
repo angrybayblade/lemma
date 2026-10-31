@@ -164,7 +164,7 @@ def run_script(setup: Setup, arm: str, directory: Path, path: str) -> str:
     codex = " ".join(
         quoted(part)
         for part in [
-            "codex",
+            setup.codex,
             "exec",
             "--json",
             "--skip-git-repo-check",
