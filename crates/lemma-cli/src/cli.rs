@@ -73,6 +73,11 @@ pub(crate) enum Command {
     Signature(SymbolLookupArgs),
     /// List configured providers and whether each is installed.
     Providers,
+    /// Serve these commands to agents as MCP tools, over stdin and stdout.
+    ///
+    /// Run it from the project directory; tool calls go through the
+    /// daemon like any other command.
+    Mcp,
     /// Run, inspect, stop, or install the background daemon.
     ///
     /// Every other command starts the daemon automatically; run this to keep

@@ -1,0 +1,268 @@
+[
+  {
+    "name": "index",
+    "description": "Index a directory's TypeScript, Python and Go files, or update the index after edits. Incremental: an update takes milliseconds. Starts language servers in the background.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Directory to index, relative to the current one. Defaults to the current directory."
+        }
+      }
+    }
+  },
+  {
+    "name": "search_symbols",
+    "description": "Find indexed definitions by name or qualified name. Returns each symbol's id, kind, file and position.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Text to find in names and qualified names."
+        },
+        "exact": {
+          "type": "boolean",
+          "description": "Match the whole name instead of any part of it."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "function",
+            "method",
+            "class",
+            "interface",
+            "struct",
+            "enum",
+            "type_alias",
+            "constant",
+            "variable"
+          ],
+          "description": "Only symbols of this kind."
+        },
+        "language": {
+          "type": "string",
+          "enum": [
+            "typescript",
+            "tsx",
+            "python",
+            "go"
+          ],
+          "description": "Only symbols in this language."
+        },
+        "path": {
+          "type": "string",
+          "description": "Only symbols whose file path contains this text."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "At most this many results (default 50)."
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "outline",
+    "description": "List the symbols defined in a file, in source order.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path relative to the current directory."
+        }
+      },
+      "required": [
+        "file"
+      ]
+    }
+  },
+  {
+    "name": "references",
+    "description": "Find where a symbol is used, resolved by a language server, with the function each use sits in. Unlike text search, other symbols with the same name are not reported.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "A name (`delete`), a qualified name (`Router.delete`), or an id from search_symbols (`#415`)."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "function",
+            "method",
+            "class",
+            "interface",
+            "struct",
+            "enum",
+            "type_alias",
+            "constant",
+            "variable"
+          ],
+          "description": "Only symbols of this kind."
+        },
+        "language": {
+          "type": "string",
+          "enum": [
+            "typescript",
+            "tsx",
+            "python",
+            "go"
+          ],
+          "description": "Only symbols in this language."
+        },
+        "path": {
+          "type": "string",
+          "description": "Only symbols whose file path contains this text."
+        },
+        "refresh": {
+          "type": "boolean",
+          "description": "Ask the language server again instead of using a stored answer."
+        },
+        "include_declaration": {
+          "type": "boolean",
+          "description": "Also count the definition itself."
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    }
+  },
+  {
+    "name": "definition",
+    "description": "Find where the symbol used at a position is defined, such as the function a call goes to.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path relative to the current directory."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Line, counting from 1."
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Column, counting from 1."
+        },
+        "refresh": {
+          "type": "boolean",
+          "description": "Ask the language server again instead of using a stored answer."
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "column"
+      ]
+    }
+  },
+  {
+    "name": "implementations",
+    "description": "Find what implements an interface or interface method, or overrides a method.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "A name (`delete`), a qualified name (`Router.delete`), or an id from search_symbols (`#415`)."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "function",
+            "method",
+            "class",
+            "interface",
+            "struct",
+            "enum",
+            "type_alias",
+            "constant",
+            "variable"
+          ],
+          "description": "Only symbols of this kind."
+        },
+        "language": {
+          "type": "string",
+          "enum": [
+            "typescript",
+            "tsx",
+            "python",
+            "go"
+          ],
+          "description": "Only symbols in this language."
+        },
+        "path": {
+          "type": "string",
+          "description": "Only symbols whose file path contains this text."
+        },
+        "refresh": {
+          "type": "boolean",
+          "description": "Ask the language server again instead of using a stored answer."
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    }
+  },
+  {
+    "name": "signature",
+    "description": "Show a symbol's declaration as written, and the language server's description of it (inferred types and documentation).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "A name (`delete`), a qualified name (`Router.delete`), or an id from search_symbols (`#415`)."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "function",
+            "method",
+            "class",
+            "interface",
+            "struct",
+            "enum",
+            "type_alias",
+            "constant",
+            "variable"
+          ],
+          "description": "Only symbols of this kind."
+        },
+        "language": {
+          "type": "string",
+          "enum": [
+            "typescript",
+            "tsx",
+            "python",
+            "go"
+          ],
+          "description": "Only symbols in this language."
+        },
+        "path": {
+          "type": "string",
+          "description": "Only symbols whose file path contains this text."
+        },
+        "refresh": {
+          "type": "boolean",
+          "description": "Ask the language server again instead of using a stored answer."
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    }
+  }
+]

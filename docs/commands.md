@@ -113,6 +113,30 @@ It exits with 0 if either part was found, and 3 if neither was.
 
 Lists every configured language server, whether its command was found, and the order they are tried in for each language. It reads the configuration of the indexed project if there is one, otherwise `.lemma/providers.toml` in the current directory.
 
+## `lemma mcp`
+
+Serves Lemma to agents as an [MCP](https://modelcontextprotocol.io) server over stdin and stdout. Run it from the project directory, or have the agent's client start it there. Tool calls run in the daemon like any other command, so language servers stay warm across tool calls and terminal use.
+
+| Tool | Command it runs | Arguments |
+| --- | --- | --- |
+| `index` | `lemma index` | `path` (optional) |
+| `search_symbols` | `lemma symbols` | `query`, `exact`, `kind`, `language`, `path`, `limit` |
+| `outline` | `lemma outline` | `file` |
+| `references` | `lemma refs` | `symbol`, `kind`, `language`, `path`, `include_declaration`, `refresh` |
+| `definition` | `lemma definition` | `file`, `line`, `column` (from 1), `refresh` |
+| `implementations` | `lemma implementations` | `symbol`, `kind`, `language`, `path`, `refresh` |
+| `signature` | `lemma signature` | `symbol`, `kind`, `language`, `path`, `refresh` |
+
+Each tool returns the command's [JSON output](json-output.md) as text. A command that ran but found no answer (an ambiguous name, a stale file, no server) is a normal result whose JSON says why; only a command that failed, such as a missing index, is returned as an error.
+
+To add it to Claude Code for a project:
+
+```sh
+claude mcp add lemma -- lemma mcp
+```
+
+Other clients take the same command, `lemma mcp`, started in the project directory.
+
 ## `lemma daemon`
 
 Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground.
