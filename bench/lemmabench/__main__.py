@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import prepare as preparing
 from . import report as reporting
-from .runner import ARMS, Limits, Setup, execute
+from .runner import ARMS, BASELINE, Limits, Setup, execute
 from .select import impact_tasks, localization_candidates
 from .tasks import Source, Task, load_tasks, save_tasks
 from .truth import Criteria
@@ -65,6 +65,9 @@ def main() -> int:
     report.add_argument("--round", required=True)
     report.add_argument("--arms", default=",".join(ARMS))
     report.add_argument("--repeats", type=int, default=3)
+    report.add_argument(
+        "--baseline-round", help="take the baseline arm's runs from this round; it does not depend on Lemma"
+    )
 
     args = parser.parse_args()
     return {"select": cmd_select, "prepare": cmd_prepare, "run": cmd_run, "report": cmd_report}[args.command](args)
@@ -176,7 +179,13 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_report(args: argparse.Namespace) -> int:
     setup = Setup(cache=args.home / "cache", round_dir=args.home / "rounds" / args.round, lemma=Path("lemma"))
     arms = args.arms.split(",")
-    rows = reporting.collect(setup, all_tasks(args.tasks), arms, args.repeats)
+    tasks = all_tasks(args.tasks)
+    own_arms = [arm for arm in arms if not (args.baseline_round and arm == BASELINE)]
+    rows = reporting.collect(setup, tasks, own_arms, args.repeats)
+    if args.baseline_round:
+        baseline_dir = args.home / "rounds" / args.baseline_round
+        baseline_setup = Setup(cache=setup.cache, round_dir=baseline_dir, lemma=setup.lemma)
+        rows += reporting.collect(baseline_setup, tasks, [BASELINE], args.repeats)
     text = reporting.render(rows, arms)
     (setup.round_dir / "report.md").write_text(text)
     print(text)
