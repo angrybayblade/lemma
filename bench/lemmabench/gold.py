@@ -1,5 +1,10 @@
 """The answer key for localization: the files and definitions a fix changes.
 
+It follows SWE-PolyBench's node-level key: functions, methods and classes
+(Go structs and interfaces) whose code the fix changes or adds. Where the
+dataset ships that key (`modified_nodes`), it is used as is; otherwise it
+is computed here the same way.
+
 Definitions are named the way `lemma outline` names them (qualified by
 their containers: `Router.delete`; Go methods by receiver: `Server.Start`).
 Agents in every arm are told this convention, so the key favours no arm.
@@ -12,6 +17,8 @@ from dataclasses import dataclass
 from .patches import FileChange
 
 TEST_MARKERS = ("test", "tests", "__tests__", "spec", "testdata", "e2e")
+NODE_KINDS = {"function", "method", "class", "struct", "interface"}
+"""Kinds of definition the key counts; constants, variables and type aliases are not nodes."""
 
 
 @dataclass(frozen=True)
@@ -21,6 +28,7 @@ class Definition:
     qualified_name: str
     first_line: int
     last_line: int
+    kind: str = "function"
 
     def contains(self, line: int) -> bool:
         return self.first_line <= line <= self.last_line
@@ -61,12 +69,31 @@ def innermost_containing(definitions: list[Definition], first: int, last: int) -
 
 
 def definitions_from_outline(outline: dict) -> list[Definition]:
-    """Definitions from `lemma --json outline` (zero-based positions)."""
+    """Node definitions from `lemma --json outline` (zero-based positions)."""
     return [
         Definition(
             qualified_name=symbol["qualified_name"],
             first_line=symbol["span"]["start"]["line"] + 1,
             last_line=symbol["span"]["end"]["line"] + 1,
+            kind=symbol["kind"],
         )
         for symbol in outline["symbols"]
+        if symbol["kind"] in NODE_KINDS
     ]
+
+
+def added_definitions(before: list[Definition], after: list[Definition]) -> set[str]:
+    """Definitions the fix adds: in the patched file but not the original."""
+    return {d.qualified_name for d in after} - {d.qualified_name for d in before}
+
+
+def from_polybench(modified_nodes: list[str]) -> set[str]:
+    """SWE-PolyBench nodes (`path->program->class_declaration:A->method_definition:b`)
+    as `path::A.b`."""
+    symbols = set()
+    for node in modified_nodes:
+        path, *parts = node.split("->")
+        names = [part.split(":", 1)[1] for part in parts if ":" in part]
+        if names:
+            symbols.add(f"{path}::{'.'.join(names)}")
+    return symbols

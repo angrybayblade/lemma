@@ -12,7 +12,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .gold import changed_definitions, definitions_from_outline, is_test_path
+from .gold import added_definitions, changed_definitions, definitions_from_outline, from_polybench, is_test_path
 from .patches import parse_diff
 from .tasks import LOCALIZATION, Task
 
@@ -65,21 +65,66 @@ def make_snapshot(cache: Path, task: Task) -> Path:
 
 
 def fill_localization_gold(cache: Path, task: Task, lemma: Path) -> None:
-    """Names the definitions the fix changes, from the snapshot's syntax index."""
+    """Names the definitions the fix changes or adds: SWE-PolyBench's own key
+    when the dataset has one, otherwise computed from the patch."""
+    shipped = parse_nodes(task.origin.get("modified_nodes"))
+    if shipped:
+        task.gold["symbols"] = sorted(from_polybench(shipped))
+        task.gold["symbols_from"] = "swe-polybench"
+        return
+    task.gold["symbols"] = sorted(computed_symbols(cache, task, lemma))
+    task.gold["symbols_from"] = "computed"
+
+
+def parse_nodes(raw: object) -> list[str]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    return [node for node in raw or [] if isinstance(node, str)]
+
+
+def computed_symbols(cache: Path, task: Task, lemma: Path) -> set[str]:
     snapshot = snapshot_path(cache, task)
-    db = cache / "gold" / f"{task.id}.db"
-    db.parent.mkdir(parents=True, exist_ok=True)
-    run([str(lemma), "--no-daemon", "--db", str(db), "index", str(snapshot)])
+    changes = [change for change in parse_diff(task.gold["patch"]) if not is_test_path(change.path)]
+    patched = patched_copy(cache, task, [change.path for change in changes])
+    before_db = index(lemma, cache / "gold" / f"{task.id}.db", snapshot)
+    after_db = index(lemma, cache / "gold" / f"{task.id}-patched.db", patched)
     symbols: set[str] = set()
-    for change in parse_diff(task.gold["patch"]):
-        if is_test_path(change.path):
-            continue
-        outline = json.loads(
-            run([str(lemma), "--no-daemon", "--db", str(db), "--json", "outline", str(snapshot / change.path)]).stdout
-        )
-        names = changed_definitions(change, definitions_from_outline(outline))
+    for change in changes:
+        before = outline(lemma, before_db, snapshot, change.path)
+        after = outline(lemma, after_db, patched, change.path)
+        names = changed_definitions(change, before) | added_definitions(before, after)
         symbols.update(f"{change.path}::{name}" for name in names)
-    task.gold["symbols"] = sorted(symbols)
+    return symbols
+
+
+def patched_copy(cache: Path, task: Task, paths: list[str]) -> Path:
+    """The changed source files, with the fix applied, in a directory of their own."""
+    directory = cache / "gold" / f"{task.id}-patched"
+    shutil.rmtree(directory, ignore_errors=True)
+    for path in paths:
+        target = directory / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(snapshot_path(cache, task) / path, target)
+    patch = directory / "fix.patch"
+    patch.write_text(task.gold["patch"])
+    includes = [f"--include={path}" for path in paths]
+    run(["git", "apply", *includes, str(patch)], cwd=directory)
+    patch.unlink()
+    return directory
+
+
+def index(lemma: Path, db: Path, root: Path) -> Path:
+    db.parent.mkdir(parents=True, exist_ok=True)
+    run([str(lemma), "--no-daemon", "--db", str(db), "index", str(root)])
+    return db
+
+
+def outline(lemma: Path, db: Path, root: Path, path: str) -> list:
+    result = run([str(lemma), "--no-daemon", "--db", str(db), "--json", "outline", str(root / path)])
+    return definitions_from_outline(json.loads(result.stdout))
 
 
 def prepare(cache: Path, tasks: list[Task], lemma: Path) -> list[str]:
