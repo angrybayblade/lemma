@@ -143,7 +143,10 @@ def execute(setup: Setup, task: Task, arm: str, repeat: int) -> RunResult:
     )
     if result.answer is None:
         result.error = (completed.stderr[-500:] or "no answer").strip()
+    # The workspace and Codex home are large (Codex caches plugins per home)
+    # and nothing in them is needed once the run is recorded.
     shutil.rmtree(workspace, ignore_errors=True)
+    shutil.rmtree(directory / "codex", ignore_errors=True)
     (directory / "result.json").write_text(json.dumps(asdict(result), indent=2))
     return result
 
