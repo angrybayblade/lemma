@@ -179,6 +179,7 @@ impl Engine {
             Command::Signature(args) => self.signature(&request, args, out),
             Command::Providers => self.providers(&request, out),
             Command::Daemon(_) => bail!("`lemma daemon` cannot run inside the daemon"),
+            Command::Mcp => bail!("`lemma mcp` cannot run inside the daemon"),
         }
     }
 
