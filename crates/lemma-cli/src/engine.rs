@@ -18,13 +18,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use lemma_index::LiveIndex;
-use lemma_model::{Language, ReferenceOutcome};
+use lemma_model::Language;
 use lemma_providers::ProviderRegistry;
 use lemma_query::{
-    IdlePolicy, LookupContext, ReferenceOptions, ServerState, SessionPool, SymbolResolution,
+    IdlePolicy, LookupContext, LookupOptions, ServerState, SessionPool, SymbolResolution,
     SymbolSearch, SymbolSelector, WarmUp,
 };
-use lemma_store::{NameMatch, Store, StoreError, StoredSnapshot, StoredSymbol, SymbolFilter};
+use lemma_store::{
+    FactStore, NameMatch, Store, StoreError, StoredSnapshot, StoredSymbol, SymbolFilter,
+};
 
 use crate::cli::{Cli, Command, Filters, RefsArgs, SymbolsArgs};
 use crate::output::{self, Format};
@@ -256,8 +258,7 @@ impl Engine {
         args: RefsArgs,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
-        let options = ReferenceOptions {
-            include_declaration: args.include_declaration,
+        let options = LookupOptions {
             refresh: args.refresh,
             request_timeout: Duration::from_secs(args.timeout_secs),
         };
@@ -278,14 +279,19 @@ impl Engine {
             registry: &registry,
             options: &options,
         };
-        let report = lemma_query::find_references(store, &context, target, &mut self.pool)?;
+        let report = lemma_query::find_references(
+            store,
+            &context,
+            target,
+            args.include_declaration,
+            &mut self.pool,
+        )?;
         output::reference_report(out, &report, &snapshot.snapshot.root, request.format)?;
-
-        let answered = matches!(
-            report.outcome,
-            ReferenceOutcome::Found { .. } | ReferenceOutcome::Empty
-        );
-        Ok(if answered { 0 } else { EXIT_NO_ANSWER })
+        Ok(if report.answer.outcome.is_answered() {
+            0
+        } else {
+            EXIT_NO_ANSWER
+        })
     }
 
     fn providers(&mut self, request: &Request<'_>, out: &mut dyn Write) -> anyhow::Result<u8> {

@@ -1,14 +1,17 @@
-//! Answers questions about an indexed snapshot: which symbol a name refers
-//! to, and where a symbol is referenced.
+//! Answers questions about an indexed snapshot: the operations agents and
+//! people use, independent of how they are asked or where facts are kept.
+//!
+//! Semantic operations go through [`lookup`]: stored answers first, then
+//! the language's providers.
 
+mod lookup;
 mod references;
 mod resolve;
 mod search;
 mod sessions;
 
-pub use references::{
-    LookupContext, ReferenceOptions, ReferenceReport, answer_without_provider, find_references,
-};
+pub use lookup::{Answered, LookupContext, LookupOptions};
+pub use references::{ReferenceReport, SymbolReport, find_references};
 pub use resolve::{SymbolResolution, SymbolSelector, resolve_symbol};
 pub use search::SymbolSearch;
 pub use sessions::{IdlePolicy, ServerState, SessionPool, SessionStatus, WarmUp};
