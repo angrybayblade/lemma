@@ -141,6 +141,8 @@ def codex_config(setup: Setup, arm: str, directory: Path, path: str) -> str:
             'args = ["mcp"]',
             f"cwd = {json.dumps(str(directory / 'workspace'))}",
             "startup_timeout_sec = 60",
+            # Runs are unattended: an approval prompt would reject the call.
+            'default_tools_approval_mode = "approve"',
             "tool_timeout_sec = 300",
             "env = { " + ", ".join(f"{key} = {json.dumps(value)}" for key, value in env.items()) + " }",
         ]
