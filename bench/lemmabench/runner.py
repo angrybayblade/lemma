@@ -114,8 +114,10 @@ def lay_out(setup: Setup, task: Task, arm: str, directory: Path) -> Path:
     subprocess.run(["cp", "-a", "--reflink=auto", str(snapshot_path(setup.cache, task)), str(workspace)], check=True)
     codex_home = directory / "codex"
     codex_home.mkdir()
-    shutil.copy2(Path.home() / ".codex" / "auth.json", codex_home / "auth.json")
-    (codex_home / "auth.json").chmod(0o600)
+    auth = Path.home() / ".codex" / "auth.json"
+    if auth.is_file():  # without it Codex fails, and the run records why
+        shutil.copy2(auth, codex_home / "auth.json")
+        (codex_home / "auth.json").chmod(0o600)
     (directory / "tmp").mkdir()
     path = ":".join([*setup.tool_path, "/usr/local/bin", "/usr/bin", "/bin"])
     (codex_home / "config.toml").write_text(codex_config(setup, arm, directory, path))
