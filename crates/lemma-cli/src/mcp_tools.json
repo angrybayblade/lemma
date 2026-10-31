@@ -1,7 +1,7 @@
 [
   {
     "name": "index",
-    "description": "Index a directory's TypeScript, Python and Go files, or update the index after edits. Incremental: an update takes milliseconds. Starts language servers in the background.",
+    "description": "Index the directory's TypeScript, Python and Go files, or update the index after edits. Incremental: an update takes milliseconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -21,7 +21,7 @@
   },
   {
     "name": "search_symbols",
-    "description": "Find indexed definitions by name or qualified name. Returns each symbol's id, kind, file and position.",
+    "description": "Find definitions (functions, methods, classes, interfaces) by name or qualified name, with an id for each to pass to the other tools. Faster and more exact than grepping for `def`/`func`/`class`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -81,7 +81,7 @@
   },
   {
     "name": "outline",
-    "description": "List the symbols defined in a file, in source order.",
+    "description": "List every definition in a file, nested, with ids: a quick map of a file before reading it.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -103,7 +103,7 @@
   },
   {
     "name": "references",
-    "description": "Find where a symbol is used, resolved by a language server, with the function each use sits in. Unlike text search, other symbols with the same name are not reported.",
+    "description": "Every place that uses a symbol (calls, imports, type uses), resolved by a language server, each with the function it sits in. Use instead of grep/rg to find callers or the impact of a change: other symbols with the same name and mentions in comments or strings are left out.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -162,7 +162,7 @@
   },
   {
     "name": "definition",
-    "description": "Find where the symbol used at a position is defined, such as the function a call goes to.",
+    "description": "Where the symbol used at a file position is defined: the function a call goes to, the class a name refers to, through imports and aliases.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -200,7 +200,7 @@
   },
   {
     "name": "implementations",
-    "description": "Find what implements an interface or interface method, or overrides a method.",
+    "description": "What implements an interface or interface method, or overrides a method. Text search cannot answer this reliably.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -255,7 +255,7 @@
   },
   {
     "name": "signature",
-    "description": "Show a symbol's declaration as written, and the language server's description of it (inferred types and documentation).",
+    "description": "A symbol's declaration as written, plus the language server's description (inferred types, documentation), without reading the whole file.",
     "inputSchema": {
       "type": "object",
       "properties": {
