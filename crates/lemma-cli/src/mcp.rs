@@ -24,13 +24,15 @@ const INVALID_PARAMS: i64 = -32602;
 const PARSE_ERROR: i64 = -32700;
 
 /// Told to the agent once, when it connects.
-const INSTRUCTIONS: &str = "Lemma answers questions about TypeScript, Python and Go code from an \
-index plus language servers. Run `index` once per directory (and again after edits; it is \
-incremental and takes milliseconds). Then use `search_symbols` or `outline` to find a symbol, \
-and `references`, `definition`, `implementations` or `signature` to ask about it. Symbols can be \
-named by qualified name (`Router.delete`) or by id (`#415`). Every answer has an `outcome.state`: \
-only `found` and `empty` are answers, and `empty` means the server saw nothing, not that the \
-code is unused.";
+const INSTRUCTIONS: &str = "Lemma resolves symbols in TypeScript, Python and Go with language \
+servers, so it answers \"where is this used, defined or implemented\" exactly where text search \
+guesses: it leaves out other symbols with the same name and mentions in comments and strings, and \
+follows imports and aliases. Prefer it to grep or rg for those questions, especially for common \
+names; use text search for strings, configuration and other files.\n\n\
+Workflow: `search_symbols` (or `outline` for a file) gives each definition an id like `#415`; pass \
+the id to `references`, `implementations` or `signature`. `definition` takes a file, line and \
+column. Run `index` after editing files; it takes milliseconds. Only `found` and `empty` outcomes \
+are answers; `empty` means the server saw nothing, not that the code is unused.";
 
 /// A command's result, as the tool returns it.
 struct Finished {
