@@ -25,7 +25,17 @@ from .tasks import Task
 
 BASELINE = "baseline"
 LEMMA = "lemma"
-ARMS = (BASELINE, LEMMA)
+GUIDED = "lemma-guided"
+ARMS = (BASELINE, LEMMA, GUIDED)
+LEMMA_ARMS = (LEMMA, GUIDED)
+
+GUIDANCE = (
+    "\n\nThis repository is indexed by Lemma. To find where a symbol is defined, used or implemented, "
+    "prefer the lemma MCP tools (search_symbols, references, definition, implementations, outline, "
+    "signature) over text search: they resolve symbols with a language server, so other symbols with "
+    "the same name and mentions in comments or strings are left out."
+)
+"""What a user who installs Lemma would put in AGENTS.md; only the guided arm gets it."""
 
 
 @dataclass(frozen=True)
@@ -121,7 +131,8 @@ def lay_out(setup: Setup, task: Task, arm: str, directory: Path) -> Path:
     (directory / "tmp").mkdir()
     path = ":".join([*setup.tool_path, "/usr/local/bin", "/usr/bin", "/bin"])
     (codex_home / "config.toml").write_text(codex_config(setup, arm, directory, path))
-    (directory / "prompt.txt").write_text(prompt_for(task))
+    guidance = GUIDANCE if arm == GUIDED else ""
+    (directory / "prompt.txt").write_text(prompt_for(task) + guidance)
     (directory / "schema.json").write_text(json.dumps(schema_for(task)))
     script = directory / "run.sh"
     script.write_text(run_script(setup, arm, directory, path))
@@ -132,7 +143,7 @@ def lay_out(setup: Setup, task: Task, arm: str, directory: Path) -> Path:
 def codex_config(setup: Setup, arm: str, directory: Path, path: str) -> str:
     """Codex settings for the run. Only the Lemma arm gets the MCP server."""
     lines = ['approval_policy = "never"', 'sandbox_mode = "workspace-write"']
-    if arm == LEMMA:
+    if arm in LEMMA_ARMS:
         env = {"PATH": path, "TMPDIR": str(directory / "tmp"), "HOME": str(Path.home())}
         lines += [
             "",
@@ -156,7 +167,7 @@ def run_script(setup: Setup, arm: str, directory: Path, path: str) -> str:
     lemma = quoted(str(setup.lemma))
     index = ""
     stop = ""
-    if arm == LEMMA:
+    if arm in LEMMA_ARMS:
         # Index before the agent starts, as a project an agent works in
         # would already be; the time is recorded separately.
         index = (
@@ -190,7 +201,11 @@ cd {quoted(str(workspace))}
 {index}timeout {setup.limits.timeout_seconds} {codex} < {quoted(str(directory / "prompt.txt"))} \\
   > {quoted(str(directory / "events.jsonl"))} 2> {quoted(str(directory / "codex.stderr"))}
 echo $? > {quoted(str(directory / "exit_code"))}
-{stop}"""
+{stop}# systemd's own summary can miss the peak; read the cgroup while still in it.
+cgroup=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)
+cat "$cgroup/memory.peak" > {quoted(str(directory / "memory.peak"))} 2>/dev/null
+cat "$cgroup/cpu.stat" > {quoted(str(directory / "cpu.stat"))} 2>/dev/null
+"""
 
 
 def systemd_command(limits: Limits, unit: str, directory: Path) -> list[str]:
