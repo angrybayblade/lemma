@@ -106,11 +106,29 @@ Commands run in a background daemon that `lemma` starts on first use. It starts 
 
 If a name matches more than one symbol, Lemma lists the candidates and asks you to choose. Use the qualified name, a filter such as `--language python` or `--path api/`, or the id: `lemma refs '#415'`.
 
+## 6. Ask other questions
+
+```sh
+lemma definition src/api/routes.py:22:12   # where the call there goes
+lemma implementations Shape.area           # what implements an interface method
+lemma signature Router.delete              # its declaration and documentation
+lemma outline src/router.py                # what a file defines
+```
+
+## 7. Connect an agent
+
+`lemma mcp` serves the same questions as MCP tools. In Claude Code, from the project directory:
+
+```sh
+claude mcp add lemma -- lemma mcp
+```
+
 ## Next steps
 
 - [Commands](commands.md): every command, option, and exit code.
 - [Language servers](providers.md): built-in servers, adding your own, and how one is chosen.
 - [How Lemma works](concepts.md): snapshots, stale results, and caching.
+- [Architecture](architecture.md): how the layers fit together.
 - [JSON output](json-output.md): using Lemma from scripts and agents.
 - [Comparison](comparison.md): when to use Lemma and when to use grep or ripgrep.
 - [Performance](performance.md): how fast Lemma is on large repositories, and why.
