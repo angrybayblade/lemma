@@ -60,6 +60,7 @@ def row_for(task: Task, result: RunResult, directory: Path) -> RunRow:
         "uncached_input_tokens": activity.uncached_input_tokens,
         "output_tokens": activity.output_tokens,
         "tool_calls": activity.tool_calls,
+        "shell_commands": activity.commands,
         "lemma_calls": lemma_calls,
         "failed_mcp_calls": activity.failed_mcp_calls,
     }
@@ -95,59 +96,72 @@ def paired_effect(rows: list[RunRow], field: str, arm: str, seed: int = 0) -> tu
     return statistics.fmean(diffs), low, high
 
 
+PRIMARY = {"localization": "symbol_f1", "impact": "location_f1"}
 SCORE_FIELDS = {
-    "localization": ["file_recall", "file_precision", "symbol_recall", "symbol_precision", "symbol_f1"],
-    "impact": ["location_recall", "location_precision", "location_f1", "file_recall"],
+    "localization": ["symbol_f1", "symbol_recall", "symbol_precision", "file_recall"],
+    "impact": ["location_f1", "location_recall", "location_precision", "file_recall"],
 }
 COST_FIELDS = [
     "wall_seconds",
     "uncached_input_tokens",
     "output_tokens",
     "tool_calls",
+    "shell_commands",
     "lemma_calls",
     "cpu_seconds",
     "memory_peak_mb",
 ]
+EFFECT_FIELDS = ["wall_seconds", "uncached_input_tokens"]
 
 
 def render(rows: list[RunRow], arms: list[str]) -> str:
-    """A Markdown report: per track, each arm's means and Lemma's effect."""
+    """A Markdown report per track: each arm's means, each arm's paired
+    effect against the baseline, and the primary score per task."""
     lines = ["# Round report", ""]
     for track in ("localization", "impact"):
         track_rows = [row for row in rows if row.task.track == track]
         if not track_rows:
             continue
         tasks = sorted({row.task.id for row in track_rows})
+        primary = PRIMARY[track]
         lines += [f"## {track} ({len(tasks)} tasks, {len(track_rows)} runs)", ""]
-        lines += table(track_rows, arms, SCORE_FIELDS[track] + COST_FIELDS)
-        primary = "symbol_f1" if track == "localization" else "location_f1"
-        lines += [""] + per_task_table(track_rows, arms, primary) + [""]
+        lines += arm_table(track_rows, arms, SCORE_FIELDS[track] + COST_FIELDS) + [""]
+        if BASELINE in arms:
+            lines += effect_table(track_rows, arms, [primary, *EFFECT_FIELDS]) + [""]
+        lines += per_task_table(track_rows, arms, primary) + [""]
     return "\n".join(lines) + "\n"
 
 
-def table(rows: list[RunRow], arms: list[str], fields: list[str]) -> list[str]:
-    """Each arm's mean, then each other arm's paired effect against the baseline."""
-    compared = [arm for arm in arms if arm != BASELINE] if BASELINE in arms else []
-    header = "| Metric | " + " | ".join(arms) + "".join(f" | {arm} − baseline (95% CI)" for arm in compared) + " |"
-    lines = [header, "|" + " --- |" * (len(arms) + len(compared) + 1)]
-    answered = {
-        arm: sum(r.answered for r in rows if r.arm == arm) / max(1, sum(r.arm == arm for r in rows)) for arm in arms
-    }
-    lines.append("| answered | " + " | ".join(f"{answered[a]:.0%}" for a in arms) + " |" * (len(compared) + 1))
-    for field in fields:
-        means = per_task_means(rows, field)
+def arm_table(rows: list[RunRow], arms: list[str], fields: list[str]) -> list[str]:
+    """One row per arm: the share of runs that answered, then per-task means."""
+    lines = ["| Arm | answered | " + " | ".join(fields) + " |", "|" + " --- |" * (len(fields) + 2)]
+    for arm in arms:
+        arm_rows = [row for row in rows if row.arm == arm]
+        if not arm_rows:
+            continue
+        answered = sum(row.answered for row in arm_rows) / len(arm_rows)
         cells = []
-        for arm in arms:
-            values = [v for (task_id, a), v in means.items() if a == arm]
+        for field in fields:
+            values = [value for (_, a), value in per_task_means(arm_rows, field).items() if a == arm]
             cells.append(fmt(field, statistics.fmean(values)) if values else "–")
-        cells += [effect_cell(field, paired_effect(rows, field, arm)) for arm in compared]
-        lines.append(f"| {field} | " + " | ".join(cells) + " |")
+        lines.append(f"| {arm} | {answered:.0%} | " + " | ".join(cells) + " |")
+    return lines
+
+
+def effect_table(rows: list[RunRow], arms: list[str], fields: list[str]) -> list[str]:
+    """Each arm minus the baseline, paired by task, with 95% intervals."""
+    lines = ["| Arm − baseline | " + " | ".join(fields) + " |", "|" + " --- |" * (len(fields) + 1)]
+    for arm in arms:
+        if arm == BASELINE:
+            continue
+        cells = [effect_cell(field, paired_effect(rows, field, arm)) for field in fields]
+        lines.append(f"| {arm} | " + " | ".join(cells) + " |")
     return lines
 
 
 def effect_cell(field: str, effect: tuple[float, float, float] | None) -> str:
     if effect is None:
-        return ""
+        return "–"
     mean, low, high = (fmt(field, value, signed=True) for value in effect)
     return f"{mean} ({low}, {high})"
 
@@ -155,7 +169,7 @@ def effect_cell(field: str, effect: tuple[float, float, float] | None) -> str:
 def per_task_table(rows: list[RunRow], arms: list[str], field: str) -> list[str]:
     means = per_task_means(rows, field)
     tasks = sorted({row.task.id: row.task for row in rows}.values(), key=lambda t: t.id)
-    lines = ["| Task | Language | " + " | ".join(f"{a} {field}" for a in arms) + " |", "|" + " --- |" * (len(arms) + 2)]
+    lines = [f"| Task ({field}) | Language | " + " | ".join(arms) + " |", "|" + " --- |" * (len(arms) + 2)]
     for task in tasks:
         cells = [fmt(field, means[(task.id, a)]) if (task.id, a) in means else "–" for a in arms]
         lines.append(f"| {task.id} | {task.language} | " + " | ".join(cells) + " |")
