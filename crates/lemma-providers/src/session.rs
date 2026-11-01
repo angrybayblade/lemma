@@ -3,6 +3,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use lemma_lsp::lsp_types::notification::{
@@ -56,6 +57,10 @@ pub struct ProviderSession {
     project_markers: Vec<String>,
     /// The project directory each directory belongs to, as found so far.
     project_of_directory: HashMap<PathBuf, Option<PathBuf>>,
+    /// Whether projects were just opened and may still be loading. The
+    /// server answers meanwhile, from the projects it has, and no message
+    /// reliably says when it has finished.
+    projects_loading: bool,
 }
 
 /// A document the server has open, as Lemma last sent it.
@@ -65,6 +70,12 @@ struct OpenDocument {
     /// The project the document belongs to, for project-scoped servers.
     project: Option<PathBuf>,
 }
+
+/// How often to ask again while newly opened projects load, and for how
+/// long at most.
+const SETTLE_INTERVAL: Duration = Duration::from_secs(1);
+const SETTLE_LIMIT: Duration = Duration::from_secs(20);
+const EMPTY_SETTLE: Duration = Duration::from_secs(5);
 
 /// Most projects opened for one question. A symbol mentioned in hundreds of
 /// projects would otherwise make the server load all of them first.
@@ -103,6 +114,7 @@ impl ProviderSession {
             open_order: VecDeque::new(),
             project_markers: definition.project_markers.clone(),
             project_of_directory: HashMap::new(),
+            projects_loading: false,
         })
     }
 
@@ -344,6 +356,34 @@ impl ProviderSession {
         })
     }
 
+    /// Asks until the answer stops growing: two answers in a row with the
+    /// same number of locations (non-zero, or zero for a while), or the
+    /// time limit.
+    fn settled_locations(
+        &self,
+        query: LocationQuery,
+        position: &TextDocumentPositionParams,
+    ) -> Result<Vec<lsp_types::Location>, ProviderError> {
+        let started = Instant::now();
+        let mut previous = self
+            .request_locations(query, position.clone())
+            .map_err(|source| self.server_error(source))?;
+        while started.elapsed() < SETTLE_LIMIT {
+            thread::sleep(SETTLE_INTERVAL);
+            let current = self
+                .request_locations(query, position.clone())
+                .map_err(|source| self.server_error(source))?;
+            // An empty answer may be real; trust it once it has held a while.
+            let has_held = !current.is_empty() || started.elapsed() >= EMPTY_SETTLE;
+            let is_settled = has_held && current.len() == previous.len();
+            previous = current;
+            if is_settled {
+                break;
+            }
+        }
+        Ok(previous)
+    }
+
     fn supports(&self, query: LocationQuery) -> bool {
         let server = self.client.server();
         match query {
@@ -453,8 +493,6 @@ impl SemanticProvider for ProviderSession {
             .filter_map(|open| open.project.clone())
             .collect();
         let mut opened = 0;
-        let started = Instant::now();
-        let mut last_opened = None;
         for path in paths {
             if opened == MAX_PROJECTS_PER_QUESTION {
                 break;
@@ -480,16 +518,10 @@ impl SemanticProvider for ProviderSession {
                     path: absolute_path,
                 })?;
             self.show_document(&uri, language, source)?;
-            last_opened = Some(uri);
             opened += 1;
         }
-        // A server asked right away answers from the projects it had, and
-        // the empty answer looks real. It publishes diagnostics for the
-        // last file once that file's project, and the ones queued before
-        // it, have loaded.
-        if let Some(uri) = last_opened {
-            self.client
-                .wait_until_ready(&uri, started, READY_QUIET_PERIOD);
+        if opened > 0 {
+            self.projects_loading = true;
         }
         Ok(())
     }
@@ -503,9 +535,13 @@ impl SemanticProvider for ProviderSession {
             return Ok(ProviderAnswer::Unsupported);
         }
         let position = self.prepare(at)?;
-        let found = self
-            .request_locations(query, position)
-            .map_err(|source| self.server_error(source))?;
+        let found = if self.projects_loading {
+            self.projects_loading = false;
+            self.settled_locations(query, &position)?
+        } else {
+            self.request_locations(query, position)
+                .map_err(|source| self.server_error(source))?
+        };
         if found.is_empty() {
             return Ok(ProviderAnswer::Empty);
         }
