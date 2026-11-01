@@ -73,6 +73,12 @@ pub enum VerifyError {
         #[source]
         source: serde_json::Error,
     },
+    /// A relation was asked for that the grammar does not declare or derive.
+    #[error("the grammar has no relation `{name}`")]
+    UnknownRelation {
+        /// The name.
+        name: String,
+    },
     /// The engine could not evaluate the grammar.
     #[error("evaluation failed: {message}")]
     Evaluation {
@@ -108,14 +114,26 @@ pub struct Report {
     pub facts: BTreeMap<String, usize>,
     /// Findings, most severe first, then by requirement and message.
     pub findings: Vec<Finding>,
+    /// The rows of each relation asked for in [`Options::relations`], sorted.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub relations: BTreeMap<String, Vec<Vec<String>>>,
 }
 
-/// Verifies a manifest's change with `engine`. With `explain`, each
-/// finding carries its derivation.
+/// What to include in a report beyond its findings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Options {
+    /// Attach each finding's derivation.
+    pub explain: bool,
+    /// Derived relations to report in full, such as `calls`, for inspecting
+    /// or measuring what the rules concluded.
+    pub relations: Vec<String>,
+}
+
+/// Verifies a manifest's change with `engine`.
 pub fn verify<E: Engine>(
     manifest: &Manifest,
     engine: &E,
-    explain: bool,
+    options: &Options,
 ) -> Result<Report, VerifyError> {
     let grammar_text = match &manifest.grammar {
         Some(path) => std::fs::read_to_string(path).map_err(|source| VerifyError::Read {
@@ -125,12 +143,14 @@ pub fn verify<E: Engine>(
         None => HTTP_CONTRACTS.to_owned(),
     };
     let mut grammar = lemma_grammar::compile(&lemma_grammar::parse_grammar(&grammar_text)?)?;
+    check_relations(&grammar, &options.relations)?;
     let mut writer = extract::FactWriter::new(&mut grammar);
     extract::extract_all(manifest, &mut writer)?;
     let facts = writer.counts;
     let derived = evaluate(&grammar, engine, &Request::default())?;
     let mut findings = findings(&grammar, &derived);
-    if explain {
+    let relations = relation_rows(&grammar, &derived, &options.relations);
+    if options.explain {
         add_derivations(&grammar, engine, &mut findings)?;
     }
     let change = &manifest.change;
@@ -139,7 +159,37 @@ pub fn verify<E: Engine>(
         engine: engine.name().to_owned(),
         facts,
         findings: findings.into_iter().map(|(finding, _)| finding).collect(),
+        relations,
     })
+}
+
+fn check_relations(grammar: &CompiledGrammar, names: &[String]) -> Result<(), VerifyError> {
+    for name in names {
+        if grammar.program.relation(name).is_none() {
+            return Err(VerifyError::UnknownRelation { name: name.clone() });
+        }
+    }
+    Ok(())
+}
+
+fn relation_rows(
+    grammar: &CompiledGrammar,
+    derived: &lemma_logic::Derived,
+    names: &[String],
+) -> BTreeMap<String, Vec<Vec<String>>> {
+    let mut relations = BTreeMap::new();
+    for name in names {
+        let rows = derived
+            .rows(name)
+            .map(|row| {
+                row.iter()
+                    .map(|value| grammar.symbols.display(*value))
+                    .collect()
+            })
+            .collect();
+        relations.insert(name.clone(), rows);
+    }
+    relations
 }
 
 fn evaluate<E: Engine>(

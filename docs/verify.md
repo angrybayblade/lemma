@@ -103,7 +103,7 @@ Paths compare in one form, so `{id}`, `${id}`, `:id` and `[id]` are the same par
 
 "Names a field" means the consumer's file, or a file it imports, uses the field's last name as an object key, member, keyword argument or dictionary key. It is evidence, not proof: a consumer that builds requests dynamically can use a field without naming it, and a common name can appear for another reason. Without that evidence a field change is informational, so a change most consumers never touch does not produce a wall of errors.
 
-`lemma verify` exits with 4 if any finding is an error, so CI can gate on it. `--json` prints the findings with their values.
+`lemma verify` exits with 4 if any finding is an error, so CI can gate on it. `--json` prints the findings with their values. `--relation calls` also prints every row of a derived relation, here which consumer calls which operation, for inspecting what the rules concluded.
 
 ## Grammars
 
