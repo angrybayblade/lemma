@@ -1,7 +1,7 @@
 [
   {
     "name": "index",
-    "description": "Index the directory's TypeScript, Python and Go files, or update the index after edits. Incremental: an update takes milliseconds.",
+    "description": "Index a directory's TypeScript, Python and Go files. Rarely needed: every other tool refreshes the index of the current directory first.",
     "inputSchema": {
       "type": "object",
       "properties": {
