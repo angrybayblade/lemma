@@ -22,6 +22,8 @@ pub struct Operation {
     pub path: String,
     /// The path as written in the spec.
     pub template: String,
+    /// Its `operationId`, which generated clients name their functions after.
+    pub operation_id: Option<String>,
     /// Path, query and header parameters.
     pub parameters: Vec<Parameter>,
     /// Fields of the JSON request body.
@@ -82,6 +84,10 @@ pub fn operations(document: &Json) -> Vec<Operation> {
                 method,
                 path: canonical.clone(),
                 template: template.clone(),
+                operation_id: operation
+                    .get("operationId")
+                    .and_then(Json::as_str)
+                    .map(str::to_owned),
                 parameters: operation_parameters,
                 request_fields: request_fields(document, operation),
                 response_fields: response_fields(document, operation),
