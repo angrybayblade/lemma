@@ -45,6 +45,8 @@ repositories:
     service: gateway
     specs: [apps/gateway/openapi-v3.1.json, apps/gateway/openapi-internal.json]
     routes: [apps/gateway/src/pages/api]
+    schemas: [apps/gateway/src/lib, apps/gateway/src/common]
+    route_aliases: { /api/v3/: /api/v3.1/ }
   platform-client:
     path: ../platform-client
     commit: 9de76a65
@@ -72,6 +74,7 @@ repositories:
 | `role` | `service`, `client` or `consumer`. |
 | `specs` | OpenAPI documents: a service's contract, or a client's copy of it. |
 | `routes` | Directories with a service's route code, for checking the spec against the code. |
+| `schemas` | For a service: further directories with schemas its routes import, such as shared zod schemas, read to tell which reject unknown keys. |
 | `rejects_unknown_fields` | For a service: requests with fields it does not know fail, as with strict validation, even where its spec does not say so. |
 | `tables` | Files with a client's operation tables (objects or calls naming a method, a path and a method chain). |
 | `include` | Directories with a consumer's code; the whole repository if absent. |
@@ -86,7 +89,7 @@ One clone can appear under several names, such as a service and a consumer of an
 | From | Facts |
 | --- | --- |
 | A service's OpenAPI documents, at both commits | operations, parameters (and whether required), request and response fields as dotted paths (`hooks[].handler.action`) |
-| A service's route code | routes declared with a method and path: TypeScript objects and calls, Go `net/http`, gorilla/mux, chi, gin and echo, Rust axum, actix-web and Rocket |
+| A service's route code | which request schemas are zod `.strict()` (in the route's file, a file it imports, or a union of them); routes declared with a method and path: TypeScript objects and calls, Go `net/http`, gorilla/mux, chi, gin and echo, Rust axum, actix-web and Rocket |
 | A client's tables and spec | which method chain calls which operation; the parameters it declares |
 | A consumer's code (TypeScript, JavaScript, Python, Go, Rust) | strings naming API paths, with the HTTP method where the call shows it; calls through its client (`this.client.sessionOptions.list()`); the field names each file uses; its relative imports |
 
@@ -100,8 +103,9 @@ Paths compare in one form, so `{id}`, `${id}`, `:id` and `[id]` are the same par
 | `consumer_calls_unserved_operation` | error | A changed consumer adds a call to a path in a service's family (`/api/v3.1`) that no service serves, such as an endpoint not yet deployed. |
 | `consumer_misses_new_required_parameter` | error | An operation a consumer calls now requires a parameter. |
 | `consumer_misses_new_required_field` | error | An operation now requires a request field the consumer's code never names. |
-| `consumer_sends_removed_parameter` | error | A consumer calls an operation and names a parameter the change removed. |
-| `consumer_sends_rejected_field` | error | A consumer names a request field the change removed, and the operation rejects fields it does not know: its schema says `additionalProperties: false`, or its service sets `rejects_unknown_fields`. |
+| `consumer_sends_removed_parameter` | error | A consumer calls an operation and names a parameter the change removed, and the operation rejects parameters it does not know. |
+| `consumer_sends_ignored_parameter` | warning | As above, where the operation ignores unknown parameters. |
+| `consumer_sends_rejected_field` | error | A consumer names a request field the change removed, and the operation rejects fields it does not know: its spec says `additionalProperties: false`, its route's zod schema is `.strict()`, or its service sets `rejects_unknown_fields`. |
 | `consumer_uses_removed_request_field` | warning | A consumer names a request field the change removed or renamed; the operation now ignores it, so whatever it set no longer takes effect. |
 | `consumer_uses_removed_response_field` | warning | A consumer names a response field the change removed or renamed. |
 | `client_declares_removed_parameter` | error | A generated client still declares a parameter the service removed. |

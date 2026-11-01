@@ -11,7 +11,7 @@ mod source;
 
 pub use code::{
     ClientCall, CodeError, CodeFacts, CodeOptions, Location, Mention, MethodPath, PathReference,
-    extract,
+    SchemaUnion, SchemaUse, extract,
 };
 pub use openapi::{Field, Operation, Parameter, operations};
 pub use paths::{canonical_method, canonical_path, canonical_route};
