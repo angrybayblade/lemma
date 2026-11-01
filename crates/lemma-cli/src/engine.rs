@@ -180,6 +180,7 @@ impl Engine {
             Command::Providers => self.providers(&request, out),
             Command::Daemon(_) => bail!("`lemma daemon` cannot run inside the daemon"),
             Command::Mcp => bail!("`lemma mcp` cannot run inside the daemon"),
+            Command::Verify(_) => bail!("`lemma verify` runs in its own process"),
         }
     }
 

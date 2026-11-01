@@ -78,11 +78,33 @@ pub(crate) enum Command {
     /// Run it from the project directory; tool calls go through the
     /// daemon like any other command.
     Mcp,
+    /// Verify a change across repositories: extract facts from each
+    /// repository in a manifest, evaluate a grammar's requirements, and
+    /// report what the change breaks.
+    ///
+    /// Exits with 4 if any finding is an error.
+    Verify(VerifyArgs),
     /// Run, inspect, stop, or install the background daemon.
     ///
     /// Every other command starts the daemon automatically; run this to keep
     /// it in the foreground, check on it, stop it, or start it at login.
     Daemon(DaemonArgs),
+}
+
+#[derive(Args)]
+pub(crate) struct VerifyArgs {
+    /// The manifest: repositories, their roles and commits, and the change.
+    pub manifest: PathBuf,
+    /// Show why each finding holds.
+    #[arg(long)]
+    pub explain: bool,
+    /// The rule engine: `souffle` or `reference`. Default: Soufflé if it is
+    /// installed, otherwise the reference engine.
+    #[arg(long)]
+    pub engine: Option<String>,
+    /// Also list informational findings, not just their count.
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Args)]
