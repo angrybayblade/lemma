@@ -40,4 +40,17 @@ pub trait SemanticProvider {
     /// signature and documentation. This is display text, often Markdown,
     /// not a structured type.
     fn hover(&mut self, at: SourcePoint<'_>) -> Result<ProviderAnswer<String>, ProviderError>;
+
+    /// Whether the provider only searches projects it has loaded, so a
+    /// project-wide question needs [`SemanticProvider::open_projects`] first.
+    fn is_project_scoped(&self) -> bool {
+        false
+    }
+
+    /// Makes the provider load the projects these files belong to, so a
+    /// following project-wide question covers them. Paths are relative to
+    /// the provider's root.
+    fn open_projects(&mut self, _paths: &[&str]) -> Result<(), ProviderError> {
+        Ok(())
+    }
 }
