@@ -32,6 +32,12 @@ use crate::transport;
 /// How long to wait for a polite shutdown before killing the process.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
+/// LSP's error code for "the document changed while answering; ask again".
+const CONTENT_MODIFIED: i64 = -32801;
+
+/// How long to wait before asking again after `ContentModified`.
+const RETRY_PAUSE: Duration = Duration::from_millis(500);
+
 /// How to start a language server.
 #[derive(Debug, Clone)]
 pub struct LaunchConfig {
@@ -186,8 +192,29 @@ impl LspClient {
     }
 
     /// Sends a request and waits for its answer, up to the configured timeout.
-    pub fn request<R: Request>(&self, params: R::Params) -> Result<R::Result, LspError> {
-        self.connection.request::<R>(params, self.request_timeout)
+    /// A request the server answers with `ContentModified` is asked again
+    /// within that time, as LSP expects: rust-analyzer answers so while it
+    /// is still loading the workspace.
+    pub fn request<R: Request>(&self, params: R::Params) -> Result<R::Result, LspError>
+    where
+        R::Params: Clone,
+    {
+        let deadline = Instant::now() + self.request_timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let answer = self.connection.request::<R>(params.clone(), remaining);
+            let is_stale = matches!(
+                answer,
+                Err(LspError::Server {
+                    code: CONTENT_MODIFIED,
+                    ..
+                })
+            );
+            if !is_stale || Instant::now() + RETRY_PAUSE >= deadline {
+                return answer;
+            }
+            thread::sleep(RETRY_PAUSE);
+        }
     }
 
     /// Sends a notification.
