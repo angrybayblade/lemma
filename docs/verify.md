@@ -137,15 +137,18 @@ Rules run on [Soufflé](https://souffle-lang.github.io) when it is installed (`b
 
 Measured on the generic platform's repositories (November 2026):
 
-- **Coverage.** Against an independent map of which code calls which Gateway route, Lemma found every real call the map lists in the dashboard and the SDKs. It also found 116 SDK calls made through the generated client, which the map cannot see.
-- **Service changes.** All 94 changes to Gateway's specs, each checked against the consumers as they were when it merged. Lemma flagged three. All three were real breaks that the dashboard or SDK had to follow up on, as each PR or its companion PR confirms. It flagged nothing else, and no missed break was found.
+- **Coverage.** Against an independent map of which code calls which route, Lemma found every real call the map lists from the dashboard and the SDKs to Gateway, and all 35 operations Gateway (TypeScript) calls on Worker (Go) through its generated client. It also found 116 SDK calls made through Gateway's generated client, which the map cannot see.
+- **Gateway changes.** All 94 changes to Gateway's specs, each checked against the consumers as they were when it merged. Lemma flagged three. All three were real breaks that the dashboard or SDK had to follow up on, as each PR or its companion PR confirms. It flagged nothing else, and no missed break was found.
+- **Worker changes.** All 156 changes to Worker's spec, checked against Gateway at the same commits. Lemma reported no errors and 8 warnings, none of them a real break. Each was a common field name (`id`, `slug`, `toolkit`) that Gateway, updated in the same commit, uses for its own objects. One change made a field newly required (`auth` on tool sync). With Gateway pinned to the commit before it, Lemma reports that the caller never sends the field.
 - **Consumer changes.** 68 dashboard changes that touch Gateway paths. Lemma flagged one: a call to an endpoint that Gateway only started serving a week later.
+- **Rust.** On Qdrant (actix-web), all 69 operations in its spec are found among the routes Lemma reads from its handlers.
 
-A run takes about 9 seconds with Soufflé.
+A run takes 9 to 20 seconds with Soufflé.
 
 ## Limits of this version
 
 - Only HTTP contracts and OpenAPI specs.
 - Field changes compare names, not types or enum values: a field whose allowed values change (`"prompt"` to `"condition_check"`) is not reported.
 - Calls whose URL is built at run time from values the code does not show are not matched to an operation.
+- "Names a field" cannot tell a field read from a response apart from a consumer's own object that reuses the name, so warnings about common names (`id`, `slug`) can be wrong.
 - Consumers are matched to operations by path and method; a consumer is reported against the operation it was written for (the base snapshot).
