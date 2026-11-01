@@ -137,6 +137,18 @@ claude mcp add lemma -- lemma mcp
 
 Other clients take the same command, `lemma mcp`, started in the project directory.
 
+## `lemma verify <manifest>`
+
+Checks a change across the repositories listed in a manifest and reports what it breaks. See [Verifying changes](verify.md).
+
+| Option | Meaning |
+| --- | --- |
+| `--explain` | Show why each finding holds, down to the facts it rests on. |
+| `--engine <name>` | `souffle` or `reference`. Default: Soufflé if installed, otherwise the reference engine. |
+| `--all` | List informational findings too, not just their count. |
+
+Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
+
 ## `lemma daemon`
 
 Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground.
@@ -180,3 +192,4 @@ There is one daemon per user. It talks to `lemma` over a Unix socket in the temp
 | `1` | Error, such as no index, an unknown symbol, or an invalid configuration file. The message is printed to stderr. |
 | `2` | `refs` only: the name matches several symbols. The candidates are printed. |
 | `3` | `refs` only: no answer. The file is stale, no server is installed, the server failed, or it does not support references. |
+| `4` | `verify` only: a finding is an error. |
