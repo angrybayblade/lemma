@@ -62,6 +62,10 @@ pub struct Repository {
     /// `OpenAPI` documents: a service's contract, or a client's copy of it.
     #[serde(default)]
     pub specs: Vec<String>,
+    /// Whether a service rejects requests with fields it does not know, as
+    /// a strict schema does, even where its spec does not say so.
+    #[serde(default)]
+    pub rejects_unknown_fields: bool,
     /// Directories with a service's route code.
     #[serde(default)]
     pub routes: Vec<String>,
