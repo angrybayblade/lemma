@@ -55,8 +55,11 @@ relations:
     attributes: { chain: Text, file: Text, line: Number }
     sources: [syntax]
   mentions:
-    args: [Text]                       # file
+    args: [Text]                       # the function it is in, or the file outside functions
     attributes: { name: Text }
+    sources: [syntax]
+  in_file:
+    args: [Text, Text]                 # a consumer or function, its file
     sources: [syntax]
   imports:
     args: [Text, Text]                 # file, imported file
@@ -78,9 +81,22 @@ rules:
   - calls(c, op, f, l) :- calls_path(c, "*", p, f, l), operation@base(_, op, _, p).
   - calls(c, op, f, l) :- calls_client(c, ch, f, l), client_operation(_, ch, m, p, _, _), operation@base(_, op, m, p).
 
-  # A file uses a name if it or a file it imports mentions it.
-  - uses(f, n) :- mentions(f, n).
-  - uses(f, n) :- imports(f, g), mentions(g, n).
+  # Every name a file mentions, in or outside its functions.
+  - file_mentions(f, n) :- mentions(f, n).
+  - file_mentions(f, n) :- in_file(s, f), mentions(s, n).
+
+  # Evidence that consumer c uses name n, for findings that rest on a use:
+  # its own function, or declarations outside functions (schemas, types,
+  # constants) in its file or a file its file imports. Other functions do
+  # not count; they often reuse common names for other things.
+  - uses(c, n) :- mentions(c, n).
+  - uses(c, n) :- in_file(c, f), mentions(f, n).
+  - uses(c, n) :- in_file(c, f), imports(f, g), mentions(g, n).
+
+  # A broad search, for findings that rest on a name being absent: anywhere
+  # in the file or the files it imports.
+  - names_anywhere(f, n) :- file_mentions(f, n).
+  - names_anywhere(f, n) :- imports(f, g), file_mentions(g, n).
 
   # What changed between the base and head of the change. Parameter and
   # field changes count only on operations the change kept; a removed
@@ -128,32 +144,32 @@ requirements:
     explain: "{c} calls {op}, which now requires {loc} parameter `{n}` ({f}:{l})"
 
   consumer_misses_new_required_field:
-    when: calls(c, op, f, l), new_required_request_field(op, fld, leaf), !uses(f, leaf)
+    when: calls(c, op, f, l), new_required_request_field(op, fld, leaf), !names_anywhere(f, leaf)
     severity: error
     explain: "{c} calls {op}, which now requires `{fld}`; its code never names `{leaf}` ({f}:{l})"
 
   consumer_sends_removed_parameter:
-    when: calls(c, op, f, l), removed_parameter(op, n, loc), uses(f, n)
+    when: calls(c, op, f, l), removed_parameter(op, n, loc), uses(c, n)
     severity: error
     explain: "{c} calls {op} and uses `{n}`, a {loc} parameter that was removed ({f}:{l})"
 
   consumer_sends_rejected_field:
-    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), uses(f, leaf), rejects_unknown(op)
+    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), uses(c, leaf), rejects_unknown(op)
     severity: error
     explain: "{c} calls {op} and names `{leaf}`; request field `{fld}` was removed and {op} now rejects requests that send it ({f}:{l})"
 
   consumer_uses_removed_request_field:
-    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), uses(f, leaf), !rejects_unknown(op)
+    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), uses(c, leaf), !rejects_unknown(op)
     severity: warning
     explain: "{c} calls {op} and names `{leaf}`; request field `{fld}` was removed or renamed, so {op} now ignores it if sent ({f}:{l})"
 
   consumer_uses_removed_response_field:
-    when: calls(c, op, f, l), removed_response_field(op, fld, leaf), uses(f, leaf)
+    when: calls(c, op, f, l), removed_response_field(op, fld, leaf), uses(c, leaf)
     severity: warning
     explain: "{c} calls {op} and names `{leaf}`; response field `{fld}` was removed or renamed ({f}:{l})"
 
   consumer_calls_changed_operation:
-    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), !uses(f, leaf)
+    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), !names_anywhere(f, leaf)
     severity: info
     explain: "{c} calls {op}, whose request field `{fld}` changed; its code never names `{leaf}` ({f}:{l})"
 

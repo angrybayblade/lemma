@@ -391,9 +391,43 @@ fn consumer_file(
     writer: &mut FactWriter<'_>,
 ) {
     let file_id = format!("{}:{path}", scope.name);
-    let consumer_id = |symbol: Option<&String>| {
-        symbol.map_or_else(|| file_id.clone(), |symbol| format!("{file_id}::{symbol}"))
-    };
+    let mut scopes = BTreeSet::from([file_id.clone()]);
+    write_calls(scope, &file_id, facts, writer, &mut scopes);
+    for mention in &facts.mentions {
+        let mention_scope = consumer_id(&file_id, mention.function.as_ref());
+        writer.add(
+            "mentions",
+            scope.snapshots,
+            &[Arg::Text(&mention_scope), Arg::Text(&mention.name)],
+        );
+        scopes.insert(mention_scope);
+    }
+    for function_scope in &scopes {
+        writer.add(
+            "in_file",
+            scope.snapshots,
+            &[Arg::Text(function_scope), Arg::Text(&file_id)],
+        );
+    }
+    write_imports(scope, path, &file_id, facts, writer);
+}
+
+/// A consumer's id: the function a fact is in, or the file outside functions.
+fn consumer_id(file_id: &str, symbol: Option<&String>) -> String {
+    symbol.map_or_else(
+        || file_id.to_owned(),
+        |symbol| format!("{file_id}::{symbol}"),
+    )
+}
+
+/// Calls by path and through clients, adding each caller to `scopes`.
+fn write_calls(
+    scope: &ConsumerScope<'_>,
+    file_id: &str,
+    facts: &CodeFacts,
+    writer: &mut FactWriter<'_>,
+    scopes: &mut BTreeSet<String>,
+) {
     let calls = facts
         .path_references
         .iter()
@@ -404,34 +438,39 @@ fn consumer_file(
         .filter(|item| item.chain.is_none())
         .map(|item| (&item.method, &item.path, &item.location));
     for (method, call_path, location) in calls.chain(descriptors) {
-        let consumer = consumer_id(location.symbol.as_ref());
+        let consumer = consumer_id(file_id, location.symbol.as_ref());
         let args = [
             Arg::Text(&consumer),
             Arg::Text(method),
             Arg::Text(call_path),
-            Arg::Text(&file_id),
+            Arg::Text(file_id),
             Arg::Number(i64::from(location.line)),
         ];
         writer.add("calls_path", scope.snapshots, &args);
         add_path_family(call_path, scope.snapshots, writer);
+        scopes.insert(consumer);
     }
     for call in &facts.client_calls {
-        let consumer = consumer_id(call.location.symbol.as_ref());
+        let consumer = consumer_id(file_id, call.location.symbol.as_ref());
         let args = [
             Arg::Text(&consumer),
             Arg::Text(&call.chain),
-            Arg::Text(&file_id),
+            Arg::Text(file_id),
             Arg::Number(i64::from(call.location.line)),
         ];
         writer.add("calls_client", scope.snapshots, &args);
+        scopes.insert(consumer);
     }
-    for mention in &facts.mentions {
-        writer.add(
-            "mentions",
-            scope.snapshots,
-            &[Arg::Text(&file_id), Arg::Text(mention)],
-        );
-    }
+}
+
+/// The files a file imports, and for Go the other files of its package.
+fn write_imports(
+    scope: &ConsumerScope<'_>,
+    path: &str,
+    file_id: &str,
+    facts: &CodeFacts,
+    writer: &mut FactWriter<'_>,
+) {
     let package_files = same_package(path, &scope.known);
     let imported = facts
         .imports
@@ -443,7 +482,7 @@ fn consumer_file(
         writer.add(
             "imports",
             scope.snapshots,
-            &[Arg::Text(&file_id), Arg::Text(&target_id)],
+            &[Arg::Text(file_id), Arg::Text(&target_id)],
         );
     }
 }
@@ -759,6 +798,7 @@ mod tests {
             &[Arg::Text("PATCH /api/strict")],
         );
         writer.add("mentions", &BOTH, &[Arg::Text("d:f"), Arg::Text("old")]);
+        writer.add("in_file", &BOTH, &[Arg::Text("d:f::c"), Arg::Text("d:f")]);
 
         let errors = derive(&grammar, "requirement:consumer_sends_rejected_field");
         let warnings = derive(&grammar, "requirement:consumer_uses_removed_request_field");
@@ -767,6 +807,32 @@ mod tests {
         assert_eq!(errors[0][1], "PATCH /api/strict");
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0][1], "PATCH /api/lenient");
+    }
+
+    #[test]
+    fn a_name_in_another_function_of_the_file_is_not_a_use() {
+        let mut grammar = http_contracts();
+        let mut writer = FactWriter::new(&mut grammar);
+        for (scope, name) in [
+            ("d:f::caller", "own"),
+            ("d:f::other", "elsewhere"),
+            ("d:f", "shape"),
+        ] {
+            writer.add("mentions", &BOTH, &[Arg::Text(scope), Arg::Text(name)]);
+            writer.add("in_file", &BOTH, &[Arg::Text(scope), Arg::Text("d:f")]);
+        }
+
+        let uses = derive(&grammar, "uses");
+        let anywhere = derive(&grammar, "names_anywhere");
+
+        let caller_uses: Vec<&str> = uses
+            .iter()
+            .filter(|row| row[0] == "d:f::caller")
+            .map(|row| row[1].as_str())
+            .collect();
+        assert_eq!(caller_uses, ["own", "shape"]);
+        let in_file = anywhere.iter().filter(|row| row[0] == "d:f").count();
+        assert_eq!(in_file, 3);
     }
 
     #[test]
