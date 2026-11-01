@@ -1,0 +1,19 @@
+[package]
+name = "lemma-http"
+description = "Extracts HTTP contract facts: operations from OpenAPI and route code, and the calls consumers make."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+lemma-model.workspace = true
+lemma-syntax.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tree-sitter.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-typescript.workspace = true
