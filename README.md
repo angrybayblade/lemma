@@ -37,6 +37,7 @@ Lemma keeps "no answer" separate from "no references". "No references found" mea
 - [Architecture](docs/architecture.md): the four layers and where each can grow.
 - [JSON output](docs/json-output.md): the output contract for scripts and agents.
 - [Comparison](docs/comparison.md): Lemma against grep, ripgrep, git grep and ast-grep, with caveats.
+- [Agents with and without Lemma](docs/agent-benchmark.md): what Lemma changes for a coding agent, measured.
 - [Performance](docs/performance.md): benchmarks, and the approaches that were tried.
 - [Troubleshooting](docs/troubleshooting.md): failed lookups and missing results.
 
