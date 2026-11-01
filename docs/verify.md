@@ -126,6 +126,16 @@ requirements:
 
 Rules run on [Soufflé](https://souffle-lang.github.io) when it is installed (`brew install souffle`), otherwise on Lemma's built-in reference engine; `--engine souffle` or `--engine reference` picks one. Both give the same results. Soufflé's numbers are 32-bit; Lemma reports values that do not fit instead of truncating them.
 
+## How well it works
+
+Measured on the generic platform's repositories (November 2026):
+
+- **Coverage.** Against an independent map of which code calls which Gateway route, Lemma found every real call the map lists in the dashboard and the SDKs. It also found 116 SDK calls made through the generated client, which the map cannot see.
+- **Service changes.** All 94 changes to Gateway's specs, each checked against the consumers as they were when it merged. Lemma flagged three. All three were real breaks that the dashboard or SDK had to follow up on, as each PR or its companion PR confirms. It flagged nothing else, and no missed break was found.
+- **Consumer changes.** 68 dashboard changes that touch Gateway paths. Lemma flagged one: a call to an endpoint that Gateway only started serving a week later.
+
+A run takes about 9 seconds with Soufflé.
+
 ## Limits of this version
 
 - Only HTTP contracts, TypeScript and Python consumers, and OpenAPI specs.
