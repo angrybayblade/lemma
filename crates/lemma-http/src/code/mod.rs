@@ -8,8 +8,11 @@
 
 mod go;
 mod rust;
+mod zod;
 
 use std::collections::BTreeMap;
+
+pub use zod::{SchemaUnion, SchemaUse};
 
 use lemma_model::{Language, Symbol, SymbolKind};
 use lemma_syntax::Extractor;
@@ -85,8 +88,15 @@ pub struct CodeFacts {
     /// Names the file uses as object keys, member names, keyword arguments
     /// or dictionary keys: the fields it may send or read. Sorted, unique.
     pub mentions: Vec<Mention>,
-    /// Relative import specifiers, as written (`../types/x`, `.models`).
+    /// Relative and path-alias import specifiers, as written (`../types/x`,
+    /// `.models`, `@/src/lib/x`).
     pub imports: Vec<String>,
+    /// The schemas routes use for their request body and query.
+    pub schema_uses: Vec<SchemaUse>,
+    /// Schemas defined here that reject keys they do not list.
+    pub strict_schemas: Vec<String>,
+    /// Unions of schemas defined here.
+    pub schema_unions: Vec<SchemaUnion>,
 }
 
 /// What to look for.
@@ -166,6 +176,10 @@ pub fn extract(
     facts.mentions.dedup();
     facts.imports.sort();
     facts.imports.dedup();
+    facts.schema_uses.sort();
+    facts.strict_schemas.sort();
+    facts.strict_schemas.dedup();
+    facts.schema_unions.sort();
     Ok(facts)
 }
 
@@ -232,6 +246,7 @@ impl Walk<'_> {
     fn visit(&mut self, node: Node<'_>) {
         match node.kind() {
             "object" => self.object(node),
+            "variable_declarator" => self.zod_definition(node),
             "call_expression" | "call" => self.call(node),
             "import_statement" | "import_from_statement" => self.import(node),
             "short_var_declaration" | "assignment_statement" => self.go_router_prefix(node),
@@ -251,6 +266,7 @@ impl Walk<'_> {
         let mut method = None;
         let mut path = None;
         let mut chain = None;
+        let mut request = None;
         let mut cursor = node.walk();
         for pair in node
             .named_children(&mut cursor)
@@ -266,6 +282,7 @@ impl Walk<'_> {
                 "method" => method = self.string_value(value),
                 "path" | "url" => path = Some(value),
                 "chain" => chain = self.string_list(value),
+                "request" => request = Some(value),
                 _ => {}
             }
         }
@@ -273,6 +290,9 @@ impl Walk<'_> {
         let Some(template) = self.string_value(path_node) else {
             return;
         };
+        if let (Some(method), Some(request)) = (method.as_deref(), request) {
+            self.zod_route_request(method, &template, request);
+        }
         self.add_method_path(method.as_deref(), &template, chain, path_node);
     }
 
@@ -470,7 +490,12 @@ impl Walk<'_> {
         if is_client_module {
             self.client_imports(node);
         }
-        if specifier.starts_with('.') {
+        // Relative imports, and the path aliases projects map to their own
+        // source (`@/src/lib/x`, `~/server/x`).
+        let is_local = [".", "@/", "~/"]
+            .iter()
+            .any(|prefix| specifier.starts_with(prefix));
+        if is_local {
             self.facts.imports.push(specifier);
         }
     }
@@ -903,6 +928,62 @@ impl Client {
             assert!(names(&found).contains(&name), "{name}");
         }
         assert_eq!(found.imports, ["crate::models"]);
+    }
+
+    #[test]
+    fn zod_strictness_and_route_schemas() {
+        let source = r"
+const Lenient = z.object({ a: z.string() })
+const Strict = z.object({ a: z.string() }).strict().openapi('Strict')
+const Loosened = z.object({}).strict().passthrough()
+const Either = z.discriminatedUnion('kind', [Strict, z.object({}).strict()])
+const Mixed = z.union([Strict, z.object({})])
+const Route = router.createRoute({
+  method: 'patch',
+  path: '/api/x/{id}',
+  request: {
+    body: { content: { 'application/json': { schema: Either } } },
+    query: z.object({ q: z.string() }).strict(),
+  },
+})
+";
+
+        let found = facts("routes.ts", source);
+
+        assert_eq!(found.strict_schemas, ["Strict"]);
+        let unions: Vec<(&str, Vec<&str>)> = found
+            .schema_unions
+            .iter()
+            .map(|union| {
+                (
+                    union.name.as_str(),
+                    union.members.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            unions,
+            [("Either", vec!["Strict"]), ("Mixed", vec!["Strict", "*"])]
+        );
+        let uses: Vec<(&str, &str, Option<&str>, bool)> = found
+            .schema_uses
+            .iter()
+            .map(|used| {
+                (
+                    used.path.as_str(),
+                    used.part.as_str(),
+                    used.schema.as_deref(),
+                    used.is_inline_strict,
+                )
+            })
+            .collect();
+        assert_eq!(
+            uses,
+            [
+                ("/api/x/{}", "body", Some("Either"), false),
+                ("/api/x/{}", "query", None, true)
+            ]
+        );
     }
 
     #[test]

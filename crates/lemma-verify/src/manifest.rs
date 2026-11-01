@@ -69,6 +69,15 @@ pub struct Repository {
     /// Directories with a service's route code.
     #[serde(default)]
     pub routes: Vec<String>,
+    /// Path prefixes a service also serves its routes under, such as
+    /// `/api/v3/` routes published as `/api/v3.1/`: each route counts at
+    /// its own path and at the aliased one.
+    #[serde(default)]
+    pub route_aliases: BTreeMap<String, String>,
+    /// Further directories with schemas a service's routes import, such as
+    /// shared zod schemas, read to tell which reject unknown keys.
+    #[serde(default)]
+    pub schemas: Vec<String>,
     /// Files with a client's operation tables.
     #[serde(default)]
     pub tables: Vec<String>,

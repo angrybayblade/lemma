@@ -20,6 +20,7 @@ const CODE_EXTENSIONS: [&str; 11] = [
 ];
 
 /// A value for a fact, before interning.
+#[derive(Clone, Copy)]
 enum Arg<'a> {
     Text(&'a str),
     Number(i64),
@@ -193,27 +194,141 @@ fn service(
     if !snapshots.contains(&"head") || repository.routes.is_empty() {
         return Ok(());
     }
-    let files = lemma_http::read_files(
-        &repository.path,
-        commit,
-        &repository.routes,
-        &CODE_EXTENSIONS,
-    )?;
+    let directories: Vec<String> = repository
+        .routes
+        .iter()
+        .chain(&repository.schemas)
+        .cloned()
+        .collect();
+    let files = lemma_http::read_files(&repository.path, commit, &directories, &CODE_EXTENSIONS)?;
+    let scope = ServiceScope {
+        name,
+        service: service_name,
+        known: files.iter().map(|file| file.path.clone()).collect(),
+        aliases: &repository.route_aliases,
+    };
     for file in files.iter().filter(|file| !is_test_file(&file.path)) {
         let facts = code_facts(file, &CodeOptions::default(), extractor)?;
+        schema_facts(&scope, &file.path, &facts, writer);
+        let is_route_file = repository
+            .routes
+            .iter()
+            .any(|directory| file.path.starts_with(directory.as_str()));
+        if !is_route_file {
+            continue;
+        }
         for route in facts.method_paths.iter().filter(|item| item.method != "*") {
-            let line = i64::from(route.location.line);
-            let args = [
-                Arg::Text(service_name),
-                Arg::Text(&route.method),
-                Arg::Text(&route.path),
-                Arg::Text(&file.path),
-                Arg::Number(line),
-            ];
-            writer.add("route", &["head"], &args);
+            route_facts(&scope, &file.path, route, writer);
         }
     }
     Ok(())
+}
+
+/// What every route file of one service shares.
+struct ServiceScope<'a> {
+    name: &'a str,
+    service: &'a str,
+    known: BTreeSet<String>,
+    aliases: &'a BTreeMap<String, String>,
+}
+
+impl ServiceScope<'_> {
+    /// A route's path and the paths its prefixes are aliased to.
+    fn route_paths(&self, path: &str) -> Vec<String> {
+        let mut paths = vec![path.to_owned()];
+        for (from, to) in self.aliases {
+            if let Some(rest) = path.strip_prefix(from.as_str()) {
+                paths.push(format!("{to}{rest}"));
+            }
+        }
+        paths
+    }
+}
+
+/// Which schemas a route file's routes use, which schemas it defines strict
+/// or as unions, and the files it imports, where its schemas may be defined.
+fn schema_facts(
+    scope: &ServiceScope<'_>,
+    path: &str,
+    facts: &CodeFacts,
+    writer: &mut FactWriter<'_>,
+) {
+    let file_id = format!("{}:{path}", scope.name);
+    for used in &facts.schema_uses {
+        for path in scope.route_paths(&used.path) {
+            schema_use_facts(scope, &file_id, used, &path, writer);
+        }
+    }
+    for schema in &facts.strict_schemas {
+        writer.add(
+            "strict_schema",
+            &["head"],
+            &[Arg::Text(&file_id), Arg::Text(schema)],
+        );
+    }
+    for union in &facts.schema_unions {
+        for member in &union.members {
+            let args = [
+                Arg::Text(&file_id),
+                Arg::Text(&union.name),
+                Arg::Text(member),
+            ];
+            writer.add("union_member", &["head"], &args);
+        }
+    }
+    for specifier in &facts.imports {
+        if let Some(target) = resolve_import(path, specifier, &scope.known) {
+            let target_id = format!("{}:{target}", scope.name);
+            writer.add(
+                "imports",
+                &["head"],
+                &[Arg::Text(&file_id), Arg::Text(&target_id)],
+            );
+        }
+    }
+}
+
+/// The schema one route part uses, at one of the route's paths.
+fn schema_use_facts(
+    scope: &ServiceScope<'_>,
+    file_id: &str,
+    used: &lemma_http::SchemaUse,
+    path: &str,
+    writer: &mut FactWriter<'_>,
+) {
+    let route = [
+        Arg::Text(scope.service),
+        Arg::Text(&used.method),
+        Arg::Text(path),
+        Arg::Text(&used.part),
+    ];
+    if let Some(schema) = &used.schema {
+        let mut args = route.to_vec();
+        args.extend([Arg::Text(file_id), Arg::Text(schema)]);
+        writer.add("route_schema", &["head"], &args);
+    } else if used.is_inline_strict {
+        writer.add("inline_strict_route", &["head"], &route);
+    }
+}
+
+/// A route a service serves, at its path and any aliased path.
+fn route_facts(
+    scope: &ServiceScope<'_>,
+    file: &str,
+    route: &lemma_http::MethodPath,
+    writer: &mut FactWriter<'_>,
+) {
+    let line = i64::from(route.location.line);
+    for path in scope.route_paths(&route.path) {
+        let args = [
+            Arg::Text(scope.service),
+            Arg::Text(&route.method),
+            Arg::Text(&path),
+            Arg::Text(file),
+            Arg::Number(line),
+        ];
+        writer.add("route", &["head"], &args);
+    }
 }
 
 fn operation_facts(
@@ -618,6 +733,12 @@ fn resolve_import(file: &str, specifier: &str, known: &BTreeSet<String>) -> Opti
     if has_extension(file, "rs") {
         return rust_module(file, specifier, known);
     }
+    if let Some(rest) = specifier
+        .strip_prefix("@/")
+        .or_else(|| specifier.strip_prefix("~/"))
+    {
+        return resolve_alias(file, rest, known);
+    }
     let directory = Path::new(file).parent().unwrap_or(Path::new(""));
     let is_python = Path::new(file)
         .extension()
@@ -627,8 +748,13 @@ fn resolve_import(file: &str, specifier: &str, known: &BTreeSet<String>) -> Opti
     } else {
         join(directory, specifier.trim_end_matches(".js"))?
     };
+    module_file(&base, known)
+}
+
+/// The file a module path names, trying source extensions and index files.
+fn module_file(base: &str, known: &BTreeSet<String>) -> Option<String> {
     let candidates = [
-        base.clone(),
+        base.to_owned(),
         format!("{base}.ts"),
         format!("{base}.tsx"),
         format!("{base}.js"),
@@ -642,6 +768,23 @@ fn resolve_import(file: &str, specifier: &str, known: &BTreeSet<String>) -> Opti
     candidates
         .into_iter()
         .find(|candidate| known.contains(candidate))
+}
+
+/// A path alias such as `@/src/lib/x` or `~/server/x`. Projects map these
+/// to their own root or its `src` in `tsconfig.json`; rather than read it,
+/// each directory above the importing file is tried as that root, nearest
+/// first.
+fn resolve_alias(file: &str, rest: &str, known: &BTreeSet<String>) -> Option<String> {
+    let mut directory = Path::new(file).parent();
+    while let Some(root) = directory {
+        for base in [root.join(rest), root.join("src").join(rest)] {
+            if let Some(found) = module_file(&base.to_string_lossy(), known) {
+                return Some(found);
+            }
+        }
+        directory = root.parent();
+    }
+    None
 }
 
 /// The file of the module a Rust `use` path names: `crate::models::Tool`
@@ -816,6 +959,63 @@ mod tests {
     }
 
     #[test]
+    fn strict_schemas_reach_routes_through_imports_and_unions() {
+        let mut grammar = http_contracts();
+        let mut writer = FactWriter::new(&mut grammar);
+        let route = |path, part, schema| {
+            [
+                Arg::Text("apollo"),
+                Arg::Text("POST"),
+                Arg::Text(path),
+                Arg::Text(part),
+                Arg::Text("p:routes.ts"),
+                Arg::Text(schema),
+            ]
+        };
+        writer.add(
+            "route_schema",
+            &["head"],
+            &route("/api/a", "body", "Imported"),
+        );
+        writer.add(
+            "route_schema",
+            &["head"],
+            &route("/api/b", "body", "Either"),
+        );
+        writer.add("route_schema", &["head"], &route("/api/c", "body", "Mixed"));
+        writer.add(
+            "imports",
+            &["head"],
+            &[Arg::Text("p:routes.ts"), Arg::Text("p:_schemas.ts")],
+        );
+        writer.add(
+            "strict_schema",
+            &["head"],
+            &[Arg::Text("p:_schemas.ts"), Arg::Text("Imported")],
+        );
+        for (union, member) in [
+            ("Either", "Imported"),
+            ("Mixed", "Imported"),
+            ("Mixed", "*"),
+        ] {
+            writer.add(
+                "union_member",
+                &["head"],
+                &[
+                    Arg::Text("p:routes.ts"),
+                    Arg::Text(union),
+                    Arg::Text(member),
+                ],
+            );
+        }
+
+        let strict = derive(&grammar, "strict_route");
+
+        let paths: Vec<&str> = strict.iter().map(|row| row[2].as_str()).collect();
+        assert_eq!(paths, ["/api/a", "/api/b"]);
+    }
+
+    #[test]
     fn a_name_in_another_function_of_the_file_is_not_a_use() {
         let mut grammar = http_contracts();
         let mut writer = FactWriter::new(&mut grammar);
@@ -910,6 +1110,28 @@ mod tests {
         assert_eq!(
             resolve_import("svc/src/api/mod.rs", "self::types", &files).as_deref(),
             Some("svc/src/api/types.rs")
+        );
+    }
+
+    #[test]
+    fn path_aliases_resolve_from_the_nearest_project_root() {
+        let files = known(&[
+            "apps/apollo/src/lib/schemas.ts",
+            "dashboard/src/server/trpc.ts",
+        ]);
+
+        assert_eq!(
+            resolve_import(
+                "apps/apollo/src/pages/api/x.ts",
+                "@/src/lib/schemas",
+                &files
+            )
+            .as_deref(),
+            Some("apps/apollo/src/lib/schemas.ts")
+        );
+        assert_eq!(
+            resolve_import("dashboard/src/app/page.tsx", "~/server/trpc", &files).as_deref(),
+            Some("dashboard/src/server/trpc.ts")
         );
     }
 

@@ -70,6 +70,22 @@ relations:
   rejects_unknown_fields:
     args: [Text]                       # service that rejects unknown fields whatever its spec says
     sources: [declared]
+  route_schema:
+    args: [Text]                       # service
+    attributes: { method: Text, path: Text, part: Text, file: Text, schema: Text }
+    sources: [syntax]                  # the named schema a route uses for its body or query
+  inline_strict_route:
+    args: [Text]                       # service
+    attributes: { method: Text, path: Text, part: Text }
+    sources: [syntax]                  # a route part whose schema, written in place, is strict
+  strict_schema:
+    args: [Text]                       # file
+    attributes: { name: Text }
+    sources: [syntax]                  # a schema defined there that rejects unknown keys
+  union_member:
+    args: [Text]                       # file
+    attributes: { union: Text, member: Text }
+    sources: [syntax]                  # `*` for a member written in place that is not strict
   path_family:
     args: [Text]                       # path
     attributes: { family: Text }       # its first two segments, /api/v3.1
@@ -108,10 +124,26 @@ rules:
   - removed_request_field(op, fld, leaf) :- request_field@base(op, fld, leaf), !request_field@head(op, fld, leaf), kept_operation(op).
   - new_required_request_field(op, fld, leaf) :- required_request_field@head(op, fld, leaf), !required_request_field@base(op, fld, leaf), kept_operation(op).
   - removed_response_field(op, fld, leaf) :- response_field@base(op, fld, leaf), !response_field@head(op, fld, leaf), kept_operation(op).
-  # Operations that fail a request sending a field they do not know, after
-  # the change: by their spec, or because their service says so.
+  # Route parts whose schema rejects unknown keys (zod's `.strict()`): a
+  # strict schema defined in the route's file or a file it imports, or a
+  # union of them.
+  - strict_in_scope(f, n) :- strict_schema(f, n).
+  - strict_in_scope(f, n) :- imports(f, g), strict_schema(g, n).
+  - loose_union(f, u) :- union_member(f, u, m), !strict_in_scope(f, m).
+  - strict_definition(f, n) :- strict_in_scope(f, n).
+  - strict_definition(f, u) :- union_member(f, u, _), !loose_union(f, u).
+  - strict_definition(f, u) :- imports(f, g), union_member(g, u, _), !loose_union(g, u).
+  - strict_route(s, m, p, part) :- route_schema(s, m, p, part, f, n), strict_definition(f, n).
+  - strict_route(s, m, p, part) :- inline_strict_route(s, m, p, part).
+
+  # Operations that fail a request sending a field or parameter they do not
+  # know, after the change: by their spec, their route code, or because
+  # their service says so.
   - rejects_unknown(op) :- strict_request@head(op).
+  - rejects_unknown(op) :- operation@head(s, op, m, p), strict_route(s, m, p, "body").
   - rejects_unknown(op) :- operation@head(s, op, _, _), rejects_unknown_fields(s).
+  - rejects_unknown_parameter(op) :- operation@head(s, op, m, p), strict_route(s, m, p, "query").
+  - rejects_unknown_parameter(op) :- operation@head(s, op, _, _), rejects_unknown_fields(s).
 
   # Calls a changed consumer adds to paths of a service's family (such as
   # /api/v3.1) that the service does not serve. Calls that were already
@@ -126,6 +158,9 @@ rules:
   # Spec against code, in the head snapshot.
   - specified(s, m, p) :- operation(s, _, m, p).
   - routed(s, m, p) :- route(s, m, p, _, _).
+  # A route declared once may be served at several paths (route aliases);
+  # it is in the spec if any of them is.
+  - specified_route(s, m, f, l) :- route(s, m, p, f, l), specified(s, m, p).
 
 requirements:
   consumer_calls_unserved_operation:
@@ -149,9 +184,14 @@ requirements:
     explain: "{c} calls {op}, which now requires `{fld}`; its code never names `{leaf}` ({f}:{l})"
 
   consumer_sends_removed_parameter:
-    when: calls(c, op, f, l), removed_parameter(op, n, loc), uses(c, n)
+    when: calls(c, op, f, l), removed_parameter(op, n, loc), uses(c, n), rejects_unknown_parameter(op)
     severity: error
-    explain: "{c} calls {op} and uses `{n}`, a {loc} parameter that was removed ({f}:{l})"
+    explain: "{c} calls {op} and uses `{n}`, a {loc} parameter that was removed and that {op} now rejects ({f}:{l})"
+
+  consumer_sends_ignored_parameter:
+    when: calls(c, op, f, l), removed_parameter(op, n, loc), uses(c, n), !rejects_unknown_parameter(op)
+    severity: warning
+    explain: "{c} calls {op} and uses `{n}`, a {loc} parameter that was removed, so {op} now ignores it if sent ({f}:{l})"
 
   consumer_sends_rejected_field:
     when: calls(c, op, f, l), removed_request_field(op, fld, leaf), uses(c, leaf), rejects_unknown(op)
@@ -185,6 +225,6 @@ requirements:
 
   # Informational: public specs leave out internal routes on purpose.
   route_not_in_spec:
-    when: route(s, m, p, f, l), !specified(s, m, p)
+    when: route(s, m, p, f, l), !specified_route(s, m, f, l)
     severity: info
     explain: "{s} serves {m} {p} ({f}:{l}) but its spec does not declare it"
