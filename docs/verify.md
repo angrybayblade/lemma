@@ -79,7 +79,7 @@ repositories:
 | `generated_from` | OpenAPI documents a client is generated from, one function per operation named after its `operationId` in camel case (`get_pollRevokeJob` is `getPollRevokeJob`). |
 | `client_modules` | Modules of generated clients, such as `generated/thermos`: functions a consumer imports from them are client calls. |
 
-One clone can appear under several names, such as a service and a consumer of another service in the same repository. Every entry for the changed repository's clone is read at both commits of the change.
+One clone can appear under several names, such as a service and a consumer of another service in the same repository. Every entry for the changed repository's clone is read at both commits of the change, unless it sets its own `commit`: pinning a consumer to an older commit asks how the change meets code from before it.
 
 ## What is extracted
 
