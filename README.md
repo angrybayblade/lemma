@@ -18,6 +18,7 @@ lemma definition src/app.py:12:5        # where the symbol used there is defined
 lemma implementations Shape.area        # what implements or overrides it
 lemma signature Router.delete           # declaration and the server's description
 lemma providers                         # which servers are installed and tried
+lemma verify change.yaml                # what a change breaks in the repositories that depend on it
 ```
 
 Add `--json` to any command for machine-readable output. For agents, `lemma mcp` serves the same commands as MCP tools; in Claude Code, `claude mcp add lemma -- lemma mcp` adds it to a project.
@@ -38,6 +39,7 @@ Lemma keeps "no answer" separate from "no references". "No references found" mea
 - [JSON output](docs/json-output.md): the output contract for scripts and agents.
 - [Comparison](docs/comparison.md): Lemma against grep, ripgrep, git grep and ast-grep, with caveats.
 - [Agents with and without Lemma](docs/agent-benchmark.md): what Lemma changes for a coding agent, measured.
+- [Verifying changes](docs/verify.md): check a change against every repository that depends on it.
 - [Performance](docs/performance.md): benchmarks, and the approaches that were tried.
 - [Troubleshooting](docs/troubleshooting.md): failed lookups and missing results.
 
@@ -52,6 +54,11 @@ Lemma keeps "no answer" separate from "no references". "No references found" mea
 | `lemma-store` | The `FactStore` trait and its SQLite storage format |
 | `lemma-index` | Walking, hashing, and snapshotting a directory |
 | `lemma-query` | The operations: symbols, outline, references, definitions, implementations, signatures |
+| `lemma-logic` | Lemma's Datalog: programs, facts, the `Engine` trait and a reference engine |
+| `lemma-souffle` | Soufflé as an engine |
+| `lemma-grammar` | User-defined grammars (YAML) compiled to Datalog |
+| `lemma-http` | HTTP contract facts from OpenAPI documents and code |
+| `lemma-verify` | Verifying a change across the repositories in a manifest |
 | `lemma-cli` | The `lemma` command, its background daemon, and the MCP server |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions.
