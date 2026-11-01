@@ -15,6 +15,7 @@ mod mcp;
 mod output;
 #[cfg(unix)]
 mod service;
+mod verify;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -30,6 +31,9 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Command::Daemon(args) = &cli.command {
         return run_daemon(args);
+    }
+    if let Command::Verify(args) = &cli.command {
+        return verify::run(args, cli.json);
     }
     if matches!(cli.command, Command::Mcp) {
         return run_mcp(!cli.no_daemon && !daemon_disabled_by_environment());
