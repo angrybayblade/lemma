@@ -9,6 +9,7 @@ from lemmabench.patches import parse_diff
 from lemmabench.runner import parse_resources
 from lemmabench.scoring import score
 from lemmabench.tasks import IMPACT, LOCALIZATION, Source, Task
+from lemmabench.truth import combine
 
 DIFF = """diff --git a/src/router.py b/src/router.py
 index 1111111..2222222 100644
@@ -110,10 +111,41 @@ class ScoringTests(unittest.TestCase):
 
         self.assertEqual(matches["location"].f1, 0.5)
 
+    def test_unknown_lines_count_neither_way(self):
+        gold = {"locations": ["a.py:3"], "unknown": ["b.py:5"]}
+        answer = {"locations": [{"path": "a.py", "line": 3}, {"path": "b.py", "line": 5}]}
+
+        matches = score(task(IMPACT, gold), answer)
+
+        self.assertEqual(matches["location"].precision, 1.0)
+
     def test_a_missing_answer_scores_zero(self):
         matches = score(task(IMPACT, {"locations": ["a.py:3"]}), None)
 
         self.assertEqual(matches["location"].f1, 0.0)
+
+
+class TruthTests(unittest.TestCase):
+    symbol = {"path": "a.ts", "line": 0}
+
+    def test_confirmed_lines_are_references_and_import_only_lines_unknown(self):
+        found = [
+            {"path": "a.ts", "line": 0},
+            {"path": "b.ts", "line": 4},
+            {"path": "c.ts", "line": 1},
+            {"path": "d.ts", "line": 2},
+        ]
+        per_server = [[True, True, "unresolved", False], [True, True, True, "unresolved"]]
+
+        checked = combine(self.symbol, found, per_server)
+
+        self.assertEqual(checked.references, [("b.ts", 5)])
+        self.assertEqual(checked.unknown, [("c.ts", 2)])
+
+    def test_a_missing_answer_drops_the_symbol(self):
+        found = [{"path": "b.ts", "line": 4}]
+
+        self.assertIsNone(combine(self.symbol, found, [[None]]))
 
 
 class EventTests(unittest.TestCase):

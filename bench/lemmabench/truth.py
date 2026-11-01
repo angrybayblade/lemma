@@ -18,7 +18,7 @@ import random
 import sqlite3
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .gold import is_test_path
@@ -79,6 +79,9 @@ class Checked:
     references: list[tuple[str, int]]
     """(path, line from 1), the definition excluded."""
     occurrences: int
+    unknown: list[tuple[str, int]] = field(default_factory=list)
+    """Lines no oracle rejected but some could not resolve past an import;
+    answering them is neither required nor penalized."""
 
 
 def candidate_symbols(db: Path, language: str, seed: int) -> list[dict]:
@@ -163,18 +166,39 @@ def check_symbols(root: Path, db: Path, language: str, criteria: Criteria, seed:
     checked = []
     for index, (symbol, found) in enumerate(picked):
         per_server = [server[index] for server in verdicts]
-        if any(verdict is None for server in per_server for verdict in server):
-            continue
-        references = sorted(
-            (candidate["path"], candidate["line"] + 1)
-            for position, candidate in enumerate(found)
-            if all(server[position] for server in per_server)
-            and (candidate["path"], candidate["line"]) != (symbol["path"], symbol["line"])
-        )
-        references = sorted(set(references))
-        if criteria.min_references <= len(references) <= criteria.max_references:
-            checked.append(Checked(symbol, references, len(found)))
+        result = combine(symbol, found, per_server)
+        if result and criteria.min_references <= len(result.references) <= criteria.max_references:
+            checked.append(result)
     return checked[: criteria.count]
+
+
+def combine(symbol: dict, found: list[dict], per_server: list[list]) -> Checked | None:
+    """Lines every server confirms are references; lines a server could
+    only follow to an import are unknown. `None` if a server failed to
+    answer for any candidate."""
+    if any(verdict is None for server in per_server for verdict in server):
+        return None
+    definition = (symbol["path"], symbol["line"])
+    references, unknown = set(), set()
+    for position, candidate in enumerate(found):
+        if (candidate["path"], candidate["line"]) == definition:
+            continue
+        verdicts = [server[position] for server in per_server]
+        line = (candidate["path"], candidate["line"] + 1)
+        if all(verdict is True for verdict in verdicts):
+            references.add(line)
+        elif False not in verdicts:
+            unknown.add(line)
+    # A line with a confirmed occurrence is a reference, whatever else is on it.
+    return Checked(symbol, sorted(references), len(found), sorted(unknown - references))
+
+
+def recheck(root: Path, language: str, symbol: dict) -> Checked | None:
+    """A fresh answer key for one symbol, as `check_symbols` would build it."""
+    found = occurrences(root, language, symbol["name"])
+    job = {"target": {"path": symbol["path"], "line": symbol["line"], "column": symbol["column"]}, "candidates": found}
+    verdicts = ask_oracles(root, language, [job])
+    return combine(symbol, found, [server[0] for server in verdicts])
 
 
 def index_snapshot(lemma: Path, db: Path, root: Path) -> None:

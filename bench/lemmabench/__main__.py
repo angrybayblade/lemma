@@ -20,7 +20,7 @@ from . import report as reporting
 from .runner import ARMS, BASELINE, Limits, Setup, execute
 from .select import impact_tasks, localization_candidates
 from .tasks import Source, Task, load_tasks, save_tasks
-from .truth import Criteria
+from .truth import Criteria, recheck
 
 HERE = Path(__file__).resolve().parent.parent
 DEFAULT_TASKS = HERE / "tasks"
@@ -43,6 +43,9 @@ def main() -> int:
     select.add_argument("--corpus-commits", type=Path, default=Path.home() / "bench" / "corpora.txt")
     select.add_argument("--impact-corpora", default="django:python,nest:typescript,terraform:go")
     select.add_argument("--seed", type=int, default=11)
+
+    rekey = commands.add_parser("rekey", help="recompute impact answer keys for the existing tasks")
+    rekey.add_argument("--only", default="", help="comma-separated task ids; default all impact tasks")
 
     prepare = commands.add_parser("prepare", help="snapshot every task")
     prepare.add_argument("--lemma", type=Path, required=True)
@@ -70,7 +73,14 @@ def main() -> int:
     )
 
     args = parser.parse_args()
-    return {"select": cmd_select, "prepare": cmd_prepare, "run": cmd_run, "report": cmd_report}[args.command](args)
+    commands_by_name = {
+        "select": cmd_select,
+        "rekey": cmd_rekey,
+        "prepare": cmd_prepare,
+        "run": cmd_run,
+        "report": cmd_report,
+    }
+    return commands_by_name[args.command](args)
 
 
 def all_tasks(directory: Path) -> list[Task]:
@@ -111,6 +121,31 @@ def select_localization_tasks(cache: Path, lemma: Path, per_language: int, seed:
             kept += 1
         print(f"{language}: {kept} localization tasks", file=sys.stderr)
     return chosen
+
+
+def cmd_rekey(args: argparse.Namespace) -> int:
+    """New answer keys for impact tasks, from the same symbols, so earlier
+    rounds can be rescored without running the agents again."""
+    path = args.tasks / "impact.jsonl"
+    tasks = load_tasks(path)
+    wanted = set(args.only.split(",")) if args.only else {task.id for task in tasks}
+    for task in tasks:
+        if task.id not in wanted:
+            continue
+        root = preparing.make_snapshot(args.home / "cache", task)
+        checked = recheck(root, task.language, task.origin["symbol"])
+        if checked is None:
+            print(f"{task.id}: an oracle did not answer; key kept", file=sys.stderr)
+            continue
+        before = len(task.gold["locations"])
+        task.gold["locations"] = [f"{p}:{n}" for p, n in checked.references]
+        task.gold["unknown"] = [f"{p}:{n}" for p, n in checked.unknown]
+        print(
+            f"{task.id}: {before} -> {len(checked.references)} references, {len(checked.unknown)} unknown",
+            file=sys.stderr,
+        )
+    save_tasks(path, tasks)
+    return 0
 
 
 def cmd_prepare(args: argparse.Namespace) -> int:
