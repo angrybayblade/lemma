@@ -75,15 +75,19 @@ repositories:
 | `tables` | Files with a client's operation tables (objects or calls naming a method, a path and a method chain). |
 | `include` | Directories with a consumer's code; the whole repository if absent. |
 | `client_receivers` | Names a consumer calls its client through, such as `client`. |
+| `generated_from` | OpenAPI documents a client is generated from, one function per operation named after its `operationId` in camel case (`get_pollExportJob` is `getPollExportJob`). |
+| `client_modules` | Modules of generated clients, such as `generated/worker`: functions a consumer imports from them are client calls. |
+
+One clone can appear under several names, such as a service and a consumer of another service in the same repository. Every entry for the changed repository's clone is read at both commits of the change.
 
 ## What is extracted
 
 | From | Facts |
 | --- | --- |
 | A service's OpenAPI documents, at both commits | operations, parameters (and whether required), request and response fields as dotted paths (`hooks[].handler.action`) |
-| A service's route code | routes declared with a method and path |
+| A service's route code | routes declared with a method and path: TypeScript objects and calls, Go `net/http`, gorilla/mux, chi, gin and echo, Rust axum, actix-web and Rocket |
 | A client's tables and spec | which method chain calls which operation; the parameters it declares |
-| A consumer's code (TypeScript, Python) | strings naming API paths, with the HTTP method where the call shows it; calls through its client (`this.client.sessionOptions.list()`); the field names each file uses; its relative imports |
+| A consumer's code (TypeScript, JavaScript, Python, Go, Rust) | strings naming API paths, with the HTTP method where the call shows it; calls through its client (`this.client.sessionOptions.list()`); the field names each file uses; its relative imports |
 
 Paths compare in one form, so `{id}`, `${id}`, `:id` and `[id]` are the same parameter. Test files in consumers are skipped.
 
@@ -138,7 +142,7 @@ A run takes about 9 seconds with Soufflé.
 
 ## Limits of this version
 
-- Only HTTP contracts, TypeScript and Python consumers, and OpenAPI specs.
+- Only HTTP contracts and OpenAPI specs.
 - Field changes compare names, not types or enum values: a field whose allowed values change (`"prompt"` to `"condition_check"`) is not reported.
 - Calls whose URL is built at run time from values the code does not show are not matched to an operation.
 - Consumers are matched to operations by path and method; a consumer is reported against the operation it was written for (the base snapshot).
