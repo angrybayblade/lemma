@@ -58,7 +58,8 @@ pub struct Parameter {
 pub struct Field {
     /// Dotted path, with `[]` for array items.
     pub path: String,
-    /// Whether it and every object containing it are required.
+    /// Whether a body that is sent must contain it: it and every object
+    /// containing it are required.
     pub required: bool,
 }
 
@@ -127,13 +128,12 @@ fn request_fields(document: &Json, operation: &Json) -> Vec<Field> {
     else {
         return Vec::new();
     };
-    let body_required = body
-        .get("required")
-        .and_then(Json::as_bool)
-        .unwrap_or(false);
+    // A field the schema requires must be in any body sent, whether or not
+    // the body itself is (`requestBody.required`): generators such as
+    // zod-openapi leave that flag out even where the schema requires fields.
     let mut fields = Vec::new();
     if let Some(schema) = json_schema(body) {
-        flatten(document, schema, &Place::root(body_required), &mut fields);
+        flatten(document, schema, &Place::root(true), &mut fields);
     }
     dedupe(fields)
 }
@@ -218,24 +218,7 @@ fn flatten(document: &Json, schema: &Json, place: &Place, out: &mut Vec<Field>) 
         return;
     }
     let schema = resolve(document, schema);
-    for key in ["allOf", "oneOf", "anyOf"] {
-        for branch in schema
-            .get(key)
-            .and_then(Json::as_array)
-            .into_iter()
-            .flatten()
-        {
-            // A field is only surely required if every branch requires it;
-            // `allOf` branches all apply, so keep their requiredness.
-            let branch_required = place.required && key == "allOf";
-            flatten(
-                document,
-                branch,
-                &place.child(place.prefix.clone(), branch_required),
-                out,
-            );
-        }
-    }
+    flatten_branches(document, schema, place, out);
     if let Some(items) = schema.get("items") {
         flatten(
             document,
@@ -290,6 +273,62 @@ fn resolve<'a>(document: &'a Json, value: &'a Json) -> &'a Json {
         }
     }
     current
+}
+
+/// The fields of a schema's `allOf`, `oneOf` and `anyOf` branches.
+fn flatten_branches(document: &Json, schema: &Json, place: &Place, out: &mut Vec<Field>) {
+    // `allOf` branches all apply, so each keeps its requiredness.
+    for branch in schema
+        .get("allOf")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+    {
+        flatten(
+            document,
+            branch,
+            &place.child(place.prefix.clone(), place.required),
+            out,
+        );
+    }
+    // Only one `oneOf` or `anyOf` branch need apply, so a field is surely
+    // required only if every branch requires it.
+    for key in ["oneOf", "anyOf"] {
+        let branches: Vec<Vec<Field>> = schema
+            .get(key)
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+            .map(|branch| {
+                let mut fields = Vec::new();
+                flatten(
+                    document,
+                    branch,
+                    &place.child(place.prefix.clone(), place.required),
+                    &mut fields,
+                );
+                dedupe(fields)
+            })
+            .collect();
+        out.extend(required_in_every_branch(branches));
+    }
+}
+
+/// Every field of any branch, required only where every branch requires it.
+fn required_in_every_branch(branches: Vec<Vec<Field>>) -> Vec<Field> {
+    let count = branches.len();
+    let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for field in branches.iter().flatten().filter(|field| field.required) {
+        *seen.entry(field.path.clone()).or_default() += 1;
+    }
+    branches
+        .into_iter()
+        .flatten()
+        .map(|field| Field {
+            required: seen.get(&field.path) == Some(&count),
+            path: field.path,
+        })
+        .collect()
 }
 
 /// One field per path; required if any occurrence is.
@@ -388,5 +427,26 @@ mod tests {
             required,
             [("hooks", false), ("hooks[].action", false), ("name", true)]
         );
+    }
+
+    #[test]
+    fn a_union_requires_only_what_every_branch_requires() {
+        let document = serde_json::json!({ "paths": { "/api/x": { "patch": {
+            "requestBody": { "content": { "application/json": { "schema": { "anyOf": [
+                { "type": "object", "required": ["id", "a"],
+                  "properties": { "id": {}, "a": {} } },
+                { "type": "object", "required": ["id", "b"],
+                  "properties": { "id": {}, "b": {} } }
+            ] } } } }
+        } } } });
+
+        let found = operations(&document);
+
+        let required: Vec<(&str, bool)> = found[0]
+            .request_fields
+            .iter()
+            .map(|field| (field.path.as_str(), field.required))
+            .collect();
+        assert_eq!(required, [("a", false), ("b", false), ("id", true)]);
     }
 }
