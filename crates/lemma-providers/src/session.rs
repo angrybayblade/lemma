@@ -453,6 +453,8 @@ impl SemanticProvider for ProviderSession {
             .filter_map(|open| open.project.clone())
             .collect();
         let mut opened = 0;
+        let started = Instant::now();
+        let mut last_opened = None;
         for path in paths {
             if opened == MAX_PROJECTS_PER_QUESTION {
                 break;
@@ -478,7 +480,16 @@ impl SemanticProvider for ProviderSession {
                     path: absolute_path,
                 })?;
             self.show_document(&uri, language, source)?;
+            last_opened = Some(uri);
             opened += 1;
+        }
+        // A server asked right away answers from the projects it had, and
+        // the empty answer looks real. It publishes diagnostics for the
+        // last file once that file's project, and the ones queued before
+        // it, have loaded.
+        if let Some(uri) = last_opened {
+            self.client
+                .wait_until_ready(&uri, started, READY_QUIET_PERIOD);
         }
         Ok(())
     }
