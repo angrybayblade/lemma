@@ -72,6 +72,7 @@ repositories:
 | `role` | `service`, `client` or `consumer`. |
 | `specs` | OpenAPI documents: a service's contract, or a client's copy of it. |
 | `routes` | Directories with a service's route code, for checking the spec against the code. |
+| `rejects_unknown_fields` | For a service: requests with fields it does not know fail, as with strict validation, even where its spec does not say so. |
 | `tables` | Files with a client's operation tables (objects or calls naming a method, a path and a method chain). |
 | `include` | Directories with a consumer's code; the whole repository if absent. |
 | `client_receivers` | Names a consumer calls its client through, such as `client`. |
@@ -100,7 +101,9 @@ Paths compare in one form, so `{id}`, `${id}`, `:id` and `[id]` are the same par
 | `consumer_misses_new_required_parameter` | error | An operation a consumer calls now requires a parameter. |
 | `consumer_misses_new_required_field` | error | An operation now requires a request field the consumer's code never names. |
 | `consumer_sends_removed_parameter` | error | A consumer calls an operation and names a parameter the change removed. |
-| `consumer_uses_removed_request_field`, `consumer_uses_removed_response_field` | warning | A consumer names a field the change removed or renamed. |
+| `consumer_sends_rejected_field` | error | A consumer names a request field the change removed, and the operation rejects fields it does not know: its schema says `additionalProperties: false`, or its service sets `rejects_unknown_fields`. |
+| `consumer_uses_removed_request_field` | warning | A consumer names a request field the change removed or renamed; the operation now ignores it, so whatever it set no longer takes effect. |
+| `consumer_uses_removed_response_field` | warning | A consumer names a response field the change removed or renamed. |
 | `client_declares_removed_parameter` | error | A generated client still declares a parameter the service removed. |
 | `client_calls_removed_operation` | error | A client method calls an operation the change removed. |
 | `consumer_calls_changed_operation` | info | A consumer calls an operation whose request changed, but never names the changed field. |
