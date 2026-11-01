@@ -567,6 +567,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lemma-logic"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "lemma-lsp"
 version = "0.1.0"
 dependencies = [
