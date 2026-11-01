@@ -11,7 +11,7 @@ mod rust;
 
 use std::collections::BTreeMap;
 
-use lemma_model::{Language, Symbol};
+use lemma_model::{Language, Symbol, SymbolKind};
 use lemma_syntax::Extractor;
 use tree_sitter::{Node, Parser};
 
@@ -63,6 +63,16 @@ pub struct ClientCall {
     pub location: Location,
 }
 
+/// A name the code uses as a field.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Mention {
+    /// The name.
+    pub name: String,
+    /// The innermost function or method it is in, by qualified name; `None`
+    /// outside functions, as in a schema, type or constant.
+    pub function: Option<String>,
+}
+
 /// Everything found in one file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CodeFacts {
@@ -74,7 +84,7 @@ pub struct CodeFacts {
     pub client_calls: Vec<ClientCall>,
     /// Names the file uses as object keys, member names, keyword arguments
     /// or dictionary keys: the fields it may send or read. Sorted, unique.
-    pub mentions: Vec<String>,
+    pub mentions: Vec<Mention>,
     /// Relative import specifiers, as written (`../types/x`, `.models`).
     pub imports: Vec<String>,
 }
@@ -427,7 +437,8 @@ impl Walk<'_> {
             _ => None,
         };
         if let Some(name) = name.filter(|name| is_identifier(name)) {
-            self.facts.mentions.push(name);
+            let function = self.enclosing_function(node);
+            self.facts.mentions.push(Mention { name, function });
         }
     }
 
@@ -623,6 +634,24 @@ impl Walk<'_> {
         }
     }
 
+    /// The innermost function or method containing a node.
+    fn enclosing_function(&self, node: Node<'_>) -> Option<String> {
+        let line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX);
+        let column = u32::try_from(node.start_position().column).unwrap_or(u32::MAX);
+        let point = lemma_model::Position { line, column };
+        self.symbols
+            .iter()
+            .filter(|symbol| matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method))
+            .filter(|symbol| symbol.span.start <= point && point < symbol.span.end)
+            .min_by_key(|symbol| {
+                (
+                    symbol.span.end.line - symbol.span.start.line,
+                    symbol.span.end.column,
+                )
+            })
+            .map(|symbol| symbol.qualified_name.clone())
+    }
+
     fn text(&self, node: Node<'_>) -> &str {
         node.utf8_text(self.source.as_bytes()).unwrap_or_default()
     }
@@ -650,6 +679,14 @@ fn is_identifier(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn names(found: &CodeFacts) -> Vec<&str> {
+        found
+            .mentions
+            .iter()
+            .map(|mention| mention.name.as_str())
+            .collect()
+    }
 
     fn facts(file: &str, source: &str) -> CodeFacts {
         let options = CodeOptions {
@@ -779,7 +816,7 @@ func notify(ctx context.Context, base string) error {
             found.path_references[1].location.symbol.as_deref(),
             Some("notify")
         );
-        assert_eq!(found.mentions, ["trigger_id"]);
+        assert_eq!(names(&found), ["trigger_id"]);
     }
 
     #[test]
@@ -855,7 +892,7 @@ impl Client {
             Some("Client.execute")
         );
         for name in ["tool_slug", "connectedAccountId", "arguments"] {
-            assert!(found.mentions.contains(&name.to_owned()), "{name}");
+            assert!(names(&found).contains(&name), "{name}");
         }
         assert_eq!(found.imports, ["crate::models"]);
     }
@@ -902,7 +939,7 @@ impl Client {
         let found = facts("a.ts", source);
 
         for name in ["search", "limit", "cursor", "archived"] {
-            assert!(found.mentions.contains(&name.to_owned()), "{name}");
+            assert!(names(&found).contains(&name), "{name}");
         }
         assert_eq!(found.imports, ["../types/configs"]);
     }
@@ -913,7 +950,7 @@ impl Client {
 
         let found = facts("a.py", source);
 
-        assert!(found.mentions.contains(&"on_match".to_owned()));
+        assert!(names(&found).contains(&"on_match"));
         assert_eq!(found.imports, [".models"]);
     }
 
