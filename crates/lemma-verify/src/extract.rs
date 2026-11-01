@@ -60,6 +60,7 @@ impl<'g> FactWriter<'g> {
 /// Extracts every repository's facts.
 pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(), VerifyError> {
     let mut extractor = Extractor::new().map_err(|source| VerifyError::Syntax { source })?;
+    check_files(manifest)?;
     for (name, repository) in &manifest.repositories {
         let is_changed = *name == manifest.change.repository;
         match repository.role {
@@ -87,6 +88,47 @@ pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(
         }
     }
     Ok(())
+}
+
+/// Fails if a spec or table is missing at every commit its repository is
+/// read at, which means the manifest names it wrongly. Missing at one of
+/// the changed repository's two commits is fine: the change added or
+/// removed it.
+fn check_files(manifest: &Manifest) -> Result<(), VerifyError> {
+    for (name, repository) in &manifest.repositories {
+        let commits: Vec<Option<&str>> = if *name == manifest.change.repository {
+            vec![Some(&manifest.change.base), Some(&manifest.change.head)]
+        } else {
+            vec![repository.commit.as_deref()]
+        };
+        for file in repository.specs.iter().chain(&repository.tables) {
+            if !exists_at_any(&repository.path, &commits, file)? {
+                return Err(VerifyError::MissingFile {
+                    repository: name.clone(),
+                    file: file.clone(),
+                    commits: commits
+                        .iter()
+                        .map(|commit| commit.unwrap_or("the working directory"))
+                        .collect::<Vec<_>>()
+                        .join(" or "),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn exists_at_any(
+    repository: &Path,
+    commits: &[Option<&str>],
+    file: &str,
+) -> Result<bool, VerifyError> {
+    for commit in commits {
+        if lemma_http::read_file(repository, *commit, file)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// A commit to read and the snapshots its facts belong to.
@@ -193,7 +235,9 @@ fn client(
     let commit = repository.commit.as_deref();
     let both = ["base", "head"];
     for table in &repository.tables {
-        let source = lemma_http::read_file(&repository.path, commit, table)?;
+        let Some(source) = lemma_http::read_file(&repository.path, commit, table)? else {
+            continue;
+        };
         let file = SourceFile {
             path: table.clone(),
             contents: source,
@@ -331,7 +375,9 @@ fn spec_operations(
     commit: Option<&str>,
     spec: &str,
 ) -> Result<Vec<Operation>, VerifyError> {
-    let text = lemma_http::read_file(&repository.path, commit, spec)?;
+    let Some(text) = lemma_http::read_file(&repository.path, commit, spec)? else {
+        return Ok(Vec::new());
+    };
     let document: serde_json::Value =
         serde_json::from_str(&text).map_err(|source| VerifyError::Spec {
             file: spec.to_owned(),

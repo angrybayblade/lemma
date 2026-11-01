@@ -54,6 +54,17 @@ pub enum VerifyError {
     /// Source files could not be read from a repository.
     #[error(transparent)]
     Source(#[from] lemma_http::SourceError),
+    /// A spec or operation table the manifest names is not in the repository
+    /// at any commit it is read at.
+    #[error("{repository} has no file {file} at {commits}")]
+    MissingFile {
+        /// The repository's name.
+        repository: String,
+        /// The file.
+        file: String,
+        /// The commits it was looked for at.
+        commits: String,
+    },
     /// A source file could not be parsed.
     #[error(transparent)]
     Code(#[from] lemma_http::CodeError),
