@@ -1,5 +1,5 @@
-//! HTTP facts in TypeScript, JavaScript, Python and Go source, read with
-//! Tree-sitter.
+//! HTTP facts in TypeScript, JavaScript, Python, Go and Rust source, read
+//! with Tree-sitter.
 //!
 //! The extractor reports what the code says, not what it means: an object
 //! with `method` and `path` is an operation declaration in a service, an
@@ -7,6 +7,7 @@
 //! consumer. The caller interprets it by the repository's role.
 
 mod go;
+mod rust;
 
 use std::collections::BTreeMap;
 
@@ -173,6 +174,7 @@ fn tree_sitter_language(language: Language) -> tree_sitter::Language {
         Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
         Language::Python => tree_sitter_python::LANGUAGE.into(),
         Language::Go => tree_sitter_go::LANGUAGE.into(),
+        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
         Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
     }
 }
@@ -185,6 +187,7 @@ enum Dialect {
     Script,
     Python,
     Go,
+    Rust,
 }
 
 impl Dialect {
@@ -192,6 +195,7 @@ impl Dialect {
         match language {
             Language::Python => Self::Python,
             Language::Go => Self::Go,
+            Language::Rust => Self::Rust,
             Language::TypeScript | Language::Tsx => Self::Script,
         }
     }
@@ -221,6 +225,8 @@ impl Walk<'_> {
             "call_expression" | "call" => self.call(node),
             "import_statement" | "import_from_statement" => self.import(node),
             "short_var_declaration" | "assignment_statement" => self.go_router_prefix(node),
+            "attribute_item" if self.dialect == Dialect::Rust => self.rust_route_attribute(node),
+            "use_declaration" => self.rust_use(node),
             _ => {}
         }
         self.mention(node);
@@ -274,6 +280,9 @@ impl Walk<'_> {
         if self.dialect == Dialect::Go && self.go_call(&parts, function, arguments) {
             return;
         }
+        if self.dialect == Dialect::Rust && self.rust_call(&parts, arguments) {
+            return;
+        }
         let strings: Vec<Node<'_>> = {
             let mut cursor = arguments.walk();
             arguments
@@ -298,10 +307,12 @@ impl Walk<'_> {
             .iter()
             .filter_map(|argument| self.string_value(*argument))
             .find(|text| VERBS.contains(&text.to_ascii_lowercase().as_str()))
-            .or_else(|| self.go_method_constant(arguments));
-        // In Go a method argument builds a request (`http.NewRequest`); in
-        // the other languages it declares an operation in a table.
-        let builds_request = self.dialect == Dialect::Go;
+            .or_else(|| self.go_method_constant(arguments))
+            .or_else(|| self.rust_method_constant(arguments));
+        // In Go and Rust a method argument builds a request
+        // (`http.NewRequest`, `client.request(Method::POST, ..)`); in the
+        // other languages it declares an operation in a table.
+        let builds_request = matches!(self.dialect, Dialect::Go | Dialect::Rust);
         if let Some(verb) = verb_argument.as_deref().filter(|_| builds_request) {
             self.add_reference(&canonical_method(verb), &template, path_node);
             return;
@@ -411,6 +422,7 @@ impl Walk<'_> {
                 });
                 index.and_then(|index| self.string_value(index))
             }
+            _ if self.dialect == Dialect::Rust => self.rust_field_name(node),
             "field_declaration" | "keyed_element" => self.go_field_name(node),
             _ => None,
         };
@@ -515,7 +527,27 @@ impl Walk<'_> {
                 }
                 parts
             }
-            "identifier" | "this" | "property_identifier" => {
+            "field_expression" => {
+                let mut parts = node
+                    .child_by_field_name("value")
+                    .map(|value| self.chain_parts(value))
+                    .unwrap_or_default();
+                if let Some(field) = node.child_by_field_name("field") {
+                    parts.push(self.text(field).to_owned());
+                }
+                parts
+            }
+            "scoped_identifier" => {
+                let mut parts = node
+                    .child_by_field_name("path")
+                    .map(|path| self.chain_parts(path))
+                    .unwrap_or_default();
+                if let Some(name) = node.child_by_field_name("name") {
+                    parts.push(self.text(name).to_owned());
+                }
+                parts
+            }
+            "identifier" | "this" | "self" | "property_identifier" => {
                 vec![self.text(node).to_owned()]
             }
             _ => Vec::new(),
@@ -599,7 +631,11 @@ impl Walk<'_> {
 fn is_string_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "string" | "template_string" | "interpreted_string_literal" | "raw_string_literal"
+        "string"
+            | "template_string"
+            | "interpreted_string_literal"
+            | "raw_string_literal"
+            | "string_literal"
     )
 }
 
@@ -744,6 +780,84 @@ func notify(ctx context.Context, base string) error {
             Some("notify")
         );
         assert_eq!(found.mentions, ["trigger_id"]);
+    }
+
+    #[test]
+    fn rust_routes_from_axum_and_attributes() {
+        let source = r#"
+pub fn router() -> Router {
+    Router::new()
+        .route("/api/v1/tools", get(list_tools).post(create_tool))
+        .route("/api/v1/tools/{slug}", routing::delete(delete_tool))
+}
+
+#[get("/api/v1/health")]
+async fn health() -> &'static str { "ok" }
+"#;
+
+        let found = facts("src/routes.rs", source);
+
+        let routes: Vec<(&str, &str)> = found
+            .method_paths
+            .iter()
+            .map(|route| (route.method.as_str(), route.path.as_str()))
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                ("DELETE", "/api/v1/tools/{}"),
+                ("GET", "/api/v1/health"),
+                ("GET", "/api/v1/tools"),
+                ("POST", "/api/v1/tools"),
+            ]
+        );
+        assert_eq!(found.path_references, []);
+    }
+
+    #[test]
+    fn rust_requests_fields_and_crate_imports() {
+        let source = r#"
+use crate::models::{Tool, Toolkit};
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct Execute {
+    tool_slug: String,
+    #[serde(rename = "connectedAccountId")]
+    account: String,
+}
+
+impl Client {
+    pub async fn execute(&self, id: &str) -> Result<()> {
+        self.http.post(format!("{}/api/v3/tools/{}/execute", self.base, id)).json(&json!({ "arguments": 1 })).send().await?;
+        self.http.request(Method::DELETE, &format!("{}/api/v3/tools/{id}", self.base)).send().await?;
+        Ok(())
+    }
+}
+"#;
+
+        let found = facts("src/client.rs", source);
+
+        let references: Vec<(&str, &str)> = found
+            .path_references
+            .iter()
+            .map(|reference| (reference.method.as_str(), reference.path.as_str()))
+            .collect();
+        assert_eq!(
+            references,
+            [
+                ("DELETE", "/api/v3/tools/{}"),
+                ("POST", "/api/v3/tools/{}/execute")
+            ]
+        );
+        assert_eq!(
+            found.path_references[1].location.symbol.as_deref(),
+            Some("Client.execute")
+        );
+        for name in ["tool_slug", "connectedAccountId", "arguments"] {
+            assert!(found.mentions.contains(&name.to_owned()), "{name}");
+        }
+        assert_eq!(found.imports, ["crate::models"]);
     }
 
     #[test]

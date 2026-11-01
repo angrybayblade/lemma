@@ -157,12 +157,13 @@ impl Walk<'_> {
     }
 
     /// A string naming an API path inside an argument, such as the format
-    /// of `fmt.Sprintf("%s/api/x", base)` or one side of `base + "/api/x"`.
+    /// of `fmt.Sprintf("%s/api/x", base)` or Rust's `&format!("{base}/api/x")`,
+    /// or one side of `base + "/api/x"`.
     pub(super) fn nested_path_argument<'tree>(
         &self,
         arguments: Node<'tree>,
     ) -> Option<Node<'tree>> {
-        if self.dialect != Dialect::Go {
+        if !matches!(self.dialect, Dialect::Go | Dialect::Rust) {
             return None;
         }
         let mut stack = Self::children(arguments);
@@ -172,7 +173,13 @@ impl Walk<'_> {
             }
             let is_wrapper = matches!(
                 node.kind(),
-                "call_expression" | "argument_list" | "binary_expression"
+                "call_expression"
+                    | "argument_list"
+                    | "arguments"
+                    | "binary_expression"
+                    | "macro_invocation"
+                    | "token_tree"
+                    | "reference_expression"
             );
             if is_wrapper {
                 stack.extend(Self::children(node));
@@ -234,7 +241,7 @@ impl Walk<'_> {
     }
 
     /// The last name of the function a call expression calls.
-    fn called_name(&self, node: Node<'_>) -> Option<String> {
+    pub(super) fn called_name(&self, node: Node<'_>) -> Option<String> {
         if node.kind() != "call_expression" {
             return None;
         }
@@ -242,7 +249,7 @@ impl Walk<'_> {
         self.chain_parts(function).pop()
     }
 
-    fn children(node: Node<'_>) -> Vec<Node<'_>> {
+    pub(super) fn children(node: Node<'_>) -> Vec<Node<'_>> {
         let mut cursor = node.walk();
         node.named_children(&mut cursor).collect()
     }
