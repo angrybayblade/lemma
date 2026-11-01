@@ -67,22 +67,30 @@ pub fn read_files(
     Ok(files)
 }
 
-/// One file's text, from `commit` or the working directory.
+/// One file's text, from `commit` or the working directory, or `None` if
+/// the file does not exist there. A file that appears or disappears between
+/// two commits is normal, such as a spec added by the change.
 pub fn read_file(
     repository: &Path,
     commit: Option<&str>,
     path: &str,
-) -> Result<String, SourceError> {
-    match commit {
-        Some(commit) => {
-            let output = git(repository, &["show", &format!("{commit}:{path}")])?;
-            Ok(String::from_utf8_lossy(&output).into_owned())
-        }
-        None => fs::read_to_string(repository.join(path)).map_err(|source| SourceError::Io {
-            path: repository.join(path),
-            source,
-        }),
+) -> Result<Option<String>, SourceError> {
+    let Some(commit) = commit else {
+        return match fs::read_to_string(repository.join(path)) {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(SourceError::Io {
+                path: repository.join(path),
+                source,
+            }),
+        };
+    };
+    let listed = git(repository, &["ls-tree", "--name-only", commit, "--", path])?;
+    if listed.is_empty() {
+        return Ok(None);
     }
+    let output = git(repository, &["show", &format!("{commit}:{path}")])?;
+    Ok(Some(String::from_utf8_lossy(&output).into_owned()))
 }
 
 fn git_paths(
@@ -219,4 +227,20 @@ fn git(repository: &Path, args: &[&str]) -> Result<Vec<u8>, SourceError> {
         });
     }
     Ok(output.stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_file_is_none_not_an_error() {
+        let crate_directory = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+        let missing = read_file(crate_directory, None, "no-such-spec.json").unwrap();
+        let present = read_file(crate_directory, None, "Cargo.toml").unwrap();
+
+        assert_eq!(missing, None);
+        assert!(present.is_some_and(|text| text.contains("lemma-http")));
+    }
 }
