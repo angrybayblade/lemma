@@ -541,10 +541,13 @@ dependencies = [
  "anyhow",
  "clap",
  "lemma-index",
+ "lemma-logic",
  "lemma-model",
  "lemma-providers",
  "lemma-query",
+ "lemma-souffle",
  "lemma-store",
+ "lemma-verify",
  "serde",
  "serde_json",
  "tempfile",
@@ -672,6 +675,20 @@ dependencies = [
  "tree-sitter-go",
  "tree-sitter-python",
  "tree-sitter-typescript",
+]
+
+[[package]]
+name = "lemma-verify"
+version = "0.1.0"
+dependencies = [
+ "lemma-grammar",
+ "lemma-http",
+ "lemma-logic",
+ "lemma-syntax",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "yaml_serde",
 ]
 
 [[package]]

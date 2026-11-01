@@ -1,0 +1,479 @@
+//! Facts for each repository, by its role, in the grammar's relations.
+//!
+//! Relations the grammar does not declare are skipped, so a grammar can use
+//! a subset. A service's facts go to the base and head snapshots; other
+//! repositories are read at one commit, so their facts are the same in both.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+use lemma_grammar::CompiledGrammar;
+use lemma_http::{CodeFacts, CodeOptions, Operation, SourceFile};
+use lemma_logic::Value;
+use lemma_syntax::Extractor;
+
+use crate::VerifyError;
+use crate::manifest::{Manifest, Repository, Role};
+
+const CODE_EXTENSIONS: [&str; 3] = ["ts", "tsx", "py"];
+
+/// A value for a fact, before interning.
+enum Arg<'a> {
+    Text(&'a str),
+    Number(i64),
+}
+
+/// Writes facts into the grammar's relations, interning text as it goes.
+pub struct FactWriter<'g> {
+    grammar: &'g mut CompiledGrammar,
+    /// Facts written, by relation, for the summary.
+    pub counts: BTreeMap<String, usize>,
+}
+
+impl<'g> FactWriter<'g> {
+    pub fn new(grammar: &'g mut CompiledGrammar) -> Self {
+        Self {
+            grammar,
+            counts: BTreeMap::new(),
+        }
+    }
+
+    fn add(&mut self, relation: &str, snapshots: &[&str], args: &[Arg<'_>]) {
+        for snapshot in snapshots {
+            let Some(name) = self.grammar.input_relation(relation, snapshot) else {
+                continue;
+            };
+            let row: Vec<Value> = args
+                .iter()
+                .map(|arg| match arg {
+                    Arg::Text(text) => self.grammar.symbols.intern(text),
+                    Arg::Number(number) => Value::Number(*number),
+                })
+                .collect();
+            if self.grammar.facts.insert(&name, row) {
+                *self.counts.entry(relation.to_owned()).or_default() += 1;
+            }
+        }
+    }
+}
+
+/// Extracts every repository's facts.
+pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(), VerifyError> {
+    let mut extractor = Extractor::new().map_err(|source| VerifyError::Syntax { source })?;
+    for (name, repository) in &manifest.repositories {
+        let is_changed = *name == manifest.change.repository;
+        match repository.role {
+            Role::Service if is_changed => {
+                let base = Snapshot {
+                    commit: Some(&manifest.change.base),
+                    names: &["base"],
+                };
+                let head = Snapshot {
+                    commit: Some(&manifest.change.head),
+                    names: &["head"],
+                };
+                service(name, repository, &base, writer, &mut extractor)?;
+                service(name, repository, &head, writer, &mut extractor)?;
+            }
+            Role::Service => {
+                let both = Snapshot {
+                    commit: repository.commit.as_deref(),
+                    names: &["base", "head"],
+                };
+                service(name, repository, &both, writer, &mut extractor)?;
+            }
+            Role::Client => client(name, repository, writer, &mut extractor)?,
+            Role::Consumer => consumer(name, repository, writer, &mut extractor)?,
+        }
+    }
+    Ok(())
+}
+
+/// A commit to read and the snapshots its facts belong to.
+struct Snapshot<'a> {
+    commit: Option<&'a str>,
+    names: &'a [&'a str],
+}
+
+fn service(
+    name: &str,
+    repository: &Repository,
+    snapshot: &Snapshot<'_>,
+    writer: &mut FactWriter<'_>,
+    extractor: &mut Extractor,
+) -> Result<(), VerifyError> {
+    let (commit, snapshots) = (snapshot.commit, snapshot.names);
+    let service_name = repository.service.as_deref().unwrap_or(name);
+    for spec in &repository.specs {
+        for operation in spec_operations(repository, commit, spec)? {
+            operation_facts(service_name, &operation, snapshots, writer);
+        }
+    }
+    if !snapshots.contains(&"head") {
+        return Ok(());
+    }
+    let files = lemma_http::read_files(
+        &repository.path,
+        commit,
+        &repository.routes,
+        &CODE_EXTENSIONS,
+    )?;
+    for file in &files {
+        let facts = code_facts(file, &CodeOptions::default(), extractor)?;
+        for route in facts.method_paths.iter().filter(|item| item.method != "*") {
+            let line = i64::from(route.location.line);
+            let args = [
+                Arg::Text(service_name),
+                Arg::Text(&route.method),
+                Arg::Text(&route.path),
+                Arg::Text(&file.path),
+                Arg::Number(line),
+            ];
+            writer.add("route", &["head"], &args);
+        }
+    }
+    Ok(())
+}
+
+fn operation_facts(
+    service: &str,
+    operation: &Operation,
+    snapshots: &[&str],
+    writer: &mut FactWriter<'_>,
+) {
+    let key = operation_key(&operation.method, &operation.path);
+    let op = key.as_str();
+    writer.add(
+        "operation",
+        snapshots,
+        &[
+            Arg::Text(service),
+            Arg::Text(op),
+            Arg::Text(&operation.method),
+            Arg::Text(&operation.path),
+        ],
+    );
+    for parameter in &operation.parameters {
+        let args = [
+            Arg::Text(op),
+            Arg::Text(&parameter.name),
+            Arg::Text(&parameter.location),
+        ];
+        writer.add("parameter", snapshots, &args);
+        if parameter.required {
+            writer.add("required_parameter", snapshots, &args);
+        }
+    }
+    for field in &operation.request_fields {
+        let args = [
+            Arg::Text(op),
+            Arg::Text(&field.path),
+            Arg::Text(leaf(&field.path)),
+        ];
+        writer.add("request_field", snapshots, &args);
+        if field.required {
+            writer.add("required_request_field", snapshots, &args);
+        }
+    }
+    for field in &operation.response_fields {
+        writer.add(
+            "response_field",
+            snapshots,
+            &[Arg::Text(op), Arg::Text(field), Arg::Text(leaf(field))],
+        );
+    }
+}
+
+fn client(
+    name: &str,
+    repository: &Repository,
+    writer: &mut FactWriter<'_>,
+    extractor: &mut Extractor,
+) -> Result<(), VerifyError> {
+    let commit = repository.commit.as_deref();
+    let both = ["base", "head"];
+    for table in &repository.tables {
+        let source = lemma_http::read_file(&repository.path, commit, table)?;
+        let file = SourceFile {
+            path: table.clone(),
+            contents: source,
+        };
+        let facts = code_facts(&file, &CodeOptions::default(), extractor)?;
+        for item in &facts.method_paths {
+            let Some(chain) = &item.chain else { continue };
+            let line = i64::from(item.location.line);
+            let args = [
+                Arg::Text(name),
+                Arg::Text(chain),
+                Arg::Text(&item.method),
+                Arg::Text(&item.path),
+                Arg::Text(&file.path),
+                Arg::Number(line),
+            ];
+            writer.add("client_operation", &both, &args);
+        }
+    }
+    for spec in &repository.specs {
+        for operation in spec_operations(repository, commit, spec)? {
+            for parameter in &operation.parameters {
+                let args = [
+                    Arg::Text(name),
+                    Arg::Text(&operation.method),
+                    Arg::Text(&operation.path),
+                    Arg::Text(&parameter.name),
+                    Arg::Text(&parameter.location),
+                ];
+                writer.add("client_parameter", &both, &args);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// What every file of one consumer shares.
+struct ConsumerScope<'a> {
+    name: &'a str,
+    known: BTreeSet<String>,
+    options: CodeOptions,
+}
+
+const BOTH: [&str; 2] = ["base", "head"];
+
+fn consumer(
+    name: &str,
+    repository: &Repository,
+    writer: &mut FactWriter<'_>,
+    extractor: &mut Extractor,
+) -> Result<(), VerifyError> {
+    let files = lemma_http::read_files(
+        &repository.path,
+        repository.commit.as_deref(),
+        &repository.include,
+        &CODE_EXTENSIONS,
+    )?;
+    let scope = ConsumerScope {
+        name,
+        known: files.iter().map(|file| file.path.clone()).collect(),
+        options: CodeOptions {
+            client_receivers: repository.client_receivers.clone(),
+        },
+    };
+    for file in files.iter().filter(|file| !is_test_file(&file.path)) {
+        let facts = code_facts(file, &scope.options, extractor)?;
+        consumer_file(&scope, &file.path, &facts, writer);
+    }
+    Ok(())
+}
+
+fn consumer_file(
+    scope: &ConsumerScope<'_>,
+    path: &str,
+    facts: &CodeFacts,
+    writer: &mut FactWriter<'_>,
+) {
+    let file_id = format!("{}:{path}", scope.name);
+    let consumer_id = |symbol: Option<&String>| {
+        symbol.map_or_else(|| file_id.clone(), |symbol| format!("{file_id}::{symbol}"))
+    };
+    let calls = facts
+        .path_references
+        .iter()
+        .map(|reference| (&reference.method, &reference.path, &reference.location));
+    let descriptors = facts
+        .method_paths
+        .iter()
+        .filter(|item| item.chain.is_none())
+        .map(|item| (&item.method, &item.path, &item.location));
+    for (method, call_path, location) in calls.chain(descriptors) {
+        let consumer = consumer_id(location.symbol.as_ref());
+        let args = [
+            Arg::Text(&consumer),
+            Arg::Text(method),
+            Arg::Text(call_path),
+            Arg::Text(&file_id),
+            Arg::Number(i64::from(location.line)),
+        ];
+        writer.add("calls_path", &BOTH, &args);
+    }
+    for call in &facts.client_calls {
+        let consumer = consumer_id(call.location.symbol.as_ref());
+        let args = [
+            Arg::Text(&consumer),
+            Arg::Text(&call.chain),
+            Arg::Text(&file_id),
+            Arg::Number(i64::from(call.location.line)),
+        ];
+        writer.add("calls_client", &BOTH, &args);
+    }
+    for mention in &facts.mentions {
+        writer.add(
+            "mentions",
+            &BOTH,
+            &[Arg::Text(&file_id), Arg::Text(mention)],
+        );
+    }
+    for specifier in &facts.imports {
+        if let Some(target) = resolve_import(path, specifier, &scope.known) {
+            writer.add(
+                "imports",
+                &BOTH,
+                &[
+                    Arg::Text(&file_id),
+                    Arg::Text(&format!("{}:{target}", scope.name)),
+                ],
+            );
+        }
+    }
+}
+
+fn spec_operations(
+    repository: &Repository,
+    commit: Option<&str>,
+    spec: &str,
+) -> Result<Vec<Operation>, VerifyError> {
+    let text = lemma_http::read_file(&repository.path, commit, spec)?;
+    let document: serde_json::Value =
+        serde_json::from_str(&text).map_err(|source| VerifyError::Spec {
+            file: spec.to_owned(),
+            source,
+        })?;
+    Ok(lemma_http::operations(&document))
+}
+
+fn code_facts(
+    file: &SourceFile,
+    options: &CodeOptions,
+    extractor: &mut Extractor,
+) -> Result<CodeFacts, VerifyError> {
+    Ok(lemma_http::extract(
+        &file.path,
+        &file.contents,
+        options,
+        extractor,
+    )?)
+}
+
+/// `GET /api/v3.1/session_configs/{}`: how rules name an operation.
+pub fn operation_key(method: &str, path: &str) -> String {
+    format!("{method} {path}")
+}
+
+/// The last name in a field path: `hooks[].handler.action` → `action`.
+fn leaf(field: &str) -> &str {
+    field
+        .rsplit('.')
+        .next()
+        .unwrap_or(field)
+        .trim_end_matches("[]")
+}
+
+fn is_test_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.contains("/test/")
+        || lower.contains("/tests/")
+        || lower.contains("__tests__")
+        || lower.contains(".test.")
+        || lower.contains(".spec.")
+        || lower.contains("/test_")
+}
+
+/// The repository file a relative import names, if it is one of `known`.
+fn resolve_import(file: &str, specifier: &str, known: &BTreeSet<String>) -> Option<String> {
+    let directory = Path::new(file).parent().unwrap_or(Path::new(""));
+    let is_python = Path::new(file)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("py"));
+    let base = if is_python {
+        python_module(directory, specifier)?
+    } else {
+        join(directory, specifier.trim_end_matches(".js"))?
+    };
+    let candidates = [
+        base.clone(),
+        format!("{base}.ts"),
+        format!("{base}.tsx"),
+        format!("{base}/index.ts"),
+        format!("{base}.py"),
+        format!("{base}/__init__.py"),
+    ];
+    candidates
+        .into_iter()
+        .find(|candidate| known.contains(candidate))
+}
+
+/// `.models` or `..core.models` relative to a Python package directory.
+fn python_module(directory: &Path, specifier: &str) -> Option<String> {
+    let dots = specifier.chars().take_while(|c| *c == '.').count();
+    let mut base = directory.to_path_buf();
+    for _ in 1..dots {
+        base = base.parent()?.to_path_buf();
+    }
+    let module = specifier[dots..].replace('.', "/");
+    let joined = if module.is_empty() {
+        base
+    } else {
+        base.join(module)
+    };
+    Some(joined.to_string_lossy().replace('\\', "/"))
+}
+
+/// Joins a relative specifier to a directory, resolving `.` and `..`.
+fn join(directory: &Path, specifier: &str) -> Option<String> {
+    let mut parts: Vec<String> = directory
+        .iter()
+        .map(|part| part.to_string_lossy().into_owned())
+        .collect();
+    for part in specifier.split('/') {
+        match part {
+            "." | "" => {}
+            ".." => {
+                parts.pop()?;
+            }
+            name => parts.push(name.to_owned()),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn known(paths: &[&str]) -> BTreeSet<String> {
+        paths.iter().map(|path| (*path).to_owned()).collect()
+    }
+
+    #[test]
+    fn typescript_imports_resolve_with_extensions_and_index_files() {
+        let files = known(&["src/types/configs.ts", "src/models/index.ts"]);
+
+        assert_eq!(
+            resolve_import("src/models/a.ts", "../types/configs.js", &files).as_deref(),
+            Some("src/types/configs.ts")
+        );
+        assert_eq!(
+            resolve_import("src/b.ts", "./models", &files).as_deref(),
+            Some("src/models/index.ts")
+        );
+    }
+
+    #[test]
+    fn python_relative_imports_resolve_to_modules_and_packages() {
+        let files = known(&["pkg/core/models.py", "pkg/types/__init__.py"]);
+
+        assert_eq!(
+            resolve_import("pkg/core/a.py", ".models", &files).as_deref(),
+            Some("pkg/core/models.py")
+        );
+        assert_eq!(
+            resolve_import("pkg/core/a.py", "..types", &files).as_deref(),
+            Some("pkg/types/__init__.py")
+        );
+    }
+
+    #[test]
+    fn field_leaves_drop_containers_and_array_marks() {
+        assert_eq!(leaf("hooks[].handler.action"), "action");
+        assert_eq!(leaf("items[]"), "items");
+    }
+}
