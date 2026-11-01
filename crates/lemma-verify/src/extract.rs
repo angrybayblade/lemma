@@ -15,8 +15,8 @@ use lemma_syntax::Extractor;
 use crate::VerifyError;
 use crate::manifest::{Manifest, Repository, Role};
 
-const CODE_EXTENSIONS: [&str; 10] = [
-    "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "go",
+const CODE_EXTENSIONS: [&str; 11] = [
+    "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "go", "rs",
 ];
 
 /// A value for a fact, before interning.
@@ -535,6 +535,9 @@ fn same_package(path: &str, known: &BTreeSet<String>) -> Vec<String> {
 
 /// The repository file a relative import names, if it is one of `known`.
 fn resolve_import(file: &str, specifier: &str, known: &BTreeSet<String>) -> Option<String> {
+    if has_extension(file, "rs") {
+        return rust_module(file, specifier, known);
+    }
     let directory = Path::new(file).parent().unwrap_or(Path::new(""));
     let is_python = Path::new(file)
         .extension()
@@ -559,6 +562,45 @@ fn resolve_import(file: &str, specifier: &str, known: &BTreeSet<String>) -> Opti
     candidates
         .into_iter()
         .find(|candidate| known.contains(candidate))
+}
+
+/// The file of the module a Rust `use` path names: `crate::models::Tool`
+/// is `src/models.rs` or `src/models/mod.rs` (the last segments may be
+/// items, so shorter paths are tried too).
+fn rust_module(file: &str, specifier: &str, known: &BTreeSet<String>) -> Option<String> {
+    let path = Path::new(file);
+    let directory = path.parent().unwrap_or(Path::new(""));
+    let is_module_root = matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("mod.rs" | "lib.rs" | "main.rs")
+    );
+    let mut segments = specifier.split("::");
+    let base = match segments.next()? {
+        "crate" => {
+            let source_root = file.rfind("src/").map_or("", |index| &file[..index + 4]);
+            Path::new(source_root).to_path_buf()
+        }
+        "self" if is_module_root => directory.to_path_buf(),
+        "self" => directory.join(path.file_stem()?),
+        "super" if is_module_root => directory.parent()?.to_path_buf(),
+        "super" => directory.to_path_buf(),
+        _ => return None,
+    };
+    let segments: Vec<&str> = segments.collect();
+    for length in (1..=segments.len()).rev() {
+        let module = segments[..length]
+            .iter()
+            .fold(base.clone(), |module, segment| module.join(segment));
+        let module = module.to_string_lossy();
+        let candidates = [format!("{module}.rs"), format!("{module}/mod.rs")];
+        if let Some(found) = candidates
+            .into_iter()
+            .find(|candidate| known.contains(candidate))
+        {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// `.models` or `..core.models` relative to a Python package directory.
@@ -699,6 +741,28 @@ mod tests {
         assert_eq!(
             resolve_import("src/b.ts", "./models", &files).as_deref(),
             Some("src/models/index.ts")
+        );
+    }
+
+    #[test]
+    fn rust_use_paths_resolve_to_module_files() {
+        let files = known(&[
+            "svc/src/models.rs",
+            "svc/src/api/mod.rs",
+            "svc/src/api/types.rs",
+        ]);
+
+        assert_eq!(
+            resolve_import("svc/src/api/client.rs", "crate::models::Tool", &files).as_deref(),
+            Some("svc/src/models.rs")
+        );
+        assert_eq!(
+            resolve_import("svc/src/api/client.rs", "super::types", &files).as_deref(),
+            Some("svc/src/api/types.rs")
+        );
+        assert_eq!(
+            resolve_import("svc/src/api/mod.rs", "self::types", &files).as_deref(),
+            Some("svc/src/api/types.rs")
         );
     }
 
