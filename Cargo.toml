@@ -20,6 +20,7 @@ lemma-query = { path = "crates/lemma-query" }
 lemma-souffle = { path = "crates/lemma-souffle" }
 lemma-store = { path = "crates/lemma-store" }
 lemma-syntax = { path = "crates/lemma-syntax" }
+lemma-verify = { path = "crates/lemma-verify" }
 
 anyhow = "1"
 blake3 = "1"

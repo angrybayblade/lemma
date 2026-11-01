@@ -1,0 +1,137 @@
+# HTTP contracts between services, their generated clients and consumers.
+#
+# Facts come from `lemma verify`'s extractors: operations from OpenAPI
+# documents (spec), routes, client operation tables and calls from code
+# (syntax). Operations are named "METHOD /path" with path parameters
+# written `{}`. A consumer is "repository:file::Symbol"; a file is
+# "repository:file". Consumers are read at one commit; services at the
+# base and head of the change.
+
+grammar: http-contracts
+
+relations:
+  operation:
+    args: [Text, Text]                 # service, operation
+    attributes: { method: Text, path: Text }
+    sources: [spec]
+  parameter:
+    args: [Text]                       # operation
+    attributes: { name: Text, location: Text }
+    sources: [spec]
+  required_parameter:
+    args: [Text]
+    attributes: { name: Text, location: Text }
+    sources: [spec]
+  request_field:
+    args: [Text]
+    attributes: { field: Text, leaf: Text }
+    sources: [spec]
+  required_request_field:
+    args: [Text]
+    attributes: { field: Text, leaf: Text }
+    sources: [spec]
+  response_field:
+    args: [Text]
+    attributes: { field: Text, leaf: Text }
+    sources: [spec]
+  route:
+    args: [Text]                       # service
+    attributes: { method: Text, path: Text, file: Text, line: Number }
+    sources: [syntax]
+  client_operation:
+    args: [Text]                       # client
+    attributes: { chain: Text, method: Text, path: Text, file: Text, line: Number }
+    sources: [syntax]
+  client_parameter:
+    args: [Text]                       # client
+    attributes: { method: Text, path: Text, name: Text, location: Text }
+    sources: [spec]
+  calls_path:
+    args: [Text]                       # consumer
+    attributes: { method: Text, path: Text, file: Text, line: Number }
+    sources: [syntax]
+  calls_client:
+    args: [Text]                       # consumer
+    attributes: { chain: Text, file: Text, line: Number }
+    sources: [syntax]
+  mentions:
+    args: [Text]                       # file
+    attributes: { name: Text }
+    sources: [syntax]
+  imports:
+    args: [Text, Text]                 # file, imported file
+    sources: [syntax]
+
+rules:
+  # What consumers call, matched against the operations they were written for.
+  - calls(c, op, f, l) :- calls_path(c, m, p, f, l), operation@base(_, op, m, p).
+  - calls(c, op, f, l) :- calls_path(c, "*", p, f, l), operation@base(_, op, _, p).
+  - calls(c, op, f, l) :- calls_client(c, ch, f, l), client_operation(_, ch, m, p, _, _), operation@base(_, op, m, p).
+
+  # A file uses a name if it or a file it imports mentions it.
+  - uses(f, n) :- mentions(f, n).
+  - uses(f, n) :- imports(f, g), mentions(g, n).
+
+  # What changed between the base and head of the change.
+  - removed_operation(op) :- operation@base(s, op, m, p), !operation@head(s, op, m, p).
+  - removed_parameter(op, n, loc) :- parameter@base(op, n, loc), !parameter@head(op, n, loc).
+  - new_required_parameter(op, n, loc) :- required_parameter@head(op, n, loc), !required_parameter@base(op, n, loc).
+  - removed_request_field(op, fld, leaf) :- request_field@base(op, fld, leaf), !request_field@head(op, fld, leaf).
+  - new_required_request_field(op, fld, leaf) :- required_request_field@head(op, fld, leaf), !required_request_field@base(op, fld, leaf), operation@head(_, op, _, _).
+  - removed_response_field(op, fld, leaf) :- response_field@base(op, fld, leaf), !response_field@head(op, fld, leaf).
+
+  # Spec against code, in the head snapshot.
+  - specified(s, m, p) :- operation(s, _, m, p).
+  - routed(s, m, p) :- route(s, m, p, _, _).
+
+requirements:
+  consumer_calls_removed_operation:
+    when: calls(c, op, f, l), removed_operation(op)
+    severity: error
+    explain: "{c} calls {op}, which no longer exists ({f}:{l})"
+
+  consumer_misses_new_required_parameter:
+    when: calls(c, op, f, l), new_required_parameter(op, n, loc)
+    severity: error
+    explain: "{c} calls {op}, which now requires {loc} parameter `{n}` ({f}:{l})"
+
+  consumer_misses_new_required_field:
+    when: calls(c, op, f, l), new_required_request_field(op, fld, leaf), !uses(f, leaf)
+    severity: error
+    explain: "{c} calls {op}, which now requires `{fld}`; its code never names `{leaf}` ({f}:{l})"
+
+  consumer_sends_removed_parameter:
+    when: calls(c, op, f, l), removed_parameter(op, n, loc), uses(f, n)
+    severity: error
+    explain: "{c} calls {op} and uses `{n}`, a {loc} parameter that was removed ({f}:{l})"
+
+  consumer_uses_removed_request_field:
+    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), uses(f, leaf)
+    severity: warning
+    explain: "{c} calls {op} and names `{leaf}`; request field `{fld}` was removed or renamed ({f}:{l})"
+
+  consumer_uses_removed_response_field:
+    when: calls(c, op, f, l), removed_response_field(op, fld, leaf), uses(f, leaf)
+    severity: warning
+    explain: "{c} calls {op} and names `{leaf}`; response field `{fld}` was removed or renamed ({f}:{l})"
+
+  consumer_calls_changed_operation:
+    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), !uses(f, leaf)
+    severity: info
+    explain: "{c} calls {op}, whose request field `{fld}` changed; its code never names `{leaf}` ({f}:{l})"
+
+  client_declares_removed_parameter:
+    when: client_parameter(cl, m, p, n, loc), operation@base(_, op, m, p), removed_parameter(op, n, loc)
+    severity: error
+    explain: "{cl} still declares {loc} parameter `{n}` on {op}, which the service removed"
+
+  client_calls_removed_operation:
+    when: client_operation(cl, ch, m, p, f, l), operation@base(_, op, m, p), removed_operation(op)
+    severity: error
+    explain: "{cl} method `{ch}` calls {op}, which no longer exists ({f}:{l})"
+
+  # Informational: public specs leave out internal routes on purpose.
+  route_not_in_spec:
+    when: route(s, m, p, f, l), !specified(s, m, p)
+    severity: info
+    explain: "{s} serves {m} {p} ({f}:{l}) but its spec does not declare it"
