@@ -105,6 +105,10 @@ pub(crate) struct VerifyArgs {
     /// Also list informational findings, not just their count.
     #[arg(long)]
     pub all: bool,
+    /// Also print every row of a derived relation, such as `calls`.
+    /// Repeatable.
+    #[arg(long = "relation", value_name = "NAME")]
+    pub relations: Vec<String>,
 }
 
 #[derive(Args)]
