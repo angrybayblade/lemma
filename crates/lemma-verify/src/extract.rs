@@ -161,6 +161,13 @@ fn service(
 ) -> Result<(), VerifyError> {
     let (commit, snapshots) = (snapshot.commit, snapshot.names);
     let service_name = repository.service.as_deref().unwrap_or(name);
+    if repository.rejects_unknown_fields {
+        writer.add(
+            "rejects_unknown_fields",
+            snapshots,
+            &[Arg::Text(service_name)],
+        );
+    }
     for spec in &repository.specs {
         for operation in spec_operations(repository, commit, spec)? {
             operation_facts(service_name, &operation, snapshots, writer);
@@ -213,6 +220,9 @@ fn operation_facts(
         ],
     );
     add_path_family(&operation.path, snapshots, writer);
+    if operation.rejects_unknown_fields {
+        writer.add("strict_request", snapshots, &[Arg::Text(op)]);
+    }
     for parameter in &operation.parameters {
         let args = [
             Arg::Text(op),
@@ -692,6 +702,46 @@ mod tests {
 
         assert_eq!(removed, [["GET /api/a", "name", "name"]]);
         assert_eq!(derive(&grammar, "removed_operation"), [["POST /api/b"]]);
+    }
+
+    #[test]
+    fn sending_a_removed_field_is_an_error_only_where_unknown_fields_fail() {
+        let mut grammar = http_contracts();
+        let mut writer = FactWriter::new(&mut grammar);
+        for op in ["PATCH /api/strict", "PATCH /api/lenient"] {
+            let path = op.split(' ').nth(1).unwrap();
+            let operation = [
+                Arg::Text("gateway"),
+                Arg::Text(op),
+                Arg::Text("PATCH"),
+                Arg::Text(path),
+            ];
+            writer.add("operation", &BOTH, &operation);
+            let field = [Arg::Text(op), Arg::Text("old"), Arg::Text("old")];
+            writer.add("request_field", &["base"], &field);
+            let call = [
+                Arg::Text("d:f::c"),
+                Arg::Text("PATCH"),
+                Arg::Text(path),
+                Arg::Text("d:f"),
+                Arg::Number(1),
+            ];
+            writer.add("calls_path", &BOTH, &call);
+        }
+        writer.add(
+            "strict_request",
+            &["head"],
+            &[Arg::Text("PATCH /api/strict")],
+        );
+        writer.add("mentions", &BOTH, &[Arg::Text("d:f"), Arg::Text("old")]);
+
+        let errors = derive(&grammar, "requirement:consumer_sends_rejected_field");
+        let warnings = derive(&grammar, "requirement:consumer_uses_removed_request_field");
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0][1], "PATCH /api/strict");
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0][1], "PATCH /api/lenient");
     }
 
     #[test]

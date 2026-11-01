@@ -28,6 +28,9 @@ pub struct Operation {
     pub parameters: Vec<Parameter>,
     /// Fields of the JSON request body.
     pub request_fields: Vec<Field>,
+    /// Whether the request body's schema forbids fields it does not list
+    /// (`additionalProperties: false`), so a request sending one fails.
+    pub rejects_unknown_fields: bool,
     /// Fields of the JSON bodies of 2xx responses.
     pub response_fields: Vec<String>,
 }
@@ -90,6 +93,7 @@ pub fn operations(document: &Json) -> Vec<Operation> {
                     .map(str::to_owned),
                 parameters: operation_parameters,
                 request_fields: request_fields(document, operation),
+                rejects_unknown_fields: rejects_unknown_fields(document, operation),
                 response_fields: response_fields(document, operation),
             });
         }
@@ -132,6 +136,31 @@ fn request_fields(document: &Json, operation: &Json) -> Vec<Field> {
         flatten(document, schema, &Place::root(body_required), &mut fields);
     }
     dedupe(fields)
+}
+
+/// Whether the request body's schema, or every branch of a union, sets
+/// `additionalProperties: false`.
+fn rejects_unknown_fields(document: &Json, operation: &Json) -> bool {
+    let Some(body) = operation
+        .get("requestBody")
+        .map(|body| resolve(document, body))
+    else {
+        return false;
+    };
+    let Some(schema) = json_schema(body).map(|schema| resolve(document, schema)) else {
+        return false;
+    };
+    let is_closed = |schema: &Json| schema.get("additionalProperties") == Some(&Json::Bool(false));
+    let branches: Vec<&Json> = ["anyOf", "oneOf"]
+        .iter()
+        .filter_map(|key| schema.get(*key).and_then(Json::as_array))
+        .flatten()
+        .map(|branch| resolve(document, branch))
+        .collect();
+    if branches.is_empty() {
+        return is_closed(schema);
+    }
+    branches.into_iter().all(is_closed)
 }
 
 fn response_fields(document: &Json, operation: &Json) -> Vec<String> {
@@ -292,7 +321,7 @@ mod tests {
                     },
                     "post": {
                         "requestBody": { "required": true, "content": { "application/json": { "schema": {
-                            "type": "object", "required": ["name"],
+                            "type": "object", "required": ["name"], "additionalProperties": false,
                             "properties": {
                                 "name": { "type": "string" },
                                 "hooks": { "type": "array", "items": { "type": "object", "required": ["action"],
@@ -331,6 +360,18 @@ mod tests {
             found[0].response_fields,
             ["items", "items[].id", "next_cursor"]
         );
+    }
+
+    #[test]
+    fn closed_request_schemas_reject_unknown_fields() {
+        let found = operations(&document());
+
+        let rejects: Vec<bool> = found
+            .iter()
+            .map(|operation| operation.rejects_unknown_fields)
+            .collect();
+
+        assert_eq!(rejects, [false, true]);
     }
 
     #[test]
