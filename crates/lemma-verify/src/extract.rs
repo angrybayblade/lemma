@@ -489,6 +489,59 @@ fn join(directory: &Path, specifier: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn http_contracts() -> CompiledGrammar {
+        let grammar = lemma_grammar::parse_grammar(crate::HTTP_CONTRACTS).unwrap();
+        lemma_grammar::compile(&grammar).unwrap()
+    }
+
+    fn derive(grammar: &CompiledGrammar, relation: &str) -> Vec<Vec<String>> {
+        let request = lemma_logic::Request::default();
+        let derived = lemma_logic::evaluate(
+            &lemma_logic::ReferenceEngine,
+            &grammar.program,
+            &grammar.facts,
+            &request,
+        )
+        .unwrap();
+        derived
+            .rows(relation)
+            .map(|row| {
+                row.iter()
+                    .map(|value| grammar.symbols.display(*value))
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_removed_operation_does_not_also_report_its_fields() {
+        let mut grammar = http_contracts();
+        let mut writer = FactWriter::new(&mut grammar);
+        let kept = [
+            Arg::Text("apollo"),
+            Arg::Text("GET /api/a"),
+            Arg::Text("GET"),
+            Arg::Text("/api/a"),
+        ];
+        let gone = [
+            Arg::Text("apollo"),
+            Arg::Text("POST /api/b"),
+            Arg::Text("POST"),
+            Arg::Text("/api/b"),
+        ];
+        writer.add("operation", &["base", "head"], &kept);
+        writer.add("operation", &["base"], &gone);
+        for op in ["GET /api/a", "POST /api/b"] {
+            let field = [Arg::Text(op), Arg::Text("name"), Arg::Text("name")];
+            writer.add("request_field", &["base"], &field);
+        }
+
+        let removed = derive(&grammar, "removed_request_field");
+
+        assert_eq!(removed, [["GET /api/a", "name", "name"]]);
+        assert_eq!(derive(&grammar, "removed_operation"), [["POST /api/b"]]);
+    }
+
     fn known(paths: &[&str]) -> BTreeSet<String> {
         paths.iter().map(|path| (*path).to_owned()).collect()
     }

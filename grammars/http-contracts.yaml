@@ -72,14 +72,16 @@ rules:
   - uses(f, n) :- mentions(f, n).
   - uses(f, n) :- imports(f, g), mentions(g, n).
 
-  # What changed between the base and head of the change.
+  # What changed between the base and head of the change. Parameter and
+  # field changes count only on operations the change kept; a removed
+  # operation is reported once, not once per field it had.
   - removed_operation(op) :- operation@base(s, op, m, p), !operation@head(s, op, m, p).
-  - removed_parameter(op, n, loc) :- parameter@base(op, n, loc), !parameter@head(op, n, loc).
-  - new_required_parameter(op, n, loc) :- required_parameter@head(op, n, loc), !required_parameter@base(op, n, loc).
-  - removed_request_field(op, fld, leaf) :- request_field@base(op, fld, leaf), !request_field@head(op, fld, leaf).
-  - new_required_request_field(op, fld, leaf) :- required_request_field@head(op, fld, leaf), !required_request_field@base(op, fld, leaf), operation@head(_, op, _, _).
-  - removed_response_field(op, fld, leaf) :- response_field@base(op, fld, leaf), !response_field@head(op, fld, leaf).
-
+  - kept_operation(op) :- operation@base(s, op, m, p), operation@head(s, op, m, p).
+  - removed_parameter(op, n, loc) :- parameter@base(op, n, loc), !parameter@head(op, n, loc), kept_operation(op).
+  - new_required_parameter(op, n, loc) :- required_parameter@head(op, n, loc), !required_parameter@base(op, n, loc), kept_operation(op).
+  - removed_request_field(op, fld, leaf) :- request_field@base(op, fld, leaf), !request_field@head(op, fld, leaf), kept_operation(op).
+  - new_required_request_field(op, fld, leaf) :- required_request_field@head(op, fld, leaf), !required_request_field@base(op, fld, leaf), kept_operation(op).
+  - removed_response_field(op, fld, leaf) :- response_field@base(op, fld, leaf), !response_field@head(op, fld, leaf), kept_operation(op).
   # Spec against code, in the head snapshot.
   - specified(s, m, p) :- operation(s, _, m, p).
   - routed(s, m, p) :- route(s, m, p, _, _).
