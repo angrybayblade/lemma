@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use lemma_logic::ReferenceEngine;
 use lemma_souffle::SouffleEngine;
-use lemma_verify::{Manifest, Report, VerifyError};
+use lemma_verify::{Manifest, Options, Report, VerifyError};
 
 use crate::cli::VerifyArgs;
 
@@ -39,16 +39,20 @@ pub(crate) fn run(args: &VerifyArgs, json: bool) -> ExitCode {
 
 fn verify(args: &VerifyArgs) -> anyhow::Result<Report> {
     let manifest = Manifest::load(&args.manifest)?;
+    let options = Options {
+        explain: args.explain,
+        relations: args.relations.clone(),
+    };
     let report: Result<Report, VerifyError> = match args.engine.as_deref() {
-        Some("reference") => lemma_verify::verify(&manifest, &ReferenceEngine, args.explain),
-        Some("souffle") => lemma_verify::verify(&manifest, &SouffleEngine::find()?, args.explain),
+        Some("reference") => lemma_verify::verify(&manifest, &ReferenceEngine, &options),
+        Some("souffle") => lemma_verify::verify(&manifest, &SouffleEngine::find()?, &options),
         Some(other) => anyhow::bail!("unknown engine `{other}`; use `souffle` or `reference`"),
         None => {
             if let Ok(souffle) = SouffleEngine::find() {
-                lemma_verify::verify(&manifest, &souffle, args.explain)
+                lemma_verify::verify(&manifest, &souffle, &options)
             } else {
                 eprintln!("souffle is not installed; using the reference engine");
-                lemma_verify::verify(&manifest, &ReferenceEngine, args.explain)
+                lemma_verify::verify(&manifest, &ReferenceEngine, &options)
             }
         }
     };
@@ -97,5 +101,12 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
         "{} errors, {} warnings, {infos} informational{hidden}",
         count("error"),
         count("warning")
-    )
+    )?;
+    for (name, rows) in &report.relations {
+        writeln!(out, "{name}: {} rows", rows.len())?;
+        for row in rows {
+            writeln!(out, "  {}", row.join("\t"))?;
+        }
+    }
+    Ok(())
 }
