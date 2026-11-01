@@ -4,13 +4,16 @@
 //! Parameters are written differently everywhere: `{nanoid}` in `OpenAPI`,
 //! `${id}` or `:id` in code, `[nanoId]` in Next.js file names. Each becomes
 //! `{}`. Anything before `/api/` (a base URL, `${BACKEND}`), a query
-//! string, and a trailing slash are dropped.
+//! string, text after the path, and a trailing slash are dropped.
 
 /// The canonical form of a path, or `None` if it has no `/api/` part.
 pub fn canonical_path(raw: &str) -> Option<String> {
     let start = raw.find("/api/")?;
     let path = &raw[start..];
-    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let path = path
+        .split(|c: char| c == '?' || c == '#' || c.is_whitespace())
+        .next()
+        .unwrap_or(path);
     let segments: Vec<&str> = path
         .split('/')
         .skip(1)
@@ -31,6 +34,16 @@ pub fn canonical_method(raw: &str) -> String {
     }
 }
 
+/// The method written just before a path, as in `PATCH /api/v3.1/x` in
+/// documentation or a log line, or `None` if the word before it is not one.
+pub fn method_before_path(raw: &str) -> Option<String> {
+    let start = raw.find("/api/")?;
+    let before = raw[..start].trim_end_matches(|c: char| !c.is_whitespace());
+    let word = before.split_whitespace().next_back()?;
+    let method = canonical_method(word);
+    (method != "*").then_some(method)
+}
+
 /// `{id}`, `${id}`, `:id`, `[id]` or a segment that is wholly a template
 /// substitution. A segment mixing text and a parameter (`v${n}`) counts too.
 fn is_parameter(segment: &str) -> bool {
@@ -43,6 +56,20 @@ fn is_parameter(segment: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_method_written_before_a_path_is_found() {
+        let documented = "PATCH /api/v3.1/tool_router/session/{session_id}\n\n{ \"x\": 1 }";
+        let full_url = "GET https://backend.sdk.dev/api/v3.1/tools";
+
+        assert_eq!(method_before_path(documented).as_deref(), Some("PATCH"));
+        assert_eq!(method_before_path(full_url).as_deref(), Some("GET"));
+        assert_eq!(method_before_path("${BASE}/api/v3.1/tools"), None);
+        assert_eq!(
+            canonical_path(documented).as_deref(),
+            Some("/api/v3.1/tool_router/session/{}")
+        );
+    }
 
     #[test]
     fn parameter_styles_become_one_placeholder() {
