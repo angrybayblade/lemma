@@ -39,6 +39,14 @@ def main() -> int:
     select.add_argument("--per-language", type=int, default=4)
     select.add_argument("--impact-per-corpus", type=int, default=Criteria.count)
     select.add_argument("--impact-only", action="store_true", help="keep the localization tasks as they are")
+    select.add_argument("--impact-file", default="impact.jsonl", help="task file for the impact tasks")
+    select.add_argument("--impact-prefix", default="imp", help="task id prefix for the impact tasks")
+    select.add_argument("--min-occurrences", type=int, default=Criteria.min_occurrences)
+    select.add_argument("--max-occurrences", type=int, default=Criteria.max_occurrences)
+    select.add_argument("--min-references", type=int, default=Criteria.min_references)
+    select.add_argument("--max-references", type=int, default=Criteria.max_references)
+    select.add_argument("--attempts", type=int, default=Criteria.attempts, help="symbols to check per corpus")
+    select.add_argument("--localization-only", action="store_true", help="keep the impact tasks as they are")
     select.add_argument("--corpora", type=Path, default=Path.home() / "corpora")
     select.add_argument("--corpus-commits", type=Path, default=Path.home() / "bench" / "corpora.txt")
     select.add_argument("--impact-corpora", default="django:python,nest:typescript,terraform:go")
@@ -59,6 +67,7 @@ def main() -> int:
     run.add_argument("--only", default="", help="comma-separated task ids")
     run.add_argument("--codex-arg", action="append", default=[], help="extra `codex exec` argument")
     run.add_argument("--codex", default="codex", help="Codex executable")
+    run.add_argument("--warm", action="store_true", help="start agents once Lemma's servers are up")
     run.add_argument("--cpu-quota", default=Limits.cpu_quota)
     run.add_argument("--memory-max", default=Limits.memory_max)
     run.add_argument("--timeout", type=int, default=Limits.timeout_seconds)
@@ -92,14 +101,23 @@ def cmd_select(args: argparse.Namespace) -> int:
     if not args.impact_only:
         localization = select_localization_tasks(cache, args.lemma.resolve(), args.per_language, args.seed)
         save_tasks(args.tasks / "localization.jsonl", localization)
+    if args.localization_only:
+        return 0
     commits = dict(line.split() for line in args.corpus_commits.read_text().splitlines() if line.strip())
     corpora = {}
     for entry in args.impact_corpora.split(","):
         name, language = entry.split(":")
         corpora[name] = (Source(repo=name, commit=commits[name], url=str(args.corpora / name)), language)
-    criteria = Criteria(count=args.impact_per_corpus)
-    impact = impact_tasks(cache, args.lemma.resolve(), corpora, criteria, seed=args.seed)
-    save_tasks(args.tasks / "impact.jsonl", impact)
+    criteria = Criteria(
+        count=args.impact_per_corpus,
+        min_occurrences=args.min_occurrences,
+        max_occurrences=args.max_occurrences,
+        min_references=args.min_references,
+        max_references=args.max_references,
+        attempts=args.attempts,
+    )
+    impact = impact_tasks(cache, args.lemma.resolve(), corpora, criteria, seed=args.seed, prefix=args.impact_prefix)
+    save_tasks(args.tasks / args.impact_file, impact)
     print(f"impact: {len(impact)} tasks", file=sys.stderr)
     return 0
 
@@ -166,6 +184,7 @@ def make_setup(args: argparse.Namespace) -> Setup:
         tool_path=tool_path,
         codex_args=tuple(args.codex_arg),
         codex=args.codex,
+        warm=args.warm,
     )
 
 
@@ -188,6 +207,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "limits": setup.limits.__dict__,
                 "codex_args": setup.codex_args,
                 "arms": args.arms,
+                "warm": args.warm,
                 "repeats": args.repeats,
                 "tasks": [t.id for t in tasks],
             },

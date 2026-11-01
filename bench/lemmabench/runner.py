@@ -94,6 +94,10 @@ class Setup:
     """Extra arguments for `codex exec`, such as `-m <model>`."""
     codex: str = "codex"
     """The Codex executable; a stand-in can replace it to test the harness."""
+    warm: bool = False
+    """Start the agent only once Lemma's language servers are up, as in a
+    session where the daemon is already running. The wait is recorded as
+    `warm.seconds` and not counted in the run's wall time."""
 
 
 @dataclass
@@ -105,6 +109,9 @@ class RunResult:
     wall_seconds: float
     index_seconds: float | None
     answer: dict | None
+    agent_seconds: float | None = None
+    """Time from the agent's start to its answer, without indexing or warm-up."""
+    warm_seconds: float | None = None
     resources: dict = field(default_factory=dict)
     error: str | None = None
 
@@ -138,6 +145,8 @@ def execute(setup: Setup, task: Task, arm: str, repeat: int) -> RunResult:
         exit_code=read_exit_code(directory),
         wall_seconds=wall,
         index_seconds=read_float(directory / "index.seconds"),
+        agent_seconds=read_float(directory / "agent.seconds"),
+        warm_seconds=read_float(directory / "warm.seconds"),
         answer=read_answer(directory / "answer.json"),
         resources={**parse_resources(completed.stderr), **read_cgroup_stats(directory)},
     )
@@ -220,6 +229,8 @@ def run_script(setup: Setup, arm: str, directory: Path, path: str) -> str:
             f"{lemma} index . > {quoted(str(directory / 'index.json'))} 2>&1\n"
             f'awk "BEGIN {{ print $EPOCHREALTIME - $start }}" > {quoted(str(directory / "index.seconds"))}\n'
         )
+        if setup.warm:
+            index += warm_up_script(lemma, quoted(str(directory / "warm.seconds")))
         stop = f"{lemma} daemon stop >/dev/null 2>&1 || true\n"
     codex = " ".join(
         quoted(part)
@@ -244,9 +255,11 @@ export HOME={quoted(str(Path.home()))}
 export CODEX_HOME={quoted(str(directory / "codex"))}
 export TMPDIR={quoted(str(directory / "tmp"))}
 cd {quoted(str(workspace))}
-{index}timeout {setup.limits.timeout_seconds} {codex} < {quoted(str(directory / "prompt.txt"))} \\
+{index}agent_start=$EPOCHREALTIME
+timeout {setup.limits.timeout_seconds} {codex} < {quoted(str(directory / "prompt.txt"))} \\
   > {quoted(str(directory / "events.jsonl"))} 2> {quoted(str(directory / "codex.stderr"))}
 echo $? > {quoted(str(directory / "exit_code"))}
+awk "BEGIN {{ print $EPOCHREALTIME - $agent_start }}" > {quoted(str(directory / "agent.seconds"))}
 {stop}# systemd's own summary can miss the peak; read the cgroup while still in it.
 cgroup=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)
 cat "$cgroup/memory.peak" > {quoted(str(directory / "memory.peak"))} 2>/dev/null
@@ -256,6 +269,23 @@ cat "$cgroup/cpu.stat" > {quoted(str(directory / "cpu.stat"))} 2>/dev/null
 
 def disabled_features(arm: str) -> tuple[str, ...]:
     return ALWAYS_DISABLED + (() if ARMS[arm].shell else NO_SHELL_FEATURES)
+
+
+WARM_LIMIT_SECONDS = 300
+
+
+def warm_up_script(lemma: str, record: str) -> str:
+    """Waits until the daemon reports no language server still starting."""
+    return (
+        "start=$EPOCHREALTIME\n"
+        f"for _ in $(seq {WARM_LIMIT_SECONDS}); do\n"
+        f"  status=$({lemma} daemon status 2>/dev/null)\n"
+        '  if echo "$status" | grep -q " running " && ! echo "$status" | grep -q " starting "; then break; fi\n'
+        "  sleep 1\n"
+        "done\n"
+        f'awk "BEGIN {{ print $EPOCHREALTIME - $start }}" > {record}\n'
+        f"date +%s.%N > {record}.end\n"
+    )
 
 
 def systemd_command(limits: Limits, unit: str, directory: Path) -> list[str]:

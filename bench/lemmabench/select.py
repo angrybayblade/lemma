@@ -109,7 +109,7 @@ def localization_candidates(seed: int) -> dict[str, list[Task]]:
 
 
 def impact_tasks(
-    cache: Path, lemma: Path, corpora: dict[str, tuple[Source, str]], criteria: Criteria, seed: int
+    cache: Path, lemma: Path, corpora: dict[str, tuple[Source, str]], criteria: Criteria, seed: int, prefix: str = "imp"
 ) -> list[Task]:
     """Impact tasks for each corpus (source and language), with answer keys
     checked by the oracle servers."""
@@ -120,11 +120,11 @@ def impact_tasks(
         db = cache / "truth" / f"{corpus}.db"
         index_snapshot(lemma, db, root)
         for checked in check_symbols(root, db, language, criteria, seed):
-            tasks.append(impact_task(corpus, source, language, checked))
+            tasks.append(impact_task(corpus, source, language, checked, prefix))
     return tasks
 
 
-def impact_task(corpus: str, source: Source, language: str, checked: Checked) -> Task:
+def impact_task(corpus: str, source: Source, language: str, checked: Checked, prefix: str = "imp") -> Task:
     symbol = checked.symbol
     line = symbol["line"] + 1
     brief = (
@@ -135,7 +135,7 @@ def impact_task(corpus: str, source: Source, language: str, checked: Checked) ->
         "other symbols that share its name, and mentions in comments or strings."
     )
     return Task(
-        id=f"imp-{corpus}-{symbol['name']}-{line}",
+        id=f"{prefix}-{corpus}-{symbol['name']}-{line}",
         track=IMPACT,
         language=language,
         source=source,
