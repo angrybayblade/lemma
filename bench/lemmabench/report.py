@@ -54,6 +54,7 @@ def row_for(task: Task, result: RunResult, directory: Path) -> RunRow:
     activity = read_activity(directory / "events.jsonl")
     lemma_calls = sum(count for tool, count in activity.tools.items() if tool.startswith("mcp:lemma."))
     costs = {
+        "agent_seconds": result.agent_seconds if result.agent_seconds is not None else result.wall_seconds,
         "wall_seconds": result.wall_seconds,
         "cpu_seconds": result.resources.get("cpu_seconds", 0.0),
         "memory_peak_mb": result.resources.get("memory_peak_bytes", 0) / 2**20,
@@ -102,6 +103,7 @@ SCORE_FIELDS = {
     "impact": ["location_f1", "location_recall", "location_precision", "file_recall"],
 }
 COST_FIELDS = [
+    "agent_seconds",
     "wall_seconds",
     "uncached_input_tokens",
     "output_tokens",
@@ -111,7 +113,7 @@ COST_FIELDS = [
     "cpu_seconds",
     "memory_peak_mb",
 ]
-EFFECT_FIELDS = ["wall_seconds", "uncached_input_tokens"]
+EFFECT_FIELDS = ["agent_seconds", "uncached_input_tokens"]
 
 
 def render(rows: list[RunRow], arms: list[str]) -> str:
