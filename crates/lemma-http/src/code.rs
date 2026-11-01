@@ -9,7 +9,7 @@ use lemma_model::{Language, Symbol};
 use lemma_syntax::Extractor;
 use tree_sitter::{Node, Parser};
 
-use crate::paths::{canonical_method, canonical_path};
+use crate::paths::{canonical_method, canonical_path, method_before_path};
 
 /// Where in the code a fact was found.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -372,7 +372,8 @@ impl Walk<'_> {
                 .string_value(node)
                 .filter(|text| text.contains("/api/"))
             {
-                self.add_reference("*", &text, node);
+                let method = method_before_path(&text).unwrap_or_else(|| "*".to_owned());
+                self.add_reference(&method, &text, node);
             }
             return;
         }
