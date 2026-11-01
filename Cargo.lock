@@ -620,6 +620,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lemma-souffle"
+version = "0.1.0"
+dependencies = [
+ "lemma-logic",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "which",
+]
+
+[[package]]
 name = "lemma-store"
 version = "0.1.0"
 dependencies = [
