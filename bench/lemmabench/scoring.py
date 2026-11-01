@@ -66,6 +66,8 @@ def score_impact(task: Task, answer: dict) -> dict[str, Match]:
     for location in answer.get("locations", []):
         if isinstance(location, dict) and location.get("path") and isinstance(location.get("line"), int):
             locations.add(f"{normalize_path(location['path'])}:{location['line']}")
+    # Lines the oracles could not settle count neither way.
+    locations -= set(task.gold.get("unknown", []))
     wanted = set(task.gold["locations"])
     return {
         "location": compare(locations, wanted),

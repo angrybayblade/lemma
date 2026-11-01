@@ -140,7 +140,10 @@ def impact_task(corpus: str, source: Source, language: str, checked: Checked) ->
         language=language,
         source=source,
         brief=brief,
-        gold={"locations": [f"{path}:{number}" for path, number in checked.references]},
+        gold={
+            "locations": [f"{path}:{number}" for path, number in checked.references],
+            "unknown": [f"{path}:{number}" for path, number in checked.unknown],
+        },
         origin={
             "oracles": [server["command"][0] for server in ORACLES[language]["servers"]],
             "name_occurrences": checked.occurrences,

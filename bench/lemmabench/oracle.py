@@ -12,15 +12,18 @@ Input (stdin, JSON):
    "jobs": [{"target": {"path", "line", "column"},
              "candidates": [{"path", "line", "column"}]}]}
   Positions are zero-based; columns count UTF-8 bytes.
-Output (stdout, JSON): {"verdicts": [[true|false|null, ...] per job],
+Output (stdout, JSON): {"verdicts": [[true|false|null|"unresolved", ...] per job],
                         "seconds", "restarts"}
-null means the server did not answer for that candidate.
+null means the server did not answer for that candidate. "unresolved" means
+its answer stopped at an import statement: the server could not follow the
+import (an unresolved module or path alias), which says nothing either way.
 """
 
 import collections
 import fnmatch
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import threading
@@ -212,6 +215,43 @@ class Server:
             pass
 
 
+IMPORT_LINE = re.compile(r"^\s*(import\b|export\b.*\bfrom\b|from\s+\S+\s+import\b)|\brequire\(")
+
+
+def judge(result, target_path, target_line, root):
+    """True if the answer points at the target, "unresolved" if it only
+    reaches import statements, False otherwise."""
+    if points_at(result, target_path, target_line):
+        return True
+    locations = result if isinstance(result, list) else [result] if result else []
+    lines = [location_line(location) for location in locations]
+    if lines and all(line is not None and IMPORT_LINE.search(line) for line in lines):
+        return "unresolved"
+    return False
+
+
+def location_line(location):
+    uri_text = location.get("targetUri") or location.get("uri")
+    line_range = location.get("targetSelectionRange") or location.get("range")
+    if not uri_text or not line_range:
+        return None
+    try:
+        text = pathlib.Path(uri_text.replace("file://", "")).read_text(errors="replace")
+    except OSError:
+        return None
+    lines = text.split("\n")
+    number = line_range["start"]["line"]
+    if number >= len(lines):
+        return None
+    # An import can span lines (`import {\n  A,\n} from "x"`): look back to its start.
+    for back in range(number, max(-1, number - 30), -1):
+        if IMPORT_LINE.search(lines[back]):
+            return lines[back]
+        if back != number and lines[back].rstrip().endswith((";", "}")) and "{" not in lines[back]:
+            break
+    return lines[number]
+
+
 def points_at(result, target_path, target_line):
     if not result:
         return False
@@ -256,7 +296,7 @@ def main():
             if answer is None or "error" in answer:
                 verdicts.append(None)
             else:
-                verdicts.append(points_at(answer.get("result"), target_path, target["line"]))
+                verdicts.append(judge(answer.get("result"), target_path, target["line"], root))
         all_verdicts.append(verdicts)
     server.stop()
     print(json.dumps({"verdicts": all_verdicts, "seconds": time.time() - start, "restarts": restarts}))
