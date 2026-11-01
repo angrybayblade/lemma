@@ -169,7 +169,9 @@ fn service(
             operation_facts(service_name, &operation, snapshots, writer);
         }
     }
-    if !snapshots.contains(&"head") {
+    // Without route directories there is no route code to read; an empty
+    // list would otherwise mean the whole repository.
+    if !snapshots.contains(&"head") || repository.routes.is_empty() {
         return Ok(());
     }
     let files = lemma_http::read_files(
