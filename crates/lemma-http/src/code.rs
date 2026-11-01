@@ -105,9 +105,7 @@ pub fn extract(
     extractor: &mut Extractor,
 ) -> Result<CodeFacts, CodeError> {
     let extension = file.rsplit_once('.').map_or("", |(_, extension)| extension);
-    let Some(language) =
-        Language::from_extension(extension).filter(|language| *language != Language::Go)
-    else {
+    let Some(language) = parse_language(extension) else {
         return Ok(CodeFacts::default());
     };
     let parse_error = |source| CodeError::Parse {
@@ -147,6 +145,16 @@ pub fn extract(
     facts.imports.sort();
     facts.imports.dedup();
     Ok(facts)
+}
+
+/// The grammar to parse a file with. JavaScript has no language of its own
+/// in Lemma's model; the TSX grammar parses it, JSX included, because
+/// TypeScript's syntax is a superset of it.
+fn parse_language(extension: &str) -> Option<Language> {
+    if matches!(extension, "js" | "jsx" | "mjs" | "cjs") {
+        return Some(Language::Tsx);
+    }
+    Language::from_extension(extension).filter(|language| *language != Language::Go)
 }
 
 fn tree_sitter_language(language: Language) -> tree_sitter::Language {
@@ -526,6 +534,17 @@ mod tests {
             reference.path,
             "/api/v3.1/internal/customer_accounts/link/{}"
         );
+    }
+
+    #[test]
+    fn javascript_modules_are_read() {
+        let source = "export async function provision(api) {\n  return api('/api/v3.1/api_keys', { method: 'POST' })\n}\n";
+
+        let found = facts("scripts/provision.mjs", source);
+
+        let reference = &found.path_references[0];
+        assert_eq!(reference.path, "/api/v3.1/api_keys");
+        assert_eq!(reference.location.symbol.as_deref(), Some("provision"));
     }
 
     #[test]

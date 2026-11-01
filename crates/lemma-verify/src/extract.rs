@@ -15,7 +15,7 @@ use lemma_syntax::Extractor;
 use crate::VerifyError;
 use crate::manifest::{Manifest, Repository, Role};
 
-const CODE_EXTENSIONS: [&str; 3] = ["ts", "tsx", "py"];
+const CODE_EXTENSIONS: [&str; 9] = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py"];
 
 /// A value for a fact, before interning.
 enum Arg<'a> {
@@ -392,7 +392,11 @@ fn resolve_import(file: &str, specifier: &str, known: &BTreeSet<String>) -> Opti
         base.clone(),
         format!("{base}.ts"),
         format!("{base}.tsx"),
+        format!("{base}.js"),
+        format!("{base}.jsx"),
         format!("{base}/index.ts"),
+        format!("{base}/index.tsx"),
+        format!("{base}/index.js"),
         format!("{base}.py"),
         format!("{base}/__init__.py"),
     ];
