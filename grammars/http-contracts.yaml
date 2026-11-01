@@ -4,8 +4,8 @@
 # documents (spec), routes, client operation tables and calls from code
 # (syntax). Operations are named "METHOD /path" with path parameters
 # written `{}`. A consumer is "repository:file::Symbol"; a file is
-# "repository:file". Consumers are read at one commit; services at the
-# base and head of the change.
+# "repository:file". The changed repository is read at the base and head
+# of the change; every other repository at one commit, the same in both.
 
 grammar: http-contracts
 
@@ -61,6 +61,10 @@ relations:
   imports:
     args: [Text, Text]                 # file, imported file
     sources: [syntax]
+  path_family:
+    args: [Text]                       # path
+    attributes: { family: Text }       # its first two segments, /api/v3.1
+    sources: [syntax, spec]
 
 rules:
   # What consumers call, matched against the operations they were written for.
@@ -82,11 +86,26 @@ rules:
   - removed_request_field(op, fld, leaf) :- request_field@base(op, fld, leaf), !request_field@head(op, fld, leaf), kept_operation(op).
   - new_required_request_field(op, fld, leaf) :- required_request_field@head(op, fld, leaf), !required_request_field@base(op, fld, leaf), kept_operation(op).
   - removed_response_field(op, fld, leaf) :- response_field@base(op, fld, leaf), !response_field@head(op, fld, leaf), kept_operation(op).
+  # Calls a changed consumer adds to paths of a service's family (such as
+  # /api/v3.1) that the service does not serve. Calls that were already
+  # there, and paths of other families, are not the change's doing.
+  - served(m, p) :- operation(_, _, m, p).
+  - served_path(p) :- operation(_, _, _, p).
+  - served_family(fam) :- operation(_, _, _, p), path_family(p, fam).
+  - called_before(c, m, p) :- calls_path@base(c, m, p, _, _).
+  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m != "*", !served(m, p), !called_before(c, m, p), path_family(p, fam), served_family(fam).
+  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m = "*", !served_path(p), !called_before(c, m, p), path_family(p, fam), served_family(fam).
+
   # Spec against code, in the head snapshot.
   - specified(s, m, p) :- operation(s, _, m, p).
   - routed(s, m, p) :- route(s, m, p, _, _).
 
 requirements:
+  consumer_calls_unserved_operation:
+    when: unserved_call(c, m, p, f, l)
+    severity: error
+    explain: "{c} now calls {m} {p}, which no service serves ({f}:{l})"
+
   consumer_calls_removed_operation:
     when: calls(c, op, f, l), removed_operation(op)
     severity: error
