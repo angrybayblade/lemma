@@ -36,6 +36,12 @@ pub struct ProviderDefinition {
     /// for one before asking anything.
     #[serde(default)]
     pub ready_messages: Vec<String>,
+    /// File names, such as `tsconfig.json`, that mark a separate project
+    /// the server only searches once one of its files is open. Before a
+    /// project-wide question, Lemma opens a file in each project that
+    /// mentions the symbol.
+    #[serde(default)]
+    pub project_markers: Vec<String>,
 }
 
 impl ProviderDefinition {
@@ -46,7 +52,8 @@ impl ProviderDefinition {
         let parts = [&self.command]
             .into_iter()
             .chain(&self.args)
-            .chain(&self.ready_messages);
+            .chain(&self.ready_messages)
+            .chain(&self.project_markers);
         for part in parts {
             hasher.update(part.as_bytes());
             hasher.update(b"\0");
@@ -224,6 +231,7 @@ mod tests {
             initialization_options: None,
             settings: None,
             ready_messages: Vec::new(),
+            project_markers: Vec::new(),
         }
     }
 
