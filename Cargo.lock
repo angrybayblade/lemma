@@ -562,6 +562,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lemma-http"
+version = "0.1.0"
+dependencies = [
+ "lemma-model",
+ "lemma-syntax",
+ "serde_json",
+ "thiserror",
+ "tree-sitter",
+ "tree-sitter-python",
+ "tree-sitter-typescript",
+]
+
+[[package]]
 name = "lemma-index"
 version = "0.1.0"
 dependencies = [
