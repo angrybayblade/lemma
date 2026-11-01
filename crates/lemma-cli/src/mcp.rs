@@ -1,8 +1,8 @@
 //! An MCP server, so agents can call Lemma's operations as tools.
 //!
 //! It speaks the Model Context Protocol over stdio: one JSON-RPC message
-//! per line. Each tool is a `lemma` command with `--json`; its result is
-//! that command's JSON, run in the daemon like any other command, so
+//! per line. Each tool is a `lemma` command; its result is that command's
+//! text output, run in the daemon like any other command, so
 //! language servers stay warm across tool calls and terminal use. Without
 //! a daemon, commands run in a long-lived engine inside this process.
 
@@ -31,8 +31,8 @@ follows imports and aliases. Prefer it to grep or rg for those questions, especi
 names; use text search for strings, configuration and other files.\n\n\
 Workflow: `search_symbols` (or `outline` for a file) gives each definition an id like `#415`; pass \
 the id to `references`, `implementations` or `signature`. `definition` takes a file, line and \
-column. Run `index` after editing files; it takes milliseconds. Only `found` and `empty` outcomes \
-are answers; `empty` means the server saw nothing, not that the code is unused.";
+column. The index refreshes itself before every query. \"No references found\" means the server \
+saw nothing, not that the code is unused.";
 
 /// A command's result, as the tool returns it.
 struct Finished {
@@ -204,6 +204,12 @@ fn call_tool(
         .and_then(Value::as_object)
         .unwrap_or(&empty);
     let args = command_for(name, arguments)?;
+    if name != "index" {
+        // Keep answers current without spending an agent's call on it: an
+        // update with nothing changed takes milliseconds. A failure shows
+        // up in the query itself.
+        run(vec!["index".to_owned(), ".".to_owned()]);
+    }
     let finished = run(args);
     let is_error = finished.exit_code == 1;
     let text = if is_error {
@@ -217,9 +223,10 @@ fn call_tool(
     }))
 }
 
-/// The `lemma` arguments a tool call stands for.
+/// The `lemma` arguments a tool call stands for. Results are the commands'
+/// text output: a fraction of the JSON's size, with the same facts and ids.
 fn command_for(name: &str, arguments: &Map<String, Value>) -> Result<Vec<String>, String> {
-    let mut args = vec!["--json".to_owned()];
+    let mut args = Vec::new();
     match name {
         "index" => {
             args.push("index".to_owned());
@@ -350,7 +357,6 @@ mod tests {
         assert_eq!(
             args,
             [
-                "--json",
                 "refs",
                 "Router.delete",
                 "--language",
@@ -368,7 +374,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(args, ["--json", "definition", "src/app.py:12:5"]);
+        assert_eq!(args, ["definition", "src/app.py:12:5"]);
     }
 
     #[test]
@@ -453,6 +459,23 @@ mod tests {
             reply["result"]["content"][0]["text"],
             "error: no index found"
         );
+    }
+
+    #[test]
+    fn queries_refresh_the_index_first() {
+        let line = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"outline","arguments":{"file":"a.py"}}}"#;
+        let mut commands = Vec::new();
+
+        handle_line(line, &mut |args| {
+            commands.push(args.join(" "));
+            Finished {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+            }
+        });
+
+        assert_eq!(commands, ["index .", "outline a.py"]);
     }
 
     #[test]
