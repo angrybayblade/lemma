@@ -1,0 +1,17 @@
+[package]
+name = "lemma-souffle"
+description = "Evaluates Lemma's Datalog programs with Soufflé."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+lemma-logic.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+which.workspace = true
