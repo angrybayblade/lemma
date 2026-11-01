@@ -31,6 +31,7 @@ Lemma reads definitions itself, but asks a language server where symbols are use
 | Python (fastest) | `uv tool install ty` or `pip install ty` | `ty` |
 | Python | `npm install -g pyright` or `pip install basedpyright` | `pyright-langserver` or `basedpyright-langserver` |
 | Go | `go install golang.org/x/tools/gopls@latest` | `gopls` |
+| Rust | `rustup component add rust-analyzer` | `rust-analyzer` |
 
 The command must be on your `PATH`. Run `lemma providers` to see what Lemma found:
 
@@ -50,7 +51,7 @@ Tried in order for each language:
   go           gopls
 ```
 
-Language servers work best when the project's own dependencies are installed (`npm install`, a Python virtual environment, `go mod download`). Without them, references that go through imports may be missing.
+Language servers work best when the project's own dependencies are installed (`npm install`, a Python virtual environment, `go mod download`, `cargo fetch`). Without them, references that go through imports may be missing.
 
 ## 3. Index a project
 

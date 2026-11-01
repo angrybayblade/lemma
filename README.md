@@ -1,6 +1,6 @@
 # Lemma
 
-Lemma indexes source code into a shared, versioned store of symbols and asks language servers about them. It covers TypeScript, Python, and Go: syntax indexing with Tree-sitter, pluggable language servers for semantic answers, and the questions agents ask while changing code: where a symbol is used, where something is defined, what implements an interface, and what a symbol's signature is. Agents can call it as an MCP server.
+Lemma indexes source code into a shared, versioned store of symbols and asks language servers about them. It covers TypeScript, Python, Go, and Rust: syntax indexing with Tree-sitter, pluggable language servers for semantic answers, and the questions agents ask while changing code: where a symbol is used, where something is defined, what implements an interface, and what a symbol's signature is. Agents can call it as an MCP server.
 
 ## Quick start
 
@@ -23,7 +23,7 @@ lemma verify change.yaml                # what a change breaks in the repositori
 
 Add `--json` to any command for machine-readable output. For agents, `lemma mcp` serves the same commands as MCP tools; in Claude Code, `claude mcp add lemma -- lemma mcp` adds it to a project.
 
-Lemma does not bundle language servers. Install the ones you need: `typescript-language-server` or TypeScript 7's `tsc`, `ty` (fastest) or `pyright`, and `gopls`.
+Lemma does not bundle language servers. Install the ones you need: `typescript-language-server` or TypeScript 7's `tsc`, `ty` (fastest) or `pyright`, `gopls`, and `rust-analyzer`.
 
 Lemma is built to be called in a loop by agents. Commands run in a background daemon that watches indexed directories and keeps language servers warm. Across 241 randomly drawn symbols in five repositories, 96% of the lines Lemma reported were real references, against 31% for ripgrep; with Lemma running, a lookup took 19-126 ms the first time a symbol was asked and 1-3 ms once cached. Text search remains better for one-off questions, small repositories, strings and other text, and as a cross-check before a rename. See [the comparison](docs/comparison.md) and [Performance](docs/performance.md).
 
