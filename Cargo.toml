@@ -10,6 +10,7 @@ publish = false
 
 [workspace.dependencies]
 lemma-index = { path = "crates/lemma-index" }
+lemma-logic = { path = "crates/lemma-logic" }
 lemma-lsp = { path = "crates/lemma-lsp" }
 lemma-model = { path = "crates/lemma-model" }
 lemma-providers = { path = "crates/lemma-providers" }
