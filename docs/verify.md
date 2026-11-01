@@ -66,9 +66,9 @@ repositories:
 
 | Field | Meaning |
 | --- | --- |
-| `change` | The repository that changed and the commits before (`base`) and with (`head`) the change. |
+| `change` | The repository that changed and the commits before (`base`) and with (`head`) the change: a service, or a consumer whose new calls are checked against the services. |
 | `path` | The repository's clone, relative to the manifest. Files are read from Git at the commit, without a checkout. |
-| `commit` | The commit to read for repositories other than the changed one; the working directory if absent. |
+| `commit` | The commit to read for repositories other than the changed one, the same before and after the change; the working directory if absent. |
 | `role` | `service`, `client` or `consumer`. |
 | `specs` | OpenAPI documents: a service's contract, or a client's copy of it. |
 | `routes` | Directories with a service's route code, for checking the spec against the code. |
@@ -92,6 +92,7 @@ Paths compare in one form, so `{id}`, `${id}`, `:id` and `[id]` are the same par
 | Requirement | Severity | Meaning |
 | --- | --- | --- |
 | `consumer_calls_removed_operation` | error | A consumer calls an operation the change removed. |
+| `consumer_calls_unserved_operation` | error | A changed consumer adds a call to a path in a service's family (`/api/v3.1`) that no service serves, such as an endpoint not yet deployed. |
 | `consumer_misses_new_required_parameter` | error | An operation a consumer calls now requires a parameter. |
 | `consumer_misses_new_required_field` | error | An operation now requires a request field the consumer's code never names. |
 | `consumer_sends_removed_parameter` | error | A consumer calls an operation and names a parameter the change removed. |

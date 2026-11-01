@@ -84,7 +84,25 @@ pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(
                 service(name, repository, &both, writer, &mut extractor)?;
             }
             Role::Client => client(name, repository, writer, &mut extractor)?,
-            Role::Consumer => consumer(name, repository, writer, &mut extractor)?,
+            Role::Consumer if is_changed => {
+                let base = Snapshot {
+                    commit: Some(&manifest.change.base),
+                    names: &["base"],
+                };
+                let head = Snapshot {
+                    commit: Some(&manifest.change.head),
+                    names: &["head"],
+                };
+                consumer(name, repository, &base, writer, &mut extractor)?;
+                consumer(name, repository, &head, writer, &mut extractor)?;
+            }
+            Role::Consumer => {
+                let both = Snapshot {
+                    commit: repository.commit.as_deref(),
+                    names: &BOTH,
+                };
+                consumer(name, repository, &both, writer, &mut extractor)?;
+            }
         }
     }
     Ok(())
@@ -195,6 +213,7 @@ fn operation_facts(
             Arg::Text(&operation.path),
         ],
     );
+    add_path_family(&operation.path, snapshots, writer);
     for parameter in &operation.parameters {
         let args = [
             Arg::Text(op),
@@ -277,26 +296,47 @@ fn client(
 /// What every file of one consumer shares.
 struct ConsumerScope<'a> {
     name: &'a str,
+    /// The snapshots this reading of the repository belongs to.
+    snapshots: &'a [&'a str],
     known: BTreeSet<String>,
     options: CodeOptions,
 }
 
 const BOTH: [&str; 2] = ["base", "head"];
 
+/// Records a path's family: its first two segments, such as `/api/v3.1`.
+/// Rules use it to tell a call to a missing operation of a service from a
+/// call to some other service, such as a consumer's own `/api/trpc`.
+fn add_path_family(path: &str, snapshots: &[&str], writer: &mut FactWriter<'_>) {
+    let family: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .take(2)
+        .collect();
+    let family = format!("/{}", family.join("/"));
+    writer.add(
+        "path_family",
+        snapshots,
+        &[Arg::Text(path), Arg::Text(&family)],
+    );
+}
+
 fn consumer(
     name: &str,
     repository: &Repository,
+    snapshot: &Snapshot<'_>,
     writer: &mut FactWriter<'_>,
     extractor: &mut Extractor,
 ) -> Result<(), VerifyError> {
     let files = lemma_http::read_files(
         &repository.path,
-        repository.commit.as_deref(),
+        snapshot.commit,
         &repository.include,
         &CODE_EXTENSIONS,
     )?;
     let scope = ConsumerScope {
         name,
+        snapshots: snapshot.names,
         known: files.iter().map(|file| file.path.clone()).collect(),
         options: CodeOptions {
             client_receivers: repository.client_receivers.clone(),
@@ -337,7 +377,8 @@ fn consumer_file(
             Arg::Text(&file_id),
             Arg::Number(i64::from(location.line)),
         ];
-        writer.add("calls_path", &BOTH, &args);
+        writer.add("calls_path", scope.snapshots, &args);
+        add_path_family(call_path, scope.snapshots, writer);
     }
     for call in &facts.client_calls {
         let consumer = consumer_id(call.location.symbol.as_ref());
@@ -347,12 +388,12 @@ fn consumer_file(
             Arg::Text(&file_id),
             Arg::Number(i64::from(call.location.line)),
         ];
-        writer.add("calls_client", &BOTH, &args);
+        writer.add("calls_client", scope.snapshots, &args);
     }
     for mention in &facts.mentions {
         writer.add(
             "mentions",
-            &BOTH,
+            scope.snapshots,
             &[Arg::Text(&file_id), Arg::Text(mention)],
         );
     }
@@ -360,7 +401,7 @@ fn consumer_file(
         if let Some(target) = resolve_import(path, specifier, &scope.known) {
             writer.add(
                 "imports",
-                &BOTH,
+                scope.snapshots,
                 &[
                     Arg::Text(&file_id),
                     Arg::Text(&format!("{}:{target}", scope.name)),
@@ -540,6 +581,38 @@ mod tests {
 
         assert_eq!(removed, [["GET /api/a", "name", "name"]]);
         assert_eq!(derive(&grammar, "removed_operation"), [["POST /api/b"]]);
+    }
+
+    #[test]
+    fn only_new_calls_to_a_served_family_are_unserved() {
+        let mut grammar = http_contracts();
+        let mut writer = FactWriter::new(&mut grammar);
+        let operation = [
+            Arg::Text("gateway"),
+            Arg::Text("GET /api/v3.1/a"),
+            Arg::Text("GET"),
+            Arg::Text("/api/v3.1/a"),
+        ];
+        writer.add("operation", &BOTH, &operation);
+        add_path_family("/api/v3.1/a", &BOTH, &mut writer);
+        let call = |path| {
+            [
+                Arg::Text("d:f::c"),
+                Arg::Text("GET"),
+                Arg::Text(path),
+                Arg::Text("d:f"),
+                Arg::Number(3),
+            ]
+        };
+        writer.add("calls_path", &BOTH, &call("/api/v3.1/old"));
+        for path in ["/api/v3.1/old", "/api/v3.1/new", "/api/trpc/x"] {
+            writer.add("calls_path", &["head"], &call(path));
+            add_path_family(path, &BOTH, &mut writer);
+        }
+
+        let unserved = derive(&grammar, "unserved_call");
+
+        assert_eq!(unserved, [["d:f::c", "GET", "/api/v3.1/new", "d:f", "3"]]);
     }
 
     fn known(paths: &[&str]) -> BTreeSet<String> {
