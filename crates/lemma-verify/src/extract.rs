@@ -117,9 +117,9 @@ fn exists_at_any(
 }
 
 /// The commits to read a repository at. The changed repository, and any
-/// other entry for the same clone (one repository can hold a service and
-/// its consumers), are read before and with the change; every other
-/// repository once, for both snapshots.
+/// other entry for the same clone without a commit of its own (one
+/// repository can hold a service and its consumers), are read before and
+/// with the change; every other repository once, for both snapshots.
 fn snapshots<'m>(manifest: &'m Manifest, repository: &'m Repository) -> Vec<Snapshot<'m>> {
     if !is_changed(manifest, repository) {
         return vec![Snapshot {
@@ -142,11 +142,17 @@ fn snapshots<'m>(manifest: &'m Manifest, repository: &'m Repository) -> Vec<Snap
     ]
 }
 
+/// Whether a repository entry is read at the change's commits: the changed
+/// one, and other entries for its clone unless they pin their own commit
+/// (to ask how the change meets code from another time).
 fn is_changed(manifest: &Manifest, repository: &Repository) -> bool {
-    manifest
-        .repositories
-        .get(&manifest.change.repository)
-        .is_some_and(|changed| changed.path == repository.path)
+    let Some(changed) = manifest.repositories.get(&manifest.change.repository) else {
+        return false;
+    };
+    if std::ptr::eq(changed, repository) {
+        return true;
+    }
+    changed.path == repository.path && repository.commit.is_none()
 }
 
 /// A commit to read and the snapshots its facts belong to.
