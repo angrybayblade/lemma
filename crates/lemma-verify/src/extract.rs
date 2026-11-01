@@ -15,7 +15,9 @@ use lemma_syntax::Extractor;
 use crate::VerifyError;
 use crate::manifest::{Manifest, Repository, Role};
 
-const CODE_EXTENSIONS: [&str; 9] = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py"];
+const CODE_EXTENSIONS: [&str; 10] = [
+    "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "go",
+];
 
 /// A value for a fact, before interning.
 enum Arg<'a> {
@@ -62,46 +64,11 @@ pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(
     let mut extractor = Extractor::new().map_err(|source| VerifyError::Syntax { source })?;
     check_files(manifest)?;
     for (name, repository) in &manifest.repositories {
-        let is_changed = *name == manifest.change.repository;
-        match repository.role {
-            Role::Service if is_changed => {
-                let base = Snapshot {
-                    commit: Some(&manifest.change.base),
-                    names: &["base"],
-                };
-                let head = Snapshot {
-                    commit: Some(&manifest.change.head),
-                    names: &["head"],
-                };
-                service(name, repository, &base, writer, &mut extractor)?;
-                service(name, repository, &head, writer, &mut extractor)?;
-            }
-            Role::Service => {
-                let both = Snapshot {
-                    commit: repository.commit.as_deref(),
-                    names: &["base", "head"],
-                };
-                service(name, repository, &both, writer, &mut extractor)?;
-            }
-            Role::Client => client(name, repository, writer, &mut extractor)?,
-            Role::Consumer if is_changed => {
-                let base = Snapshot {
-                    commit: Some(&manifest.change.base),
-                    names: &["base"],
-                };
-                let head = Snapshot {
-                    commit: Some(&manifest.change.head),
-                    names: &["head"],
-                };
-                consumer(name, repository, &base, writer, &mut extractor)?;
-                consumer(name, repository, &head, writer, &mut extractor)?;
-            }
-            Role::Consumer => {
-                let both = Snapshot {
-                    commit: repository.commit.as_deref(),
-                    names: &BOTH,
-                };
-                consumer(name, repository, &both, writer, &mut extractor)?;
+        for snapshot in snapshots(manifest, repository) {
+            match repository.role {
+                Role::Service => service(name, repository, &snapshot, writer, &mut extractor)?,
+                Role::Client => client(name, repository, &snapshot, writer, &mut extractor)?,
+                Role::Consumer => consumer(name, repository, &snapshot, writer, &mut extractor)?,
             }
         }
     }
@@ -114,7 +81,7 @@ pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(
 /// removed it.
 fn check_files(manifest: &Manifest) -> Result<(), VerifyError> {
     for (name, repository) in &manifest.repositories {
-        let commits: Vec<Option<&str>> = if *name == manifest.change.repository {
+        let commits: Vec<Option<&str>> = if is_changed(manifest, repository) {
             vec![Some(&manifest.change.base), Some(&manifest.change.head)]
         } else {
             vec![repository.commit.as_deref()]
@@ -149,6 +116,36 @@ fn exists_at_any(
     Ok(false)
 }
 
+/// The commits to read a repository at. The changed repository, and any
+/// other entry for the same clone (one repository can hold a service and
+/// its consumers), are read before and with the change; every other
+/// repository once, for both snapshots.
+fn snapshots<'m>(manifest: &'m Manifest, repository: &'m Repository) -> Vec<Snapshot<'m>> {
+    if !is_changed(manifest, repository) {
+        return vec![Snapshot {
+            commit: repository.commit.as_deref(),
+            names: &BOTH,
+        }];
+    }
+    vec![
+        Snapshot {
+            commit: Some(&manifest.change.base),
+            names: &["base"],
+        },
+        Snapshot {
+            commit: Some(&manifest.change.head),
+            names: &["head"],
+        },
+    ]
+}
+
+fn is_changed(manifest: &Manifest, repository: &Repository) -> bool {
+    manifest
+        .repositories
+        .get(&manifest.change.repository)
+        .is_some_and(|changed| changed.path == repository.path)
+}
+
 /// A commit to read and the snapshots its facts belong to.
 struct Snapshot<'a> {
     commit: Option<&'a str>,
@@ -180,7 +177,7 @@ fn service(
         &repository.routes,
         &CODE_EXTENSIONS,
     )?;
-    for file in &files {
+    for file in files.iter().filter(|file| !is_test_file(&file.path)) {
         let facts = code_facts(file, &CodeOptions::default(), extractor)?;
         for route in facts.method_paths.iter().filter(|item| item.method != "*") {
             let line = i64::from(route.location.line);
@@ -250,11 +247,27 @@ fn operation_facts(
 fn client(
     name: &str,
     repository: &Repository,
+    snapshot: &Snapshot<'_>,
     writer: &mut FactWriter<'_>,
     extractor: &mut Extractor,
 ) -> Result<(), VerifyError> {
-    let commit = repository.commit.as_deref();
-    let both = ["base", "head"];
+    let (commit, both) = (snapshot.commit, snapshot.names);
+    for spec in &repository.generated_from {
+        for operation in spec_operations(repository, commit, spec)? {
+            let Some(function) = operation.operation_id.as_deref().map(camel_case) else {
+                continue;
+            };
+            let args = [
+                Arg::Text(name),
+                Arg::Text(&function),
+                Arg::Text(&operation.method),
+                Arg::Text(&operation.path),
+                Arg::Text(spec),
+                Arg::Number(0),
+            ];
+            writer.add("client_operation", both, &args);
+        }
+    }
     for table in &repository.tables {
         let Some(source) = lemma_http::read_file(&repository.path, commit, table)? else {
             continue;
@@ -275,7 +288,7 @@ fn client(
                 Arg::Text(&file.path),
                 Arg::Number(line),
             ];
-            writer.add("client_operation", &both, &args);
+            writer.add("client_operation", both, &args);
         }
     }
     for spec in &repository.specs {
@@ -288,7 +301,7 @@ fn client(
                     Arg::Text(&parameter.name),
                     Arg::Text(&parameter.location),
                 ];
-                writer.add("client_parameter", &both, &args);
+                writer.add("client_parameter", both, &args);
             }
         }
     }
@@ -342,6 +355,7 @@ fn consumer(
         known: files.iter().map(|file| file.path.clone()).collect(),
         options: CodeOptions {
             client_receivers: repository.client_receivers.clone(),
+            client_modules: repository.client_modules.clone(),
         },
     };
     for file in files.iter().filter(|file| !is_test_file(&file.path)) {
@@ -399,17 +413,19 @@ fn consumer_file(
             &[Arg::Text(&file_id), Arg::Text(mention)],
         );
     }
-    for specifier in &facts.imports {
-        if let Some(target) = resolve_import(path, specifier, &scope.known) {
-            writer.add(
-                "imports",
-                scope.snapshots,
-                &[
-                    Arg::Text(&file_id),
-                    Arg::Text(&format!("{}:{target}", scope.name)),
-                ],
-            );
-        }
+    let package_files = same_package(path, &scope.known);
+    let imported = facts
+        .imports
+        .iter()
+        .filter_map(|specifier| resolve_import(path, specifier, &scope.known))
+        .chain(package_files);
+    for target in imported {
+        let target_id = format!("{}:{target}", scope.name);
+        writer.add(
+            "imports",
+            scope.snapshots,
+            &[Arg::Text(&file_id), Arg::Text(&target_id)],
+        );
     }
 }
 
@@ -456,14 +472,65 @@ fn leaf(field: &str) -> &str {
         .trim_end_matches("[]")
 }
 
+/// The function a client generated from a spec names an operation with:
+/// its `operationId` in camel case, as `openapi-ts` and most TypeScript
+/// generators write it (`get_pollExportJob` is `getPollExportJob`).
+fn camel_case(operation_id: &str) -> String {
+    let mut name = String::new();
+    for (index, word) in operation_id
+        .split(['_', '-', ' ', '.'])
+        .filter(|word| !word.is_empty())
+        .enumerate()
+    {
+        let mut characters = word.chars();
+        let Some(first) = characters.next() else {
+            continue;
+        };
+        if index == 0 {
+            name.extend(first.to_lowercase());
+        } else {
+            name.extend(first.to_uppercase());
+        }
+        name.push_str(characters.as_str());
+    }
+    name
+}
+
 fn is_test_file(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
-    lower.contains("/test/")
+    lower.ends_with("_test.go")
+        || lower.ends_with("_test.py")
+        || lower.contains("/test/")
         || lower.contains("/tests/")
         || lower.contains("__tests__")
         || lower.contains(".test.")
         || lower.contains(".spec.")
         || lower.contains("/test_")
+}
+
+fn has_extension(path: &str, extension: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .is_some_and(|found| found.eq_ignore_ascii_case(extension))
+}
+
+/// For a Go file, the other files of its package: Go code uses names from
+/// its whole package without importing them.
+fn same_package(path: &str, known: &BTreeSet<String>) -> Vec<String> {
+    if !has_extension(path, "go") {
+        return Vec::new();
+    }
+    let directory = Path::new(path).parent().unwrap_or(Path::new(""));
+    known
+        .iter()
+        .filter(|other| {
+            other.as_str() != path
+                && has_extension(other, "go")
+                && !is_test_file(other)
+                && Path::new(other.as_str()).parent() == Some(directory)
+        })
+        .cloned()
+        .collect()
 }
 
 /// The repository file a relative import names, if it is one of `known`.
@@ -633,6 +700,13 @@ mod tests {
             resolve_import("src/b.ts", "./models", &files).as_deref(),
             Some("src/models/index.ts")
         );
+    }
+
+    #[test]
+    fn camel_case_follows_generated_client_names() {
+        assert_eq!(camel_case("get_pollExportJob"), "getPollExportJob");
+        assert_eq!(camel_case("ListCategories"), "listCategories");
+        assert_eq!(camel_case("list-products-post"), "listProductsPost");
     }
 
     #[test]

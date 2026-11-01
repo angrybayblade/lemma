@@ -68,12 +68,20 @@ pub struct Repository {
     /// Files with a client's operation tables.
     #[serde(default)]
     pub tables: Vec<String>,
+    /// `OpenAPI` documents a client is generated from, with one function per
+    /// operation named after its `operationId`.
+    #[serde(default)]
+    pub generated_from: Vec<String>,
     /// Directories with a consumer's code; all of it if empty.
     #[serde(default)]
     pub include: Vec<String>,
     /// Names a consumer calls its client through, such as `client`.
     #[serde(default)]
     pub client_receivers: Vec<String>,
+    /// Modules of generated clients, such as `generated/worker`: functions
+    /// a consumer imports from them are client methods.
+    #[serde(default)]
+    pub client_modules: Vec<String>,
 }
 
 /// The change being verified: one repository at two commits.
