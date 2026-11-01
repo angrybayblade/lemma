@@ -14,5 +14,5 @@ pub use code::{
     extract,
 };
 pub use openapi::{Field, Operation, Parameter, operations};
-pub use paths::{canonical_method, canonical_path};
+pub use paths::{canonical_method, canonical_path, canonical_route};
 pub use source::{SourceError, SourceFile, read_file, read_files};

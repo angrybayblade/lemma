@@ -6,10 +6,27 @@
 //! `{}`. Anything before `/api/` (a base URL, `${BACKEND}`), a query
 //! string, text after the path, and a trailing slash are dropped.
 
-/// The canonical form of a path, or `None` if it has no `/api/` part.
+/// The canonical form of a path, or `None` if it has no `/api/` part. For
+/// strings that may or may not be paths, such as a consumer's literals.
 pub fn canonical_path(raw: &str) -> Option<String> {
     let start = raw.find("/api/")?;
-    let path = &raw[start..];
+    Some(normalize(&raw[start..]))
+}
+
+/// The canonical form of a path known to be one, such as a spec's path or a
+/// route's, which need not start with `/api/`: `/collections/{name}`. A URL
+/// or template with an `/api/` part is read as by [`canonical_path`].
+/// `None` if it does not start with `/`.
+pub fn canonical_route(raw: &str) -> Option<String> {
+    if let Some(path) = canonical_path(raw) {
+        return Some(path);
+    }
+    raw.starts_with('/').then(|| normalize(raw))
+}
+
+/// Parameters as `{}`, without a query, a fragment, text after the path or
+/// a trailing slash.
+fn normalize(path: &str) -> String {
     let path = path
         .split(|c: char| c == '?' || c == '#' || c.is_whitespace())
         .next()
@@ -20,7 +37,7 @@ pub fn canonical_path(raw: &str) -> Option<String> {
         .filter(|segment| !segment.is_empty())
         .map(|segment| if is_parameter(segment) { "{}" } else { segment })
         .collect();
-    Some(format!("/{}", segments.join("/")))
+    format!("/{}", segments.join("/"))
 }
 
 /// An HTTP method in upper case, or `*` when unknown.
@@ -58,6 +75,17 @@ fn is_parameter(segment: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routes_need_no_api_marker() {
+        assert_eq!(
+            canonical_route("/collections/{collection_name}/points").as_deref(),
+            Some("/collections/{}/points")
+        );
+        assert_eq!(canonical_route("/api").as_deref(), Some("/api"));
+        assert_eq!(canonical_route("collections"), None);
+        assert_eq!(canonical_path("/collections/x"), None);
+    }
 
     #[test]
     fn a_method_written_before_a_path_is_found() {
