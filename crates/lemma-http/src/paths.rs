@@ -44,12 +44,14 @@ pub fn method_before_path(raw: &str) -> Option<String> {
     (method != "*").then_some(method)
 }
 
-/// `{id}`, `${id}`, `:id`, `[id]` or a segment that is wholly a template
-/// substitution. A segment mixing text and a parameter (`v${n}`) counts too.
+/// `{id}`, `${id}`, `:id`, `[id]`, a `%s` format verb, or a segment that is
+/// wholly a template substitution. A segment mixing text and a parameter
+/// (`v${n}`) counts too.
 fn is_parameter(segment: &str) -> bool {
     segment.starts_with('{')
         || segment.starts_with(':')
         || segment.starts_with('[')
+        || segment.starts_with('%')
         || segment.contains("${")
 }
 
