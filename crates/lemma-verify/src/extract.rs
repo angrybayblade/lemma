@@ -125,16 +125,19 @@ fn snapshots<'m>(manifest: &'m Manifest, repository: &'m Repository) -> Vec<Snap
         return vec![Snapshot {
             commit: repository.commit.as_deref(),
             names: &BOTH,
+            other: None,
         }];
     }
     vec![
         Snapshot {
             commit: Some(&manifest.change.base),
             names: &["base"],
+            other: Some(&manifest.change.head),
         },
         Snapshot {
             commit: Some(&manifest.change.head),
             names: &["head"],
+            other: Some(&manifest.change.base),
         },
     ]
 }
@@ -150,6 +153,12 @@ fn is_changed(manifest: &Manifest, repository: &Repository) -> bool {
 struct Snapshot<'a> {
     commit: Option<&'a str>,
     names: &'a [&'a str],
+    /// The change's other commit, when reading the changed repository. A
+    /// spec or table that exists at only one of the two commits is read
+    /// from that one for both: a file added or deleted by the change, such
+    /// as a spec moved elsewhere, does not mean its operations appeared or
+    /// disappeared.
+    other: Option<&'a str>,
 }
 
 fn service(
@@ -169,7 +178,7 @@ fn service(
         );
     }
     for spec in &repository.specs {
-        for operation in spec_operations(repository, commit, spec)? {
+        for operation in spec_operations(repository, snapshot, spec)? {
             operation_facts(service_name, &operation, snapshots, writer);
         }
     }
@@ -261,9 +270,9 @@ fn client(
     writer: &mut FactWriter<'_>,
     extractor: &mut Extractor,
 ) -> Result<(), VerifyError> {
-    let (commit, both) = (snapshot.commit, snapshot.names);
+    let both = snapshot.names;
     for spec in &repository.generated_from {
-        for operation in spec_operations(repository, commit, spec)? {
+        for operation in spec_operations(repository, snapshot, spec)? {
             let Some(function) = operation.operation_id.as_deref().map(camel_case) else {
                 continue;
             };
@@ -279,7 +288,7 @@ fn client(
         }
     }
     for table in &repository.tables {
-        let Some(source) = lemma_http::read_file(&repository.path, commit, table)? else {
+        let Some(source) = read_at_snapshot(repository, snapshot, table)? else {
             continue;
         };
         let file = SourceFile {
@@ -302,7 +311,7 @@ fn client(
         }
     }
     for spec in &repository.specs {
-        for operation in spec_operations(repository, commit, spec)? {
+        for operation in spec_operations(repository, snapshot, spec)? {
             for parameter in &operation.parameters {
                 let args = [
                     Arg::Text(name),
@@ -441,10 +450,10 @@ fn consumer_file(
 
 fn spec_operations(
     repository: &Repository,
-    commit: Option<&str>,
+    snapshot: &Snapshot<'_>,
     spec: &str,
 ) -> Result<Vec<Operation>, VerifyError> {
-    let Some(text) = lemma_http::read_file(&repository.path, commit, spec)? else {
+    let Some(text) = read_at_snapshot(repository, snapshot, spec)? else {
         return Ok(Vec::new());
     };
     let document: serde_json::Value =
@@ -453,6 +462,22 @@ fn spec_operations(
             source,
         })?;
     Ok(lemma_http::operations(&document))
+}
+
+/// A file at the snapshot's commit, or at the change's other commit if the
+/// change added or deleted it.
+fn read_at_snapshot(
+    repository: &Repository,
+    snapshot: &Snapshot<'_>,
+    file: &str,
+) -> Result<Option<String>, VerifyError> {
+    if let Some(text) = lemma_http::read_file(&repository.path, snapshot.commit, file)? {
+        return Ok(Some(text));
+    }
+    let Some(other) = snapshot.other else {
+        return Ok(None);
+    };
+    Ok(lemma_http::read_file(&repository.path, Some(other), file)?)
 }
 
 fn code_facts(
