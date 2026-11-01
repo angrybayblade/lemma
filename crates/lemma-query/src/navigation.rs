@@ -1,10 +1,13 @@
 //! Following code to where things are defined and implemented.
 
+use std::path::Path;
+
 use lemma_model::{Language, Location, LocationQuery, Outcome, Position};
 use lemma_providers::SourcePoint;
 use lemma_store::{FactStore, StoredSymbol};
 
 use crate::QueryError;
+use crate::lines::LineReader;
 use crate::lookup::{Answered, LookupContext, ask_providers};
 use crate::references::{SymbolReport, name_of};
 use crate::sessions::SessionPool;
@@ -17,6 +20,8 @@ pub struct Target {
     pub location: Location,
     /// The indexed symbol whose name is at that location.
     pub symbol: Option<StoredSymbol>,
+    /// The text of the line pointed to, trimmed; `None` outside the root.
+    pub line_text: Option<String>,
 }
 
 /// Where the symbol used at a position is defined.
@@ -49,7 +54,9 @@ pub fn find_definitions(
         position,
     };
     let answer = ask_providers(store, context, at, pool, &LocationQuery::Definitions)?;
-    let answer = answer.try_map(|locations| to_targets(&*store, context.snapshot.id, locations))?;
+    let root = Path::new(&context.snapshot.snapshot.root);
+    let answer =
+        answer.try_map(|locations| to_targets(&*store, context.snapshot.id, root, locations))?;
     Ok(DefinitionReport {
         path: path.to_owned(),
         position,
@@ -67,7 +74,9 @@ pub fn find_implementations(
 ) -> Result<ImplementationReport, QueryError> {
     let at = name_of(&symbol);
     let answer = ask_providers(store, context, at, pool, &LocationQuery::Implementations)?;
-    let answer = answer.try_map(|locations| to_targets(&*store, context.snapshot.id, locations))?;
+    let root = Path::new(&context.snapshot.snapshot.root);
+    let answer =
+        answer.try_map(|locations| to_targets(&*store, context.snapshot.id, root, locations))?;
     Ok(SymbolReport { symbol, answer })
 }
 
@@ -82,16 +91,24 @@ pub(crate) fn language_of(path: &str) -> Result<Language, QueryError> {
 fn to_targets(
     store: &dyn FactStore,
     snapshot_id: i64,
+    root: &Path,
     locations: Vec<Location>,
 ) -> Result<Outcome<Vec<Target>>, QueryError> {
+    let mut lines = LineReader::new(root);
     let mut targets = Vec::with_capacity(locations.len());
     for location in locations {
-        let symbol = if location.is_external {
-            None
+        let (symbol, line_text) = if location.is_external {
+            (None, None)
         } else {
-            store.symbol_named_at(snapshot_id, &location.path, location.span.start)?
+            let start = location.span.start;
+            let symbol = store.symbol_named_at(snapshot_id, &location.path, start)?;
+            (symbol, lines.line(&location.path, start.line))
         };
-        targets.push(Target { location, symbol });
+        targets.push(Target {
+            location,
+            symbol,
+            line_text,
+        });
     }
     Ok(Outcome::Found(targets))
 }

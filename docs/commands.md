@@ -73,7 +73,7 @@ Lookups are answered by language servers the daemon keeps running, so only the f
 
 A TypeScript or Python import statement counts as a reference, since it names the symbol.
 
-Each reference shows its location and, when it sits inside an indexed definition, the name of that definition (`in remove_route`). References outside the indexed directory, such as in installed dependencies, are marked `(external)`.
+Each reference shows its location, the name of the indexed definition it sits in (`in remove_route`), and the text of its line. References outside the indexed directory, such as in installed dependencies, are marked `(external)`.
 
 ### Results
 

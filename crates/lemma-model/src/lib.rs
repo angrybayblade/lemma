@@ -284,6 +284,9 @@ pub struct Reference {
     pub is_external: bool,
     /// The innermost indexed symbol containing the reference, if any.
     pub enclosing_symbol: Option<String>,
+    /// The referring line's text, trimmed, so the reference can be read
+    /// without opening the file. `None` outside the root or if unreadable.
+    pub line_text: Option<String>,
 }
 
 /// Who produced a semantic result, so it can be traced and invalidated.

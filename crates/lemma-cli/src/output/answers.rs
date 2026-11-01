@@ -59,6 +59,7 @@ struct TargetView<'a> {
     span: Span,
     is_external: bool,
     symbol: Option<SymbolView<'a>>,
+    line_text: Option<&'a str>,
 }
 
 impl<'a> TargetView<'a> {
@@ -68,6 +69,7 @@ impl<'a> TargetView<'a> {
             span: target.location.span,
             is_external: target.location.is_external,
             symbol: target.symbol.as_ref().map(SymbolView::new),
+            line_text: target.line_text.as_deref(),
         }
     }
 }
@@ -140,11 +142,16 @@ pub(crate) fn reference_report(
             reference.path,
             display_position(reference.span.start)
         );
-        match (&reference.enclosing_symbol, reference.is_external) {
-            (_, true) => writeln!(out, "  {location}  (external)")?,
-            (Some(enclosing), false) => writeln!(out, "  {location}  in {enclosing}")?,
-            (None, false) => writeln!(out, "  {location}")?,
-        }
+        let place = match (&reference.enclosing_symbol, reference.is_external) {
+            (_, true) => format!("{location}  (external)"),
+            (Some(enclosing), false) => format!("{location}  in {enclosing}"),
+            (None, false) => location,
+        };
+        writeln!(
+            out,
+            "  {place}{}",
+            line_suffix(reference.line_text.as_deref())
+        )?;
     }
     Ok(())
 }
@@ -254,17 +261,24 @@ fn write_targets(out: &mut dyn Write, targets: &[Target], nouns: [&str; 2]) -> i
             target.location.path,
             display_position(target.location.span.start)
         );
-        match (&target.symbol, target.location.is_external) {
-            (_, true) => writeln!(out, "  {location}  (external)")?,
-            (Some(symbol), false) => writeln!(
-                out,
-                "  {location}  {} #{}",
-                symbol.symbol.qualified_name, symbol.id
-            )?,
-            (None, false) => writeln!(out, "  {location}")?,
-        }
+        let place = match (&target.symbol, target.location.is_external) {
+            (_, true) => format!("{location}  (external)"),
+            (Some(symbol), false) => {
+                format!(
+                    "{location}  {} #{}",
+                    symbol.symbol.qualified_name, symbol.id
+                )
+            }
+            (None, false) => location,
+        };
+        writeln!(out, "  {place}{}", line_suffix(target.line_text.as_deref()))?;
     }
     Ok(())
+}
+
+/// `  | <code>` after a location, so it can be read without the file.
+fn line_suffix(line_text: Option<&str>) -> String {
+    line_text.map_or_else(String::new, |text| format!("  | {text}"))
 }
 
 fn write_provenance<T>(out: &mut dyn Write, answer: &Answered<T>) -> io::Result<()> {

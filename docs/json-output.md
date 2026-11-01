@@ -85,7 +85,8 @@ An array of [symbols](#symbol), possibly empty.
         "path": "app.py",
         "span": { "start": { "line": 1, "column": 6 }, "end": { "line": 1, "column": 11 } },
         "is_external": false,
-        "enclosing_symbol": "main"
+        "enclosing_symbol": "main",
+        "line_text": "greet(\"world\")"
       }
     ]
   }
@@ -99,7 +100,7 @@ An array of [symbols](#symbol), possibly empty.
 | `skipped_providers` | Servers that failed to start before one did, as `"<id>: <reason>"`. |
 | `outcome.state` | One of the states below. |
 
-References are sorted by path and position. `enclosing_symbol` is the qualified name of the innermost indexed definition containing the reference, or `null`. `is_external` is `true` for references outside the indexed directory.
+References are sorted by path and position. `enclosing_symbol` is the qualified name of the innermost indexed definition containing the reference, or `null`. `line_text` is the referring line, trimmed and cut at 200 characters, or `null` outside the indexed directory. `is_external` is `true` for references outside the indexed directory.
 
 ### Outcome states
 
@@ -153,7 +154,7 @@ Pick one and run `lemma --json refs '#415'`.
 }
 ```
 
-`position` is the zero-based position asked about (the command line counts from 1). Each definition's `symbol` is the indexed symbol whose name is at that location, or `null`, as for definitions in installed packages (`is_external: true`).
+`position` is the zero-based position asked about (the command line counts from 1). Each definition has the `line_text` of the line it points to. Its `symbol` is the indexed symbol whose name is at that location, or `null`, as for definitions in installed packages (`is_external: true`).
 
 ## `lemma --json implementations`
 

@@ -5,6 +5,7 @@ use lemma_providers::SourcePoint;
 use lemma_store::{FactStore, StoredSymbol};
 
 use crate::QueryError;
+use crate::lines::LineReader;
 use crate::lookup::{Answered, LookupContext, ask_providers};
 use crate::sessions::SessionPool;
 
@@ -41,9 +42,11 @@ pub fn find_references(
         if locations.is_empty() {
             return Ok(Outcome::Empty);
         }
-        Ok(Outcome::Found(with_enclosing_symbols(
+        let root = std::path::Path::new(&context.snapshot.snapshot.root);
+        Ok(Outcome::Found(with_context(
             &*store,
             snapshot_id,
+            root,
             locations,
         )?))
     })?;
@@ -78,24 +81,30 @@ fn without_own_declaration(
     locations
 }
 
-/// Names the function or class each in-root reference sits in.
-fn with_enclosing_symbols(
+/// Adds to each in-root reference the function or class it sits in and
+/// the text of its line.
+fn with_context(
     store: &dyn FactStore,
     snapshot_id: i64,
+    root: &std::path::Path,
     locations: Vec<Location>,
 ) -> Result<Vec<Reference>, QueryError> {
+    let mut lines = LineReader::new(root);
     let mut references = Vec::with_capacity(locations.len());
     for location in locations {
-        let enclosing_symbol = if location.is_external {
-            None
+        let (enclosing_symbol, line_text) = if location.is_external {
+            (None, None)
         } else {
-            store.enclosing_symbol(snapshot_id, &location.path, location.span.start)?
+            let start = location.span.start;
+            let enclosing = store.enclosing_symbol(snapshot_id, &location.path, start)?;
+            (enclosing, lines.line(&location.path, start.line))
         };
         references.push(Reference {
             path: location.path,
             span: location.span,
             is_external: location.is_external,
             enclosing_symbol,
+            line_text,
         });
     }
     Ok(references)

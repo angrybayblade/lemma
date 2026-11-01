@@ -4,6 +4,7 @@
 //! Syntax-only operations read the store. Semantic ones go through
 //! [`lookup`]: stored answers first, then the language's providers.
 
+mod lines;
 mod lookup;
 mod navigation;
 mod references;
