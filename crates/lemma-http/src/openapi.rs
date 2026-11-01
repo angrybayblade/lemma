@@ -7,7 +7,7 @@
 
 use serde_json::Value as Json;
 
-use crate::paths::{canonical_method, canonical_path};
+use crate::paths::{canonical_method, canonical_route};
 
 /// How deep to follow nested schemas; contracts deeper than this are rare
 /// and recursive schemas would otherwise never end.
@@ -70,7 +70,7 @@ pub fn operations(document: &Json) -> Vec<Operation> {
         return found;
     };
     for (template, item) in paths {
-        let Some(canonical) = canonical_path(template) else {
+        let Some(canonical) = canonical_route(template) else {
             continue;
         };
         let Some(methods) = item.as_object() else {

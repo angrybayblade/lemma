@@ -15,7 +15,7 @@ use lemma_model::{Language, Symbol, SymbolKind};
 use lemma_syntax::Extractor;
 use tree_sitter::{Node, Parser};
 
-use crate::paths::{canonical_method, canonical_path, method_before_path};
+use crate::paths::{canonical_method, canonical_path, canonical_route, method_before_path};
 
 /// Where in the code a fact was found.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -378,13 +378,21 @@ impl Walk<'_> {
         chain: Option<String>,
         path_node: Node<'_>,
     ) {
-        let Some(path) = canonical_path(template) else {
+        let method = method.map_or_else(|| "*".to_owned(), canonical_method);
+        // A path written beside its method is surely a path; alone it needs
+        // the `/api/` marker, since objects with a `path` or `url` are common.
+        let path = if method == "*" {
+            canonical_path(template)
+        } else {
+            canonical_route(template)
+        };
+        let Some(path) = path else {
             return;
         };
         self.consumed.push(path_node.id());
         let location = self.location(path_node);
         self.facts.method_paths.push(MethodPath {
-            method: method.map_or_else(|| "*".to_owned(), canonical_method),
+            method,
             path,
             template: template.to_owned(),
             chain,
