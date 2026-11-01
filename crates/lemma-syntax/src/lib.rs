@@ -74,6 +74,7 @@ pub struct Extractor {
     tsx: Grammar,
     python: Grammar,
     go: Grammar,
+    rust: Grammar,
 }
 
 impl Extractor {
@@ -84,6 +85,7 @@ impl Extractor {
             tsx: Grammar::load(Language::Tsx)?,
             python: Grammar::load(Language::Python)?,
             go: Grammar::load(Language::Go)?,
+            rust: Grammar::load(Language::Rust)?,
         })
     }
 
@@ -108,6 +110,7 @@ impl Extractor {
             Language::Tsx => &mut self.tsx,
             Language::Python => &mut self.python,
             Language::Go => &mut self.go,
+            Language::Rust => &mut self.rust,
         }
     }
 }
@@ -180,6 +183,7 @@ fn tree_sitter_language(language: Language) -> tree_sitter::Language {
         Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
         Language::Python => tree_sitter_python::LANGUAGE.into(),
         Language::Go => tree_sitter_go::LANGUAGE.into(),
+        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
     }
 }
 
@@ -188,6 +192,7 @@ fn definition_query(language: Language) -> &'static str {
         Language::TypeScript | Language::Tsx => include_str!("../queries/typescript.scm"),
         Language::Python => include_str!("../queries/python.scm"),
         Language::Go => include_str!("../queries/go.scm"),
+        Language::Rust => include_str!("../queries/rust.scm"),
     }
 }
 
@@ -299,6 +304,33 @@ def delete_task_router_session(client, session_id):
                 ("TaskRouter.delete", SymbolKind::Method),
                 ("TaskRouter.delete.inner", SymbolKind::Function),
                 ("delete_task_router_session", SymbolKind::Function),
+            ])
+        );
+    }
+
+    #[test]
+    fn rust_methods_are_qualified_by_their_impl_type() {
+        let source = r"
+pub struct Router { routes: Vec<Route> }
+pub trait Service { fn call(&self); }
+impl Service for Router<'_> {
+    fn call(&self) { fn helper() {} }
+}
+pub enum Mode { A }
+const RETRIES: u32 = 3;
+pub fn start() {}
+";
+        assert_eq!(
+            extract(Language::Rust, source),
+            named(&[
+                ("Router", SymbolKind::Struct),
+                ("Service", SymbolKind::Interface),
+                ("Service.call", SymbolKind::Method),
+                ("Router.call", SymbolKind::Method),
+                ("Router.call.helper", SymbolKind::Function),
+                ("Mode", SymbolKind::Enum),
+                ("RETRIES", SymbolKind::Constant),
+                ("start", SymbolKind::Function),
             ])
         );
     }

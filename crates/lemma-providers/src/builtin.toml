@@ -5,7 +5,7 @@
 # to start, the next installed one for the language is tried.
 #
 #   id                      unique name, used in output and cache keys
-#   languages               typescript, tsx, python, go
+#   languages               typescript, tsx, python, go, rust
 #   command                 executable name on PATH, or an absolute path
 #   args                    command arguments
 #   initialization_options  sent during the LSP initialize handshake
@@ -78,3 +78,15 @@ id = "gopls"
 languages = ["go"]
 command = "gopls"
 args = []
+
+# rust-analyzer reports progress while it loads the workspace with cargo and
+# indexes it; references are complete once indexing ends. Earlier reports,
+# such as "Roots Scanned", end before the workspace is loaded.
+[[provider]]
+id = "rust-analyzer"
+languages = ["rust"]
+command = "rust-analyzer"
+args = []
+ready_messages = ["Indexing"]
+# Each Cargo workspace is a separate project.
+project_markers = ["Cargo.toml"]

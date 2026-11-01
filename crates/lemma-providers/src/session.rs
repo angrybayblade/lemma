@@ -660,6 +660,7 @@ fn language_id(language: Language) -> &'static str {
         Language::Tsx => "typescriptreact",
         Language::Python => "python",
         Language::Go => "go",
+        Language::Rust => "rust",
     }
 }
 

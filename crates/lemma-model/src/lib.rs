@@ -21,11 +21,19 @@ pub enum Language {
     Python,
     /// Go (`.go`).
     Go,
+    /// Rust (`.rs`).
+    Rust,
 }
 
 impl Language {
     /// Every supported language, in a stable order.
-    pub const ALL: [Language; 4] = [Self::TypeScript, Self::Tsx, Self::Python, Self::Go];
+    pub const ALL: [Language; 5] = [
+        Self::TypeScript,
+        Self::Tsx,
+        Self::Python,
+        Self::Go,
+        Self::Rust,
+    ];
 
     /// Picks the language for a file extension, without the leading dot.
     pub fn from_extension(extension: &str) -> Option<Self> {
@@ -41,6 +49,7 @@ impl Language {
             Self::Tsx => &["tsx"],
             Self::Python => &["py", "pyi"],
             Self::Go => &["go"],
+            Self::Rust => &["rs"],
         }
     }
 
@@ -51,6 +60,7 @@ impl Language {
             Self::Tsx => "tsx",
             Self::Python => "python",
             Self::Go => "go",
+            Self::Rust => "rust",
         }
     }
 }
