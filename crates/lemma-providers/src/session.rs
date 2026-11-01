@@ -373,9 +373,12 @@ impl ProviderSession {
             let current = self
                 .request_locations(query, position.clone())
                 .map_err(|source| self.server_error(source))?;
+            // While projects load the server may return only the asked
+            // position itself, the declaration; that is not an answer yet.
+            let found = elsewhere(&current, position);
             // An empty answer may be real; trust it once it has held a while.
-            let has_held = !current.is_empty() || started.elapsed() >= EMPTY_SETTLE;
-            let is_settled = has_held && current.len() == previous.len();
+            let has_held = found > 0 || started.elapsed() >= EMPTY_SETTLE;
+            let is_settled = has_held && found == elsewhere(&previous, position);
             previous = current;
             if is_settled {
                 break;
@@ -569,6 +572,17 @@ impl SemanticProvider for ProviderSession {
         }
         Ok(ProviderAnswer::Found(text))
     }
+}
+
+/// How many locations are not the asked position itself.
+fn elsewhere(locations: &[lsp_types::Location], asked: &TextDocumentPositionParams) -> usize {
+    locations
+        .iter()
+        .filter(|location| {
+            location.uri != asked.text_document.uri
+                || location.range.start.line != asked.position.line
+        })
+        .count()
 }
 
 /// Definition and implementation answers come in three shapes; links point
