@@ -75,7 +75,6 @@ struct OpenDocument {
 /// long at most.
 const SETTLE_INTERVAL: Duration = Duration::from_secs(1);
 const SETTLE_LIMIT: Duration = Duration::from_secs(20);
-const EMPTY_SETTLE: Duration = Duration::from_secs(5);
 
 /// Most projects opened for one question. A symbol mentioned in hundreds of
 /// projects would otherwise make the server load all of them first.
@@ -357,8 +356,8 @@ impl ProviderSession {
     }
 
     /// Asks until the answer stops growing: two answers in a row with the
-    /// same number of locations (non-zero, or zero for a while), or the
-    /// time limit.
+    /// same, non-zero number of locations elsewhere than the asked
+    /// position, or the time limit.
     fn settled_locations(
         &self,
         query: LocationQuery,
@@ -376,9 +375,10 @@ impl ProviderSession {
             // While projects load the server may return only the asked
             // position itself, the declaration; that is not an answer yet.
             let found = elsewhere(&current, position);
-            // An empty answer may be real; trust it once it has held a while.
-            let has_held = found > 0 || started.elapsed() >= EMPTY_SETTLE;
-            let is_settled = has_held && found == elsewhere(&previous, position);
+            // Projects were opened because their files mention the name, so
+            // an empty answer means the server is still loading them; only
+            // the time limit ends the wait without one.
+            let is_settled = found > 0 && found == elsewhere(&previous, position);
             previous = current;
             if is_settled {
                 break;
