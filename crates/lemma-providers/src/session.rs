@@ -51,13 +51,24 @@ pub struct ProviderSession {
     open_documents: HashMap<Url, OpenDocument>,
     /// Open documents, least recently used first.
     open_order: VecDeque<Url>,
+    /// Files marking projects the server only searches while one of their
+    /// files is open; empty for servers that search the whole workspace.
+    project_markers: Vec<String>,
+    /// The project directory each directory belongs to, as found so far.
+    project_of_directory: HashMap<PathBuf, Option<PathBuf>>,
 }
 
 /// A document the server has open, as Lemma last sent it.
 struct OpenDocument {
     version: i32,
     text_hash: blake3::Hash,
+    /// The project the document belongs to, for project-scoped servers.
+    project: Option<PathBuf>,
 }
+
+/// Most projects opened for one question. A symbol mentioned in hundreds of
+/// projects would otherwise make the server load all of them first.
+const MAX_PROJECTS_PER_QUESTION: usize = 48;
 
 /// Most documents kept open at once; the least recently used is closed.
 const MAX_OPEN_DOCUMENTS: usize = 64;
@@ -90,6 +101,8 @@ impl ProviderSession {
             has_been_ready: false,
             open_documents: HashMap::new(),
             open_order: VecDeque::new(),
+            project_markers: definition.project_markers.clone(),
+            project_of_directory: HashMap::new(),
         })
     }
 
@@ -117,7 +130,10 @@ impl ProviderSession {
     /// Tells the server about files that changed on disk since it started or
     /// last heard, so a long-lived server does not answer from stale files.
     /// Paths are relative to the root.
-    pub fn files_changed(&self, changes: &[(String, FileChange)]) -> Result<(), ProviderError> {
+    ///
+    /// Open documents among them are closed, so the server reads the new
+    /// contents instead of keeping the text Lemma sent earlier.
+    pub fn files_changed(&mut self, changes: &[(String, FileChange)]) -> Result<(), ProviderError> {
         if changes.is_empty() {
             return Ok(());
         }
@@ -128,6 +144,10 @@ impl ProviderSession {
                 Url::from_file_path(&absolute_path).map_err(|()| ProviderError::InvalidPath {
                     path: absolute_path,
                 })?;
+            if self.open_documents.remove(&uri).is_some() {
+                self.open_order.retain(|open| open != &uri);
+                self.close_document(uri.clone())?;
+            }
             events.push(FileEvent::new(uri, file_change_type(*change)));
         }
         self.client
@@ -177,11 +197,13 @@ impl ProviderSession {
         self.open_order.retain(|open| open != uri);
         self.open_order.push_back(uri.clone());
         let Some(open) = self.open_documents.get_mut(uri) else {
+            let project = self.project_of_uri(uri);
             self.open_documents.insert(
                 uri.clone(),
                 OpenDocument {
                     version: 1,
                     text_hash,
+                    project,
                 },
             );
             self.open_document(uri, language, text)?;
@@ -206,6 +228,45 @@ impl ProviderSession {
                 }],
             })
             .map_err(|source| self.server_error(source))
+    }
+
+    /// The project directory a file belongs to: the nearest directory at
+    /// or above it, within the root, holding a project marker.
+    fn project_of(&mut self, file: &Path) -> Option<PathBuf> {
+        if self.project_markers.is_empty() {
+            return None;
+        }
+        let mut searched = Vec::new();
+        let mut found = None;
+        let mut directory = file.parent();
+        while let Some(current) = directory {
+            if !current.starts_with(&self.root) {
+                break;
+            }
+            if let Some(known) = self.project_of_directory.get(current) {
+                found.clone_from(known);
+                break;
+            }
+            searched.push(current.to_owned());
+            if self
+                .project_markers
+                .iter()
+                .any(|marker| current.join(marker).is_file())
+            {
+                found = Some(current.to_owned());
+                break;
+            }
+            directory = current.parent();
+        }
+        for directory in searched {
+            self.project_of_directory.insert(directory, found.clone());
+        }
+        found
+    }
+
+    fn project_of_uri(&mut self, uri: &Url) -> Option<PathBuf> {
+        let file = uri.to_file_path().ok()?;
+        self.project_of(&file)
     }
 
     fn close_least_recent(&mut self) -> Result<(), ProviderError> {
@@ -379,6 +440,47 @@ impl ProviderSession {
 impl SemanticProvider for ProviderSession {
     fn version(&self) -> Option<String> {
         self.provider_version()
+    }
+
+    fn is_project_scoped(&self) -> bool {
+        !self.project_markers.is_empty()
+    }
+
+    fn open_projects(&mut self, paths: &[&str]) -> Result<(), ProviderError> {
+        let mut loaded: std::collections::HashSet<PathBuf> = self
+            .open_documents
+            .values()
+            .filter_map(|open| open.project.clone())
+            .collect();
+        let mut opened = 0;
+        for path in paths {
+            if opened == MAX_PROJECTS_PER_QUESTION {
+                break;
+            }
+            let absolute_path = self.root.join(path);
+            let Some(project) = self.project_of(&absolute_path) else {
+                continue;
+            };
+            let Some(language) = absolute_path
+                .extension()
+                .and_then(|extension| Language::from_extension(&extension.to_string_lossy()))
+            else {
+                continue;
+            };
+            if !loaded.insert(project) {
+                continue;
+            }
+            let Ok(source) = fs::read_to_string(&absolute_path) else {
+                continue;
+            };
+            let uri =
+                Url::from_file_path(&absolute_path).map_err(|()| ProviderError::InvalidPath {
+                    path: absolute_path,
+                })?;
+            self.show_document(&uri, language, source)?;
+            opened += 1;
+        }
+        Ok(())
     }
 
     fn locations(

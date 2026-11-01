@@ -10,11 +10,15 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use lemma_model::{Location, LocationQuery, Outcome, Provenance, ProviderAnswer, content_hash};
+use lemma_model::{
+    Language, Location, LocationQuery, Outcome, Provenance, ProviderAnswer, content_hash,
+};
 use lemma_providers::{
     ProviderDefinition, ProviderError, ProviderRegistry, SemanticProvider, SourcePoint,
 };
-use lemma_store::{AnswerKey, FactStore, Question, StoreError, StoredAnswer, StoredSnapshot};
+use lemma_store::{
+    AnswerKey, FactStore, Question, StoreError, StoredAnswer, StoredFile, StoredSnapshot,
+};
 
 use crate::QueryError;
 use crate::sessions::{PoolError, SessionPool};
@@ -86,6 +90,12 @@ pub(crate) trait Ask {
     /// How the store files the answer.
     fn question(&self) -> Question;
 
+    /// Whether the answer spans the whole workspace, so a project-scoped
+    /// provider must load every project that might hold part of it.
+    fn spans_workspace(&self) -> bool {
+        false
+    }
+
     fn ask(
         &self,
         provider: &mut dyn SemanticProvider,
@@ -112,6 +122,10 @@ impl Ask for LocationQuery {
 
     fn question(&self) -> Question {
         Question::Locations(*self)
+    }
+
+    fn spans_workspace(&self) -> bool {
+        matches!(self, Self::References | Self::Implementations)
     }
 
     fn ask(
@@ -212,7 +226,9 @@ pub(crate) fn ask_providers<A: Ask>(
             }
         };
         let provider_version = session.version();
-        let outcome = match asking.ask(session, at) {
+        let asked = open_projects(&*store, snapshot, at, asking, session)
+            .and_then(|()| asking.ask(session, at));
+        let outcome = match asked {
             Ok(answer) => {
                 let fingerprint = definition.fingerprint();
                 let key = answer_key(snapshot, at, asking, definition, &fingerprint);
@@ -238,6 +254,75 @@ pub(crate) fn ask_providers<A: Ask>(
     Ok(Answered::without_provider(Outcome::ProviderFailed {
         message: start_failures.join("; "),
     }))
+}
+
+/// Before a workspace-wide question to a provider that only searches loaded
+/// projects, opens a file in each project that mentions the name at `at`.
+fn open_projects<A: Ask>(
+    store: &dyn FactStore,
+    snapshot: &StoredSnapshot,
+    at: SourcePoint<'_>,
+    asking: &A,
+    provider: &mut dyn SemanticProvider,
+) -> Result<(), ProviderError> {
+    if !asking.spans_workspace() || !provider.is_project_scoped() {
+        return Ok(());
+    }
+    let root = Path::new(&snapshot.snapshot.root);
+    let Some(name) = identifier_at(root, at) else {
+        return Ok(());
+    };
+    // A store failure only means no extra projects are opened.
+    let files = store.files(snapshot.id).unwrap_or_default();
+    let mentioning = files_mentioning(root, &files, at.language, &name);
+    let paths: Vec<&str> = mentioning.iter().map(String::as_str).collect();
+    provider.open_projects(&paths)
+}
+
+/// The identifier at a position, read from the file on disk.
+fn identifier_at(root: &Path, at: SourcePoint<'_>) -> Option<String> {
+    let source = fs::read_to_string(root.join(at.path)).ok()?;
+    let line = source.lines().nth(at.position.line as usize)?;
+    let column = at.position.column as usize;
+    let is_part = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let start = line
+        .get(..column)?
+        .rfind(|c: char| !is_part(c))
+        .map_or(0, |i| i + 1);
+    let end = line
+        .get(column..)?
+        .find(|c: char| !is_part(c))
+        .map_or(line.len(), |i| column + i);
+    let name = line.get(start..end)?;
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// Indexed files of the same language family whose text contains `name`,
+/// sorted.
+fn files_mentioning(
+    root: &Path,
+    files: &[StoredFile],
+    language: Language,
+    name: &str,
+) -> Vec<String> {
+    let finder = memchr::memmem::Finder::new(name.as_bytes());
+    files
+        .iter()
+        .filter(|file| same_family(file.language, language))
+        .filter(|file| {
+            fs::read(root.join(&file.path)).is_ok_and(|contents| finder.find(&contents).is_some())
+        })
+        .map(|file| file.path.clone())
+        .collect()
+}
+
+/// TypeScript and TSX share projects.
+fn same_family(left: Language, right: Language) -> bool {
+    let family = |language| match language {
+        Language::Tsx => Language::TypeScript,
+        other => other,
+    };
+    family(left) == family(right)
 }
 
 /// The answer when no live provider is needed: the file is stale, no
@@ -339,4 +424,37 @@ fn describe(error: &dyn Error) -> String {
         source = cause.source();
     }
     message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lemma_model::Position;
+
+    #[test]
+    fn identifiers_are_read_around_the_column() {
+        let directory =
+            std::env::temp_dir().join(format!("lemma-identifier-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("a.ts"), "export const $total_area = 1;\n").unwrap();
+        let at = SourcePoint {
+            path: "a.ts",
+            language: Language::TypeScript,
+            position: Position {
+                line: 0,
+                column: 16,
+            },
+        };
+
+        let name = identifier_at(&directory, at);
+
+        fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(name.as_deref(), Some("$total_area"));
+    }
+
+    #[test]
+    fn typescript_and_tsx_are_one_family() {
+        assert!(same_family(Language::Tsx, Language::TypeScript));
+        assert!(!same_family(Language::Go, Language::TypeScript));
+    }
 }
