@@ -9,6 +9,7 @@ rust-version = "1.85"
 publish = false
 
 [workspace.dependencies]
+lemma-grammar = { path = "crates/lemma-grammar" }
 lemma-index = { path = "crates/lemma-index" }
 lemma-logic = { path = "crates/lemma-logic" }
 lemma-lsp = { path = "crates/lemma-lsp" }
@@ -38,6 +39,7 @@ tree-sitter-go = "0.23"
 tree-sitter-python = "0.23"
 tree-sitter-typescript = "0.23"
 which = "7"
+yaml_serde = "0.10"
 
 [workspace.lints.rust]
 missing_docs = "warn"
