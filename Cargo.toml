@@ -15,6 +15,7 @@ lemma-lsp = { path = "crates/lemma-lsp" }
 lemma-model = { path = "crates/lemma-model" }
 lemma-providers = { path = "crates/lemma-providers" }
 lemma-query = { path = "crates/lemma-query" }
+lemma-souffle = { path = "crates/lemma-souffle" }
 lemma-store = { path = "crates/lemma-store" }
 lemma-syntax = { path = "crates/lemma-syntax" }
 
