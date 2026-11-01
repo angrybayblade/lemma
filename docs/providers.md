@@ -12,6 +12,7 @@ Lemma calls a language server a *provider*: a source of facts about code that Le
 | `pyright` | python | `pyright-langserver --stdio` |
 | `basedpyright` | python | `basedpyright-langserver --stdio` |
 | `gopls` | go | `gopls` |
+| `rust-analyzer` | rust | `rust-analyzer` |
 
 Install instructions are in [Getting started](getting-started.md#2-install-a-language-server).
 
@@ -56,7 +57,7 @@ extraPaths = ["src"]
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `id` | yes | Unique name, shown in output. An entry with the id of a built-in replaces that built-in. |
-| `languages` | yes | Languages it answers for: `typescript`, `tsx`, `python`, `go`. |
+| `languages` | yes | Languages it answers for: `typescript`, `tsx`, `python`, `go`, `rust`. |
 | `command` | yes | Executable name on `PATH`, or a path to it. |
 | `args` | no | Arguments. Most servers need `--stdio`. |
 | `initialization_options` | no | A table sent to the server when it starts, as LSP `initializationOptions`. Check the server's documentation for what it accepts. |
@@ -79,3 +80,4 @@ Upgrading a server binary without changing its configuration does not invalidate
 - **pyright and basedpyright** are configured to check only open files (`diagnosticMode = "openFilesOnly"`), which keeps start-up fast. Reference lookups still search the whole project, and pyright re-reads it for every lookup: on very large projects each lookup takes seconds even with a warm server. They count import statements as references. On a repository of a few thousand files, setting `diagnosticMode = "workspace"` makes lookups several times faster after a slower start (about a minute on django); on very large ones it does not help (see [Performance](performance.md#python-servers-measured)). Lemma waits for their "Found N source files" message before asking, since earlier answers miss most of the project. Pyright does not report its version, so output shows `unknown version`.
 - **TypeScript servers** find the project through `tsconfig.json`. Imports from packages need `node_modules`. A TypeScript import statement is not counted as a reference to the imported symbol, only its uses are. Lemma waits for typescript-language-server's "Initializing JS/TS language features" progress to finish before asking.
 - **gopls** works from the module containing the indexed files, so index from inside a directory with a `go.mod`. In a repository with several Go modules and no `go.work`, references from other modules are not found.
+- **rust-analyzer** loads the Cargo workspace with `cargo metadata` and indexes it before it can answer; Lemma waits for its "Indexing" progress to finish, and asks again while it answers "content modified". On this repository a cold lookup takes about 5 seconds.

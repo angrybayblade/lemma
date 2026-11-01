@@ -75,7 +75,7 @@ The daemon keeps running, and looks after idle servers itself: a server nobody h
 
 ## Limits of this version
 
-- Supported languages are TypeScript, TSX, Python, and Go.
+- Supported languages are TypeScript, TSX, Python, Go, and Rust.
 - The semantic questions are references, definitions, implementations, and hover text. Which of them a server supports varies; an unsupported question is reported as such.
 - Lemma waits for a server to finish loading the project before asking. Servers that announce it (pyright, basedpyright, typescript-language-server) are waited for exactly; for others Lemma uses signals such as diagnostics and quiet periods. A server that is still loading when it answers can give an incomplete result; `--refresh` asks again.
 - The daemon runs one command at a time; parallel calls queue.

@@ -39,7 +39,7 @@ Searches indexed symbols by name or qualified name.
 | --- | --- |
 | `--exact` | Match the whole name or qualified name instead of any part of it. |
 | `--kind <kind>` | Only one kind: `function`, `method`, `class`, `interface`, `struct`, `enum`, `type_alias`, `constant`, `variable`. |
-| `--language <language>` | Only one language: `typescript`, `tsx`, `python`, `go`. |
+| `--language <language>` | Only one language: `typescript`, `tsx`, `python`, `go`, `rust`. |
 | `--path <text>` | Only symbols whose file path contains this text. |
 | `--limit <n>` | At most this many results (default 50). |
 
@@ -98,7 +98,7 @@ Each definition shows its location and, when it is an indexed symbol, its qualif
 
 Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters work as for `refs`, and so do `--refresh` and `--timeout-secs`.
 
-Interface methods are indexed as symbols qualified by their interface (`Shape.area`), so you can ask about them directly. Support varies by server: gopls and the TypeScript servers answer; pyright and ty say they do not support it (`does not support implementation lookup`), which is not the same as finding none.
+Interface methods are indexed as symbols qualified by their interface (`Shape.area`), so you can ask about them directly. Support varies by server: gopls, rust-analyzer and the TypeScript servers answer; pyright and ty say they do not support it (`does not support implementation lookup`), which is not the same as finding none.
 
 ## `lemma signature <symbol>`
 
