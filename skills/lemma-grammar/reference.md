@@ -18,14 +18,15 @@
 | `inline_strict_route` | service, method, path, part | a route's own schema is `.strict()` (head only) |
 | `strict_schema` | file, name | `const name = z.object(..).strict()` (head only) |
 | `union_member` | file, union, member | `z.union`/`z.discriminatedUnion` members; `*` for a non-strict inline member (head only) |
-| `client_operation` | client, chain, method, path, file, line | client tables, or `generated_from` specs (chain is the function) |
+| `client_operation` | client, function, method, path, file, line | `generated_from` specs, functions named by `call_names` |
 | `client_parameter` | client, method, path, name, location | client specs |
 | `calls_path` | consumer, method (`*` if unknown), path, file, line | consumer code: path strings and request calls |
 | `calls_client` | consumer, chain, file, line | consumer code: calls through client receivers and imported client functions |
 | `mentions` | scope, name | names used as fields: object keys, members, keyword arguments, dictionary keys, struct fields, JSON tags |
 | `in_file` | scope, file | which file a consumer or function is in |
 | `imports` | file, imported file | relative and alias imports; for Go, files of one package |
-| `path_family` | path, family (`/api/v3.1`) | every path in specs and calls |
+| `addressed_to` | path, service | a path called in code that is under a service's `path_prefixes` (or the prefix its operations share) |
+| `part_of_service` | file, service | files of a consumer entry that names its `service` |
 | `rejects_unknown_fields` | service | manifest `rejects_unknown_fields: true` |
 
 ## Derived relations in the built-in grammar
@@ -34,7 +35,7 @@ These come from the rules in `grammars/http-contracts.yaml`; any can be printed 
 
 | Relation | Columns | Holds when |
 | --- | --- | --- |
-| `calls` | consumer, operation, file, line | A consumer calls an operation of the base snapshot, by path (with or without a method) or through a client chain |
+| `calls` | consumer, operation, file, line | A consumer calls an operation of the base snapshot, by path (with or without a method) or through a client function, and the operation is not its own service's |
 | `file_mentions` | file, name | A file mentions a name anywhere |
 | `uses` | consumer, name | The name appears in the consumer's function, or outside functions in its file or a file it imports |
 | `names_anywhere` | file, name | The name appears anywhere in the file or a file it imports |
@@ -48,10 +49,10 @@ These come from the rules in `grammars/http-contracts.yaml`; any can be printed 
 | `strict_route` | service, method, path, part | A route's body or query schema rejects unknown keys (zod `.strict()`) |
 | `rejects_unknown` | operation | Requests sending an unknown field fail, after the change |
 | `rejects_unknown_parameter` | operation | Requests sending an unknown query parameter fail, after the change |
-| `unserved_call` | consumer, method, path, file, line | A changed consumer adds a call to a path no service serves, in a family a service does serve |
+| `unserved_call` | consumer, method, path, file, line | A changed consumer adds a call to a path under a service's prefixes that no service serves |
 | `specified`, `routed`, `specified_route` | service, method, path (file, line) | Spec against code |
 
-Helper relations used by these: `called_before`, `loose_union`, `served`, `served_family`, `served_path`, `strict_definition`, `strict_in_scope`.
+Helper relations used by these: `called_before`, `loose_union`, `own_operation`, `references_operation`, `served`, `served_path`, `strict_definition`, `strict_in_scope`.
 
 ## Requirement variables
 

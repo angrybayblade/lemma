@@ -33,10 +33,10 @@ Prefer Lemma's MCP tools when they are available (`references`, `definition`, `i
 ## Read `lemma verify` output
 
 ```text
-change platform fa87ef98a7^..fa87ef98a7  (56208 facts, souffle engine)
-error   composio:ts/packages/core/src/models/SessionConfigs.ts::SessionConfigs.list calls GET /api/v3.1/session_configs and uses `search`, a query parameter that was removed and that GET /api/v3.1/session_configs now rejects (composio:ts/packages/core/src/models/SessionConfigs.ts:84)
-        [consumer_sends_removed_parameter]
-2 errors, 0 warnings, 228 informational (--all lists them)
+change billing HEAD~1..HEAD  (61 facts, souffle engine)
+error   web:src/invoices.ts::createInvoice calls POST /v1/invoices and names `memo`; request field `memo` was removed and POST /v1/invoices now rejects requests that send it (web:src/invoices.ts:4)
+        [consumer_sends_rejected_field]
+1 errors, 0 warnings, 0 informational
 ```
 
 - `error`: a request will fail. Exit code 4. Fix the consumer or keep the contract.

@@ -39,7 +39,7 @@ requirements:                    # conditions whose matches are findings
     explain: "{c} reads `{f}` from {op}, which no longer returns it"
 
 facts:                           # facts declared by hand
-  - { relation: rejects_unknown_fields, values: [apollo] }
+  - { relation: rejects_unknown_fields, values: [billing] }
   - { relation: returns, values: [get_account, status], snapshot: base }
 ```
 
@@ -153,14 +153,15 @@ A requirement that rests on a name being absent (`!names_anywhere(f, leaf)`) sho
 | `inline_strict_route` | service, method, path, part | a route's own schema is `.strict()` (head only) |
 | `strict_schema` | file, name | `const name = z.object(..).strict()` (head only) |
 | `union_member` | file, union, member | `z.union`/`z.discriminatedUnion` members; `*` for a non-strict inline member (head only) |
-| `client_operation` | client, chain, method, path, file, line | client tables, or `generated_from` specs (chain is the function) |
+| `client_operation` | client, function, method, path, file, line | `generated_from` specs, functions named by `call_names` |
 | `client_parameter` | client, method, path, name, location | client specs |
 | `calls_path` | consumer, method (`*` if unknown), path, file, line | consumer code: path strings and request calls |
 | `calls_client` | consumer, chain, file, line | consumer code: calls through client receivers and imported client functions |
 | `mentions` | scope, name | names used as fields: object keys, members, keyword arguments, dictionary keys, struct fields, JSON tags |
 | `in_file` | scope, file | which file a consumer or function is in |
 | `imports` | file, imported file | relative and alias imports; for Go, files of one package |
-| `path_family` | path, family (`/api/v3.1`) | every path in specs and calls |
+| `addressed_to` | path, service | a path called in code that is under a service's `path_prefixes` (or the prefix its operations share) |
+| `part_of_service` | file, service | files of a consumer entry that names its `service` |
 | `rejects_unknown_fields` | service | manifest `rejects_unknown_fields: true` |
 
 ## Recipes
@@ -173,7 +174,7 @@ A requirement that rests on a name being absent (`!names_anywhere(f, leaf)`) sho
 relations:
   allowed_removal: { args: [Text], sources: [declared] }    # operation
 facts:
-  - { relation: allowed_removal, values: ["DELETE /api/v3/legacy/thing/{}"] }
+  - { relation: allowed_removal, values: ["DELETE /v1/legacy/things/{}"] }
 requirements:
   consumer_calls_removed_operation:
     when: calls(c, op, f, l), removed_operation(op), !allowed_removal(op)
@@ -201,8 +202,8 @@ lemma verify manifest.yaml --relation removed_response_field --relation uses --j
 
 ```yaml
 facts:
-  - { relation: operation, values: [apollo, "GET /api/x", GET, /api/x], snapshot: base }
-  - { relation: calls_path, values: ["d:f::c", GET, /api/x, "d:f", 3] }
+  - { relation: operation, values: [billing, "GET /v1/invoices", GET, /v1/invoices], snapshot: base }
+  - { relation: calls_path, values: ["web:src/a.ts::load", GET, /v1/invoices, "web:src/a.ts", 3] }
 ```
 
 ## Engines
