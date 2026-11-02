@@ -7,6 +7,7 @@
 
 mod extract;
 mod manifest;
+mod system;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

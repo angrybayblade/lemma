@@ -89,9 +89,8 @@ relations:
   part_of_service:
     args: [Text, Text]                 # a consumer's file, the service its code belongs to
     sources: [declared]
-  path_family:
-    args: [Text]                       # path
-    attributes: { family: Text }       # its first two segments, /api/v3.1
+  addressed_to:
+    args: [Text, Text]                 # a path called in code, a service whose path prefixes it is under
     sources: [syntax, spec]
 
 rules:
@@ -152,15 +151,15 @@ rules:
   - rejects_unknown_parameter(op) :- operation@head(s, op, m, p), strict_route(s, m, p, "query").
   - rejects_unknown_parameter(op) :- operation@head(s, op, _, _), rejects_unknown_fields(s).
 
-  # Calls a changed consumer adds to paths of a service's family (such as
-  # /api/v3.1) that the service does not serve. Calls that were already
-  # there, and paths of other families, are not the change's doing.
+  # Calls a changed consumer adds to paths under a service's prefixes that
+  # the service does not serve. Calls that were already there, and paths
+  # under no service's prefixes (a consumer's own routes, other APIs), are
+  # not the change's doing.
   - served(m, p) :- operation(_, _, m, p).
   - served_path(p) :- operation(_, _, _, p).
-  - served_family(fam) :- operation(_, _, _, p), path_family(p, fam).
   - called_before(c, m, p) :- calls_path@base(c, m, p, _, _).
-  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m != "*", !served(m, p), !called_before(c, m, p), path_family(p, fam), served_family(fam).
-  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m = "*", !served_path(p), !called_before(c, m, p), path_family(p, fam), served_family(fam).
+  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m != "*", !served(m, p), !called_before(c, m, p), addressed_to(p, _).
+  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m = "*", !served_path(p), !called_before(c, m, p), addressed_to(p, _).
 
   # Spec against code, in the head snapshot.
   - specified(s, m, p) :- operation(s, _, m, p).

@@ -18,7 +18,9 @@ use lemma_model::{Language, Symbol, SymbolKind};
 use lemma_syntax::Extractor;
 use tree_sitter::{Node, Parser};
 
-use crate::paths::{canonical_method, canonical_path, canonical_route, method_before_path};
+use crate::paths::{
+    canonical_method, canonical_path, canonical_route, has_marker, method_before_path,
+};
 
 /// Where in the code a fact was found.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -40,8 +42,6 @@ pub struct MethodPath {
     pub path: String,
     /// The path as written.
     pub template: String,
-    /// A client method chain declared alongside, such as `sessionConfigs.list`.
-    pub chain: Option<String>,
     /// Where.
     pub location: Location,
 }
@@ -57,10 +57,10 @@ pub struct PathReference {
     pub location: Location,
 }
 
-/// A call through a client object, such as `this.client.sessionConfigs.list()`.
+/// A call through a client object, such as `this.client.invoices.list()`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ClientCall {
-    /// The chain after the client receiver: `sessionConfigs.list`.
+    /// The chain after the client receiver: `invoices.list`.
     pub chain: String,
     /// Where.
     pub location: Location,
@@ -88,8 +88,8 @@ pub struct CodeFacts {
     /// Names the file uses as object keys, member names, keyword arguments
     /// or dictionary keys: the fields it may send or read. Sorted, unique.
     pub mentions: Vec<Mention>,
-    /// Relative and path-alias import specifiers, as written (`../types/x`,
-    /// `.models`, `@/src/lib/x`).
+    /// Import specifiers as written: relative ones (`../types/x`, `.models`)
+    /// and, outside Python, bare ones that may be path aliases (`@/lib/x`).
     pub imports: Vec<String>,
     /// The schemas routes use for their request body and query.
     pub schema_uses: Vec<SchemaUse>,
@@ -105,10 +105,14 @@ pub struct CodeOptions {
     /// Names of client receivers, such as `client` or `_client`; calls
     /// through them are reported as client calls.
     pub client_receivers: Vec<String>,
-    /// Modules of generated clients, such as `generated/worker`: functions
+    /// Modules of generated clients, such as `generated/billing`: functions
     /// imported from a module whose specifier ends with one are client
     /// methods, so calling them is a client call.
     pub client_modules: Vec<String>,
+    /// What makes a string a path: leading segments the services being
+    /// checked serve, such as `/v1/` (see [`crate::path_markers`]). Paths
+    /// written beside a method, as in route declarations, need none.
+    pub path_markers: Vec<String>,
 }
 
 /// Why a file could not be read.
@@ -261,11 +265,11 @@ impl Walk<'_> {
         }
     }
 
-    /// `{ method: 'get', path: '/api/...', chain: ['a', 'b'] }`.
+    /// `{ method: 'get', path: '/v1/users' }`: a route declaration in a
+    /// service, a request descriptor in a consumer.
     fn object(&mut self, node: Node<'_>) {
         let mut method = None;
         let mut path = None;
-        let mut chain = None;
         let mut request = None;
         let mut cursor = node.walk();
         for pair in node
@@ -281,7 +285,6 @@ impl Walk<'_> {
             match self.text(key).trim_matches(['"', '\'']) {
                 "method" => method = self.string_value(value),
                 "path" | "url" => path = Some(value),
-                "chain" => chain = self.string_list(value),
                 "request" => request = Some(value),
                 _ => {}
             }
@@ -293,11 +296,11 @@ impl Walk<'_> {
         if let (Some(method), Some(request)) = (method.as_deref(), request) {
             self.zod_route_request(method, &template, request);
         }
-        self.add_method_path(method.as_deref(), &template, chain, path_node);
+        self.add_method_path(method.as_deref(), &template, path_node);
     }
 
-    /// `client.GET('/api/...')`, `requests.post(url)`, `fetch(url, { method })`,
-    /// `Operation("get", "/api/...", ("a", "b"))`, and calls through clients.
+    /// `client.GET('/v1/x')`, `requests.post(url)`, `fetch(url, { method })`,
+    /// `http.NewRequest("POST", url)`, and calls through clients.
     fn call(&mut self, node: Node<'_>) {
         let Some(function) = node.child_by_field_name("function") else {
             return;
@@ -325,7 +328,7 @@ impl Walk<'_> {
             .copied()
             .find(|argument| {
                 self.string_value(*argument)
-                    .is_some_and(|text| text.contains("/api/"))
+                    .is_some_and(|text| has_marker(&text, &self.options.path_markers))
             })
             .or_else(|| self.nested_path_argument(arguments));
         let Some(path_node) = path_argument.filter(|node| !self.consumed.contains(&node.id()))
@@ -339,17 +342,10 @@ impl Walk<'_> {
             .find(|text| VERBS.contains(&text.to_ascii_lowercase().as_str()))
             .or_else(|| self.go_method_constant(arguments))
             .or_else(|| self.rust_method_constant(arguments));
-        // In Go and Rust a method argument builds a request
-        // (`http.NewRequest`, `client.request(Method::POST, ..)`); in the
-        // other languages it declares an operation in a table.
-        let builds_request = matches!(self.dialect, Dialect::Go | Dialect::Rust);
-        if let Some(verb) = verb_argument.as_deref().filter(|_| builds_request) {
-            self.add_reference(&canonical_method(verb), &template, path_node);
-            return;
-        }
+        // A method argument beside the path builds a request:
+        // `http.NewRequest("POST", url)`, `request("GET", "/v1/x")`.
         if let Some(verb) = verb_argument {
-            let chain = self.tuple_chain(arguments);
-            self.add_method_path(Some(&verb), &template, chain, path_node);
+            self.add_reference(&canonical_method(&verb), &template, path_node);
             return;
         }
         let called = parts.last().map(String::as_str).unwrap_or_default();
@@ -378,7 +374,7 @@ impl Walk<'_> {
             .position(|part| self.options.client_receivers.contains(part));
         let Some(receiver) = receiver else { return };
         let chain = &parts[receiver + 1..];
-        // `client.GET('/api/...')` is a typed fetch, reported as a path reference.
+        // `client.GET('/v1/x')` is a typed fetch, reported as a path reference.
         let is_typed_fetch =
             chain.len() == 1 && VERBS.contains(&chain[0].to_ascii_lowercase().as_str());
         if chain.is_empty() || is_typed_fetch {
@@ -391,18 +387,12 @@ impl Walk<'_> {
         });
     }
 
-    fn add_method_path(
-        &mut self,
-        method: Option<&str>,
-        template: &str,
-        chain: Option<String>,
-        path_node: Node<'_>,
-    ) {
+    fn add_method_path(&mut self, method: Option<&str>, template: &str, path_node: Node<'_>) {
         let method = method.map_or_else(|| "*".to_owned(), canonical_method);
         // A path written beside its method is surely a path; alone it needs
-        // the `/api/` marker, since objects with a `path` or `url` are common.
+        // a marker, since objects with a `path` or `url` are common.
         let path = if method == "*" {
-            canonical_path(template)
+            canonical_path(template, &self.options.path_markers)
         } else {
             canonical_route(template)
         };
@@ -415,13 +405,12 @@ impl Walk<'_> {
             method,
             path,
             template: template.to_owned(),
-            chain,
             location,
         });
     }
 
     fn add_reference(&mut self, method: &str, template: &str, node: Node<'_>) {
-        let Some(path) = canonical_path(template) else {
+        let Some(path) = canonical_path(template, &self.options.path_markers) else {
             return;
         };
         self.consumed.push(node.id());
@@ -490,12 +479,10 @@ impl Walk<'_> {
         if is_client_module {
             self.client_imports(node);
         }
-        // Relative imports, and the path aliases projects map to their own
-        // source (`@/src/lib/x`, `~/server/x`).
-        let is_local = [".", "@/", "~/"]
-            .iter()
-            .any(|prefix| specifier.starts_with(prefix));
-        if is_local {
+        // Python imports outside the package are other packages; a script's
+        // bare specifier may be a path alias (`tsconfig` `paths`), resolved
+        // or dropped when the repository's files are known.
+        if specifier.starts_with('.') || self.dialect != Dialect::Python {
             self.facts.imports.push(specifier);
         }
     }
@@ -530,9 +517,10 @@ impl Walk<'_> {
         if is_string && !self.consumed.contains(&node.id()) {
             if let Some(text) = self
                 .string_value(node)
-                .filter(|text| text.contains("/api/"))
+                .filter(|text| has_marker(text, &self.options.path_markers))
             {
-                let method = method_before_path(&text).unwrap_or_else(|| "*".to_owned());
+                let method = method_before_path(&text, &self.options.path_markers)
+                    .unwrap_or_else(|| "*".to_owned());
                 self.add_reference(&method, &text, node);
             }
             return;
@@ -543,7 +531,7 @@ impl Walk<'_> {
         }
     }
 
-    /// `this.client.sessionConfigs.list` as its identifiers.
+    /// `this.client.invoices.list` as its identifiers.
     fn chain_parts(&self, node: Node<'_>) -> Vec<String> {
         match node.kind() {
             "selector_expression" => {
@@ -608,25 +596,6 @@ impl Walk<'_> {
             }
             _ => None,
         }
-    }
-
-    /// `['a', 'b']` as `a.b`.
-    fn string_list(&self, node: Node<'_>) -> Option<String> {
-        let mut cursor = node.walk();
-        let parts: Vec<String> = node
-            .named_children(&mut cursor)
-            .filter_map(|child| self.string_value(child))
-            .collect();
-        (!parts.is_empty()).then(|| parts.join("."))
-    }
-
-    /// A Python call's tuple-of-strings argument, as a chain.
-    fn tuple_chain(&self, arguments: Node<'_>) -> Option<String> {
-        let mut cursor = arguments.walk();
-        let tuple = arguments
-            .named_children(&mut cursor)
-            .find(|argument| matches!(argument.kind(), "tuple" | "array"))?;
-        self.string_list(tuple)
     }
 
     /// `method: 'POST'` in an options object passed to a call.
@@ -724,61 +693,59 @@ mod tests {
     fn facts(file: &str, source: &str) -> CodeFacts {
         let options = CodeOptions {
             client_receivers: vec!["client".to_owned(), "_client".to_owned()],
-            client_modules: vec!["generated/worker".to_owned()],
+            client_modules: vec!["generated/billing".to_owned()],
+            path_markers: vec!["/v1/".to_owned()],
         };
         extract(file, source, &options, &mut Extractor::new().unwrap()).unwrap()
     }
 
     #[test]
-    fn operation_tables_and_route_declarations_are_method_paths() {
-        let source = "export const OPS = [\n  { method: 'get', path: '/api/v3.1/session_configs', chain: ['sessionConfigs', 'list'] },\n]\n";
+    fn method_and_path_objects_are_method_paths() {
+        let source = "export const ROUTES = [\n  { method: 'get', path: '/v1/users' },\n]\n";
 
         let found = facts("ops.ts", source);
 
         let item = &found.method_paths[0];
         assert_eq!(
             (item.method.as_str(), item.path.as_str()),
-            ("GET", "/api/v3.1/session_configs")
+            ("GET", "/v1/users")
         );
-        assert_eq!(item.chain.as_deref(), Some("sessionConfigs.list"));
         assert_eq!(found.path_references, []);
     }
 
     #[test]
     fn typed_fetch_calls_carry_their_method_and_symbol() {
-        let source = "export async function createSession(gateway) {\n  return gateway.POST(\"/api/v3.1/tool_router/session\", { body: {} })\n}\n";
+        let source = "export async function createSession(api) {\n  return api.POST(\"/v1/sessions\", { body: {} })\n}\n";
 
         let found = facts("a.ts", source);
 
         let reference = &found.path_references[0];
         assert_eq!(reference.method, "POST");
-        assert_eq!(reference.path, "/api/v3.1/tool_router/session");
+        assert_eq!(reference.path, "/v1/sessions");
         assert_eq!(reference.location.symbol.as_deref(), Some("createSession"));
         assert_eq!(reference.location.line, 2);
     }
 
     #[test]
     fn templates_and_fetch_options_are_understood() {
-        let source = "const submit = (t) => fetch(`${BACKEND}/api/v3.1/internal/connected_accounts/link/${t}`, { method: 'POST' })\n";
+        let source =
+            "const submit = (t) => fetch(`${BASE}/v1/accounts/${t}/link`, { method: 'POST' })\n";
 
         let found = facts("a.ts", source);
 
         let reference = &found.path_references[0];
         assert_eq!(reference.method, "POST");
-        assert_eq!(
-            reference.path,
-            "/api/v3.1/internal/connected_accounts/link/{}"
-        );
+        assert_eq!(reference.path, "/v1/accounts/{}/link");
     }
 
     #[test]
     fn javascript_modules_are_read() {
-        let source = "export async function provision(api) {\n  return api('/api/v3.1/auth_configs', { method: 'POST' })\n}\n";
+        let source = "export async function provision(api) {\n  return api('/v1/invoices', { method: 'POST' })\n}\n";
 
         let found = facts("scripts/provision.mjs", source);
 
         let reference = &found.path_references[0];
-        assert_eq!(reference.path, "/api/v3.1/auth_configs");
+        assert_eq!(reference.path, "/v1/invoices");
         assert_eq!(reference.location.symbol.as_deref(), Some("provision"));
     }
 
@@ -787,11 +754,11 @@ mod tests {
         let source = r#"package tools
 
 func SetupToolRoutes(r *mux.Router) {
-	api := r.PathPrefix("/api/tools_").Subrouter()
+	api := r.PathPrefix("/v1/tools").Subrouter()
 	api.Handle("/{slug}/execute", NewExecute()).Methods("POST")
 	api.Handle("/enums", NewEnums()).Methods(http.MethodGet, "HEAD")
-	r.HandleFunc("GET /api/health", health)
-	r.Get("/api/skills_", listSkills)
+	r.HandleFunc("GET /v1/health", health)
+	r.Get("/v1/skills", listSkills)
 }
 "#;
 
@@ -805,11 +772,11 @@ func SetupToolRoutes(r *mux.Router) {
         assert_eq!(
             routes,
             [
-                ("GET", "/api/health"),
-                ("GET", "/api/skills_"),
-                ("GET", "/api/tools_/enums"),
-                ("HEAD", "/api/tools_/enums"),
-                ("POST", "/api/tools_/{}/execute"),
+                ("GET", "/v1/health"),
+                ("GET", "/v1/skills"),
+                ("GET", "/v1/tools/enums"),
+                ("HEAD", "/v1/tools/enums"),
+                ("POST", "/v1/tools/{}/execute"),
             ]
         );
         assert_eq!(found.path_references, []);
@@ -825,8 +792,8 @@ type Payload struct {
 }
 
 func notify(ctx context.Context, base string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/api/v3/triggers/%s/callback", base, id), nil)
-	_, err = http.Get(base + "/api/v3/status")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/v1/triggers/%s/callback", base, id), nil)
+	_, err = http.Get(base + "/v1/status")
 	return err
 }
 "#;
@@ -840,10 +807,7 @@ func notify(ctx context.Context, base string) error {
             .collect();
         assert_eq!(
             references,
-            [
-                ("GET", "/api/v3/status"),
-                ("POST", "/api/v3/triggers/{}/callback")
-            ]
+            [("GET", "/v1/status"), ("POST", "/v1/triggers/{}/callback")]
         );
         assert_eq!(
             found.path_references[1].location.symbol.as_deref(),
@@ -857,11 +821,11 @@ func notify(ctx context.Context, base string) error {
         let source = r#"
 pub fn router() -> Router {
     Router::new()
-        .route("/api/v1/tools", get(list_tools).post(create_tool))
-        .route("/api/v1/tools/{slug}", routing::delete(delete_tool))
+        .route("/v1/tools", get(list_tools).post(create_tool))
+        .route("/v1/tools/{slug}", routing::delete(delete_tool))
 }
 
-#[get("/api/v1/health")]
+#[get("/v1/health")]
 async fn health() -> &'static str { "ok" }
 "#;
 
@@ -875,10 +839,10 @@ async fn health() -> &'static str { "ok" }
         assert_eq!(
             routes,
             [
-                ("DELETE", "/api/v1/tools/{}"),
-                ("GET", "/api/v1/health"),
-                ("GET", "/api/v1/tools"),
-                ("POST", "/api/v1/tools"),
+                ("DELETE", "/v1/tools/{}"),
+                ("GET", "/v1/health"),
+                ("GET", "/v1/tools"),
+                ("POST", "/v1/tools"),
             ]
         );
         assert_eq!(found.path_references, []);
@@ -899,8 +863,8 @@ struct Execute {
 
 impl Client {
     pub async fn execute(&self, id: &str) -> Result<()> {
-        self.http.post(format!("{}/api/v3/tools/{}/execute", self.base, id)).json(&json!({ "arguments": 1 })).send().await?;
-        self.http.request(Method::DELETE, &format!("{}/api/v3/tools/{id}", self.base)).send().await?;
+        self.http.post(format!("{}/v1/tools/{}/execute", self.base, id)).json(&json!({ "arguments": 1 })).send().await?;
+        self.http.request(Method::DELETE, &format!("{}/v1/tools/{id}", self.base)).send().await?;
         Ok(())
     }
 }
@@ -915,10 +879,7 @@ impl Client {
             .collect();
         assert_eq!(
             references,
-            [
-                ("DELETE", "/api/v3/tools/{}"),
-                ("POST", "/api/v3/tools/{}/execute")
-            ]
+            [("DELETE", "/v1/tools/{}"), ("POST", "/v1/tools/{}/execute")]
         );
         assert_eq!(
             found.path_references[1].location.symbol.as_deref(),
@@ -940,7 +901,7 @@ const Either = z.discriminatedUnion('kind', [Strict, z.object({}).strict()])
 const Mixed = z.union([Strict, z.object({})])
 const Route = router.createRoute({
   method: 'patch',
-  path: '/api/x/{id}',
+  path: '/v1/x/{id}',
   request: {
     body: { content: { 'application/json': { schema: Either } } },
     query: z.object({ q: z.string() }).strict(),
@@ -980,45 +941,40 @@ const Route = router.createRoute({
         assert_eq!(
             uses,
             [
-                ("/api/x/{}", "body", Some("Either"), false),
-                ("/api/x/{}", "query", None, true)
+                ("/v1/x/{}", "body", Some("Either"), false),
+                ("/v1/x/{}", "query", None, true)
             ]
         );
     }
 
     #[test]
     fn functions_imported_from_a_generated_client_are_client_calls() {
-        let source = "import { getPollRevokeJob as poll, OpenAPI } from '../../generated/worker'\nexport const check = (id) => poll({ jobId: id })\n";
+        let source = "import { listInvoices as list, OpenAPI } from '../../generated/billing'\nexport const load = (id) => list({ customerId: id })\n";
 
         let found = facts("a.ts", source);
 
         assert_eq!(found.client_calls.len(), 1);
-        assert_eq!(found.client_calls[0].chain, "getPollRevokeJob");
+        assert_eq!(found.client_calls[0].chain, "listInvoices");
     }
 
     #[test]
     fn calls_through_clients_are_chains() {
-        let source = "class SessionConfigs {\n  async list(p) {\n    return this.client.sessionConfigs.list(p)\n  }\n}\n";
+        let source = "class Invoices {\n  async list(p) {\n    return this.client.invoices.list(p)\n  }\n}\n";
 
         let found = facts("SessionConfigs.ts", source);
 
         let call = &found.client_calls[0];
-        assert_eq!(call.chain, "sessionConfigs.list");
-        assert_eq!(call.location.symbol.as_deref(), Some("SessionConfigs.list"));
+        assert_eq!(call.chain, "invoices.list");
+        assert_eq!(call.location.symbol.as_deref(), Some("Invoices.list"));
     }
 
     #[test]
-    fn python_operation_tables_and_client_calls_are_read() {
-        let source = "OPERATIONS = (\n    Operation(\"get\", \"/api/v3.1/session_configs\", (\"session_configs\", \"list\")),\n)\n\ndef run(self):\n    return self._client.session_configs.list()\n";
+    fn python_client_calls_are_chains() {
+        let source = "def run(self):\n    return self._client.invoices.list()\n";
 
-        let found = facts("_operations.py", source);
+        let found = facts("a.py", source);
 
-        assert_eq!(
-            found.method_paths[0].chain.as_deref(),
-            Some("session_configs.list")
-        );
-        assert_eq!(found.method_paths[0].method, "GET");
-        assert_eq!(found.client_calls[0].chain, "session_configs.list");
+        assert_eq!(found.client_calls[0].chain, "invoices.list");
     }
 
     #[test]
@@ -1030,22 +986,22 @@ const Route = router.createRoute({
         for name in ["search", "limit", "cursor", "archived"] {
             assert!(names(&found).contains(&name), "{name}");
         }
-        assert_eq!(found.imports, ["../types/configs"]);
+        assert_eq!(found.imports, ["../types/configs", "zod"]);
     }
 
     #[test]
     fn python_keywords_and_relative_imports_are_recorded() {
-        let source = "from .models import Hook\n\ndef f(client):\n    client.create(on_match='block', **{'prompt': 'x'})\n";
+        let source = "from .models import Hook\n\ndef f(client):\n    client.create(on_conflict='skip', **{'note': 'x'})\n";
 
         let found = facts("a.py", source);
 
-        assert!(names(&found).contains(&"on_match"));
+        assert!(names(&found).contains(&"on_conflict"));
         assert_eq!(found.imports, [".models"]);
     }
 
     #[test]
     fn other_strings_with_api_paths_are_references_of_unknown_method() {
-        let source = "const PATH = \"/api/v3.1/internal/connected_accounts/link\";\n";
+        let source = "const PATH = \"/v1/accounts/link\";\nconst LOGO = \"/static/logo.svg\";\n";
 
         let found = facts("a.ts", source);
 
