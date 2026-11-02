@@ -105,6 +105,12 @@ pub(crate) struct VerifyArgs {
     /// Also list informational findings, not just their count.
     #[arg(long)]
     pub all: bool,
+    /// The commit before the change, instead of the manifest's `change.base`.
+    #[arg(long)]
+    pub base: Option<String>,
+    /// The commit with the change, instead of the manifest's `change.head`.
+    #[arg(long)]
+    pub head: Option<String>,
     /// Also print every row of a derived relation, such as `calls`.
     /// Repeatable.
     #[arg(long = "relation", value_name = "NAME")]
