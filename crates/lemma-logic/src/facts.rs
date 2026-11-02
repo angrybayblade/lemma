@@ -150,8 +150,8 @@ mod tests {
     fn interning_is_stable_and_reversible() {
         let mut symbols = Symbols::new();
 
-        let first = symbols.intern("gateway");
-        let again = symbols.intern("gateway");
+        let first = symbols.intern("billing");
+        let again = symbols.intern("billing");
         let second = symbols.intern("dashboard");
 
         assert_eq!(first, again);

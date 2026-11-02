@@ -8,12 +8,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use lemma_grammar::CompiledGrammar;
-use lemma_http::{CodeFacts, CodeOptions, Operation, SourceFile};
+use lemma_http::{CodeFacts, CodeOptions, Operation, PathAliases, SourceFile};
 use lemma_logic::Value;
 use lemma_syntax::Extractor;
 
 use crate::VerifyError;
 use crate::manifest::{Manifest, Repository, Role};
+use crate::system::System;
 
 const CODE_EXTENSIONS: [&str; 11] = [
     "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "go", "rs",
@@ -64,11 +65,12 @@ impl<'g> FactWriter<'g> {
 pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(), VerifyError> {
     let mut extractor = Extractor::new().map_err(|source| VerifyError::Syntax { source })?;
     check_files(manifest)?;
+    let system = read_system(manifest)?;
     for (name, repository) in &manifest.repositories {
-        for snapshot in snapshots(manifest, repository) {
+        for snapshot in snapshots(manifest, repository, &system) {
             match repository.role {
                 Role::Service => service(name, repository, &snapshot, writer, &mut extractor)?,
-                Role::Client => client(name, repository, &snapshot, writer, &mut extractor)?,
+                Role::Client => client(name, repository, &snapshot, writer)?,
                 Role::Consumer => consumer(name, repository, &snapshot, writer, &mut extractor)?,
             }
         }
@@ -76,7 +78,35 @@ pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(
     Ok(())
 }
 
-/// Fails if a spec or table is missing at every commit its repository is
+/// What the system's services serve, from their specs at every commit they
+/// are read at: the markers that make a string in code a path, and the path
+/// prefixes each service owns.
+fn read_system(manifest: &Manifest) -> Result<System, VerifyError> {
+    let unknown = System::default();
+    let mut paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut declared = BTreeMap::new();
+    let services = manifest
+        .repositories
+        .iter()
+        .filter(|(_, repository)| repository.role == Role::Service);
+    for (name, repository) in services {
+        let service = repository.service.clone().unwrap_or_else(|| name.clone());
+        let served = paths.entry(service.clone()).or_default();
+        for snapshot in snapshots(manifest, repository, &unknown) {
+            for spec in &repository.specs {
+                served.extend(
+                    spec_operations(repository, &snapshot, spec)?
+                        .into_iter()
+                        .map(|operation| operation.path),
+                );
+            }
+        }
+        declared.insert(service, repository.path_prefixes.clone());
+    }
+    Ok(System::new(&paths, &declared))
+}
+
+/// Fails if a spec is missing at every commit its repository is
 /// read at, which means the manifest names it wrongly. Missing at one of
 /// the changed repository's two commits is fine: the change added or
 /// removed it.
@@ -87,7 +117,7 @@ fn check_files(manifest: &Manifest) -> Result<(), VerifyError> {
         } else {
             vec![repository.commit.as_deref()]
         };
-        for file in repository.specs.iter().chain(&repository.tables) {
+        for file in repository.specs.iter().chain(&repository.generated_from) {
             if !exists_at_any(&repository.path, &commits, file)? {
                 return Err(VerifyError::MissingFile {
                     repository: name.clone(),
@@ -121,12 +151,17 @@ fn exists_at_any(
 /// other entry for the same clone without a commit of its own (one
 /// repository can hold a service and its consumers), are read before and
 /// with the change; every other repository once, for both snapshots.
-fn snapshots<'m>(manifest: &'m Manifest, repository: &'m Repository) -> Vec<Snapshot<'m>> {
+fn snapshots<'m>(
+    manifest: &'m Manifest,
+    repository: &'m Repository,
+    system: &'m System,
+) -> Vec<Snapshot<'m>> {
     if !is_changed(manifest, repository) {
         return vec![Snapshot {
             commit: repository.commit.as_deref(),
             names: &BOTH,
             other: None,
+            system,
         }];
     }
     vec![
@@ -134,11 +169,13 @@ fn snapshots<'m>(manifest: &'m Manifest, repository: &'m Repository) -> Vec<Snap
             commit: Some(&manifest.change.base),
             names: &["base"],
             other: Some(&manifest.change.head),
+            system,
         },
         Snapshot {
             commit: Some(&manifest.change.head),
             names: &["head"],
             other: Some(&manifest.change.base),
+            system,
         },
     ]
 }
@@ -166,6 +203,8 @@ struct Snapshot<'a> {
     /// as a spec moved elsewhere, does not mean its operations appeared or
     /// disappeared.
     other: Option<&'a str>,
+    /// What the system's services serve.
+    system: &'a System,
 }
 
 fn service(
@@ -205,7 +244,8 @@ fn service(
         name,
         service: service_name,
         known: files.iter().map(|file| file.path.clone()).collect(),
-        aliases: &repository.route_aliases,
+        route_aliases: &repository.route_aliases,
+        imports: read_import_aliases(repository, commit)?,
     };
     for file in files.iter().filter(|file| !is_test_file(&file.path)) {
         let facts = code_facts(file, &CodeOptions::default(), extractor)?;
@@ -229,14 +269,15 @@ struct ServiceScope<'a> {
     name: &'a str,
     service: &'a str,
     known: BTreeSet<String>,
-    aliases: &'a BTreeMap<String, String>,
+    route_aliases: &'a BTreeMap<String, String>,
+    imports: PathAliases,
 }
 
 impl ServiceScope<'_> {
     /// A route's path and the paths its prefixes are aliased to.
     fn route_paths(&self, path: &str) -> Vec<String> {
         let mut paths = vec![path.to_owned()];
-        for (from, to) in self.aliases {
+        for (from, to) in self.route_aliases {
             if let Some(rest) = path.strip_prefix(from.as_str()) {
                 paths.push(format!("{to}{rest}"));
             }
@@ -277,7 +318,7 @@ fn schema_facts(
         }
     }
     for specifier in &facts.imports {
-        if let Some(target) = resolve_import(path, specifier, &scope.known) {
+        if let Some(target) = resolve_import(path, specifier, &scope.known, &scope.imports) {
             let target_id = format!("{}:{target}", scope.name);
             writer.add(
                 "imports",
@@ -349,7 +390,6 @@ fn operation_facts(
             Arg::Text(&operation.path),
         ],
     );
-    add_path_family(&operation.path, snapshots, writer);
     if operation.rejects_unknown_fields {
         writer.add("strict_request", snapshots, &[Arg::Text(op)]);
     }
@@ -389,46 +429,31 @@ fn client(
     repository: &Repository,
     snapshot: &Snapshot<'_>,
     writer: &mut FactWriter<'_>,
-    extractor: &mut Extractor,
 ) -> Result<(), VerifyError> {
     let both = snapshot.names;
+    let default_names = [DEFAULT_CALL_NAME.to_owned()];
+    let templates = if repository.call_names.is_empty() {
+        &default_names[..]
+    } else {
+        &repository.call_names[..]
+    };
     for spec in &repository.generated_from {
         for operation in spec_operations(repository, snapshot, spec)? {
-            let Some(function) = operation.operation_id.as_deref().map(camel_case) else {
+            let Some(operation_id) = operation.operation_id.as_deref() else {
                 continue;
             };
-            let args = [
-                Arg::Text(name),
-                Arg::Text(&function),
-                Arg::Text(&operation.method),
-                Arg::Text(&operation.path),
-                Arg::Text(spec),
-                Arg::Number(0),
-            ];
-            writer.add("client_operation", both, &args);
-        }
-    }
-    for table in &repository.tables {
-        let Some(source) = read_at_snapshot(repository, snapshot, table)? else {
-            continue;
-        };
-        let file = SourceFile {
-            path: table.clone(),
-            contents: source,
-        };
-        let facts = code_facts(&file, &CodeOptions::default(), extractor)?;
-        for item in &facts.method_paths {
-            let Some(chain) = &item.chain else { continue };
-            let line = i64::from(item.location.line);
-            let args = [
-                Arg::Text(name),
-                Arg::Text(chain),
-                Arg::Text(&item.method),
-                Arg::Text(&item.path),
-                Arg::Text(&file.path),
-                Arg::Number(line),
-            ];
-            writer.add("client_operation", both, &args);
+            for template in templates {
+                let function = call_name(template, operation_id);
+                let args = [
+                    Arg::Text(name),
+                    Arg::Text(&function),
+                    Arg::Text(&operation.method),
+                    Arg::Text(&operation.path),
+                    Arg::Text(spec),
+                    Arg::Number(0),
+                ];
+                writer.add("client_operation", both, &args);
+            }
         }
     }
     for spec in &repository.specs {
@@ -458,26 +483,13 @@ struct ConsumerScope<'a> {
     snapshots: &'a [&'a str],
     known: BTreeSet<String>,
     options: CodeOptions,
+    /// What the system's services serve.
+    system: &'a System,
+    /// Path aliases from the repository's `tsconfig` files.
+    imports: PathAliases,
 }
 
 const BOTH: [&str; 2] = ["base", "head"];
-
-/// Records a path's family: its first two segments, such as `/api/v3.1`.
-/// Rules use it to tell a call to a missing operation of a service from a
-/// call to some other service, such as a consumer's own `/api/trpc`.
-fn add_path_family(path: &str, snapshots: &[&str], writer: &mut FactWriter<'_>) {
-    let family: Vec<&str> = path
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .take(2)
-        .collect();
-    let family = format!("/{}", family.join("/"));
-    writer.add(
-        "path_family",
-        snapshots,
-        &[Arg::Text(path), Arg::Text(&family)],
-    );
-}
 
 fn consumer(
     name: &str,
@@ -500,7 +512,10 @@ fn consumer(
         options: CodeOptions {
             client_receivers: repository.client_receivers.clone(),
             client_modules: repository.client_modules.clone(),
+            path_markers: snapshot.system.markers.clone(),
         },
+        system: snapshot.system,
+        imports: read_import_aliases(repository, snapshot.commit)?,
     };
     for file in files.iter().filter(|file| !is_test_file(&file.path)) {
         let facts = code_facts(file, &scope.options, extractor)?;
@@ -567,7 +582,6 @@ fn write_calls(
     let descriptors = facts
         .method_paths
         .iter()
-        .filter(|item| item.chain.is_none())
         .map(|item| (&item.method, &item.path, &item.location));
     for (method, call_path, location) in calls.chain(descriptors) {
         let consumer = consumer_id(file_id, location.symbol.as_ref());
@@ -579,7 +593,13 @@ fn write_calls(
             Arg::Number(i64::from(location.line)),
         ];
         writer.add("calls_path", scope.snapshots, &args);
-        add_path_family(call_path, scope.snapshots, writer);
+        for service in scope.system.addressed_to(call_path) {
+            writer.add(
+                "addressed_to",
+                scope.snapshots,
+                &[Arg::Text(call_path), Arg::Text(service)],
+            );
+        }
         scopes.insert(consumer);
     }
     for call in &facts.client_calls {
@@ -595,6 +615,19 @@ fn write_calls(
     }
 }
 
+/// Path aliases from every `tsconfig*.json` in a repository.
+fn read_import_aliases(
+    repository: &Repository,
+    commit: Option<&str>,
+) -> Result<PathAliases, VerifyError> {
+    let is_tsconfig = |path: &str| {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        name.starts_with("tsconfig") && has_extension(name, "json")
+    };
+    let files = lemma_http::read_files_where(&repository.path, commit, &is_tsconfig)?;
+    Ok(PathAliases::from_files(&files))
+}
+
 /// The files a file imports, and for Go the other files of its package.
 fn write_imports(
     scope: &ConsumerScope<'_>,
@@ -607,7 +640,7 @@ fn write_imports(
     let imported = facts
         .imports
         .iter()
-        .filter_map(|specifier| resolve_import(path, specifier, &scope.known))
+        .filter_map(|specifier| resolve_import(path, specifier, &scope.known, &scope.imports))
         .chain(package_files);
     for target in imported {
         let target_id = format!("{}:{target}", scope.name);
@@ -664,7 +697,7 @@ fn code_facts(
     )?)
 }
 
-/// `GET /api/v3.1/session_options/{}`: how rules name an operation.
+/// `GET /v1/users/{}`: how rules name an operation.
 pub fn operation_key(method: &str, path: &str) -> String {
     format!("{method} {path}")
 }
@@ -678,28 +711,56 @@ fn leaf(field: &str) -> &str {
         .trim_end_matches("[]")
 }
 
-/// The function a client generated from a spec names an operation with:
-/// its `operationId` in camel case, as `openapi-ts` and most TypeScript
-/// generators write it (`get_pollExportJob` is `getPollExportJob`).
-fn camel_case(operation_id: &str) -> String {
-    let mut name = String::new();
-    for (index, word) in operation_id
-        .split(['_', '-', ' ', '.'])
-        .filter(|word| !word.is_empty())
-        .enumerate()
-    {
-        let mut characters = word.chars();
-        let Some(first) = characters.next() else {
+/// The call name a client is assumed to use when the manifest gives none:
+/// the `operationId` as written.
+const DEFAULT_CALL_NAME: &str = "{operationId}";
+
+/// A generated client's name for an operation, from a template naming its
+/// `operationId` as written (`{operationId}`) or recased: `{camel}`
+/// (`listUsers`), `{pascal}` (`ListUsers`) or `{snake}` (`list_users`).
+/// Generators differ, so the manifest says which (`call_names`).
+fn call_name(template: &str, operation_id: &str) -> String {
+    let words = words(operation_id);
+    let capitalized: Vec<String> = words.iter().map(|word| capitalize(word)).collect();
+    let camel = match capitalized.split_first() {
+        Some((first, rest)) => first.to_lowercase() + &rest.concat(),
+        None => String::new(),
+    };
+    template
+        .replace("{operationId}", operation_id)
+        .replace("{camel}", &camel)
+        .replace("{pascal}", &capitalized.concat())
+        .replace("{snake}", &words.join("_"))
+}
+
+/// An identifier's words, split at `_`, `-`, `.`, spaces and lower-to-upper
+/// case changes, in lower case: `get_pollExportJob` is `get poll export job`.
+fn words(identifier: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut previous_lower = false;
+    for character in identifier.chars() {
+        if matches!(character, '_' | '-' | '.' | ' ') {
+            words.extend((!current.is_empty()).then(|| std::mem::take(&mut current)));
+            previous_lower = false;
             continue;
-        };
-        if index == 0 {
-            name.extend(first.to_lowercase());
-        } else {
-            name.extend(first.to_uppercase());
         }
-        name.push_str(characters.as_str());
+        if character.is_uppercase() && previous_lower {
+            words.push(std::mem::take(&mut current));
+        }
+        previous_lower = character.is_lowercase() || character.is_ascii_digit();
+        current.extend(character.to_lowercase());
     }
-    name
+    words.extend((!current.is_empty()).then_some(current));
+    words
+}
+
+fn capitalize(word: &str) -> String {
+    let mut characters = word.chars();
+    characters
+        .next()
+        .map(|first| first.to_uppercase().chain(characters).collect())
+        .unwrap_or_default()
 }
 
 fn is_test_file(path: &str) -> bool {
@@ -740,15 +801,20 @@ fn same_package(path: &str, known: &BTreeSet<String>) -> Vec<String> {
 }
 
 /// The repository file a relative import names, if it is one of `known`.
-fn resolve_import(file: &str, specifier: &str, known: &BTreeSet<String>) -> Option<String> {
+fn resolve_import(
+    file: &str,
+    specifier: &str,
+    known: &BTreeSet<String>,
+    aliases: &PathAliases,
+) -> Option<String> {
     if has_extension(file, "rs") {
         return rust_module(file, specifier, known);
     }
-    if let Some(rest) = specifier
-        .strip_prefix("@/")
-        .or_else(|| specifier.strip_prefix("~/"))
-    {
-        return resolve_alias(file, rest, known);
+    if !specifier.starts_with('.') {
+        return aliases
+            .candidates(file, specifier)
+            .iter()
+            .find_map(|base| module_file(base, known));
     }
     let directory = Path::new(file).parent().unwrap_or(Path::new(""));
     let is_python = Path::new(file)
@@ -779,23 +845,6 @@ fn module_file(base: &str, known: &BTreeSet<String>) -> Option<String> {
     candidates
         .into_iter()
         .find(|candidate| known.contains(candidate))
-}
-
-/// A path alias such as `@/src/lib/x` or `~/server/x`. Projects map these
-/// to their own root or its `src` in `tsconfig.json`; rather than read it,
-/// each directory above the importing file is tried as that root, nearest
-/// first.
-fn resolve_alias(file: &str, rest: &str, known: &BTreeSet<String>) -> Option<String> {
-    let mut directory = Path::new(file).parent();
-    while let Some(root) = directory {
-        for base in [root.join(rest), root.join("src").join(rest)] {
-            if let Some(found) = module_file(&base.to_string_lossy(), known) {
-                return Some(found);
-            }
-        }
-        directory = root.parent();
-    }
-    None
 }
 
 /// The file of the module a Rust `use` path names: `crate::models::Tool`
@@ -904,13 +953,13 @@ mod tests {
         let mut grammar = http_contracts();
         let mut writer = FactWriter::new(&mut grammar);
         let kept = [
-            Arg::Text("gateway"),
+            Arg::Text("billing"),
             Arg::Text("GET /api/a"),
             Arg::Text("GET"),
             Arg::Text("/api/a"),
         ];
         let gone = [
-            Arg::Text("gateway"),
+            Arg::Text("billing"),
             Arg::Text("POST /api/b"),
             Arg::Text("POST"),
             Arg::Text("/api/b"),
@@ -935,7 +984,7 @@ mod tests {
         for op in ["PATCH /api/strict", "PATCH /api/lenient"] {
             let path = op.split(' ').nth(1).unwrap();
             let operation = [
-                Arg::Text("gateway"),
+                Arg::Text("billing"),
                 Arg::Text(op),
                 Arg::Text("PATCH"),
                 Arg::Text(path),
@@ -975,7 +1024,7 @@ mod tests {
         let mut writer = FactWriter::new(&mut grammar);
         let route = |path, part, schema| {
             [
-                Arg::Text("gateway"),
+                Arg::Text("billing"),
                 Arg::Text("POST"),
                 Arg::Text(path),
                 Arg::Text(part),
@@ -1056,7 +1105,7 @@ mod tests {
     fn a_service_does_not_call_its_own_operations() {
         let mut grammar = http_contracts();
         let mut writer = FactWriter::new(&mut grammar);
-        for (service, path) in [("gateway", "/api/v3/tools"), ("worker", "/api/tasks_")] {
+        for (service, path) in [("billing", "/v1/invoices"), ("users", "/v1/users")] {
             let op = format!("GET {path}");
             writer.add(
                 "operation",
@@ -1080,27 +1129,26 @@ mod tests {
         writer.add(
             "part_of_service",
             &BOTH,
-            &[Arg::Text("a:route.ts"), Arg::Text("gateway")],
+            &[Arg::Text("a:route.ts"), Arg::Text("billing")],
         );
 
         let calls = derive(&grammar, "calls");
 
         let operations: Vec<&str> = calls.iter().map(|row| row[1].as_str()).collect();
-        assert_eq!(operations, ["GET /api/tasks_"]);
+        assert_eq!(operations, ["GET /v1/users"]);
     }
 
     #[test]
-    fn only_new_calls_to_a_served_family_are_unserved() {
+    fn only_new_calls_under_a_service_prefix_are_unserved() {
         let mut grammar = http_contracts();
         let mut writer = FactWriter::new(&mut grammar);
         let operation = [
-            Arg::Text("gateway"),
-            Arg::Text("GET /api/v3.1/a"),
+            Arg::Text("billing"),
+            Arg::Text("GET /v1/billing/a"),
             Arg::Text("GET"),
-            Arg::Text("/api/v3.1/a"),
+            Arg::Text("/v1/billing/a"),
         ];
         writer.add("operation", &BOTH, &operation);
-        add_path_family("/api/v3.1/a", &BOTH, &mut writer);
         let call = |path| {
             [
                 Arg::Text("d:f::c"),
@@ -1110,15 +1158,21 @@ mod tests {
                 Arg::Number(3),
             ]
         };
-        writer.add("calls_path", &BOTH, &call("/api/v3.1/old"));
-        for path in ["/api/v3.1/old", "/api/v3.1/new", "/api/trpc/x"] {
+        writer.add("calls_path", &BOTH, &call("/v1/billing/old"));
+        for path in ["/v1/billing/old", "/v1/billing/new", "/v1/other/x"] {
             writer.add("calls_path", &["head"], &call(path));
-            add_path_family(path, &BOTH, &mut writer);
+        }
+        for path in ["/v1/billing/old", "/v1/billing/new"] {
+            writer.add(
+                "addressed_to",
+                &BOTH,
+                &[Arg::Text(path), Arg::Text("billing")],
+            );
         }
 
         let unserved = derive(&grammar, "unserved_call");
 
-        assert_eq!(unserved, [["d:f::c", "GET", "/api/v3.1/new", "d:f", "3"]]);
+        assert_eq!(unserved, [["d:f::c", "GET", "/v1/billing/new", "d:f", "3"]]);
     }
 
     fn known(paths: &[&str]) -> BTreeSet<String> {
@@ -1130,11 +1184,17 @@ mod tests {
         let files = known(&["src/types/configs.ts", "src/models/index.ts"]);
 
         assert_eq!(
-            resolve_import("src/models/a.ts", "../types/configs.js", &files).as_deref(),
+            resolve_import(
+                "src/models/a.ts",
+                "../types/configs.js",
+                &files,
+                &PathAliases::default()
+            )
+            .as_deref(),
             Some("src/types/configs.ts")
         );
         assert_eq!(
-            resolve_import("src/b.ts", "./models", &files).as_deref(),
+            resolve_import("src/b.ts", "./models", &files, &PathAliases::default()).as_deref(),
             Some("src/models/index.ts")
         );
     }
@@ -1148,46 +1208,80 @@ mod tests {
         ]);
 
         assert_eq!(
-            resolve_import("svc/src/api/client.rs", "crate::models::Tool", &files).as_deref(),
+            resolve_import(
+                "svc/src/api/client.rs",
+                "crate::models::Tool",
+                &files,
+                &PathAliases::default()
+            )
+            .as_deref(),
             Some("svc/src/models.rs")
         );
         assert_eq!(
-            resolve_import("svc/src/api/client.rs", "super::types", &files).as_deref(),
+            resolve_import(
+                "svc/src/api/client.rs",
+                "super::types",
+                &files,
+                &PathAliases::default()
+            )
+            .as_deref(),
             Some("svc/src/api/types.rs")
         );
         assert_eq!(
-            resolve_import("svc/src/api/mod.rs", "self::types", &files).as_deref(),
+            resolve_import(
+                "svc/src/api/mod.rs",
+                "self::types",
+                &files,
+                &PathAliases::default()
+            )
+            .as_deref(),
             Some("svc/src/api/types.rs")
         );
     }
 
     #[test]
-    fn path_aliases_resolve_from_the_nearest_project_root() {
+    fn path_aliases_resolve_through_tsconfig_paths() {
         let files = known(&[
-            "apps/gateway/src/lib/schemas.ts",
-            "dashboard/src/server/trpc.ts",
+            "apps/web/src/server/trpc.ts",
+            "apps/web/src/server/index.ts",
         ]);
+        let aliases = PathAliases::from_files(&[SourceFile {
+            path: "apps/web/tsconfig.json".to_owned(),
+            contents: r#"{ "compilerOptions": { "paths": { "~/*": ["./src/*"] } } }"#.to_owned(),
+        }]);
 
         assert_eq!(
             resolve_import(
-                "apps/gateway/src/pages/api/x.ts",
-                "@/src/lib/schemas",
-                &files
+                "apps/web/src/app/page.tsx",
+                "~/server/trpc",
+                &files,
+                &aliases
             )
             .as_deref(),
-            Some("apps/gateway/src/lib/schemas.ts")
+            Some("apps/web/src/server/trpc.ts")
         );
         assert_eq!(
-            resolve_import("dashboard/src/app/page.tsx", "~/server/trpc", &files).as_deref(),
-            Some("dashboard/src/server/trpc.ts")
+            resolve_import("apps/web/src/app/page.tsx", "~/server", &files, &aliases).as_deref(),
+            Some("apps/web/src/server/index.ts")
+        );
+        assert_eq!(
+            resolve_import("apps/web/src/a.ts", "react", &files, &aliases),
+            None
         );
     }
 
     #[test]
-    fn camel_case_follows_generated_client_names() {
-        assert_eq!(camel_case("get_pollExportJob"), "getPollExportJob");
-        assert_eq!(camel_case("ListCategories"), "listCategories");
-        assert_eq!(camel_case("list-products-post"), "listProductsPost");
+    fn call_names_follow_the_template_a_generator_uses() {
+        assert_eq!(
+            call_name("{camel}", "get_pollExportJob"),
+            "getPollExportJob"
+        );
+        assert_eq!(
+            call_name("{pascal}.Invoke", "list-users"),
+            "ListUsers.Invoke"
+        );
+        assert_eq!(call_name("{snake}", "ListUsersByOrg"), "list_users_by_org");
+        assert_eq!(call_name("{operationId}", "users.list"), "users.list");
     }
 
     #[test]
@@ -1195,11 +1289,11 @@ mod tests {
         let files = known(&["pkg/core/models.py", "pkg/types/__init__.py"]);
 
         assert_eq!(
-            resolve_import("pkg/core/a.py", ".models", &files).as_deref(),
+            resolve_import("pkg/core/a.py", ".models", &files, &PathAliases::default()).as_deref(),
             Some("pkg/core/models.py")
         );
         assert_eq!(
-            resolve_import("pkg/core/a.py", "..types", &files).as_deref(),
+            resolve_import("pkg/core/a.py", "..types", &files, &PathAliases::default()).as_deref(),
             Some("pkg/types/__init__.py")
         );
     }

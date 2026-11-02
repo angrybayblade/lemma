@@ -23,7 +23,7 @@ impl Walk<'_> {
             return false;
         };
         for method in self.rust_method_router(*handlers) {
-            self.add_method_path(Some(&method), &template, None, *path_node);
+            self.add_method_path(Some(&method), &template, *path_node);
         }
         self.consumed.push(path_node.id());
         true
@@ -72,7 +72,7 @@ impl Walk<'_> {
             return;
         };
         let template = self.string_value(path_node).unwrap_or_default();
-        self.add_method_path(Some(&verb), &template, None, path_node);
+        self.add_method_path(Some(&verb), &template, path_node);
     }
 
     /// `Method::POST` among a call's arguments, as `POST`.
