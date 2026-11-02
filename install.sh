@@ -70,6 +70,7 @@ download() {
   fi
   # Private repositories serve assets through the API, by asset id.
   id="$(api "repos/$REPO/releases/tags/$tag" |
+    tr -d '\n' |
     tr ',' '\n' |
     grep -B 3 "\"name\": *\"$name\"" |
     sed -n 's/.*"url": *"[^"]*\/assets\/\([0-9]*\)".*/\1/p' |
