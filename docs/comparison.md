@@ -23,8 +23,8 @@ The protocol ([`PROTOCOL`](#protocol)) was written and its hash recorded before 
 | django/django | Python | `817df1c` |
 | hashicorp/terraform | Go | `becd281` |
 | nestjs/nest | TypeScript | `b7f8501` |
-| functions (private) | Python, TypeScript | `a5ffba0` |
-| platform (private) | TypeScript, Python, Go | `d81c7ef` |
+| monorepo A (private) | Python, TypeScript | `a5ffba0` |
+| monorepo B (private) | TypeScript, Python, Go | `d81c7ef` |
 
 **Symbols**: for each repository and language, every function, method and class Lemma indexed, bucketed by how many lines contain its name as a word (1-5, 6-50, 51-500, more than 500), then 8 drawn at random per bucket (seed 3): 241 symbols in all. A drawn symbol whose own definition an oracle could not resolve was replaced by the next random draw; 19 were (16 of them methods).
 
@@ -97,11 +97,11 @@ Against the second oracle, Lemma's precision was 97% for Python and 95% for Type
 | django Python | 39 ms / 507 ms | 17 ms / 97 ms | 15 ms / 108 ms | 318 ms / 430 ms | 52 ms, 99 ms | 16 ms | 2 ms |
 | terraform Go | 32 ms / 462 ms | 11 ms / 53 ms | 14 ms / 94 ms | 392 ms / 477 ms | 95 ms, 174 ms | 7 ms | 2 ms |
 | nest TypeScript | 15 ms / 272 ms | 9 ms / 103 ms | 11 ms / 69 ms | 179 ms / 244 ms | 77 ms, 502 ms | 12 ms | 2 ms |
-| platform TypeScript | 40 ms / 480 ms | 19 ms / 140 ms | 17 ms / 102 ms | 422 ms / 513 ms | 73 ms, 134 ms | 8 ms | 3 ms |
-| platform Python | 17 ms / 274 ms | 7 ms / 41 ms | 16 ms / 64 ms | 107 ms / 172 ms | 23 ms, 48 ms | 9 ms | 2 ms |
-| platform Go | 21 ms / 210 ms | 7 ms / 37 ms | 16 ms / 55 ms | 123 ms / 182 ms | 58 ms, 274 ms | 5 ms | 2 ms |
-| functions TypeScript | 90 ms / 804 ms | 160 ms / 383 ms | 33 ms / 156 ms | 95 ms / 237 ms | 19 ms, 79 ms | 8 ms | 3 ms |
-| functions Python (71,000 files) | 483 ms / 6.56 s | 5.29 s / 5.92 s | 86 ms / 1.03 s | 6.33 s / 8.18 s | 126 ms, 240 ms | 37 ms | 1 ms |
+| monorepo B TypeScript | 40 ms / 480 ms | 19 ms / 140 ms | 17 ms / 102 ms | 422 ms / 513 ms | 73 ms, 134 ms | 8 ms | 3 ms |
+| monorepo B Python | 17 ms / 274 ms | 7 ms / 41 ms | 16 ms / 64 ms | 107 ms / 172 ms | 23 ms, 48 ms | 9 ms | 2 ms |
+| monorepo B Go | 21 ms / 210 ms | 7 ms / 37 ms | 16 ms / 55 ms | 123 ms / 182 ms | 58 ms, 274 ms | 5 ms | 2 ms |
+| monorepo A TypeScript | 90 ms / 804 ms | 160 ms / 383 ms | 33 ms / 156 ms | 95 ms / 237 ms | 19 ms, 79 ms | 8 ms | 3 ms |
+| monorepo A Python (71,000 files) | 483 ms / 6.56 s | 5.29 s / 5.92 s | 86 ms / 1.03 s | 6.33 s / 8.18 s | 126 ms, 240 ms | 37 ms | 1 ms |
 
 On repositories of a few thousand files, ripgrep with warm caches is faster than a symbol's first Lemma lookup, and about as fast as a repeated one. On the 71,000-file repository, ripgrep took 86 ms warm and about 1 s cold, Lemma's first lookup 126 ms and a repeat 37 ms. Lemma's cached answers (1-3 ms) were faster than every text tool on every repository.
 
@@ -114,11 +114,11 @@ From a stopped daemon and an empty file cache: `lemma index` followed by N looku
 | django Python | 0.77 s / 0.11 s | 1.59 s / 0.30 s | 3.37 s / 0.69 s |
 | terraform Go | 3.54 s / 0.10 s | 3.39 s / 0.25 s | 6.65 s / 0.57 s |
 | nest TypeScript | 3.16 s / 0.08 s | 8.52 s / 0.20 s | 11.70 s / 0.50 s |
-| platform TypeScript | 6.64 s / 0.13 s | 7.42 s / 0.33 s | 9.51 s / 0.79 s |
-| platform Python | 0.51 s / 0.09 s | 1.37 s / 0.27 s | 2.59 s / 0.81 s |
-| platform Go | 1.56 s / 0.06 s | 3.31 s / 0.29 s | 5.25 s / 0.55 s |
-| functions TypeScript | 5.23 s / 0.16 s | 4.99 s / 0.50 s | 5.14 s / 0.83 s (17 questions) |
-| functions Python | 3.41 s / 1.03 s | 7.12 s / 1.96 s | 11.43 s / 4.27 s |
+| monorepo B TypeScript | 6.64 s / 0.13 s | 7.42 s / 0.33 s | 9.51 s / 0.79 s |
+| monorepo B Python | 0.51 s / 0.09 s | 1.37 s / 0.27 s | 2.59 s / 0.81 s |
+| monorepo B Go | 1.56 s / 0.06 s | 3.31 s / 0.29 s | 5.25 s / 0.55 s |
+| monorepo A TypeScript | 5.23 s / 0.16 s | 4.99 s / 0.50 s | 5.14 s / 0.83 s (17 questions) |
+| monorepo A Python | 3.41 s / 1.03 s | 7.12 s / 1.96 s | 11.43 s / 4.27 s |
 
 Most of a cold session is the language server starting and loading the project (1-3 s for TypeScript and Go, about 0.1-0.2 s for ty) and indexing with an empty cache (0.2-0.5 s). Keeping the daemon running removes both; see [How Lemma works](concepts.md#the-daemon-and-warm-language-servers).
 
@@ -130,13 +130,13 @@ Most of a cold session is the language server starting and loading the project (
 | 19 drawn symbols were replaced because an oracle could not resolve their own definition, 16 of them methods (often overrides). | The sample likely has fewer polymorphic methods, Lemma's weakest case, than the code does. |
 | Ground truth only considers places that spell the name. | Text search's 100% recall holds by construction; references through another name (aliases, re-exports, dynamic code) are not measured for any tool. |
 | No dependencies were installed. | References through third-party packages are out of scope; with dependencies installed, servers may find more, and load more slowly. |
-| functions Python ran with 31 GB of memory, the other seven with 7 GB. | ty needed more than 6.6 GB there; with 7 GB it was killed. File caching for that pair also had more room. |
+| monorepo A Python ran with 31 GB of memory, the other seven with 7 GB. | ty needed more than 6.6 GB there; with 7 GB it was killed. File caching for that pair also had more room. |
 | Pooled and per-symbol figures differ a lot. | Pooled figures are dominated by a few symbols with hundreds of references; both are reported. |
 | One machine, one run per symbol for accuracy. | Run-to-run variation in latency is only partly visible. |
 
 ## Earlier measurements
 
-An earlier, smaller comparison (10 hand-picked symbols, on a Mac) showed Lemma 60-130 times faster than ripgrep on functions. That was mostly the Mac: opening files there barely scaled across threads, so ripgrep took 2.3 s on functions, against 86 ms on this machine. Its "warm" Lemma figures also repeated the same question, which language servers cache.
+An earlier, smaller comparison (10 hand-picked symbols, on a Mac) showed Lemma 60-130 times faster than ripgrep on monorepo A. That was mostly the Mac: opening files there barely scaled across threads, so ripgrep took 2.3 s on monorepo A, against 86 ms on this machine. Its "warm" Lemma figures also repeated the same question, which language servers cache.
 
 ## Trade-offs
 
@@ -166,7 +166,7 @@ The protocol, harness and per-symbol results live in the experiment workspace, n
 1. The oracle closes documents it no longer needs and restarts a server that exits (typescript-language-server exited once in the pilot).
 2. Text tools are timed on two symbols per bucket; their time depends on the repository, not the symbol.
 3. Lemma-only lines are checked up to 1,500 per symbol (no symbol reached the cap).
-4. ast-grep searches `.ts` files only, not `.tsx` (3 files in platform).
+4. ast-grep searches `.ts` files only, not `.tsx` (3 files in monorepo B).
 5. Phases are saved so a failure does not repeat earlier ones.
-6. functions Python was rerun with 31 GB of memory after ty was killed at 7 GB.
+6. monorepo A Python was rerun with 31 GB of memory after ty was killed at 7 GB.
 7. Language server helpers left running by the Lemma build under test were stopped by hand before that rerun.

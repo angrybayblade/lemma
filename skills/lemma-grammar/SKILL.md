@@ -33,7 +33,7 @@ requirements:
     severity: error                          # error | warning | info
     explain: "{c} calls {op}, which no longer exists ({f}:{l})"
 facts:                                       # by hand; head snapshot unless snapshot: base
-  - { relation: allowed_removal, values: ["DELETE /api/v3/old/{}"] }
+  - { relation: allowed_removal, values: ["DELETE /v1/legacy/things/{}"] }
 ```
 
 - Identifiers are variables, `_` matches anything, `"text"` and `123` are constants.
@@ -75,6 +75,6 @@ Findings that rest on a name being **present** should use near evidence (`uses(c
     severity: error
     explain: "{op} no longer returns `{fld}`"
   ```
-- **Restrict a check to one service**: join on `operation@base(s, op, _, _), s = "gateway"`.
+- **Restrict a check to one service**: join on `operation@base(s, op, _, _), s = "billing"`.
 
 The input relations, their columns and the built-in derived relations are listed in [reference.md](reference.md).

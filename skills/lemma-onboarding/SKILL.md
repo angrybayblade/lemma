@@ -43,8 +43,8 @@ In each repository agents work in: `claude mcp add lemma -- lemma mcp` (Claude C
 Find the system's parts before writing anything:
 
 1. **Services**: repositories with committed OpenAPI documents. `git ls-files | grep -iE 'openapi|swagger' | grep -E '\.json$'`. Note the route directories (`pages/api`, `routes`, `handlers`, `router`).
-2. **Generated clients**: operation tables (objects with `method`, `path`, `chain`), or clients generated at build time from a spec (look for `openapi-ts`, `openapi-generator` in build scripts, and gitignored `generated/` directories).
-3. **Consumers**: code calling the services: path strings like `/api/v3/...`, `fetch`, `requests`, `http.NewRequest`, `reqwest`, or calls through a client object (`this.client.x.y()`).
+2. **Generated clients**: clients generated from a service's spec, committed or built at build time (look for `openapi-ts`, `openapi-generator`, Stainless or similar in build scripts, and gitignored `generated/` directories). Note how they name functions from `operationId`s: as written, camel case, Pascal case or snake case, with any fixed suffix.
+3. **Consumers**: code calling the services: request paths, `fetch`, `requests`, `http.NewRequest`, `reqwest`, or calls through a client object (`this.client.x.y()`).
 
 Then write `manifest.yaml` from [manifest-template.yaml](manifest-template.yaml), one repository at a time, running `lemma verify manifest.yaml --all` after each addition. Field meanings and pitfalls are in [manifest-reference.md](manifest-reference.md).
 
