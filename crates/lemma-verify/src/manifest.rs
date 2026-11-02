@@ -57,6 +57,9 @@ pub struct Repository {
     /// What it is to the system.
     pub role: Role,
     /// A service's name, used in findings; the repository's name if absent.
+    /// On a consumer, the service its code belongs to: its references to
+    /// that service's own operations, such as route declarations, are not
+    /// calls.
     #[serde(default)]
     pub service: Option<String>,
     /// `OpenAPI` documents: a service's contract, or a client's copy of it.
