@@ -2,10 +2,21 @@
 
 Lemma indexes source code into a shared, versioned store of symbols and asks language servers about them. It covers TypeScript, Python, Go, and Rust: syntax indexing with Tree-sitter, pluggable language servers for semantic answers, and the questions agents ask while changing code: where a symbol is used, where something is defined, what implements an interface, and what a symbol's signature is. Agents can call it as an MCP server.
 
+Lemma is in release candidates; see the [pre-release checklist](docs/pre-release.md) for what is ready and what is not.
+
+## Install
+
+```sh
+# while the repository is private (needs the GitHub CLI, signed in):
+gh api -H 'Accept: application/vnd.github.raw' repos/angrybayblade/lemma/contents/install.sh | sh
+# add LEMMA_SKILLS=1 before `sh` to also install the agent skills
+```
+
+Or from source: `cargo install --path crates/lemma-cli --locked` (Rust 1.85+). Details in [Onboarding](docs/onboarding.md#1-install).
+
 ## Quick start
 
 ```sh
-cargo install --path crates/lemma-cli --locked   # needs Rust 1.85+
 
 lemma index ~/code/project              # writes ~/code/project/.lemma/index.db
 cd ~/code/project
@@ -31,6 +42,11 @@ Lemma keeps "no answer" separate from "no references". "No references found" mea
 
 ## Documentation
 
+- [Onboarding](docs/onboarding.md): set Lemma up for a team's repositories, from install to checks in CI.
+- [Pre-release checklist](docs/pre-release.md): what this release candidate is ready for, and its known limitations.
+- [Verifying changes](docs/verify.md): `lemma verify`, the manifest, findings, and how well it works.
+- [Grammars](docs/grammar.md): writing the relations, rules and requirements `lemma verify` checks.
+- [Agent skills](skills/README.md): skills that teach coding agents to use Lemma.
 - [Getting started](docs/getting-started.md): install, set up language servers, first lookup.
 - [Commands](docs/commands.md): every command, option, and exit code.
 - [Language servers](docs/providers.md): built-in providers, adding your own, how one is chosen.
@@ -39,7 +55,6 @@ Lemma keeps "no answer" separate from "no references". "No references found" mea
 - [JSON output](docs/json-output.md): the output contract for scripts and agents.
 - [Comparison](docs/comparison.md): Lemma against grep, ripgrep, git grep and ast-grep, with caveats.
 - [Agents with and without Lemma](docs/agent-benchmark.md): what Lemma changes for a coding agent, measured.
-- [Verifying changes](docs/verify.md): check a change against every repository that depends on it.
 - [Performance](docs/performance.md): benchmarks, and the approaches that were tried.
 - [Troubleshooting](docs/troubleshooting.md): failed lookups and missing results.
 

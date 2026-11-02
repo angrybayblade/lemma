@@ -2,9 +2,17 @@
 
 This guide takes you from a fresh checkout to your first reference lookup.
 
-## 1. Build and install
+## 1. Install
 
-Lemma is a single binary. You need a Rust toolchain, 1.85 or newer ([rustup](https://rustup.rs) is the easiest way to get one).
+Lemma is a single binary. Releases ship it for macOS and Linux (arm64 and x86_64); while the repository is private, install with the GitHub CLI signed in:
+
+```sh
+gh api -H 'Accept: application/vnd.github.raw' repos/angrybayblade/lemma/contents/install.sh | sh
+```
+
+It goes into `~/.local/bin`. Options (a pinned version, the agent skills, a token instead of the GitHub CLI) are in [Onboarding](onboarding.md#1-install).
+
+To build from source instead, you need a Rust toolchain, 1.85 or newer ([rustup](https://rustup.rs) is the easiest way to get one).
 
 ```sh
 git clone https://github.com/angrybayblade/lemma.git
