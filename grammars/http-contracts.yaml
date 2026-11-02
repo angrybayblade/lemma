@@ -1,0 +1,230 @@
+# HTTP contracts between services, their generated clients and consumers.
+#
+# Facts come from `lemma verify`'s extractors: operations from OpenAPI
+# documents (spec), routes, client operation tables and calls from code
+# (syntax). Operations are named "METHOD /path" with path parameters
+# written `{}`. A consumer is "repository:file::Symbol"; a file is
+# "repository:file". The changed repository is read at the base and head
+# of the change; every other repository at one commit, the same in both.
+
+grammar: http-contracts
+
+relations:
+  operation:
+    args: [Text, Text]                 # service, operation
+    attributes: { method: Text, path: Text }
+    sources: [spec]
+  parameter:
+    args: [Text]                       # operation
+    attributes: { name: Text, location: Text }
+    sources: [spec]
+  required_parameter:
+    args: [Text]
+    attributes: { name: Text, location: Text }
+    sources: [spec]
+  request_field:
+    args: [Text]
+    attributes: { field: Text, leaf: Text }
+    sources: [spec]
+  required_request_field:
+    args: [Text]
+    attributes: { field: Text, leaf: Text }
+    sources: [spec]
+  response_field:
+    args: [Text]
+    attributes: { field: Text, leaf: Text }
+    sources: [spec]
+  route:
+    args: [Text]                       # service
+    attributes: { method: Text, path: Text, file: Text, line: Number }
+    sources: [syntax]
+  client_operation:
+    args: [Text]                       # client
+    attributes: { chain: Text, method: Text, path: Text, file: Text, line: Number }
+    sources: [syntax]
+  client_parameter:
+    args: [Text]                       # client
+    attributes: { method: Text, path: Text, name: Text, location: Text }
+    sources: [spec]
+  calls_path:
+    args: [Text]                       # consumer
+    attributes: { method: Text, path: Text, file: Text, line: Number }
+    sources: [syntax]
+  calls_client:
+    args: [Text]                       # consumer
+    attributes: { chain: Text, file: Text, line: Number }
+    sources: [syntax]
+  mentions:
+    args: [Text]                       # the function it is in, or the file outside functions
+    attributes: { name: Text }
+    sources: [syntax]
+  in_file:
+    args: [Text, Text]                 # a consumer or function, its file
+    sources: [syntax]
+  imports:
+    args: [Text, Text]                 # file, imported file
+    sources: [syntax]
+  strict_request:
+    args: [Text]                       # operation whose request schema forbids unlisted fields
+    sources: [spec]
+  rejects_unknown_fields:
+    args: [Text]                       # service that rejects unknown fields whatever its spec says
+    sources: [declared]
+  route_schema:
+    args: [Text]                       # service
+    attributes: { method: Text, path: Text, part: Text, file: Text, schema: Text }
+    sources: [syntax]                  # the named schema a route uses for its body or query
+  inline_strict_route:
+    args: [Text]                       # service
+    attributes: { method: Text, path: Text, part: Text }
+    sources: [syntax]                  # a route part whose schema, written in place, is strict
+  strict_schema:
+    args: [Text]                       # file
+    attributes: { name: Text }
+    sources: [syntax]                  # a schema defined there that rejects unknown keys
+  union_member:
+    args: [Text]                       # file
+    attributes: { union: Text, member: Text }
+    sources: [syntax]                  # `*` for a member written in place that is not strict
+  path_family:
+    args: [Text]                       # path
+    attributes: { family: Text }       # its first two segments, /api/v3.1
+    sources: [syntax, spec]
+
+rules:
+  # What consumers call, matched against the operations they were written for.
+  - calls(c, op, f, l) :- calls_path(c, m, p, f, l), operation@base(_, op, m, p).
+  - calls(c, op, f, l) :- calls_path(c, "*", p, f, l), operation@base(_, op, _, p).
+  - calls(c, op, f, l) :- calls_client(c, ch, f, l), client_operation(_, ch, m, p, _, _), operation@base(_, op, m, p).
+
+  # Every name a file mentions, in or outside its functions.
+  - file_mentions(f, n) :- mentions(f, n).
+  - file_mentions(f, n) :- in_file(s, f), mentions(s, n).
+
+  # Evidence that consumer c uses name n, for findings that rest on a use:
+  # its own function, or declarations outside functions (schemas, types,
+  # constants) in its file or a file its file imports. Other functions do
+  # not count; they often reuse common names for other things.
+  - uses(c, n) :- mentions(c, n).
+  - uses(c, n) :- in_file(c, f), mentions(f, n).
+  - uses(c, n) :- in_file(c, f), imports(f, g), mentions(g, n).
+
+  # A broad search, for findings that rest on a name being absent: anywhere
+  # in the file or the files it imports.
+  - names_anywhere(f, n) :- file_mentions(f, n).
+  - names_anywhere(f, n) :- imports(f, g), file_mentions(g, n).
+
+  # What changed between the base and head of the change. Parameter and
+  # field changes count only on operations the change kept; a removed
+  # operation is reported once, not once per field it had.
+  - removed_operation(op) :- operation@base(s, op, m, p), !operation@head(s, op, m, p).
+  - kept_operation(op) :- operation@base(s, op, m, p), operation@head(s, op, m, p).
+  - removed_parameter(op, n, loc) :- parameter@base(op, n, loc), !parameter@head(op, n, loc), kept_operation(op).
+  - new_required_parameter(op, n, loc) :- required_parameter@head(op, n, loc), !required_parameter@base(op, n, loc), kept_operation(op).
+  - removed_request_field(op, fld, leaf) :- request_field@base(op, fld, leaf), !request_field@head(op, fld, leaf), kept_operation(op).
+  - new_required_request_field(op, fld, leaf) :- required_request_field@head(op, fld, leaf), !required_request_field@base(op, fld, leaf), kept_operation(op).
+  - removed_response_field(op, fld, leaf) :- response_field@base(op, fld, leaf), !response_field@head(op, fld, leaf), kept_operation(op).
+  # Route parts whose schema rejects unknown keys (zod's `.strict()`): a
+  # strict schema defined in the route's file or a file it imports, or a
+  # union of them.
+  - strict_in_scope(f, n) :- strict_schema(f, n).
+  - strict_in_scope(f, n) :- imports(f, g), strict_schema(g, n).
+  - loose_union(f, u) :- union_member(f, u, m), !strict_in_scope(f, m).
+  - strict_definition(f, n) :- strict_in_scope(f, n).
+  - strict_definition(f, u) :- union_member(f, u, _), !loose_union(f, u).
+  - strict_definition(f, u) :- imports(f, g), union_member(g, u, _), !loose_union(g, u).
+  - strict_route(s, m, p, part) :- route_schema(s, m, p, part, f, n), strict_definition(f, n).
+  - strict_route(s, m, p, part) :- inline_strict_route(s, m, p, part).
+
+  # Operations that fail a request sending a field or parameter they do not
+  # know, after the change: by their spec, their route code, or because
+  # their service says so.
+  - rejects_unknown(op) :- strict_request@head(op).
+  - rejects_unknown(op) :- operation@head(s, op, m, p), strict_route(s, m, p, "body").
+  - rejects_unknown(op) :- operation@head(s, op, _, _), rejects_unknown_fields(s).
+  - rejects_unknown_parameter(op) :- operation@head(s, op, m, p), strict_route(s, m, p, "query").
+  - rejects_unknown_parameter(op) :- operation@head(s, op, _, _), rejects_unknown_fields(s).
+
+  # Calls a changed consumer adds to paths of a service's family (such as
+  # /api/v3.1) that the service does not serve. Calls that were already
+  # there, and paths of other families, are not the change's doing.
+  - served(m, p) :- operation(_, _, m, p).
+  - served_path(p) :- operation(_, _, _, p).
+  - served_family(fam) :- operation(_, _, _, p), path_family(p, fam).
+  - called_before(c, m, p) :- calls_path@base(c, m, p, _, _).
+  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m != "*", !served(m, p), !called_before(c, m, p), path_family(p, fam), served_family(fam).
+  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m = "*", !served_path(p), !called_before(c, m, p), path_family(p, fam), served_family(fam).
+
+  # Spec against code, in the head snapshot.
+  - specified(s, m, p) :- operation(s, _, m, p).
+  - routed(s, m, p) :- route(s, m, p, _, _).
+  # A route declared once may be served at several paths (route aliases);
+  # it is in the spec if any of them is.
+  - specified_route(s, m, f, l) :- route(s, m, p, f, l), specified(s, m, p).
+
+requirements:
+  consumer_calls_unserved_operation:
+    when: unserved_call(c, m, p, f, l)
+    severity: error
+    explain: "{c} now calls {m} {p}, which no service serves ({f}:{l})"
+
+  consumer_calls_removed_operation:
+    when: calls(c, op, f, l), removed_operation(op)
+    severity: error
+    explain: "{c} calls {op}, which no longer exists ({f}:{l})"
+
+  consumer_misses_new_required_parameter:
+    when: calls(c, op, f, l), new_required_parameter(op, n, loc)
+    severity: error
+    explain: "{c} calls {op}, which now requires {loc} parameter `{n}` ({f}:{l})"
+
+  consumer_misses_new_required_field:
+    when: calls(c, op, f, l), new_required_request_field(op, fld, leaf), !names_anywhere(f, leaf)
+    severity: error
+    explain: "{c} calls {op}, which now requires `{fld}`; its code never names `{leaf}` ({f}:{l})"
+
+  consumer_sends_removed_parameter:
+    when: calls(c, op, f, l), removed_parameter(op, n, loc), uses(c, n), rejects_unknown_parameter(op)
+    severity: error
+    explain: "{c} calls {op} and uses `{n}`, a {loc} parameter that was removed and that {op} now rejects ({f}:{l})"
+
+  consumer_sends_ignored_parameter:
+    when: calls(c, op, f, l), removed_parameter(op, n, loc), uses(c, n), !rejects_unknown_parameter(op)
+    severity: warning
+    explain: "{c} calls {op} and uses `{n}`, a {loc} parameter that was removed, so {op} now ignores it if sent ({f}:{l})"
+
+  consumer_sends_rejected_field:
+    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), uses(c, leaf), rejects_unknown(op)
+    severity: error
+    explain: "{c} calls {op} and names `{leaf}`; request field `{fld}` was removed and {op} now rejects requests that send it ({f}:{l})"
+
+  consumer_uses_removed_request_field:
+    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), uses(c, leaf), !rejects_unknown(op)
+    severity: warning
+    explain: "{c} calls {op} and names `{leaf}`; request field `{fld}` was removed or renamed, so {op} now ignores it if sent ({f}:{l})"
+
+  consumer_uses_removed_response_field:
+    when: calls(c, op, f, l), removed_response_field(op, fld, leaf), uses(c, leaf)
+    severity: warning
+    explain: "{c} calls {op} and names `{leaf}`; response field `{fld}` was removed or renamed ({f}:{l})"
+
+  consumer_calls_changed_operation:
+    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), !names_anywhere(f, leaf)
+    severity: info
+    explain: "{c} calls {op}, whose request field `{fld}` changed; its code never names `{leaf}` ({f}:{l})"
+
+  client_declares_removed_parameter:
+    when: client_parameter(cl, m, p, n, loc), operation@base(_, op, m, p), removed_parameter(op, n, loc)
+    severity: error
+    explain: "{cl} still declares {loc} parameter `{n}` on {op}, which the service removed"
+
+  client_calls_removed_operation:
+    when: client_operation(cl, ch, m, p, f, l), operation@base(_, op, m, p), removed_operation(op)
+    severity: error
+    explain: "{cl} method `{ch}` calls {op}, which no longer exists ({f}:{l})"
+
+  # Informational: public specs leave out internal routes on purpose.
+  route_not_in_spec:
+    when: route(s, m, p, f, l), !specified_route(s, m, f, l)
+    severity: info
+    explain: "{s} serves {m} {p} ({f}:{l}) but its spec does not declare it"

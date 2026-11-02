@@ -21,11 +21,19 @@ pub enum Language {
     Python,
     /// Go (`.go`).
     Go,
+    /// Rust (`.rs`).
+    Rust,
 }
 
 impl Language {
     /// Every supported language, in a stable order.
-    pub const ALL: [Language; 4] = [Self::TypeScript, Self::Tsx, Self::Python, Self::Go];
+    pub const ALL: [Language; 5] = [
+        Self::TypeScript,
+        Self::Tsx,
+        Self::Python,
+        Self::Go,
+        Self::Rust,
+    ];
 
     /// Picks the language for a file extension, without the leading dot.
     pub fn from_extension(extension: &str) -> Option<Self> {
@@ -41,6 +49,7 @@ impl Language {
             Self::Tsx => &["tsx"],
             Self::Python => &["py", "pyi"],
             Self::Go => &["go"],
+            Self::Rust => &["rs"],
         }
     }
 
@@ -51,6 +60,7 @@ impl Language {
             Self::Tsx => "tsx",
             Self::Python => "python",
             Self::Go => "go",
+            Self::Rust => "rust",
         }
     }
 }
@@ -221,6 +231,57 @@ pub struct Snapshot {
     pub fingerprint: String,
 }
 
+/// A range in a file, as a provider reported it, normalized to Lemma's
+/// positions.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Location {
+    /// Path relative to the snapshot root, or absolute when outside it.
+    pub path: String,
+    /// The range.
+    pub span: Span,
+    /// Whether the location lies outside the snapshot root, such as in an
+    /// installed dependency or a standard library stub.
+    pub is_external: bool,
+}
+
+/// A question about the code at one position whose answer is a list of
+/// locations. Providers answer them; the store keeps their answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationQuery {
+    /// Where the symbol at the position is used, its own declaration
+    /// included.
+    References,
+    /// Where the symbol used at the position is defined.
+    Definitions,
+    /// What implements the interface or abstract method at the position, or
+    /// overrides the method there.
+    Implementations,
+}
+
+impl LocationQuery {
+    /// The `snake_case` name used in storage and output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::References => "references",
+            Self::Definitions => "definitions",
+            Self::Implementations => "implementations",
+        }
+    }
+}
+
+/// What a provider said in answer to one question, before Lemma adds
+/// context. Failures are errors, not answers, so they are never stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderAnswer<T> {
+    /// The provider found something.
+    Found(T),
+    /// The provider looked and found nothing.
+    Empty,
+    /// The provider does not support the question.
+    Unsupported,
+}
+
 /// A place in the code that refers to a symbol.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Reference {
@@ -246,21 +307,17 @@ pub struct Provenance {
     pub config_fingerprint: String,
 }
 
-/// The result of asking for a symbol's references.
+/// The result of asking a semantic question, such as a symbol's references.
 ///
 /// These describe what Lemma could learn, not whether code is correct. An
 /// empty result only means the provider found nothing within its view.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum ReferenceOutcome {
-    /// The provider returned references.
-    Found {
-        /// References sorted by path and position.
-        references: Vec<Reference>,
-    },
-    /// The provider answered with no references.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome<T> {
+    /// The provider answered with something.
+    Found(T),
+    /// The provider answered with nothing.
     Empty,
-    /// The provider does not offer reference lookup.
+    /// The provider does not offer this kind of question.
     Unsupported,
     /// No configured provider for the language could be started.
     ProviderUnavailable {
@@ -275,6 +332,70 @@ pub enum ReferenceOutcome {
         message: String,
     },
 }
+
+impl<T> Outcome<T> {
+    /// The `snake_case` state name used in output.
+    pub fn state(&self) -> &'static str {
+        match self {
+            Self::Found(_) => "found",
+            Self::Empty => "empty",
+            Self::Unsupported => "unsupported",
+            Self::ProviderUnavailable { .. } => "provider_unavailable",
+            Self::Stale => "stale",
+            Self::ProviderFailed { .. } => "provider_failed",
+        }
+    }
+
+    /// Whether a provider answered, with something or with nothing.
+    pub fn is_answered(&self) -> bool {
+        matches!(self, Self::Found(_) | Self::Empty)
+    }
+
+    /// Converts what was found, keeping every other state.
+    pub fn map<U>(self, convert: impl FnOnce(T) -> U) -> Outcome<U> {
+        match self {
+            Self::Found(found) => Outcome::Found(convert(found)),
+            Self::Empty => Outcome::Empty,
+            Self::Unsupported => Outcome::Unsupported,
+            Self::ProviderUnavailable { candidates } => Outcome::ProviderUnavailable { candidates },
+            Self::Stale => Outcome::Stale,
+            Self::ProviderFailed { message } => Outcome::ProviderFailed { message },
+        }
+    }
+}
+
+impl<T> Outcome<T> {
+    /// Replaces what was found with the result of `convert`, which may
+    /// fail or decide on another state; every other state is kept.
+    pub fn try_and_then<U, E>(
+        self,
+        convert: impl FnOnce(T) -> Result<Outcome<U>, E>,
+    ) -> Result<Outcome<U>, E> {
+        match self {
+            Self::Found(found) => convert(found),
+            Self::Empty => Ok(Outcome::Empty),
+            Self::Unsupported => Ok(Outcome::Unsupported),
+            Self::ProviderUnavailable { candidates } => {
+                Ok(Outcome::ProviderUnavailable { candidates })
+            }
+            Self::Stale => Ok(Outcome::Stale),
+            Self::ProviderFailed { message } => Ok(Outcome::ProviderFailed { message }),
+        }
+    }
+}
+
+impl<T> From<ProviderAnswer<T>> for Outcome<T> {
+    fn from(answer: ProviderAnswer<T>) -> Self {
+        match answer {
+            ProviderAnswer::Found(found) => Self::Found(found),
+            ProviderAnswer::Empty => Self::Empty,
+            ProviderAnswer::Unsupported => Self::Unsupported,
+        }
+    }
+}
+
+/// The result of asking for a symbol's references.
+pub type ReferenceOutcome = Outcome<Vec<Reference>>;
 
 /// Hash of a file's contents. Used to tell whether a file changed since it
 /// was indexed.

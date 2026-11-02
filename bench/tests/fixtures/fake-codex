@@ -1,0 +1,17 @@
+#!/bin/bash
+# Stands in for `codex exec` to test the harness: reads the prompt, emits a
+# few events, and writes an empty answer of the requested shape.
+out=""
+schema=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    --output-schema) schema="$2"; shift ;;
+  esac
+  shift
+done
+cat > /dev/null
+echo '{"type":"thread.started"}'
+echo '{"type":"item.completed","item":{"type":"command_execution","command":"bash -lc \"rg -n foo\""}}'
+echo '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":50}}'
+if grep -q '"locations"' "$schema"; then echo '{"locations":[]}' > "$out"; else echo '{"files":[],"symbols":[]}' > "$out"; fi

@@ -1,0 +1,43 @@
+# Lemma manifest: the repositories that make up a system, what each one is,
+# and which change to check. Paths are relative to this file. Delete what
+# does not apply.
+
+# grammar: contracts.yaml            # optional: a custom grammar; the built-in HTTP contracts grammar otherwise
+
+# The change to check. CI usually overrides the commits with --base and --head.
+change: { repository: api, base: main, head: HEAD }
+
+repositories:
+  # A service: publishes operations in OpenAPI documents.
+  api:
+    path: ../api
+    role: service
+    service: api                       # name used in findings; the entry's name if absent
+    specs: [openapi.json]              # committed OpenAPI JSON files
+    routes: [src/routes]               # route code: checks the spec against the code, reads zod .strict()
+    # schemas: [src/lib/schemas]       # shared schemas the routes import
+    # route_aliases: { /api/v1/: /api/v2/ }   # routes also served under another prefix
+    # rejects_unknown_fields: true     # the service rejects unknown fields though nothing says so
+
+  # A generated client with committed operation tables.
+  api-client:
+    path: ../api-client
+    commit: main                       # repositories other than the changed one are read at one commit
+    role: client
+    tables: [src/operations.ts]        # objects or calls naming method, path and chain
+    specs: [openapi.json]              # the client's copy of the spec: its declared parameters
+
+  # A client generated at build time from a spec (its functions are the camel-cased operationIds).
+  # internal-client:
+  #   path: ../api
+  #   role: client
+  #   generated_from: [services/internal/openapi.json]
+
+  # A consumer: calls services by path or through a client.
+  web:
+    path: ../web
+    commit: main
+    role: consumer
+    include: [src]                     # source directories only; tests are skipped anyway
+    # client_receivers: [client]       # variables it calls the client through: client.tools.list()
+    # client_modules: [generated/api]  # modules whose imported functions are client calls
