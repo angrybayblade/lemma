@@ -80,6 +80,7 @@ repositories:
 | `include` | Directories with a consumer's code; the whole repository if absent. |
 | `client_receivers` | Names a consumer calls its client through, such as `client`. |
 | `generated_from` | OpenAPI documents a client is generated from, one function per operation named after its `operationId` in camel case (`get_pollExportJob` is `getPollExportJob`). |
+| `service` | For a consumer: the service its code belongs to, as when a service's repository is also listed as a consumer of another service. Its references to its own operations are not calls. |
 | `client_modules` | Modules of generated clients, such as `generated/worker`: functions a consumer imports from them are client calls. |
 
 One clone can appear under several names, such as a service and a consumer of another service in the same repository. Every entry for the changed repository's clone is read at both commits of the change, unless it sets its own `commit`: pinning a consumer to an older commit asks how the change meets code from before it.
