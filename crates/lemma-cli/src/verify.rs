@@ -38,7 +38,13 @@ pub(crate) fn run(args: &VerifyArgs, json: bool) -> ExitCode {
 }
 
 fn verify(args: &VerifyArgs) -> anyhow::Result<Report> {
-    let manifest = Manifest::load(&args.manifest)?;
+    let mut manifest = Manifest::load(&args.manifest)?;
+    if let Some(base) = &args.base {
+        manifest.change.base.clone_from(base);
+    }
+    if let Some(head) = &args.head {
+        manifest.change.head.clone_from(head);
+    }
     let options = Options {
         explain: args.explain,
         relations: args.relations.clone(),
