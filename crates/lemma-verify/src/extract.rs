@@ -451,6 +451,9 @@ fn client(
 /// What every file of one consumer shares.
 struct ConsumerScope<'a> {
     name: &'a str,
+    /// The service this consumer's code belongs to, whose own operations
+    /// it does not consume.
+    service: Option<&'a str>,
     /// The snapshots this reading of the repository belongs to.
     snapshots: &'a [&'a str],
     known: BTreeSet<String>,
@@ -491,6 +494,7 @@ fn consumer(
     )?;
     let scope = ConsumerScope {
         name,
+        service: repository.service.as_deref(),
         snapshots: snapshot.names,
         known: files.iter().map(|file| file.path.clone()).collect(),
         options: CodeOptions {
@@ -531,6 +535,13 @@ fn consumer_file(
         );
     }
     write_imports(scope, path, &file_id, facts, writer);
+    if let Some(service) = scope.service {
+        writer.add(
+            "part_of_service",
+            scope.snapshots,
+            &[Arg::Text(&file_id), Arg::Text(service)],
+        );
+    }
 }
 
 /// A consumer's id: the function a fact is in, or the file outside functions.
@@ -1039,6 +1050,43 @@ mod tests {
         assert_eq!(caller_uses, ["own", "shape"]);
         let in_file = anywhere.iter().filter(|row| row[0] == "d:f").count();
         assert_eq!(in_file, 3);
+    }
+
+    #[test]
+    fn a_service_does_not_call_its_own_operations() {
+        let mut grammar = http_contracts();
+        let mut writer = FactWriter::new(&mut grammar);
+        for (service, path) in [("apollo", "/api/v3/tools"), ("thermos", "/api/tools_")] {
+            let op = format!("GET {path}");
+            writer.add(
+                "operation",
+                &BOTH,
+                &[
+                    Arg::Text(service),
+                    Arg::Text(&op),
+                    Arg::Text("GET"),
+                    Arg::Text(path),
+                ],
+            );
+            let call = [
+                Arg::Text("a:route.ts"),
+                Arg::Text("GET"),
+                Arg::Text(path),
+                Arg::Text("a:route.ts"),
+                Arg::Number(1),
+            ];
+            writer.add("calls_path", &BOTH, &call);
+        }
+        writer.add(
+            "part_of_service",
+            &BOTH,
+            &[Arg::Text("a:route.ts"), Arg::Text("apollo")],
+        );
+
+        let calls = derive(&grammar, "calls");
+
+        let operations: Vec<&str> = calls.iter().map(|row| row[1].as_str()).collect();
+        assert_eq!(operations, ["GET /api/tools_"]);
     }
 
     #[test]

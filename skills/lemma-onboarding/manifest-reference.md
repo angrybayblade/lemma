@@ -15,7 +15,7 @@
 | `path` | all | The clone, relative to the manifest. Files are read from Git, without a checkout. |
 | `role` | all | `service`, `client` or `consumer`. |
 | `commit` | all | The commit to read for repositories other than the changed one; the working directory if absent. On an entry sharing the changed repository's clone, pins it to that commit instead of the change's. |
-| `service` | service | Name used in findings. |
+| `service` | service, consumer | On a service: the name used in findings. On a consumer: the service its code belongs to; its references to that service's own operations (route declarations) are not calls. |
 | `specs` | service, client | OpenAPI JSON documents: a service's contract, or a client's copy of it. |
 | `routes` | service | Directories with route code. Checks the spec against the code and reads which request schemas are zod `.strict()`. |
 | `schemas` | service | Further directories with schemas the routes import. |
