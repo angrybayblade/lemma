@@ -13,11 +13,10 @@ Work through these steps in order and confirm each before the next. Ask the user
 command -v lemma && lemma --version
 ```
 
-If missing, install the newest release. While the repository is private:
+If missing, install the newest release:
 
 ```sh
-gh auth status || gh auth login
-gh api -H 'Accept: application/vnd.github.raw' repos/angrybayblade/lemma/contents/install.sh | LEMMA_SKILLS=1 sh
+curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | LEMMA_SKILLS=1 sh
 ```
 
 It installs into `~/.local/bin`; make sure that is on `PATH`. Suggest `brew install souffle` (macOS) for faster verification; it is optional.
