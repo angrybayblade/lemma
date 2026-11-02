@@ -51,7 +51,7 @@ Servers answer best when the project's dependencies are installed (`npm install`
 Index each repository once; the background daemon keeps it current as files change:
 
 ```sh
-cd ~/code/platform
+cd ~/code/billing
 lemma index .                  # writes .lemma/index.db
 lemma symbols Router           # find symbols by name
 lemma refs Router.delete       # every reference, from the language server
@@ -93,23 +93,22 @@ Each repository has a role:
 | Role | Is | Lemma reads |
 | --- | --- | --- |
 | `service` | Serves HTTP operations | Its OpenAPI specs (`specs`), and route code (`routes`) to check the spec against the code and tell strict schemas |
-| `client` | A generated client | Operation tables mapping methods to operations (`tables`), or the spec it was generated from (`generated_from`) |
-| `consumer` | Calls services | Its code (`include`): paths in strings and calls through clients |
+| `client` | A client generated from a service's spec | The spec it is generated from (`generated_from`), and how it names each operation (`call_names`) |
+| `consumer` | Calls services | Its code (`include`): paths in strings and requests, and calls through clients |
 
 One clone can appear under several names. A monorepo holding a service and a caller of another service is two entries with the same `path`.
 
-Build the manifest one repository at a time.
+Build the manifest one repository at a time. The examples below describe a billing service, a users service that calls it, a generated SDK client and a web app.
 
-**Start with one service.** Name the OpenAPI files it publishes. If they are generated, use the committed copies.
+**Start with one service.** Name the OpenAPI files it publishes. If they are generated, commit them, or the change cannot be read at both commits.
 
 ```yaml
-change: { repository: platform, base: main~1, head: main }
+change: { repository: billing, base: main~1, head: main }
 repositories:
-  platform:
-    path: ../platform
+  billing:
+    path: ../billing
     role: service
-    service: gateway                       # name used in findings
-    specs: [apps/gateway/openapi-v3.1.json, apps/gateway/openapi-internal.json]
+    specs: [openapi.json]
 ```
 
 ```sh
@@ -118,53 +117,45 @@ lemma verify manifest.yaml --all
 
 With only a service, findings are empty, but the run proves the specs parse. `--relation removed_operation` shows what the change removed.
 
-**Add the route code.** `routes` points at the directories declaring routes; Lemma then reports routes the spec leaves out (`route_not_in_spec`, informational) and reads which request schemas are zod `.strict()`. If routes import shared schemas from elsewhere, add those directories as `schemas`. If the service publishes routes under a second prefix, as Gateway serves `/api/v3/` routes as `/api/v3.1/`, add `route_aliases`.
+**Add the route code.** `routes` points at the directories declaring routes; Lemma then reports routes the spec leaves out (`route_not_in_spec`, informational) and reads which request schemas are zod `.strict()`. If routes import shared schemas from elsewhere, add those directories as `schemas`. If the service also serves its routes under a second prefix, add `route_aliases`. If it owns specific prefixes that other services share a first segment with, list them as `path_prefixes`.
 
 ```yaml
-    routes: [apps/gateway/src/pages/api]
-    schemas: [apps/gateway/src/lib, apps/gateway/src/common]
-    route_aliases: { /api/v3/: /api/v3.1/ }
+    routes: [src/routes]
+    schemas: [src/schemas]
+    route_aliases: { /v1/: /v2/ }
+    path_prefixes: [/v1/invoices/, /v1/payments/]
 ```
 
-**Add the generated clients.** A client with committed operation tables names them; a client generated at build time from a spec names the spec, and its functions are taken to be the camel-cased `operationId`s.
+**Add the generated clients.** A client generated from a spec names it in `generated_from`. Generators name functions differently, so say how with `call_names`: `{operationId}` as written, or recased as `{camel}`, `{pascal}` or `{snake}`, with any fixed text around it.
 
 ```yaml
-  platform-client:
-    path: ../platform-client
+  billing-client:
+    path: ../billing-sdk
     commit: main
     role: client
-    tables: [src/compat/generated-operations.ts, python/src/sdk_client/_operations.py]
-    specs: [spec/openapi.json]
-
-  worker-client:                         # Gateway's client for Worker, generated at build time
-    path: ../platform
-    role: client
-    generated_from: [apps/worker/openapi.json]
+    generated_from: [openapi.json]
+    call_names: ["{camel}"]               # createInvoice stays createInvoice; {snake} would be create_invoice
 ```
 
 **Add the consumers.** Point `include` at source directories, not the whole repository, to keep tests, scripts and fixtures out. Name the variables code calls its client through (`client_receivers`), and for generated clients imported as functions, the module they come from (`client_modules`).
 
 ```yaml
-  sdk:
-    path: ../sdk
-    commit: main
-    role: consumer
-    include: [ts/packages/core/src, python/sdk]
-    client_receivers: [client, _client]
-
-  dashboard:
-    path: ../dashboard
+  web:
+    path: ../web
     commit: main
     role: consumer
     include: [src]
+    client_receivers: [billing]          # billing.createInvoice(...)
 
-  gateway:                                 # Gateway calling Worker
-    path: ../platform
+  users-code:                            # the users service, as a caller of billing
+    path: ../users
     role: consumer
-    include: [apps/gateway/src]
-    client_receivers: [worker]
-    client_modules: [generated/worker]
+    service: users                       # its own route declarations are not calls to itself
+    include: [src]
+    client_modules: [generated/billing]  # import { createInvoice } from '../generated/billing'
 ```
+
+A string in code counts as a path only if it contains a leading segment some service in the manifest serves (`/v1/` here), so add every service a consumer calls before checking its coverage. Imports through `tsconfig.json` `paths` aliases are followed.
 
 **Check coverage.** Before trusting findings, check Lemma sees the calls you know about:
 
@@ -172,7 +163,7 @@ With only a service, findings are empty, but the run proves the specs parse. `--
 lemma verify manifest.yaml --relation calls --json | jq -r '.relations.calls[] | "\(.[1])\t\(.[2])"' | sort -u | less
 ```
 
-Each row is an operation and the file calling it. Missing calls usually mean an `include` directory is missing, a client receiver is not named, or URLs are built at run time from values the code does not show (see [pre-release checklist](pre-release.md)).
+Each row is an operation and the file calling it. Missing calls usually mean an `include` directory is missing, a client receiver is not named, `call_names` does not match the generator, or URLs are built at run time from values the code does not show (see [pre-release checklist](pre-release.md)).
 
 **Declare what code does not show.** A service whose code rejects unknown fields without saying so in its spec or zod schemas (Go's `DisallowUnknownFields`, serde's `deny_unknown_fields`) gets `rejects_unknown_fields: true`, so sending a removed field is an error rather than a warning.
 
@@ -206,10 +197,10 @@ Read a finding by its derivation (`--explain`): each line is a fact or rule, ind
 Before gating anything, replay changes your team already made and compare the findings with what happened. For each commit that changed a service's spec:
 
 ```sh
-git -C ../platform log --format=%h -- apps/gateway/openapi-v3.1.json | head -50
+git -C ../billing log --format=%h -- openapi.json | head -50
 ```
 
-set `change` to `<commit>^..<commit>`, pin each consumer's `commit` to the last commit before the change merged (`git rev-list -1 --before=<date> main`), and run `lemma verify`. Check every error and warning by hand against the pull request and any follow-up in the consumers. This is how Lemma was measured on the generic platform's repositories ([results](verify.md#how-well-it-works)); a sweep of a hundred changes takes a few minutes.
+set `change` to `<commit>^..<commit>`, pin each consumer's `commit` to the last commit before the change merged (`git rev-list -1 --before=<date> main`), and run `lemma verify`. Check every error and warning by hand against the pull request and any follow-up in the consumers. A sweep of a hundred changes takes a few minutes.
 
 Keep the manifests that found real breaks as regression cases for upgrades of Lemma or your grammar.
 
@@ -223,11 +214,11 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-        with: { path: platform, fetch-depth: 0 }
+        with: { path: billing, fetch-depth: 0 }
       - uses: actions/checkout@v4
         with: { repository: your-org/workspace, path: workspace, token: ${{ secrets.READ_TOKEN }} }
       - uses: actions/checkout@v4
-        with: { repository: your-org/dashboard, path: dashboard, token: ${{ secrets.READ_TOKEN }} }
+        with: { repository: your-org/web, path: web, token: ${{ secrets.READ_TOKEN }} }
       - name: Install lemma
         env: { LEMMA_VERSION: v0.1.0-rc0 }
         run: |

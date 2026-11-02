@@ -19,12 +19,13 @@
 | `specs` | service, client | OpenAPI JSON documents: a service's contract, or a client's copy of it. |
 | `routes` | service | Directories with route code. Checks the spec against the code and reads which request schemas are zod `.strict()`. |
 | `schemas` | service | Further directories with schemas the routes import. |
-| `route_aliases` | service | Map of path prefixes to the prefixes routes are also served under, such as `{ /api/v3/: /api/v3.1/ }`. |
+| `route_aliases` | service | Map of path prefixes to the prefixes routes are also served under, such as `{ /v1/: /v2/ }`. |
 | `rejects_unknown_fields` | service | `true` if requests with unknown fields fail even where spec and zod do not say so (Go `DisallowUnknownFields`, serde `deny_unknown_fields`). |
-| `tables` | client | Files with operation tables: objects `{ method, path, chain: [...] }` or calls `Operation("get", "/api/x", ("a", "b"))`. |
-| `generated_from` | client | Specs a client is generated from at build time; one function per operation, named after the camel-cased `operationId`. |
+| `generated_from` | client | Specs a client is generated from; one function per operation. |
+| `call_names` | client | How the client names an operation's function from its `operationId`: templates with `{operationId}`, `{camel}`, `{pascal}`, `{snake}`, such as `["{camel}"]` or `["{pascal}.Invoke"]`. The `operationId` as written if absent. |
+| `path_prefixes` | service | Path prefixes the service owns; a changed consumer's new call to an unserved path under one is reported. The prefix all its operations share if absent. |
 | `include` | consumer | Directories with the consumer's code; the whole repository if absent. |
-| `client_receivers` | consumer | Variable names the code calls its client through: `client`, `_client`, `worker`. |
+| `client_receivers` | consumer | Variable names the code calls its client through: `client`, `_client`, `billing`. |
 | `client_modules` | consumer | Module specifiers (suffixes) of generated clients; functions imported from them are client calls. |
 
 ## What Lemma reads
@@ -32,11 +33,11 @@
 | Language | Routes | Calls | Field names |
 | --- | --- | --- | --- |
 | TypeScript, JavaScript | objects with `method` and `path` (`createRoute`), zod `.strict()` | path strings, `fetch(url, { method })`, typed fetch `client.POST("/x")`, calls through clients | object keys, members, destructuring, subscripts |
-| Python | — | path strings, `requests.post(url)`, `Operation(...)` tables, calls through clients | keyword arguments, attributes, dictionary keys |
+| Python | — | path strings, `requests.post(url)`, calls through clients | keyword arguments, attributes, dictionary keys |
 | Go | `net/http` (`"GET /x"` patterns), gorilla/mux with subrouters, chi, gin, echo | `http.NewRequest`, `http.Get`, URLs from `fmt.Sprintf` | JSON struct tags, string map keys |
 | Rust | axum `.route()`, actix-web and Rocket `#[get("/x")]` | reqwest `client.post(url)`, `request(Method::POST, url)`, `format!` URLs | struct fields, serde renames, `json!` keys |
 
-Paths in strings count only if they contain `/api/`; paths beside a method (route declarations, tables) and in specs only need to start with `/`. Path parameters (`{id}`, `${id}`, `:id`, `[id]`, `%s`) compare equal.
+A string counts as a path only if it contains a leading segment some service in the manifest serves (such as `/v1/`); paths beside a method (route declarations) and in specs only need to start with `/`. Path parameters (`{id}`, `${id}`, `:id`, `[id]`, `%s`) compare equal. Imports through `tsconfig.json` `paths` are followed.
 
 ## Pitfalls
 
@@ -61,11 +62,11 @@ jobs:
     continue-on-error: true            # remove once findings are trusted
     steps:
       - uses: actions/checkout@v4
-        with: { path: platform, fetch-depth: 0 }
+        with: { path: billing, fetch-depth: 0 }
       - uses: actions/checkout@v4
         with: { repository: your-org/workspace, path: workspace, token: ${{ secrets.READ_TOKEN }} }
       - uses: actions/checkout@v4
-        with: { repository: your-org/dashboard, path: dashboard, token: ${{ secrets.READ_TOKEN }} }
+        with: { repository: your-org/web, path: web, token: ${{ secrets.READ_TOKEN }} }
       - name: Install lemma
         env: { LEMMA_VERSION: v0.1.0-rc0 }
         run: |
