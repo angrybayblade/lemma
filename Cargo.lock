@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-cli"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "anyhow",
  "clap",
@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-grammar"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lemma-logic",
  "serde",
@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-http"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lemma-model",
  "lemma-syntax",
@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-index"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "blake3",
  "ignore",
@@ -596,14 +596,14 @@ dependencies = [
 
 [[package]]
 name = "lemma-logic"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "lemma-lsp"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lsp-types",
  "serde",
@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-model"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "blake3",
  "serde",
@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-providers"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "blake3",
  "lemma-lsp",
@@ -636,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-query"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lemma-lsp",
  "lemma-model",
@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-souffle"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lemma-logic",
  "serde_json",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-store"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lemma-model",
  "rusqlite",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-syntax"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lemma-model",
  "thiserror",
@@ -682,7 +682,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-verify"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lemma-grammar",
  "lemma-http",

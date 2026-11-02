@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-rc0"
 edition = "2024"
 rust-version = "1.85"
 publish = false
@@ -61,3 +61,8 @@ dbg_macro = "deny"
 todo = "warn"
 excessive_nesting = "warn"
 allow_attributes_without_reason = "warn"
+
+# Stripping runs rust-objcopy, which hangs on some macOS toolchains; the
+# release workflow ships unstripped binaries.
+[profile.release]
+strip = "none"
