@@ -16,20 +16,13 @@ Before relying on Lemma, read the [pre-release checklist](pre-release.md): it li
 
 ## 1. Install
 
-Releases ship `lemma` for macOS and Linux on arm64 and x86_64. While the repository is private, fetch the install script with the GitHub CLI:
-
-```sh
-gh auth login    # once
-gh api -H 'Accept: application/vnd.github.raw' repos/angrybayblade/lemma/contents/install.sh | sh
-```
-
-Once it is public:
+Releases ship `lemma` for macOS and Linux on arm64 and x86_64:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
 ```
 
-The script installs the newest release, pre-releases included, into `~/.local/bin`. Set `LEMMA_VERSION=v0.1.0-rc0` to pin a version, `LEMMA_INSTALL_DIR` to change where it goes, and `LEMMA_SKILLS=1` to also install the agent skills into `~/.claude/skills` (see [Agent skills](#agent-skills)). Without the GitHub CLI, set `GITHUB_TOKEN` to a token that can read the repository.
+The script installs the newest release, pre-releases included, into `~/.local/bin`. Set `LEMMA_VERSION=v0.1.0-rc0` to pin a version, `LEMMA_INSTALL_DIR` to change where it goes, and `LEMMA_SKILLS=1` to also install the agent skills into `~/.claude/skills` (see [Agent skills](#agent-skills)). If GitHub's API rate limit stops the script finding the newest release, set `LEMMA_VERSION` or `GITHUB_TOKEN`.
 
 From source instead: `cargo install --path crates/lemma-cli --locked` (Rust 1.85 or later).
 
@@ -236,9 +229,9 @@ jobs:
       - uses: actions/checkout@v4
         with: { repository: your-org/dashboard, path: dashboard, token: ${{ secrets.READ_TOKEN }} }
       - name: Install lemma
-        env: { GH_TOKEN: ${{ secrets.READ_TOKEN }}, LEMMA_VERSION: v0.1.0-rc0 }
+        env: { LEMMA_VERSION: v0.1.0-rc0 }
         run: |
-          gh api -H 'Accept: application/vnd.github.raw' repos/angrybayblade/lemma/contents/install.sh | sh
+          curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Verify the change
         run: |
