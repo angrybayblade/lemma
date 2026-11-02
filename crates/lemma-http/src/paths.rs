@@ -1,0 +1,132 @@
+//! HTTP paths in one canonical form, so a consumer's URL and an operation's
+//! template can be compared.
+//!
+//! Parameters are written differently everywhere: `{nanoid}` in `OpenAPI`,
+//! `${id}` or `:id` in code, `[nanoId]` in Next.js file names. Each becomes
+//! `{}`. Anything before `/api/` (a base URL, `${BACKEND}`), a query
+//! string, text after the path, and a trailing slash are dropped.
+
+/// The canonical form of a path, or `None` if it has no `/api/` part. For
+/// strings that may or may not be paths, such as a consumer's literals.
+pub fn canonical_path(raw: &str) -> Option<String> {
+    let start = raw.find("/api/")?;
+    Some(normalize(&raw[start..]))
+}
+
+/// The canonical form of a path known to be one, such as a spec's path or a
+/// route's, which need not start with `/api/`: `/collections/{name}`. A URL
+/// or template with an `/api/` part is read as by [`canonical_path`].
+/// `None` if it does not start with `/`.
+pub fn canonical_route(raw: &str) -> Option<String> {
+    if let Some(path) = canonical_path(raw) {
+        return Some(path);
+    }
+    raw.starts_with('/').then(|| normalize(raw))
+}
+
+/// Parameters as `{}`, without a query, a fragment, text after the path or
+/// a trailing slash.
+fn normalize(path: &str) -> String {
+    let path = path
+        .split(|c: char| c == '?' || c == '#' || c.is_whitespace())
+        .next()
+        .unwrap_or(path);
+    let segments: Vec<&str> = path
+        .split('/')
+        .skip(1)
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| if is_parameter(segment) { "{}" } else { segment })
+        .collect();
+    format!("/{}", segments.join("/"))
+}
+
+/// An HTTP method in upper case, or `*` when unknown.
+pub fn canonical_method(raw: &str) -> String {
+    let upper = raw.trim().to_ascii_uppercase();
+    let known = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+    if known.contains(&upper.as_str()) {
+        upper
+    } else {
+        "*".to_owned()
+    }
+}
+
+/// The method written just before a path, as in `PATCH /api/v3.1/x` in
+/// documentation or a log line, or `None` if the word before it is not one.
+pub fn method_before_path(raw: &str) -> Option<String> {
+    let start = raw.find("/api/")?;
+    let before = raw[..start].trim_end_matches(|c: char| !c.is_whitespace());
+    let word = before.split_whitespace().next_back()?;
+    let method = canonical_method(word);
+    (method != "*").then_some(method)
+}
+
+/// `{id}`, `${id}`, `:id`, `[id]`, a `%s` format verb, or a segment that is
+/// wholly a template substitution. A segment mixing text and a parameter
+/// (`v${n}`) counts too.
+fn is_parameter(segment: &str) -> bool {
+    segment.starts_with('{')
+        || segment.starts_with(':')
+        || segment.starts_with('[')
+        || segment.starts_with('%')
+        || segment.contains("${")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routes_need_no_api_marker() {
+        assert_eq!(
+            canonical_route("/collections/{collection_name}/points").as_deref(),
+            Some("/collections/{}/points")
+        );
+        assert_eq!(canonical_route("/api").as_deref(), Some("/api"));
+        assert_eq!(canonical_route("collections"), None);
+        assert_eq!(canonical_path("/collections/x"), None);
+    }
+
+    #[test]
+    fn a_method_written_before_a_path_is_found() {
+        let documented = "PATCH /api/v3.1/tool_router/session/{session_id}\n\n{ \"x\": 1 }";
+        let full_url = "GET https://backend.composio.dev/api/v3.1/tools";
+
+        assert_eq!(method_before_path(documented).as_deref(), Some("PATCH"));
+        assert_eq!(method_before_path(full_url).as_deref(), Some("GET"));
+        assert_eq!(method_before_path("${BASE}/api/v3.1/tools"), None);
+        assert_eq!(
+            canonical_path(documented).as_deref(),
+            Some("/api/v3.1/tool_router/session/{}")
+        );
+    }
+
+    #[test]
+    fn parameter_styles_become_one_placeholder() {
+        let forms = [
+            "/api/v3.1/connected_accounts/{nanoid}",
+            "${BACKEND}/api/v3.1/connected_accounts/${id}",
+            "https://backend.composio.dev/api/v3.1/connected_accounts/:id/",
+            "/api/v3.1/connected_accounts/[nanoId]?expand=true",
+        ];
+
+        let canonical: Vec<_> = forms.iter().map(|form| canonical_path(form)).collect();
+
+        assert!(
+            canonical
+                .iter()
+                .all(|path| path.as_deref() == Some("/api/v3.1/connected_accounts/{}"))
+        );
+    }
+
+    #[test]
+    fn strings_without_an_api_path_are_ignored() {
+        assert_eq!(canonical_path("https://composio.dev/docs"), None);
+    }
+
+    #[test]
+    fn methods_are_upper_case_or_unknown() {
+        assert_eq!(canonical_method("post"), "POST");
+        assert_eq!(canonical_method("fetch"), "*");
+    }
+}

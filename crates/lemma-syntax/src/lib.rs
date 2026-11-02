@@ -5,16 +5,18 @@
 //! from semantic providers.
 
 mod classify;
+mod declaration;
 mod nesting;
 
 use lemma_model::{Language, Position, Span, Symbol};
 use tree_sitter::{Node, Parser, Query, QueryCursor, QueryMatch, StreamingIterator};
 
+pub use crate::declaration::declaration_text;
 use crate::nesting::Definition;
 
 /// Changes whenever extraction output could change, so snapshots built by an
 /// older extractor get a different fingerprint.
-pub const EXTRACTOR_VERSION: &str = "1";
+pub const EXTRACTOR_VERSION: &str = "2";
 
 /// Why the extractor could not be set up or could not parse a file.
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +74,7 @@ pub struct Extractor {
     tsx: Grammar,
     python: Grammar,
     go: Grammar,
+    rust: Grammar,
 }
 
 impl Extractor {
@@ -82,6 +85,7 @@ impl Extractor {
             tsx: Grammar::load(Language::Tsx)?,
             python: Grammar::load(Language::Python)?,
             go: Grammar::load(Language::Go)?,
+            rust: Grammar::load(Language::Rust)?,
         })
     }
 
@@ -106,6 +110,7 @@ impl Extractor {
             Language::Tsx => &mut self.tsx,
             Language::Python => &mut self.python,
             Language::Go => &mut self.go,
+            Language::Rust => &mut self.rust,
         }
     }
 }
@@ -178,6 +183,7 @@ fn tree_sitter_language(language: Language) -> tree_sitter::Language {
         Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
         Language::Python => tree_sitter_python::LANGUAGE.into(),
         Language::Go => tree_sitter_go::LANGUAGE.into(),
+        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
     }
 }
 
@@ -186,6 +192,7 @@ fn definition_query(language: Language) -> &'static str {
         Language::TypeScript | Language::Tsx => include_str!("../queries/typescript.scm"),
         Language::Python => include_str!("../queries/python.scm"),
         Language::Go => include_str!("../queries/go.scm"),
+        Language::Rust => include_str!("../queries/rust.scm"),
     }
 }
 
@@ -302,6 +309,33 @@ def delete_tool_router_session(client, session_id):
     }
 
     #[test]
+    fn rust_methods_are_qualified_by_their_impl_type() {
+        let source = r"
+pub struct Router { routes: Vec<Route> }
+pub trait Service { fn call(&self); }
+impl Service for Router<'_> {
+    fn call(&self) { fn helper() {} }
+}
+pub enum Mode { A }
+const RETRIES: u32 = 3;
+pub fn start() {}
+";
+        assert_eq!(
+            extract(Language::Rust, source),
+            named(&[
+                ("Router", SymbolKind::Struct),
+                ("Service", SymbolKind::Interface),
+                ("Service.call", SymbolKind::Method),
+                ("Router.call", SymbolKind::Method),
+                ("Router.call.helper", SymbolKind::Function),
+                ("Mode", SymbolKind::Enum),
+                ("RETRIES", SymbolKind::Constant),
+                ("start", SymbolKind::Function),
+            ])
+        );
+    }
+
+    #[test]
     fn go_methods_are_qualified_by_their_receiver() {
         let source = r"
 package router
@@ -324,10 +358,37 @@ func New() *Router { return &Router{} }
                 ("client", SymbolKind::Variable),
                 ("Router", SymbolKind::Struct),
                 ("Deleter", SymbolKind::Interface),
+                ("Deleter.Delete", SymbolKind::Method),
                 ("ID", SymbolKind::TypeAlias),
                 ("Count", SymbolKind::TypeAlias),
                 ("Router.Delete", SymbolKind::Method),
                 ("New", SymbolKind::Function),
+            ])
+        );
+    }
+
+    #[test]
+    fn interface_methods_are_qualified_by_their_interface() {
+        let typescript = "interface Shape {\n  area(): number;\n}\nabstract class Base {\n  abstract size(): number;\n}\n";
+        let go = "package shapes\n\ntype Shape interface {\n\tArea() float64\n}\n";
+
+        let typescript_symbols = extract(Language::TypeScript, typescript);
+        let go_symbols = extract(Language::Go, go);
+
+        assert_eq!(
+            typescript_symbols,
+            named(&[
+                ("Shape", SymbolKind::Interface),
+                ("Shape.area", SymbolKind::Method),
+                ("Base", SymbolKind::Class),
+                ("Base.size", SymbolKind::Method),
+            ])
+        );
+        assert_eq!(
+            go_symbols,
+            named(&[
+                ("Shape", SymbolKind::Interface),
+                ("Shape.Area", SymbolKind::Method),
             ])
         );
     }

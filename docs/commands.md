@@ -39,13 +39,17 @@ Searches indexed symbols by name or qualified name.
 | --- | --- |
 | `--exact` | Match the whole name or qualified name instead of any part of it. |
 | `--kind <kind>` | Only one kind: `function`, `method`, `class`, `interface`, `struct`, `enum`, `type_alias`, `constant`, `variable`. |
-| `--language <language>` | Only one language: `typescript`, `tsx`, `python`, `go`. |
+| `--language <language>` | Only one language: `typescript`, `tsx`, `python`, `go`, `rust`. |
 | `--path <text>` | Only symbols whose file path contains this text. |
 | `--limit <n>` | At most this many results (default 50). |
 
 Qualified names join enclosing definitions with dots: a method `delete` in class `Router` is `Router.delete`. For Go methods the receiver type is used: `func (s *Server) Start()` is `Server.Start`.
 
 Ids (`#412`) are valid until the next `lemma index` that records a change.
+
+## `lemma outline <file>`
+
+Lists the symbols defined in one file, in source order, indented by nesting. Needs no language server. `<file>` is relative to the current directory and must be inside the indexed directory.
 
 ## `lemma refs <symbol>`
 
@@ -84,9 +88,68 @@ Each reference shows its location and, when it sits inside an indexed definition
 
 Lines starting with `skipped` name servers that could not start before one did.
 
+## `lemma definition <file:line:column>`
+
+Finds where the symbol used at a position is defined, such as the function a call goes to. Lines and columns count from 1, as editors show them: `lemma definition src/app.py:12:5`.
+
+Each definition shows its location and, when it is an indexed symbol, its qualified name and id, so you can ask about it next (`lemma refs '#415'`). It takes `--refresh` and `--timeout-secs` like `refs`, and exits with 3 when no server could answer.
+
+## `lemma implementations <symbol>`
+
+Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters work as for `refs`, and so do `--refresh` and `--timeout-secs`.
+
+Interface methods are indexed as symbols qualified by their interface (`Shape.area`), so you can ask about them directly. Support varies by server: gopls, rust-analyzer and the TypeScript servers answer; pyright and ty say they do not support it (`does not support implementation lookup`), which is not the same as finding none.
+
+## `lemma signature <symbol>`
+
+Shows a symbol's declaration and what its language server says about it. These come from two places and are kept apart:
+
+- The **declaration** is the definition's header as written, without its body, such as `def delete(self, id: str) -> None:`. It comes from the index and needs no server. It is left out if the file changed since it was indexed.
+- The **description** is the server's hover text, usually Markdown: the signature with inferred types, and the documentation comment. It is display text and is not parsed into types.
+
+It exits with 0 if either part was found, and 3 if neither was.
+
 ## `lemma providers`
 
 Lists every configured language server, whether its command was found, and the order they are tried in for each language. It reads the configuration of the indexed project if there is one, otherwise `.lemma/providers.toml` in the current directory.
+
+## `lemma mcp`
+
+Serves Lemma to agents as an [MCP](https://modelcontextprotocol.io) server over stdin and stdout. Run it from the project directory, or have the agent's client start it there. Tool calls run in the daemon like any other command, so language servers stay warm across tool calls and terminal use.
+
+| Tool | Command it runs | Arguments |
+| --- | --- | --- |
+| `index` | `lemma index` | `path` (optional) |
+| `search_symbols` | `lemma symbols` | `query`, `exact`, `kind`, `language`, `path`, `limit` |
+| `outline` | `lemma outline` | `file` |
+| `references` | `lemma refs` | `symbol`, `kind`, `language`, `path`, `include_declaration`, `refresh` |
+| `definition` | `lemma definition` | `file`, `line`, `column` (from 1), `refresh` |
+| `implementations` | `lemma implementations` | `symbol`, `kind`, `language`, `path`, `refresh` |
+| `signature` | `lemma signature` | `symbol`, `kind`, `language`, `path`, `refresh` |
+
+Each tool returns the command's [JSON output](json-output.md) as text. A command that ran but found no answer (an ambiguous name, a stale file, no server) is a normal result whose JSON says why; only a command that failed, such as a missing index, is returned as an error.
+
+To add it to Claude Code for a project:
+
+```sh
+claude mcp add lemma -- lemma mcp
+```
+
+Other clients take the same command, `lemma mcp`, started in the project directory.
+
+## `lemma verify <manifest>`
+
+Checks a change across the repositories listed in a manifest and reports what it breaks. See [Verifying changes](verify.md).
+
+| Option | Meaning |
+| --- | --- |
+| `--explain` | Show why each finding holds, down to the facts it rests on. |
+| `--engine <name>` | `souffle` or `reference`. Default: Soufflé if installed, otherwise the reference engine. |
+| `--all` | List informational findings too, not just their count. |
+| `--base <commit>`, `--head <commit>` | Check these commits instead of the manifest's `change.base` and `change.head`, as in CI. |
+| `--relation <name>` | Also print every row of a relation the grammar derives, such as `calls`. Repeatable. |
+
+Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
 ## `lemma daemon`
 
@@ -131,3 +194,4 @@ There is one daemon per user. It talks to `lemma` over a Unix socket in the temp
 | `1` | Error, such as no index, an unknown symbol, or an invalid configuration file. The message is printed to stderr. |
 | `2` | `refs` only: the name matches several symbols. The candidates are printed. |
 | `3` | `refs` only: no answer. The file is stale, no server is installed, the server failed, or it does not support references. |
+| `4` | `verify` only: a finding is an error. |

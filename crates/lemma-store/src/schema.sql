@@ -66,21 +66,30 @@ CREATE INDEX IF NOT EXISTS symbols_by_name ON symbols (name);
 CREATE INDEX IF NOT EXISTS symbols_by_qualified_name ON symbols (qualified_name);
 CREATE INDEX IF NOT EXISTS symbols_by_file ON symbols (file_id, start_line);
 
--- A provider's answer to "where is this symbol referenced?", keyed by
--- everything that could change the answer within one snapshot.
-CREATE TABLE IF NOT EXISTS reference_lookups (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    symbol_id           INTEGER NOT NULL REFERENCES symbols (id) ON DELETE CASCADE,
-    provider_id         TEXT NOT NULL,
-    provider_version    TEXT,
-    config_fingerprint  TEXT NOT NULL,
-    include_declaration INTEGER NOT NULL,
-    outcome             TEXT NOT NULL,
-    UNIQUE (symbol_id, provider_id, config_fingerprint, include_declaration)
+-- A provider's answer to one question asked at one position, keyed by
+-- everything that could change the answer within one snapshot. Questions
+-- about a symbol are asked at its name. Only definitive answers are stored:
+-- failures say something about the provider, not the code.
+CREATE TABLE IF NOT EXISTS answers (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id        INTEGER NOT NULL REFERENCES snapshots (id) ON DELETE CASCADE,
+    -- references, definitions, implementations, or hover.
+    question           TEXT NOT NULL,
+    path               TEXT NOT NULL,
+    line               INTEGER NOT NULL,
+    column             INTEGER NOT NULL,
+    provider_id        TEXT NOT NULL,
+    config_fingerprint TEXT NOT NULL,
+    provider_version   TEXT,
+    -- found, empty, or unsupported.
+    state              TEXT NOT NULL,
+    -- The answer to a hover question; locations are in answer_locations.
+    text               TEXT,
+    UNIQUE (snapshot_id, question, path, line, column, provider_id, config_fingerprint)
 );
 
-CREATE TABLE IF NOT EXISTS reference_results (
-    lookup_id    INTEGER NOT NULL REFERENCES reference_lookups (id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS answer_locations (
+    answer_id    INTEGER NOT NULL REFERENCES answers (id) ON DELETE CASCADE,
     path         TEXT NOT NULL,
     is_external  INTEGER NOT NULL,
     start_line   INTEGER NOT NULL,
@@ -89,4 +98,4 @@ CREATE TABLE IF NOT EXISTS reference_results (
     end_column   INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS reference_results_by_lookup ON reference_results (lookup_id);
+CREATE INDEX IF NOT EXISTS answer_locations_by_answer ON answer_locations (answer_id);

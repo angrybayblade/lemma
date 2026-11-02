@@ -3,38 +3,30 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use lemma_lsp::lsp_types::notification::{
     DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
 };
-use lemma_lsp::lsp_types::request::References;
+use lemma_lsp::lsp_types::request::{GotoDefinition, GotoImplementation, HoverRequest, References};
 use lemma_lsp::lsp_types::{
     self, DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, FileChangeType, FileEvent, Location, ReferenceContext,
+    DidOpenTextDocumentParams, FileChangeType, FileEvent, GotoDefinitionParams,
+    GotoDefinitionResponse, HoverContents, HoverParams, MarkedString, ReferenceContext,
     ReferenceParams, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
     TextDocumentPositionParams, Url, VersionedTextDocumentIdentifier,
 };
 use lemma_lsp::{LaunchConfig, LspClient, LspError, PositionEncoding, line_text};
-use lemma_model::{Language, Position, Reference, Span};
+use lemma_model::{Language, Location, LocationQuery, Position, ProviderAnswer, Span};
 use serde_json::Value;
 
+use crate::semantic::{SemanticProvider, SourcePoint};
 use crate::{ProviderDefinition, ProviderError};
 
 /// How long a server must stay silent, with no work in progress, before it is
 /// treated as ready. Only used when it does not publish diagnostics first.
 const READY_QUIET_PERIOD: Duration = Duration::from_millis(500);
-
-/// A provider's answer to a reference lookup, before Lemma adds context.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReferenceAnswer {
-    /// References, sorted and without duplicates.
-    Found(Vec<Reference>),
-    /// The server answered with nothing.
-    Empty,
-    /// The server does not support reference lookup.
-    Unsupported,
-}
 
 /// How a file changed since a server last looked at it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,13 +52,33 @@ pub struct ProviderSession {
     open_documents: HashMap<Url, OpenDocument>,
     /// Open documents, least recently used first.
     open_order: VecDeque<Url>,
+    /// Files marking projects the server only searches while one of their
+    /// files is open; empty for servers that search the whole workspace.
+    project_markers: Vec<String>,
+    /// The project directory each directory belongs to, as found so far.
+    project_of_directory: HashMap<PathBuf, Option<PathBuf>>,
+    /// Whether projects were just opened and may still be loading. The
+    /// server answers meanwhile, from the projects it has, and no message
+    /// reliably says when it has finished.
+    projects_loading: bool,
 }
 
 /// A document the server has open, as Lemma last sent it.
 struct OpenDocument {
     version: i32,
     text_hash: blake3::Hash,
+    /// The project the document belongs to, for project-scoped servers.
+    project: Option<PathBuf>,
 }
+
+/// How often to ask again while newly opened projects load, and for how
+/// long at most.
+const SETTLE_INTERVAL: Duration = Duration::from_secs(1);
+const SETTLE_LIMIT: Duration = Duration::from_secs(20);
+
+/// Most projects opened for one question. A symbol mentioned in hundreds of
+/// projects would otherwise make the server load all of them first.
+const MAX_PROJECTS_PER_QUESTION: usize = 48;
 
 /// Most documents kept open at once; the least recently used is closed.
 const MAX_OPEN_DOCUMENTS: usize = 64;
@@ -99,6 +111,9 @@ impl ProviderSession {
             has_been_ready: false,
             open_documents: HashMap::new(),
             open_order: VecDeque::new(),
+            project_markers: definition.project_markers.clone(),
+            project_of_directory: HashMap::new(),
+            projects_loading: false,
         })
     }
 
@@ -126,7 +141,10 @@ impl ProviderSession {
     /// Tells the server about files that changed on disk since it started or
     /// last heard, so a long-lived server does not answer from stale files.
     /// Paths are relative to the root.
-    pub fn files_changed(&self, changes: &[(String, FileChange)]) -> Result<(), ProviderError> {
+    ///
+    /// Open documents among them are closed, so the server reads the new
+    /// contents instead of keeping the text Lemma sent earlier.
+    pub fn files_changed(&mut self, changes: &[(String, FileChange)]) -> Result<(), ProviderError> {
         if changes.is_empty() {
             return Ok(());
         }
@@ -137,6 +155,10 @@ impl ProviderSession {
                 Url::from_file_path(&absolute_path).map_err(|()| ProviderError::InvalidPath {
                     path: absolute_path,
                 })?;
+            if self.open_documents.remove(&uri).is_some() {
+                self.open_order.retain(|open| open != &uri);
+                self.close_document(uri.clone())?;
+            }
             events.push(FileEvent::new(uri, file_change_type(*change)));
         }
         self.client
@@ -169,66 +191,6 @@ impl ProviderSession {
             .map(normalize_version)
     }
 
-    /// Finds references to the symbol whose identifier is at `position` in a
-    /// file relative to the root.
-    pub fn references(
-        &mut self,
-        path: &str,
-        language: Language,
-        position: Position,
-        include_declaration: bool,
-    ) -> Result<ReferenceAnswer, ProviderError> {
-        if !self.client.server().supports_references() {
-            return Ok(ReferenceAnswer::Unsupported);
-        }
-
-        let absolute_path = self.root.join(path);
-        let source =
-            fs::read_to_string(&absolute_path).map_err(|source| ProviderError::ReadSource {
-                path: absolute_path.clone(),
-                source,
-            })?;
-        let uri = Url::from_file_path(&absolute_path).map_err(|()| ProviderError::InvalidPath {
-            path: absolute_path.clone(),
-        })?;
-        let encoding = self.client.server().position_encoding;
-        let character = encoding.encode_column(line_text(&source, position.line), position.column);
-
-        let opened_at = Instant::now();
-        self.show_document(&uri, language, source)?;
-        // Some servers answer before loading the workspace and return empty
-        // results that look real. If readiness times out, ask anyway: the
-        // answer is the best available.
-        if !self.has_been_ready {
-            self.client
-                .wait_until_ready(&uri, opened_at, READY_QUIET_PERIOD);
-            self.has_been_ready = true;
-        }
-        let locations = self.client.request::<References>(ReferenceParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                position: lsp_types::Position {
-                    line: position.line,
-                    character,
-                },
-            },
-            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
-            partial_result_params: lsp_types::PartialResultParams::default(),
-            context: ReferenceContext {
-                include_declaration,
-            },
-        });
-        let locations = locations
-            .map_err(|source| self.server_error(source))?
-            .unwrap_or_default();
-        if locations.is_empty() {
-            return Ok(ReferenceAnswer::Empty);
-        }
-        Ok(ReferenceAnswer::Found(
-            self.to_references(locations, encoding),
-        ))
-    }
-
     /// Stops the server politely.
     pub fn shutdown(self) {
         self.client.shutdown();
@@ -246,11 +208,13 @@ impl ProviderSession {
         self.open_order.retain(|open| open != uri);
         self.open_order.push_back(uri.clone());
         let Some(open) = self.open_documents.get_mut(uri) else {
+            let project = self.project_of_uri(uri);
             self.open_documents.insert(
                 uri.clone(),
                 OpenDocument {
                     version: 1,
                     text_hash,
+                    project,
                 },
             );
             self.open_document(uri, language, text)?;
@@ -275,6 +239,45 @@ impl ProviderSession {
                 }],
             })
             .map_err(|source| self.server_error(source))
+    }
+
+    /// The project directory a file belongs to: the nearest directory at
+    /// or above it, within the root, holding a project marker.
+    fn project_of(&mut self, file: &Path) -> Option<PathBuf> {
+        if self.project_markers.is_empty() {
+            return None;
+        }
+        let mut searched = Vec::new();
+        let mut found = None;
+        let mut directory = file.parent();
+        while let Some(current) = directory {
+            if !current.starts_with(&self.root) {
+                break;
+            }
+            if let Some(known) = self.project_of_directory.get(current) {
+                found.clone_from(known);
+                break;
+            }
+            searched.push(current.to_owned());
+            if self
+                .project_markers
+                .iter()
+                .any(|marker| current.join(marker).is_file())
+            {
+                found = Some(current.to_owned());
+                break;
+            }
+            directory = current.parent();
+        }
+        for directory in searched {
+            self.project_of_directory.insert(directory, found.clone());
+        }
+        found
+    }
+
+    fn project_of_uri(&mut self, uri: &Url) -> Option<PathBuf> {
+        let file = uri.to_file_path().ok()?;
+        self.project_of(&file)
     }
 
     fn close_least_recent(&mut self) -> Result<(), ProviderError> {
@@ -314,13 +317,130 @@ impl ProviderSession {
             .map_err(|source| self.server_error(source))
     }
 
-    fn to_references(
+    /// Opens the file at `at` in the server, waits for the server to load
+    /// its project the first time, and returns where to point a request.
+    fn prepare(
+        &mut self,
+        at: SourcePoint<'_>,
+    ) -> Result<TextDocumentPositionParams, ProviderError> {
+        let absolute_path = self.root.join(at.path);
+        let source =
+            fs::read_to_string(&absolute_path).map_err(|source| ProviderError::ReadSource {
+                path: absolute_path.clone(),
+                source,
+            })?;
+        let uri = Url::from_file_path(&absolute_path).map_err(|()| ProviderError::InvalidPath {
+            path: absolute_path.clone(),
+        })?;
+        let encoding = self.client.server().position_encoding;
+        let character =
+            encoding.encode_column(line_text(&source, at.position.line), at.position.column);
+
+        let opened_at = Instant::now();
+        self.show_document(&uri, at.language, source)?;
+        // Some servers answer before loading the workspace and return empty
+        // results that look real. If readiness times out, ask anyway: the
+        // answer is the best available.
+        if !self.has_been_ready {
+            self.client
+                .wait_until_ready(&uri, opened_at, READY_QUIET_PERIOD);
+            self.has_been_ready = true;
+        }
+        Ok(TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: lsp_types::Position {
+                line: at.position.line,
+                character,
+            },
+        })
+    }
+
+    /// Asks until the answer stops growing: two answers in a row with the
+    /// same, non-zero number of locations elsewhere than the asked
+    /// position, or the time limit.
+    fn settled_locations(
         &self,
-        locations: Vec<Location>,
+        query: LocationQuery,
+        position: &TextDocumentPositionParams,
+    ) -> Result<Vec<lsp_types::Location>, ProviderError> {
+        let started = Instant::now();
+        let mut previous = self
+            .request_locations(query, position.clone())
+            .map_err(|source| self.server_error(source))?;
+        while started.elapsed() < SETTLE_LIMIT {
+            thread::sleep(SETTLE_INTERVAL);
+            let current = self
+                .request_locations(query, position.clone())
+                .map_err(|source| self.server_error(source))?;
+            // While projects load the server may return only the asked
+            // position itself, the declaration; that is not an answer yet.
+            let found = elsewhere(&current, position);
+            // Projects were opened because their files mention the name, so
+            // an empty answer means the server is still loading them; only
+            // the time limit ends the wait without one.
+            let is_settled = found > 0 && found == elsewhere(&previous, position);
+            previous = current;
+            if is_settled {
+                break;
+            }
+        }
+        Ok(previous)
+    }
+
+    fn supports(&self, query: LocationQuery) -> bool {
+        let server = self.client.server();
+        match query {
+            LocationQuery::References => server.supports_references(),
+            LocationQuery::Definitions => server.supports_definitions(),
+            LocationQuery::Implementations => server.supports_implementations(),
+        }
+    }
+
+    fn request_locations(
+        &self,
+        query: LocationQuery,
+        position: TextDocumentPositionParams,
+    ) -> Result<Vec<lsp_types::Location>, LspError> {
+        let work_done_progress_params = lsp_types::WorkDoneProgressParams::default();
+        let partial_result_params = lsp_types::PartialResultParams::default();
+        let response = match query {
+            LocationQuery::References => {
+                let found = self.client.request::<References>(ReferenceParams {
+                    text_document_position: position,
+                    work_done_progress_params,
+                    partial_result_params,
+                    context: ReferenceContext {
+                        include_declaration: true,
+                    },
+                })?;
+                return Ok(found.unwrap_or_default());
+            }
+            LocationQuery::Definitions => {
+                self.client
+                    .request::<GotoDefinition>(GotoDefinitionParams {
+                        text_document_position_params: position,
+                        work_done_progress_params,
+                        partial_result_params,
+                    })?
+            }
+            LocationQuery::Implementations => self.client.request::<GotoImplementation>(
+                lsp_types::request::GotoImplementationParams {
+                    text_document_position_params: position,
+                    work_done_progress_params,
+                    partial_result_params,
+                },
+            )?,
+        };
+        Ok(response.map(flatten_goto).unwrap_or_default())
+    }
+
+    fn to_locations(
+        &self,
+        found: Vec<lsp_types::Location>,
         encoding: PositionEncoding,
-    ) -> Vec<Reference> {
+    ) -> Vec<Location> {
         let mut sources = SourceCache::default();
-        let mut references: Vec<_> = locations
+        let mut locations: Vec<_> = found
             .into_iter()
             .map(|location| {
                 let (path, is_external) = self.display_path(&location.uri);
@@ -329,17 +449,16 @@ impl ProviderSession {
                     .to_file_path()
                     .ok()
                     .and_then(|file| sources.get(file));
-                Reference {
+                Location {
                     path,
                     span: decode_range(location.range, encoding, source),
                     is_external,
-                    enclosing_symbol: None,
                 }
             })
             .collect();
-        references.sort();
-        references.dedup();
-        references
+        locations.sort();
+        locations.dedup();
+        locations
     }
 
     /// The path to show for a URI: relative to the root when inside it.
@@ -358,6 +477,146 @@ impl ProviderSession {
             provider: self.provider_id.clone(),
             source,
         }
+    }
+}
+
+impl SemanticProvider for ProviderSession {
+    fn version(&self) -> Option<String> {
+        self.provider_version()
+    }
+
+    fn is_project_scoped(&self) -> bool {
+        !self.project_markers.is_empty()
+    }
+
+    fn open_projects(&mut self, paths: &[&str]) -> Result<(), ProviderError> {
+        let mut loaded: std::collections::HashSet<PathBuf> = self
+            .open_documents
+            .values()
+            .filter_map(|open| open.project.clone())
+            .collect();
+        let mut opened = 0;
+        for path in paths {
+            if opened == MAX_PROJECTS_PER_QUESTION {
+                break;
+            }
+            let absolute_path = self.root.join(path);
+            let Some(project) = self.project_of(&absolute_path) else {
+                continue;
+            };
+            let Some(language) = absolute_path
+                .extension()
+                .and_then(|extension| Language::from_extension(&extension.to_string_lossy()))
+            else {
+                continue;
+            };
+            if !loaded.insert(project) {
+                continue;
+            }
+            let Ok(source) = fs::read_to_string(&absolute_path) else {
+                continue;
+            };
+            let uri =
+                Url::from_file_path(&absolute_path).map_err(|()| ProviderError::InvalidPath {
+                    path: absolute_path,
+                })?;
+            self.show_document(&uri, language, source)?;
+            opened += 1;
+        }
+        if opened > 0 {
+            self.projects_loading = true;
+        }
+        Ok(())
+    }
+
+    fn locations(
+        &mut self,
+        query: LocationQuery,
+        at: SourcePoint<'_>,
+    ) -> Result<ProviderAnswer<Vec<Location>>, ProviderError> {
+        if !self.supports(query) {
+            return Ok(ProviderAnswer::Unsupported);
+        }
+        let position = self.prepare(at)?;
+        let found = if self.projects_loading {
+            self.projects_loading = false;
+            self.settled_locations(query, &position)?
+        } else {
+            self.request_locations(query, position)
+                .map_err(|source| self.server_error(source))?
+        };
+        if found.is_empty() {
+            return Ok(ProviderAnswer::Empty);
+        }
+        let encoding = self.client.server().position_encoding;
+        Ok(ProviderAnswer::Found(self.to_locations(found, encoding)))
+    }
+
+    fn hover(&mut self, at: SourcePoint<'_>) -> Result<ProviderAnswer<String>, ProviderError> {
+        if !self.client.server().supports_hover() {
+            return Ok(ProviderAnswer::Unsupported);
+        }
+        let position = self.prepare(at)?;
+        let hover = self
+            .client
+            .request::<HoverRequest>(HoverParams {
+                text_document_position_params: position,
+                work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
+            })
+            .map_err(|source| self.server_error(source))?;
+        let text = hover
+            .map(|hover| hover_text(hover.contents))
+            .unwrap_or_default();
+        if text.trim().is_empty() {
+            return Ok(ProviderAnswer::Empty);
+        }
+        Ok(ProviderAnswer::Found(text))
+    }
+}
+
+/// How many locations are not the asked position itself.
+fn elsewhere(locations: &[lsp_types::Location], asked: &TextDocumentPositionParams) -> usize {
+    locations
+        .iter()
+        .filter(|location| {
+            location.uri != asked.text_document.uri
+                || location.range.start.line != asked.position.line
+        })
+        .count()
+}
+
+/// Definition and implementation answers come in three shapes; links point
+/// at the name inside the target, which is what Lemma reports.
+fn flatten_goto(response: GotoDefinitionResponse) -> Vec<lsp_types::Location> {
+    match response {
+        GotoDefinitionResponse::Scalar(location) => vec![location],
+        GotoDefinitionResponse::Array(locations) => locations,
+        GotoDefinitionResponse::Link(links) => links
+            .into_iter()
+            .map(|link| lsp_types::Location {
+                uri: link.target_uri,
+                range: link.target_selection_range,
+            })
+            .collect(),
+    }
+}
+
+/// Hover contents as one Markdown string.
+fn hover_text(contents: HoverContents) -> String {
+    let marked = |marked: MarkedString| match marked {
+        MarkedString::String(text) => text,
+        MarkedString::LanguageString(code) => {
+            format!("```{}\n{}\n```", code.language, code.value)
+        }
+    };
+    match contents {
+        HoverContents::Scalar(single) => marked(single),
+        HoverContents::Array(parts) => parts
+            .into_iter()
+            .map(marked)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        HoverContents::Markup(markup) => markup.value,
     }
 }
 
@@ -401,6 +660,7 @@ fn language_id(language: Language) -> &'static str {
         Language::Tsx => "typescriptreact",
         Language::Python => "python",
         Language::Go => "go",
+        Language::Rust => "rust",
     }
 }
 

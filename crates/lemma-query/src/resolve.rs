@@ -1,7 +1,7 @@
 //! Turning a name typed by a person or agent into exactly one symbol.
 
 use lemma_model::{Language, SymbolKind};
-use lemma_store::{NameMatch, Store, StoredSymbol, SymbolFilter};
+use lemma_store::{FactStore, NameMatch, StoredSymbol, SymbolFilter};
 
 use crate::QueryError;
 
@@ -34,7 +34,7 @@ pub enum SymbolResolution {
 
 /// Finds the symbol a selector refers to by exact name or qualified name.
 pub fn resolve_symbol(
-    store: &Store,
+    store: &dyn FactStore,
     snapshot_id: i64,
     selector: &SymbolSelector,
 ) -> Result<SymbolResolution, QueryError> {
@@ -49,6 +49,16 @@ pub fn resolve_symbol(
     Ok(classify(store.find_symbols(snapshot_id, &filter)?))
 }
 
+/// Every symbol defined in a file, in source order. `path` is relative to
+/// the snapshot root.
+pub fn symbols_in_file(
+    store: &dyn FactStore,
+    snapshot_id: i64,
+    path: &str,
+) -> Result<Vec<StoredSymbol>, QueryError> {
+    Ok(store.symbols_in_file(snapshot_id, path)?)
+}
+
 fn classify(mut candidates: Vec<StoredSymbol>) -> SymbolResolution {
     match candidates.len() {
         0 => SymbolResolution::Unresolved,
@@ -61,7 +71,7 @@ fn classify(mut candidates: Vec<StoredSymbol>) -> SymbolResolution {
 mod tests {
     use super::*;
     use lemma_model::{IndexedFile, Position, Snapshot, Span, Symbol};
-    use lemma_store::{FileStamp, NewSnapshot, StampedFile};
+    use lemma_store::{FileStamp, NewSnapshot, StampedFile, Store};
 
     fn symbol(name: &str, qualified_name: &str, line: u32) -> Symbol {
         let span = Span {

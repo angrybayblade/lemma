@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use lemma_model::Language;
 
 use lemma_providers::{FileChange, InstalledProvider, ProviderError, ProviderSession};
-use lemma_store::{Store, StoreError, StoredSnapshot};
+use lemma_store::{FactStore, Store, StoreError, StoredSnapshot};
 
 /// Why a session could not be provided.
 pub(crate) enum PoolError {
@@ -291,7 +291,7 @@ impl SessionPool {
     /// answered, or started otherwise.
     pub(crate) fn session(
         &mut self,
-        store: &Store,
+        store: &dyn FactStore,
         snapshot: &StoredSnapshot,
         provider: &InstalledProvider,
         request_timeout: Duration,
@@ -338,7 +338,7 @@ impl SessionPool {
     fn sync(
         &mut self,
         key: &SessionKey,
-        store: &Store,
+        store: &dyn FactStore,
         snapshot: &StoredSnapshot,
     ) -> Result<(), PoolError> {
         let Some(pooled) = self.sessions.get_mut(key) else {
@@ -366,7 +366,7 @@ impl SessionPool {
 }
 
 fn start(
-    store: &Store,
+    store: &dyn FactStore,
     snapshot: &StoredSnapshot,
     provider: &InstalledProvider,
     request_timeout: Duration,
@@ -517,7 +517,7 @@ fn session_key(snapshot: &StoredSnapshot, provider: &InstalledProvider) -> Sessi
 }
 
 fn file_hashes(
-    store: &Store,
+    store: &dyn FactStore,
     snapshot: &StoredSnapshot,
 ) -> Result<HashMap<String, String>, PoolError> {
     let files = store.files(snapshot.id).map_err(PoolError::Store)?;

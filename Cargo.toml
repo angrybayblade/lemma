@@ -3,19 +3,24 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-rc0"
 edition = "2024"
 rust-version = "1.85"
 publish = false
 
 [workspace.dependencies]
+lemma-grammar = { path = "crates/lemma-grammar" }
+lemma-http = { path = "crates/lemma-http" }
 lemma-index = { path = "crates/lemma-index" }
+lemma-logic = { path = "crates/lemma-logic" }
 lemma-lsp = { path = "crates/lemma-lsp" }
 lemma-model = { path = "crates/lemma-model" }
 lemma-providers = { path = "crates/lemma-providers" }
 lemma-query = { path = "crates/lemma-query" }
+lemma-souffle = { path = "crates/lemma-souffle" }
 lemma-store = { path = "crates/lemma-store" }
 lemma-syntax = { path = "crates/lemma-syntax" }
+lemma-verify = { path = "crates/lemma-verify" }
 
 anyhow = "1"
 blake3 = "1"
@@ -34,8 +39,10 @@ toml = "0.8"
 tree-sitter = "0.25"
 tree-sitter-go = "0.23"
 tree-sitter-python = "0.23"
+tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"
 which = "7"
+yaml_serde = "0.10"
 
 [workspace.lints.rust]
 missing_docs = "warn"
@@ -54,3 +61,8 @@ dbg_macro = "deny"
 todo = "warn"
 excessive_nesting = "warn"
 allow_attributes_without_reason = "warn"
+
+# Stripping runs rust-objcopy, which hangs on some macOS toolchains; the
+# release workflow ships unstripped binaries.
+[profile.release]
+strip = "none"

@@ -7,6 +7,10 @@
 (abstract_class_declaration name: (type_identifier) @name) @definition
 (method_definition name: (property_identifier) @name) @definition
 (interface_declaration name: (type_identifier) @name) @definition
+; Methods an interface or abstract class requires, so their
+; implementations can be found.
+(method_signature name: (property_identifier) @name) @definition
+(abstract_method_signature name: (property_identifier) @name) @definition
 (type_alias_declaration name: (type_identifier) @name) @definition
 (enum_declaration name: (identifier) @name) @definition
 
