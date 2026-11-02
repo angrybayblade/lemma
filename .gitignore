@@ -2,3 +2,4 @@
 /target/
 .lemma/
 .experiments/
+.test/
