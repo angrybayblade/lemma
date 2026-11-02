@@ -2,27 +2,25 @@
 //! commits, what role each plays, and which change is being verified.
 //!
 //! ```yaml
-//! grammar: ../grammars/http-contracts.yaml
-//! change: { repository: platform, base: fa87ef98a7^, head: fa87ef98a7 }
+//! change: { repository: billing, base: main, head: HEAD }
 //! repositories:
-//!   platform:
-//!     path: corpora/platform
+//!   billing:
+//!     path: ../billing
 //!     role: service
-//!     service: apollo
-//!     specs: [apps/apollo/openapi-v3.1.json]
-//!     routes: [apps/apollo/src/pages/api]
-//!   composio-client:
-//!     path: corpora/composio-client
-//!     commit: 9de76a65
+//!     specs: [openapi.json]
+//!     routes: [src/routes]
+//!   billing-client:
+//!     path: ../billing-client
+//!     commit: main
 //!     role: client
-//!     tables: [src/compat/generated-operations.ts]
-//!     specs: [spec/openapi.json]
-//!   composio:
-//!     path: corpora/composio
-//!     commit: d7a25360
+//!     generated_from: [openapi.json]
+//!     call_names: ["{camel}"]
+//!   web:
+//!     path: ../web
+//!     commit: main
 //!     role: consumer
-//!     include: [ts/packages/core/src]
-//!     client_receivers: [client]
+//!     include: [src]
+//!     client_receivers: [billing]
 //! ```
 
 use std::collections::BTreeMap;
@@ -38,7 +36,7 @@ use crate::VerifyError;
 pub enum Role {
     /// Serves operations, described by specs and route code.
     Service,
-    /// A generated client: operation tables mapping methods to operations.
+    /// A generated client: functions generated from a service's spec.
     Client,
     /// Calls operations, directly or through a client.
     Consumer,
@@ -72,8 +70,13 @@ pub struct Repository {
     /// Directories with a service's route code.
     #[serde(default)]
     pub routes: Vec<String>,
+    /// Path prefixes a service owns, such as `/v1/billing/`: a new call to an
+    /// unserved path under one is reported. The longest prefix all its
+    /// operations share if empty.
+    #[serde(default)]
+    pub path_prefixes: Vec<String>,
     /// Path prefixes a service also serves its routes under, such as
-    /// `/api/v3/` routes published as `/api/v3.1/`: each route counts at
+    /// `/v1/` routes also published as `/v2/`: each route counts at
     /// its own path and at the aliased one.
     #[serde(default)]
     pub route_aliases: BTreeMap<String, String>,
@@ -81,20 +84,23 @@ pub struct Repository {
     /// shared zod schemas, read to tell which reject unknown keys.
     #[serde(default)]
     pub schemas: Vec<String>,
-    /// Files with a client's operation tables.
-    #[serde(default)]
-    pub tables: Vec<String>,
     /// `OpenAPI` documents a client is generated from, with one function per
-    /// operation named after its `operationId`.
+    /// operation named after its `operationId` (see `call_names`).
     #[serde(default)]
     pub generated_from: Vec<String>,
+    /// How a generated client names an operation's function, from its
+    /// `operationId`: templates with `{operationId}`, `{camel}`, `{pascal}`
+    /// or `{snake}`, such as `{camel}` or `{pascal}.Invoke`. The
+    /// `operationId` as written if empty.
+    #[serde(default)]
+    pub call_names: Vec<String>,
     /// Directories with a consumer's code; all of it if empty.
     #[serde(default)]
     pub include: Vec<String>,
     /// Names a consumer calls its client through, such as `client`.
     #[serde(default)]
     pub client_receivers: Vec<String>,
-    /// Modules of generated clients, such as `generated/thermos`: functions
+    /// Modules of generated clients, such as `generated/billing`: functions
     /// a consumer imports from them are client methods.
     #[serde(default)]
     pub client_modules: Vec<String>,

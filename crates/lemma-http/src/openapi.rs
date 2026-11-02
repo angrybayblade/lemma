@@ -36,7 +36,7 @@ pub struct Operation {
 }
 
 impl Operation {
-    /// `GET /api/v3.1/session_configs`: how findings name the operation.
+    /// `GET /v1/users`: how findings name the operation.
     pub fn key(&self) -> String {
         format!("{} {}", self.method, self.template)
     }
@@ -349,7 +349,7 @@ mod tests {
     fn document() -> Json {
         serde_json::json!({
             "paths": {
-                "/api/v3.1/session_configs": {
+                "/v1/users": {
                     "get": {
                         "parameters": [
                             { "name": "search", "in": "query", "required": false },
@@ -386,7 +386,7 @@ mod tests {
         let found = operations(&document());
 
         let get = &found[0];
-        assert_eq!(get.key(), "GET /api/v3.1/session_configs");
+        assert_eq!(get.key(), "GET /v1/users");
         let names: Vec<&str> = get.parameters.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["search", "limit"]);
     }

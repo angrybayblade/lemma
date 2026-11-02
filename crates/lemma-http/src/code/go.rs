@@ -4,7 +4,7 @@
 use tree_sitter::Node;
 
 use super::{Dialect, VERBS, Walk};
-use crate::paths::{canonical_method, method_before_path};
+use crate::paths::canonical_method;
 
 /// Calls that register a handler for a path.
 const HANDLERS: [&str; 3] = ["Handle", "HandleFunc", "Path"];
@@ -82,11 +82,15 @@ impl Walk<'_> {
             return; // already read with its `.Methods(...)`
         }
         // Go 1.22 patterns carry their method: `mux.HandleFunc("GET /x", h)`.
-        let written_method = method_before_path(&pattern);
-        let path = pattern.rsplit(' ').next().unwrap_or(&pattern);
+        let (written_method, path) = match pattern.split_once(' ') {
+            Some((verb, path)) if canonical_method(verb) != "*" => {
+                (Some(canonical_method(verb)), path.trim())
+            }
+            _ => (None, pattern.as_str()),
+        };
         let template = format!("{}{path}", self.router_prefix(parts));
         let method = method.map(str::to_owned).or(written_method);
-        self.add_method_path(method.as_deref(), &template, None, path_node);
+        self.add_method_path(method.as_deref(), &template, path_node);
     }
 
     /// `r.Get("/x", handler)` (chi, gin, echo): a verb-named call with a
@@ -103,7 +107,7 @@ impl Walk<'_> {
             return false;
         }
         let template = format!("{}{path}", self.router_prefix(parts));
-        self.add_method_path(Some(verb), &template, None, *path_node);
+        self.add_method_path(Some(verb), &template, *path_node);
         true
     }
 
@@ -157,8 +161,8 @@ impl Walk<'_> {
     }
 
     /// A string naming an API path inside an argument, such as the format
-    /// of `fmt.Sprintf("%s/api/x", base)` or Rust's `&format!("{base}/api/x")`,
-    /// or one side of `base + "/api/x"`.
+    /// of `fmt.Sprintf("%s/v1/x", base)` or Rust's `&format!("{base}/v1/x")`,
+    /// or one side of `base + "/v1/x"`.
     pub(super) fn nested_path_argument<'tree>(
         &self,
         arguments: Node<'tree>,
@@ -168,7 +172,7 @@ impl Walk<'_> {
         }
         let mut stack = Self::children(arguments);
         while let Some(node) = stack.pop() {
-            if self.names_api_path(node) {
+            if self.names_path(node) {
                 return Some(node);
             }
             let is_wrapper = matches!(
@@ -188,9 +192,9 @@ impl Walk<'_> {
         None
     }
 
-    fn names_api_path(&self, node: Node<'_>) -> bool {
+    fn names_path(&self, node: Node<'_>) -> bool {
         self.string_value(node)
-            .is_some_and(|text| text.contains("/api/"))
+            .is_some_and(|text| crate::paths::has_marker(&text, &self.options.path_markers))
     }
 
     /// The JSON name in a struct field's tag, or a string key in a keyed

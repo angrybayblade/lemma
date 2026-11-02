@@ -67,6 +67,29 @@ pub fn read_files(
     Ok(files)
 }
 
+/// Files whose path `wanted` accepts, anywhere in the repository, read from
+/// `commit` or the working directory. Sorted by path. For configuration
+/// found by name, such as every `tsconfig.json`.
+pub fn read_files_where(
+    repository: &Path,
+    commit: Option<&str>,
+    wanted: &dyn Fn(&str) -> bool,
+) -> Result<Vec<SourceFile>, SourceError> {
+    let wanted = |path: &str| wanted(path) && !path.contains("node_modules/");
+    let mut files = match commit {
+        Some(commit) => {
+            let paths: Vec<String> = git_paths(repository, commit, &[])?
+                .into_iter()
+                .filter(|path| wanted(path))
+                .collect();
+            git_contents(repository, commit, &paths)?
+        }
+        None => directory_files(repository, &[], &wanted)?,
+    };
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
+}
+
 /// One file's text, from `commit` or the working directory, or `None` if
 /// the file does not exist there. A file that appears or disappears between
 /// two commits is normal, such as a spec added by the change.
@@ -183,6 +206,11 @@ fn directory_files(
             source,
         })?;
         if metadata.is_dir() {
+            // Dependencies and Git's own files are never source.
+            let name = path.file_name().and_then(|name| name.to_str());
+            if matches!(name, Some("node_modules" | ".git")) {
+                continue;
+            }
             let entries = fs::read_dir(&path).map_err(|source| SourceError::Io {
                 path: path.clone(),
                 source,
