@@ -54,7 +54,6 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 
 | Limitation | Effect | Until fixed |
 | --- | --- | --- |
-| The repository is private | Install needs the GitHub CLI signed in, or `GITHUB_TOKEN` | [Onboarding](onboarding.md#1-install) |
 | Binaries are unstripped | Larger downloads | Fine for now |
 | No Windows build | — | Use WSL |
 | CI is new in rc0 | Checks may be flaky until rc1 | Run `cargo fmt`, `cargo clippy` and `cargo test` locally ([CONTRIBUTING](../CONTRIBUTING.md)) |
@@ -64,7 +63,7 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 
 - [ ] CI green on every pull request for two weeks (rc1).
 - [ ] Release builds checked on macOS arm64, macOS x86_64, Linux x86_64 and Linux arm64 (rc1).
-- [ ] Install script run on a clean macOS and Linux machine, with the GitHub CLI and with `GITHUB_TOKEN` (rc1).
+- [ ] Install script run on a clean macOS and Linux machine (rc1).
 - [ ] `lemma verify` reporting on Composio pull requests for two weeks; every error checked by hand; no false error.
 - [ ] A decision on read-versus-write evidence for response-field warnings, from what internal use shows.
 - [ ] Field type and enum value changes compared, or kept out of 0.1 explicitly.

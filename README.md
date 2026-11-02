@@ -7,8 +7,7 @@ Lemma is in release candidates; see the [pre-release checklist](docs/pre-release
 ## Install
 
 ```sh
-# while the repository is private (needs the GitHub CLI, signed in):
-gh api -H 'Accept: application/vnd.github.raw' repos/angrybayblade/lemma/contents/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
 # add LEMMA_SKILLS=1 before `sh` to also install the agent skills
 ```
 
