@@ -2,9 +2,17 @@
 
 This guide takes you from a fresh checkout to your first reference lookup.
 
-## 1. Build and install
+## 1. Install
 
-Lemma is a single binary. You need a Rust toolchain, 1.85 or newer ([rustup](https://rustup.rs) is the easiest way to get one).
+Lemma is a single binary. Releases ship it for macOS and Linux (arm64 and x86_64); while the repository is private, install with the GitHub CLI signed in:
+
+```sh
+gh api -H 'Accept: application/vnd.github.raw' repos/angrybayblade/lemma/contents/install.sh | sh
+```
+
+It goes into `~/.local/bin`. Options (a pinned version, the agent skills, a token instead of the GitHub CLI) are in [Onboarding](onboarding.md#1-install).
+
+To build from source instead, you need a Rust toolchain, 1.85 or newer ([rustup](https://rustup.rs) is the easiest way to get one).
 
 ```sh
 git clone https://github.com/angrybayblade/lemma.git
@@ -31,6 +39,7 @@ Lemma reads definitions itself, but asks a language server where symbols are use
 | Python (fastest) | `uv tool install ty` or `pip install ty` | `ty` |
 | Python | `npm install -g pyright` or `pip install basedpyright` | `pyright-langserver` or `basedpyright-langserver` |
 | Go | `go install golang.org/x/tools/gopls@latest` | `gopls` |
+| Rust | `rustup component add rust-analyzer` | `rust-analyzer` |
 
 The command must be on your `PATH`. Run `lemma providers` to see what Lemma found:
 
@@ -50,7 +59,7 @@ Tried in order for each language:
   go           gopls
 ```
 
-Language servers work best when the project's own dependencies are installed (`npm install`, a Python virtual environment, `go mod download`). Without them, references that go through imports may be missing.
+Language servers work best when the project's own dependencies are installed (`npm install`, a Python virtual environment, `go mod download`, `cargo fetch`). Without them, references that go through imports may be missing.
 
 ## 3. Index a project
 
@@ -106,11 +115,29 @@ Commands run in a background daemon that `lemma` starts on first use. It starts 
 
 If a name matches more than one symbol, Lemma lists the candidates and asks you to choose. Use the qualified name, a filter such as `--language python` or `--path api/`, or the id: `lemma refs '#415'`.
 
+## 6. Ask other questions
+
+```sh
+lemma definition src/api/routes.py:22:12   # where the call there goes
+lemma implementations Shape.area           # what implements an interface method
+lemma signature Router.delete              # its declaration and documentation
+lemma outline src/router.py                # what a file defines
+```
+
+## 7. Connect an agent
+
+`lemma mcp` serves the same questions as MCP tools. In Claude Code, from the project directory:
+
+```sh
+claude mcp add lemma -- lemma mcp
+```
+
 ## Next steps
 
 - [Commands](commands.md): every command, option, and exit code.
 - [Language servers](providers.md): built-in servers, adding your own, and how one is chosen.
 - [How Lemma works](concepts.md): snapshots, stale results, and caching.
+- [Architecture](architecture.md): how the layers fit together.
 - [JSON output](json-output.md): using Lemma from scripts and agents.
 - [Comparison](comparison.md): when to use Lemma and when to use grep or ripgrep.
 - [Performance](performance.md): how fast Lemma is on large repositories, and why.

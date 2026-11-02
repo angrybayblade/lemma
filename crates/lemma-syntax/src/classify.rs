@@ -7,18 +7,27 @@ use tree_sitter::Node;
 /// queries should not have matched.
 pub(crate) fn kind_of(definition: Node<'_>, source: &str) -> Option<SymbolKind> {
     let kind = match definition.kind() {
-        "function_declaration" | "generator_function_declaration" | "function_definition" => {
-            SymbolKind::Function
-        }
-        "method_definition" | "method_declaration" => SymbolKind::Method,
+        "function_item" if rust_impl_or_trait(definition).is_some() => SymbolKind::Method,
+        "function_declaration"
+        | "generator_function_declaration"
+        | "function_definition"
+        | "function_item"
+        | "macro_definition" => SymbolKind::Function,
+        "method_definition"
+        | "method_declaration"
+        | "method_elem"
+        | "method_signature"
+        | "abstract_method_signature"
+        | "function_signature_item" => SymbolKind::Method,
         "class_declaration" | "abstract_class_declaration" | "class_definition" => {
             SymbolKind::Class
         }
-        "interface_declaration" => SymbolKind::Interface,
-        "type_alias_declaration" | "type_alias" => SymbolKind::TypeAlias,
-        "enum_declaration" => SymbolKind::Enum,
+        "struct_item" | "union_item" => SymbolKind::Struct,
+        "interface_declaration" | "trait_item" => SymbolKind::Interface,
+        "type_alias_declaration" | "type_alias" | "type_item" => SymbolKind::TypeAlias,
+        "enum_declaration" | "enum_item" => SymbolKind::Enum,
         "type_spec" => go_type_kind(definition),
-        "const_spec" => SymbolKind::Constant,
+        "const_spec" | "const_item" | "static_item" => SymbolKind::Constant,
         "var_spec" => SymbolKind::Variable,
         "variable_declarator" => typescript_variable_kind(definition, source),
         "assignment" => python_assignment_kind(definition, source),
@@ -28,14 +37,34 @@ pub(crate) fn kind_of(definition: Node<'_>, source: &str) -> Option<SymbolKind> 
 }
 
 /// The receiver type of a Go method, such as `Router` for
-/// `func (r *Router) Delete()`. Other definitions have none.
+/// `func (r *Router) Delete()`, or the type of the Rust `impl` block a
+/// function is in, such as `Router` for `impl Service for Router`. Other
+/// definitions have none.
 pub(crate) fn receiver_type(definition: Node<'_>, source: &str) -> Option<String> {
+    if definition.kind() == "function_item" {
+        let block = rust_impl_or_trait(definition)?;
+        if block.kind() != "impl_item" {
+            return None; // a trait is a definition itself, so nesting names it
+        }
+        let type_node = block.child_by_field_name("type")?;
+        let type_name = first_descendant_of_kind(type_node, "type_identifier")?;
+        return Some(source[type_name.byte_range()].to_owned());
+    }
     if definition.kind() != "method_declaration" {
         return None;
     }
     let receiver = definition.child_by_field_name("receiver")?;
     let type_name = first_descendant_of_kind(receiver, "type_identifier")?;
     Some(source[type_name.byte_range()].to_owned())
+}
+
+/// The `impl` or `trait` block a Rust function is directly inside.
+fn rust_impl_or_trait(function: Node<'_>) -> Option<Node<'_>> {
+    let block = function
+        .parent()
+        .filter(|parent| parent.kind() == "declaration_list")?
+        .parent()?;
+    matches!(block.kind(), "impl_item" | "trait_item").then_some(block)
 }
 
 fn go_type_kind(type_spec: Node<'_>) -> SymbolKind {

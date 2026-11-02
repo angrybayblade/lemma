@@ -4,6 +4,8 @@
 (function_declaration name: (identifier) @name) @definition
 (method_declaration name: (field_identifier) @name) @definition
 (type_spec name: (type_identifier) @name) @definition
+; Methods an interface requires, so their implementations can be found.
+(method_elem name: (field_identifier) @name) @definition
 (type_alias name: (type_identifier) @name) @definition
 
 ; Package-level constants and variables only.

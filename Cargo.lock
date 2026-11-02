@@ -536,15 +536,18 @@ dependencies = [
 
 [[package]]
 name = "lemma-cli"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "anyhow",
  "clap",
  "lemma-index",
+ "lemma-logic",
  "lemma-model",
  "lemma-providers",
  "lemma-query",
+ "lemma-souffle",
  "lemma-store",
+ "lemma-verify",
  "serde",
  "serde_json",
  "tempfile",
@@ -552,8 +555,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "lemma-grammar"
+version = "0.1.0-rc0"
+dependencies = [
+ "lemma-logic",
+ "serde",
+ "thiserror",
+ "yaml_serde",
+]
+
+[[package]]
+name = "lemma-http"
+version = "0.1.0-rc0"
+dependencies = [
+ "lemma-model",
+ "lemma-syntax",
+ "serde_json",
+ "thiserror",
+ "tree-sitter",
+ "tree-sitter-go",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+]
+
+[[package]]
 name = "lemma-index"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "blake3",
  "ignore",
@@ -567,8 +595,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lemma-logic"
+version = "0.1.0-rc0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "lemma-lsp"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lsp-types",
  "serde",
@@ -578,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-model"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "blake3",
  "serde",
@@ -586,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-providers"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "blake3",
  "lemma-lsp",
@@ -601,19 +636,31 @@ dependencies = [
 
 [[package]]
 name = "lemma-query"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lemma-lsp",
  "lemma-model",
  "lemma-providers",
  "lemma-store",
+ "lemma-syntax",
  "memchr",
  "thiserror",
 ]
 
 [[package]]
+name = "lemma-souffle"
+version = "0.1.0-rc0"
+dependencies = [
+ "lemma-logic",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "which",
+]
+
+[[package]]
 name = "lemma-store"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lemma-model",
  "rusqlite",
@@ -622,14 +669,29 @@ dependencies = [
 
 [[package]]
 name = "lemma-syntax"
-version = "0.1.0"
+version = "0.1.0-rc0"
 dependencies = [
  "lemma-model",
  "thiserror",
  "tree-sitter",
  "tree-sitter-go",
  "tree-sitter-python",
+ "tree-sitter-rust",
  "tree-sitter-typescript",
+]
+
+[[package]]
+name = "lemma-verify"
+version = "0.1.0-rc0"
+dependencies = [
+ "lemma-grammar",
+ "lemma-http",
+ "lemma-logic",
+ "lemma-syntax",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -648,6 +710,12 @@ dependencies = [
  "pkg-config",
  "vcpkg",
 ]
+
+[[package]]
+name = "libyaml-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
 
 [[package]]
 name = "linux-raw-sys"
@@ -877,6 +945,12 @@ dependencies = [
  "linux-raw-sys",
  "windows-sys",
 ]
+
+[[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "same-file"
@@ -1140,6 +1214,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-rust"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-typescript"
 version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1264,6 +1348,19 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "yaml_serde"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33b729a08a9a6be689bbad3e2bf8015926db54b6622cc89c3a5f7dc174b9e918"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "libyaml-rs",
+ "ryu",
+ "serde",
+]
 
 [[package]]
 name = "yoke"

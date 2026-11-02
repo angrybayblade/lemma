@@ -14,10 +14,11 @@ use lsp_types::notification::{Cancel, Exit, Initialized, Notification};
 use lsp_types::request::{Initialize, Request, Shutdown};
 use lsp_types::{
     CancelParams, ClientCapabilities, ClientInfo, DynamicRegistrationClientCapabilities,
-    GeneralClientCapabilities, InitializeParams, InitializedParams, NumberOrString, OneOf,
-    PositionEncodingKind, ServerCapabilities, TextDocumentClientCapabilities,
-    TextDocumentSyncClientCapabilities, Url, WindowClientCapabilities, WorkspaceClientCapabilities,
-    WorkspaceFolder,
+    GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, HoverProviderCapability,
+    ImplementationProviderCapability, InitializeParams, InitializedParams, MarkupKind,
+    NumberOrString, OneOf, PositionEncodingKind, ServerCapabilities,
+    TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities, Url,
+    WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 
@@ -30,6 +31,12 @@ use crate::transport;
 
 /// How long to wait for a polite shutdown before killing the process.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
+/// LSP's error code for "the document changed while answering; ask again".
+const CONTENT_MODIFIED: i64 = -32801;
+
+/// How long to wait before asking again after `ContentModified`.
+const RETRY_PAUSE: Duration = Duration::from_millis(500);
 
 /// How to start a language server.
 #[derive(Debug, Clone)]
@@ -71,6 +78,33 @@ impl ServerDetails {
         matches!(
             self.capabilities.references_provider,
             Some(OneOf::Left(true) | OneOf::Right(_))
+        )
+    }
+
+    /// Whether the server answers `textDocument/definition`.
+    pub fn supports_definitions(&self) -> bool {
+        matches!(
+            self.capabilities.definition_provider,
+            Some(OneOf::Left(true) | OneOf::Right(_))
+        )
+    }
+
+    /// Whether the server answers `textDocument/implementation`.
+    pub fn supports_implementations(&self) -> bool {
+        matches!(
+            self.capabilities.implementation_provider,
+            Some(
+                ImplementationProviderCapability::Simple(true)
+                    | ImplementationProviderCapability::Options(_)
+            )
+        )
+    }
+
+    /// Whether the server answers `textDocument/hover`.
+    pub fn supports_hover(&self) -> bool {
+        matches!(
+            self.capabilities.hover_provider,
+            Some(HoverProviderCapability::Simple(true) | HoverProviderCapability::Options(_))
         )
     }
 }
@@ -158,8 +192,29 @@ impl LspClient {
     }
 
     /// Sends a request and waits for its answer, up to the configured timeout.
-    pub fn request<R: Request>(&self, params: R::Params) -> Result<R::Result, LspError> {
-        self.connection.request::<R>(params, self.request_timeout)
+    /// A request the server answers with `ContentModified` is asked again
+    /// within that time, as LSP expects: rust-analyzer answers so while it
+    /// is still loading the workspace.
+    pub fn request<R: Request>(&self, params: R::Params) -> Result<R::Result, LspError>
+    where
+        R::Params: Clone,
+    {
+        let deadline = Instant::now() + self.request_timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let answer = self.connection.request::<R>(params.clone(), remaining);
+            let is_stale = matches!(
+                answer,
+                Err(LspError::Server {
+                    code: CONTENT_MODIFIED,
+                    ..
+                })
+            );
+            if !is_stale || Instant::now() + RETRY_PAUSE >= deadline {
+                return answer;
+            }
+            thread::sleep(RETRY_PAUSE);
+        }
     }
 
     /// Sends a notification.
@@ -457,6 +512,18 @@ fn client_capabilities() -> ClientCapabilities {
             }),
             references: Some(DynamicRegistrationClientCapabilities {
                 dynamic_registration: Some(false),
+            }),
+            definition: Some(GotoCapability {
+                dynamic_registration: Some(false),
+                link_support: Some(true),
+            }),
+            implementation: Some(GotoCapability {
+                dynamic_registration: Some(false),
+                link_support: Some(true),
+            }),
+            hover: Some(HoverClientCapabilities {
+                dynamic_registration: Some(false),
+                content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
             }),
             ..TextDocumentClientCapabilities::default()
         }),

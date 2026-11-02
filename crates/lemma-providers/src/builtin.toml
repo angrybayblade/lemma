@@ -5,7 +5,7 @@
 # to start, the next installed one for the language is tried.
 #
 #   id                      unique name, used in output and cache keys
-#   languages               typescript, tsx, python, go
+#   languages               typescript, tsx, python, go, rust
 #   command                 executable name on PATH, or an absolute path
 #   args                    command arguments
 #   initialization_options  sent during the LSP initialize handshake
@@ -13,6 +13,10 @@
 #   ready_messages          log messages, or titles of finished progress reports,
 #                           meaning the server has loaded the workspace (* matches
 #                           anything); Lemma waits for one before asking
+#   project_markers         file names marking separate projects the server only
+#                           searches once one of their files is open; before a
+#                           project-wide question Lemma opens one file in each
+#                           project that mentions the symbol
 
 # The server publishes diagnostics and goes quiet before it starts loading
 # the project; this progress report ending is the real signal.
@@ -22,6 +26,8 @@ languages = ["typescript", "tsx"]
 command = "typescript-language-server"
 args = ["--stdio"]
 ready_messages = ["Initializing JS/TS language features*"]
+# A monorepo has many tsconfig projects; references stay inside loaded ones.
+project_markers = ["tsconfig.json", "jsconfig.json"]
 
 # TypeScript 7's native compiler has its own server. typescript-language-server
 # needs TypeScript 6 or older, so whichever matches the installed TypeScript
@@ -31,6 +37,7 @@ id = "typescript-native"
 languages = ["typescript", "tsx"]
 command = "tsc"
 args = ["--lsp", "--stdio"]
+project_markers = ["tsconfig.json", "jsconfig.json"]
 
 # ty (from Astral) answers in milliseconds once loaded, even on very large
 # workspaces. Like the TypeScript servers, it does not count import
@@ -71,3 +78,15 @@ id = "gopls"
 languages = ["go"]
 command = "gopls"
 args = []
+
+# rust-analyzer reports progress while it loads the workspace with cargo and
+# indexes it; references are complete once indexing ends. Earlier reports,
+# such as "Roots Scanned", end before the workspace is loaded.
+[[provider]]
+id = "rust-analyzer"
+languages = ["rust"]
+command = "rust-analyzer"
+args = []
+ready_messages = ["Indexing"]
+# Each Cargo workspace is a separate project.
+project_markers = ["Cargo.toml"]

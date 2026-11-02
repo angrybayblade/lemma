@@ -6,12 +6,14 @@
 //! nothing beyond it sees `lsp_types`.
 
 mod registry;
+mod semantic;
 mod session;
 
 use std::path::PathBuf;
 
 pub use registry::{InstalledProvider, ProviderDefinition, ProviderRegistry};
-pub use session::{FileChange, ProviderSession, ReferenceAnswer};
+pub use semantic::{SemanticProvider, SourcePoint};
+pub use session::{FileChange, ProviderSession};
 
 /// Why a provider could not be configured or could not answer.
 #[derive(Debug, thiserror::Error)]

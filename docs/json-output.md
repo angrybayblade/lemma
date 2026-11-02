@@ -58,6 +58,14 @@ Used by `symbols`, `refs`, and ambiguous results.
 
 An array of [symbols](#symbol), possibly empty.
 
+## `lemma --json outline`
+
+```json
+{ "path": "src/router.py", "symbols": [ { "id": 412, "qualified_name": "Router", "...": "..." } ] }
+```
+
+`symbols` holds [symbols](#symbol) in source order.
+
 ## `lemma --json refs`
 
 ```json
@@ -106,9 +114,11 @@ References are sorted by path and position. `enclosing_symbol` is the qualified 
 
 Treat only `found` and `empty` as answers. `empty` means the server found nothing it could see, not that the symbol is unused.
 
+Every command that asks a language server (`refs`, `definition`, `implementations`, and the `hover` part of `signature`) shares this shape: `provenance`, `from_cache`, `skipped_providers`, and an `outcome` whose `state` is one of those above. When the state is `found`, the answer is under a field named for it: `references`, `definitions`, `implementations`, or `text`.
+
 ### Ambiguous names
 
-When the name matches several symbols, `refs` prints this and exits with 2:
+When the name matches several symbols, `refs`, `implementations` and `signature` print this and exit with 2:
 
 ```json
 {
@@ -119,6 +129,52 @@ When the name matches several symbols, `refs` prints this and exits with 2:
 ```
 
 Pick one and run `lemma --json refs '#415'`.
+
+## `lemma --json definition`
+
+```json
+{
+  "path": "main.py",
+  "position": { "line": 2, "column": 6 },
+  "provenance": { "provider_id": "pyright", "...": "..." },
+  "from_cache": false,
+  "skipped_providers": [],
+  "outcome": {
+    "state": "found",
+    "definitions": [
+      {
+        "path": "shapes.py",
+        "span": { "start": { "line": 17, "column": 4 }, "end": { "line": 17, "column": 14 } },
+        "is_external": false,
+        "symbol": { "id": 6, "qualified_name": "total_area", "...": "..." }
+      }
+    ]
+  }
+}
+```
+
+`position` is the zero-based position asked about (the command line counts from 1). Each definition's `symbol` is the indexed symbol whose name is at that location, or `null`, as for definitions in installed packages (`is_external: true`).
+
+## `lemma --json implementations`
+
+The same shape as `refs`, with `outcome.implementations` holding entries like `definitions` above.
+
+## `lemma --json signature`
+
+```json
+{
+  "symbol": { "id": 5, "qualified_name": "Square.area", "...": "..." },
+  "declaration": "def area(self) -> float:",
+  "hover": {
+    "provenance": { "provider_id": "pyright", "...": "..." },
+    "from_cache": false,
+    "skipped_providers": [],
+    "outcome": { "state": "found", "text": "```python\n(method) def area(self: Self@Square) -> float\n```" }
+  }
+}
+```
+
+`declaration` is `null` when the file changed since it was indexed. `hover.outcome.text` is the server's display text, usually Markdown.
 
 ## `lemma --json providers`
 
