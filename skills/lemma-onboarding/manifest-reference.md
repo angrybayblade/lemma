@@ -67,9 +67,9 @@ jobs:
       - uses: actions/checkout@v4
         with: { repository: your-org/dashboard, path: dashboard, token: ${{ secrets.READ_TOKEN }} }
       - name: Install lemma
-        env: { GH_TOKEN: ${{ secrets.READ_TOKEN }}, LEMMA_VERSION: v0.1.0-rc0 }
+        env: { LEMMA_VERSION: v0.1.0-rc0 }
         run: |
-          gh api -H 'Accept: application/vnd.github.raw' repos/angrybayblade/lemma/contents/install.sh | sh
+          curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Verify the change
         run: |

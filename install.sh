@@ -3,16 +3,12 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
 #
-# While the repository is private, fetch the script with credentials:
-#
-#   gh api -H 'Accept: application/vnd.github.raw' repos/angrybayblade/lemma/contents/install.sh | sh
-#
 # Settings, all optional:
 #   LEMMA_VERSION      release tag to install, such as v0.1.0-rc0 (default: the newest, pre-releases included)
 #   LEMMA_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
 #   LEMMA_SKILLS       1 to also install the agent skills (default: 0)
 #   LEMMA_SKILLS_DIR   where skills go (default: ~/.claude/skills)
-#   GITHUB_TOKEN       token for a private repository when the GitHub CLI is not signed in
+#   GITHUB_TOKEN       raises GitHub's API rate limit when looking up the newest release
 #   LEMMA_REPO         owner/name of the repository (default: angrybayblade/lemma)
 
 set -eu
@@ -40,11 +36,7 @@ target() {
   printf '%s-%s' "$arch_part" "$os_part"
 }
 
-has_gh() {
-  command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1
-}
-
-# GitHub API GET with the token if there is one.
+# GitHub API GET, with the token if there is one.
 api() {
   if [ -n "${GITHUB_TOKEN:-}" ]; then
     curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/$1"
@@ -54,35 +46,14 @@ api() {
 }
 
 latest_tag() {
-  if has_gh; then
-    gh release list -R "$REPO" --limit 1 --json tagName --jq '.[0].tagName'
-    return
-  fi
   api "repos/$REPO/releases?per_page=1" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1
 }
 
 # Downloads one release asset by name into a directory.
 download() {
   tag="$1" name="$2" directory="$3"
-  if has_gh; then
-    gh release download "$tag" -R "$REPO" -p "$name" -D "$directory" --clobber
-    return
-  fi
-  # Private repositories serve assets through the API, by asset id.
-  id="$(api "repos/$REPO/releases/tags/$tag" |
-    tr -d '\n' |
-    tr ',' '\n' |
-    grep -B 3 "\"name\": *\"$name\"" |
-    sed -n 's/.*"url": *"[^"]*\/assets\/\([0-9]*\)".*/\1/p' |
-    head -n 1)"
-  [ -n "$id" ] || fail "release $tag has no asset $name"
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
-    curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/octet-stream" \
-      -o "$directory/$name" "https://api.github.com/repos/$REPO/releases/assets/$id"
-  else
-    curl -fsSL -H "Accept: application/octet-stream" \
-      -o "$directory/$name" "https://api.github.com/repos/$REPO/releases/assets/$id"
-  fi
+  curl -fsSL -o "$directory/$name" "https://github.com/$REPO/releases/download/$tag/$name" ||
+    fail "could not download $name from release $tag"
 }
 
 verify_checksum() {
@@ -97,9 +68,9 @@ verify_checksum() {
 }
 
 main() {
-  command -v curl >/dev/null 2>&1 || has_gh || fail "needs curl or the GitHub CLI"
+  command -v curl >/dev/null 2>&1 || fail "needs curl"
   tag="${LEMMA_VERSION:-$(latest_tag)}"
-  [ -n "$tag" ] || fail "no release found in $REPO (private? sign in with 'gh auth login' or set GITHUB_TOKEN)"
+  [ -n "$tag" ] || fail "no release found in $REPO (rate limited? set GITHUB_TOKEN, or LEMMA_VERSION)"
   platform="$(target)"
   archive="lemma-$tag-$platform.tar.gz"
   work="$(mktemp -d)"
