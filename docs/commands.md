@@ -146,6 +146,7 @@ Checks a change across the repositories listed in a manifest and reports what it
 | `--explain` | Show why each finding holds, down to the facts it rests on. |
 | `--engine <name>` | `souffle` or `reference`. Default: Soufflé if installed, otherwise the reference engine. |
 | `--all` | List informational findings too, not just their count. |
+| `--base <commit>`, `--head <commit>` | Check these commits instead of the manifest's `change.base` and `change.head`, as in CI. |
 | `--relation <name>` | Also print every row of a relation the grammar derives, such as `calls`. Repeatable. |
 
 Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
