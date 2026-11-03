@@ -136,8 +136,9 @@ pub struct Report {
 pub struct Options {
     /// Attach each finding's derivation.
     pub explain: bool,
-    /// Derived relations to report in full, such as `calls`, for inspecting
-    /// or measuring what the rules concluded.
+    /// Relations to report in full, such as `calls` (derived) or `route`
+    /// (read from code), for inspecting or measuring what the rules saw and
+    /// concluded.
     pub relations: Vec<String>,
 }
 
@@ -191,14 +192,19 @@ fn relation_rows(
 ) -> BTreeMap<String, Vec<Vec<String>>> {
     let mut relations = BTreeMap::new();
     for name in names {
-        let rows = derived
+        // Input relations (facts read from code) are not among the derived
+        // ones; their rows are the facts themselves.
+        let mut rows: Vec<Vec<String>> = derived
             .rows(name)
+            .chain(grammar.facts.rows(name))
             .map(|row| {
                 row.iter()
                     .map(|value| grammar.symbols.display(*value))
                     .collect()
             })
             .collect();
+        rows.sort();
+        rows.dedup();
         relations.insert(name.clone(), rows);
     }
     relations
