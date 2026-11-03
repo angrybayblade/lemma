@@ -115,12 +115,15 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | snapshot | A fingerprinted set of source and configuration inputs | version, state, build |
 | symbol | A logical code entity reconciled across snapshots | node, entity, item |
 | occurrence | A symbol at a specific location in one snapshot | instance, usage, hit |
-| relationship | A typed connection between entities | edge, link, dependency |
+| relationship | A typed connection between entities | edge, dependency |
 | requirement | A property that must hold | rule, constraint, check |
 | checker | Something that produces evidence for a requirement | validator, test runner |
 | evidence | A result bound to specific inputs | proof, result, verdict |
 | provider | A source of semantic facts, such as a language server | backend, engine |
 | adapter | Code that translates one provider or format into Lemma types | driver, plugin, wrapper |
+| operation | Something a service provides or calls, with a request and response | endpoint, function, method |
+| link | A relationship between two operations, caller to provider, checked for persistence and schema agreement | edge, binding, connection |
+| external service | Another repository's `lemma.yaml`, named `#name` and pinned | remote, dependency, import |
 
 Extend this table when a new domain concept appears, in the same change that introduces it.
 
