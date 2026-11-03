@@ -402,3 +402,47 @@ pub type ReferenceOutcome = Outcome<Vec<Reference>>;
 pub fn content_hash(contents: &[u8]) -> String {
     blake3::hash(contents).to_hex().to_string()
 }
+
+/// A graph of what uses what: symbols, files or services, and the
+/// relationships between them. One shape for every scope, so every scope
+/// renders the same way.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UseGraph {
+    /// The nodes, in the order they were reached.
+    pub nodes: Vec<GraphNode>,
+    /// Who uses whom, sorted.
+    pub relationships: Vec<Use>,
+    /// The node the graph was built around, if there is one.
+    pub root: Option<String>,
+    /// How relationships were found, such as `lsp` or `names`.
+    pub source: String,
+    /// Questions that could not be answered while building it, such as a
+    /// language server that was not installed.
+    pub notes: Vec<String>,
+    /// Whether nodes were left out to stay within a size limit.
+    pub truncated: bool,
+}
+
+/// One node of a use graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphNode {
+    /// Unique within the graph, such as `symbol:42` or `file:src/app.ts`.
+    pub id: String,
+    /// What to show, such as a qualified name.
+    pub label: String,
+    /// What it is, such as `function`, `method` or `file`.
+    pub kind: String,
+    /// The file it is in, relative to the snapshot root.
+    pub path: Option<String>,
+    /// The line it starts on, counting from 1.
+    pub line: Option<u32>,
+}
+
+/// A use relationship: `from` uses (calls, references) `to`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Use {
+    /// The node that uses.
+    pub from: String,
+    /// The node it uses.
+    pub to: String,
+}
