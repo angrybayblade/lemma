@@ -117,7 +117,7 @@ Types that cannot be followed, such as a type from another package, are left ope
 
 ### Inferred links
 
-A service that exports its OpenAPI documents (`exports.openapi`) needs no links: calls to its operations from any repository's code are found and checked, as `lemma verify` does. A service's code (`index.include`) is searched for calls to others and for its route code; a service alone in its repository that declares nothing else has the whole repository searched.
+A service that exports its OpenAPI documents (`exports.openapi`) needs no links: calls to its operations from any repository's code are found and checked, as `lemma verify` does. A service's code (`index.include`) is read for its route code and searched for calls to others, unless the service is itself a generated client (`exports.client`); a service alone in its repository that declares nothing else has the whole repository searched.
 
 | Field | Meaning |
 | --- | --- |
@@ -128,8 +128,8 @@ A service that exports its OpenAPI documents (`exports.openapi`) needs no links:
 | `exports.operations` | Operations declared where documents do not describe them (above). |
 | `exports.symbols` | Files whose definitions are the service's public interface, as a library's entry modules. |
 | `path_prefixes`, `route_aliases`, `rejects_unknown_fields` | As in `lemma verify`'s manifest (see [Verifying changes](verify.md#the-manifest)). |
-| `client_receivers`, `client_modules` | How its code calls generated clients. |
-| `client` | A generated client: `generated_from` (documents it makes one function per operation from) and `call_names`, and `specs` (its copy of the documents, whose declared parameters are checked). |
+| `exports.client` | Set when the service is itself a generated client of another: `generated_from` (documents it makes one function per operation from), `call_names`, and `specs` (its copy of the documents, whose declared parameters are checked). Its code is indexed but not searched for calls: it is the client, not a caller. |
+| `calls.clients` | Clients the service's code calls other services through, generated elsewhere or at build time: each with `generated_from`, `call_names`, and the `receivers` (`client.createInvoice(...)`) and `modules` (`import { createInvoice } from '../generated/billing'`) the code uses. |
 
 ## Checks
 
