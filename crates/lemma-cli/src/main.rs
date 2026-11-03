@@ -12,6 +12,7 @@ mod cli;
 mod config;
 #[cfg(unix)]
 mod daemon;
+mod duration;
 mod engine;
 mod mcp;
 mod output;
