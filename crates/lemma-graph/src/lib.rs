@@ -13,6 +13,8 @@ pub mod address;
 mod check;
 pub mod compare;
 pub mod config;
+mod infer;
+pub mod openapi;
 pub mod repos;
 pub mod schema;
 
@@ -122,6 +124,13 @@ pub enum GraphError {
     UnknownRepository {
         /// The name.
         name: String,
+    },
+    /// Inferred links could not be found or checked.
+    #[error("could not infer links")]
+    Inference {
+        /// Why.
+        #[source]
+        source: lemma_verify::VerifyError,
     },
     /// The syntax extractor could not be set up.
     #[error("could not set up the syntax extractor")]

@@ -62,6 +62,90 @@ pub struct Service {
     /// Defined here: interpreters and toolchains its schema resolvers use.
     #[serde(default)]
     pub runtime: Runtime,
+    /// Defined here: `OpenAPI` documents it serves. Each operation with an
+    /// `operationId` becomes an operation of this service, and calls to any
+    /// of them from code elsewhere are found and checked (inferred links).
+    #[serde(default)]
+    pub openapi: Vec<String>,
+    /// Defined here: directories with its route code.
+    #[serde(default)]
+    pub routes: Vec<String>,
+    /// Defined here: whether it rejects request fields it does not know,
+    /// even where its documents do not say so.
+    #[serde(default)]
+    pub rejects_unknown_fields: bool,
+    /// Defined here: path prefixes it owns, such as `/v1/billing/`; a new call
+    /// under one to a path it does not serve is reported. The longest prefix
+    /// its operations share if empty.
+    #[serde(default)]
+    pub path_prefixes: Vec<String>,
+    /// Defined here: prefixes its routes are also served under, such as
+    /// `/v1/` routes also published as `/v2/`.
+    #[serde(default)]
+    pub route_aliases: BTreeMap<String, String>,
+    /// Defined here: further directories with schemas its routes import,
+    /// read to tell which reject unknown fields.
+    #[serde(default)]
+    pub shared_schemas: Vec<String>,
+    /// Defined here: directories whose code is searched for calls to other
+    /// services' operations. If empty, the whole repository for a service
+    /// that is alone in it and declares no documents, client or operations;
+    /// nothing otherwise.
+    #[serde(default)]
+    pub code: Vec<String>,
+    /// Defined here: names its code calls generated clients through, such
+    /// as `client`.
+    #[serde(default)]
+    pub client_receivers: Vec<String>,
+    /// Defined here: modules of generated clients its code imports, such as
+    /// `generated/billing`.
+    #[serde(default)]
+    pub client_modules: Vec<String>,
+    /// Defined here: a client of another service, generated from its
+    /// documents.
+    #[serde(default)]
+    pub client: Option<GeneratedClient>,
+}
+
+/// A client generated from `OpenAPI` documents.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedClient {
+    /// Documents it generates one function per operation from, as copied
+    /// into this repository; calls to those functions are calls to the
+    /// operations.
+    #[serde(default)]
+    pub generated_from: Vec<String>,
+    /// Its copy of the service's documents: the parameters it declares are
+    /// checked against the service's.
+    #[serde(default)]
+    pub specs: Vec<String>,
+    /// How it names an operation's function from its `operationId`:
+    /// templates with `{operationId}`, `{camel}`, `{pascal}` or `{snake}`.
+    /// The `operationId` as written if empty.
+    #[serde(default)]
+    pub call_names: Vec<String>,
+}
+
+impl Service {
+    /// Whether it defines anything: operations, documents, code or a client.
+    fn defines_anything(&self) -> bool {
+        let lists = [
+            &self.openapi,
+            &self.routes,
+            &self.path_prefixes,
+            &self.shared_schemas,
+            &self.code,
+            &self.client_receivers,
+            &self.client_modules,
+        ];
+        !self.operations.is_empty()
+            || self.runtime != Runtime::default()
+            || lists.iter().any(|list| !list.is_empty())
+            || self.rejects_unknown_fields
+            || !self.route_aliases.is_empty()
+            || self.client.is_some()
+    }
 }
 
 /// A service whose fields contradict its name: an external service (`#name`)
@@ -98,7 +182,7 @@ fn service_problem(name: &str, service: &Service) -> Option<&'static str> {
         || service.path.is_some()
         || service.reference.is_some()
         || service.manifest.is_some();
-    let defines = !service.operations.is_empty() || service.runtime != Runtime::default();
+    let defines = service.defines_anything();
     if !name.starts_with('#') {
         return points_elsewhere.then_some(
             "`git`, `path`, `ref` and `manifest` belong to external services; name it `#name`",

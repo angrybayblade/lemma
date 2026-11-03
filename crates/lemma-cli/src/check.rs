@@ -4,7 +4,9 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use lemma_graph::config::Level;
-use lemma_graph::{Change, CheckOptions, Report, Severity};
+use lemma_graph::{Change, CheckOptions, GraphError, Report, Severity};
+use lemma_logic::ReferenceEngine;
+use lemma_souffle::SouffleEngine;
 
 use crate::cli::CheckArgs;
 
@@ -25,15 +27,10 @@ pub(crate) fn run(args: &CheckArgs, json: bool) -> ExitCode {
         }),
         cache: lemma_graph::repos::cache_directory(),
     };
-    let report = match lemma_graph::check(&args.manifest, &options) {
+    let report = match check(args, &options) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("error: {error:#}");
-            let mut source = std::error::Error::source(&error);
-            while let Some(cause) = source {
-                eprintln!("  caused by: {cause}");
-                source = cause.source();
-            }
             return ExitCode::FAILURE;
         }
     };
@@ -55,12 +52,29 @@ pub(crate) fn run(args: &CheckArgs, json: bool) -> ExitCode {
     ExitCode::from(if violated { EXIT_VIOLATED } else { 0 })
 }
 
+fn check(args: &CheckArgs, options: &CheckOptions) -> anyhow::Result<Report> {
+    let manifest = &args.manifest;
+    let report: Result<Report, GraphError> = match args.engine.as_deref() {
+        Some("reference") => lemma_graph::check(manifest, options, &ReferenceEngine),
+        Some("souffle") => lemma_graph::check(manifest, options, &SouffleEngine::find()?),
+        Some(other) => anyhow::bail!("unknown engine `{other}`; use `souffle` or `reference`"),
+        None => match SouffleEngine::find() {
+            Ok(souffle) => lemma_graph::check(manifest, options, &souffle),
+            Err(_) => lemma_graph::check(manifest, options, &ReferenceEngine),
+        },
+    };
+    Ok(report?)
+}
+
 fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Result<()> {
     let level = match report.level {
         Level::Audit => "audit",
         Level::Check => "check",
     };
-    writeln!(out, "{} links, level {level}", report.links)?;
+    let inferred = report
+        .inferred_links
+        .map_or_else(String::new, |count| format!(", {count} inferred"));
+    writeln!(out, "{} links{inferred}, level {level}", report.links)?;
     print_repositories(out, report)?;
     let count = |severity: Severity| {
         report
