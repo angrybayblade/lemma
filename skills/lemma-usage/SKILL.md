@@ -17,7 +17,7 @@ Lemma answers code questions through each language's own server (references, def
 | What is this symbol's declaration and documentation? | `lemma signature <symbol>` | Header and the server's hover text, without opening files |
 | What does this file define? | `lemma outline <file>` | Symbols in source order, nested |
 | Which symbols are named like X? | `lemma symbols <name>` | Searches the index by name or qualified name |
-| Does my service change break callers in other repositories? | `lemma verify <manifest> --base <commit> --head <commit>` | Checks every consumer the manifest lists |
+| Does my service change break callers in other repositories? | `lemma check lemma.yaml --change '#repo' --base <commit> --head <commit>`, or `lemma verify <manifest>` where the system uses a manifest | Checks declared and inferred links, compares schemas, and traces what a break affects |
 | Strings, log messages, config keys, one-off lookups in small repositories | `rg` / grep | Text is the question |
 
 Prefer Lemma's MCP tools when they are available (`references`, `definition`, `implementations`, `signature`, `outline`, `search_symbols`, `index`); they answer the same questions. Before deleting something "unused", cross-check with text search: "no references found" means the server saw none, not that nothing uses it dynamically.
@@ -48,11 +48,32 @@ To check a finding, rerun with `--explain`: it prints the facts behind it, inden
 
 To see what Lemma concluded, print a relation: `--relation calls` (which consumer calls which operation), `--relation removed_request_field`, `--relation uses`.
 
+## Read `lemma check` output
+
+```text
+error   request: the receiver requires `currency` at the root; the sender may leave it out
+        [request] #web:services.web.create_charge -> #billing:services.api.create_charge  (introduced)
+        affects (traced by name):
+          #web:web (1): POST /v1/checkout
+          #storefront (2): src/cart.ts::Cart.pay -> POST /v1/checkout; src/quick-buy.ts::buy -> POST /v1/checkout
+```
+
+- `[link]`: an operation was removed or renamed, or its code anchor no longer resolves.
+- `[request]`: the provider now requires or rejects something the caller sends or omits.
+- `[response]`: the caller expects something the provider no longer sends, or reads it as another type.
+- `[schema]`: a side's schema could not be produced; read the message (a resolver failed, a type moved).
+- A bracketed requirement name, such as `[consumer_sends_rejected_field]`, is an inferred link, read as in `lemma verify`.
+- `(introduced)` means the change caused it; `(already there)` findings are informational when a change is given.
+- `affects` lists, nearest first, the operations whose handlers reach the problem and the code elsewhere that calls them. It is traced by name, so treat it as where to look, not as proof.
+
+`--head` must be a commit: commit the change on a branch before checking it.
+
 ## When changing a service's API
 
 1. Before editing: `lemma refs` on the handler or schema to see local uses.
-2. After editing, with the change committed on a branch: `lemma verify <manifest> --base main --head HEAD`.
+2. After editing, with the change committed on a branch: `lemma check <parent lemma.yaml> --change '#<repo>' --base main --head HEAD` (or `lemma verify <manifest> --base main --head HEAD`).
 3. For each error: update the consumer in the same change, or keep the old field or parameter accepted.
 4. For each warning: decide whether the consumer still works; say so in the pull request.
+5. For each `affects` entry in another repository: check whether it passes the changed field on to its own callers.
 
 More detail: [reference.md](reference.md).
