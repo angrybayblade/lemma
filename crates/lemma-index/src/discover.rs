@@ -1,13 +1,14 @@
 //! Finding the source files to index.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 use ignore::{DirEntry, WalkBuilder, WalkState};
 use lemma_model::Language;
 use lemma_store::FileStamp;
 
 use crate::scope::DirtyScope;
+use crate::selection::Selection;
 
 /// Directories never worth indexing, even when not ignored by Git.
 const SKIPPED_DIRECTORIES: [&str; 1] = ["node_modules"];
@@ -22,12 +23,16 @@ pub(crate) struct SourceFile {
     pub stamp: FileStamp,
 }
 
-/// Every supported source file under `root`, sorted by relative path.
+/// Every supported source file under `root` that `selection` covers,
+/// sorted by relative path.
 ///
 /// Respects `.gitignore` and skips hidden files, so build output and
 /// Lemma's own `.lemma/` directory are left out.
-pub(crate) fn source_files(root: &Path) -> Result<Vec<SourceFile>, ignore::Error> {
-    source_files_in(root, None)
+pub(crate) fn source_files(
+    root: &Path,
+    selection: &Selection,
+) -> Result<Vec<SourceFile>, ignore::Error> {
+    source_files_in(root, None, selection)
 }
 
 /// Like [`source_files`], but only in the directories `scope` names. The
@@ -36,9 +41,12 @@ pub(crate) fn source_files(root: &Path) -> Result<Vec<SourceFile>, ignore::Error
 pub(crate) fn source_files_in(
     root: &Path,
     scope: Option<&DirtyScope>,
+    selection: &Selection,
 ) -> Result<Vec<SourceFile>, ignore::Error> {
     let filter_root = root.to_owned();
     let filter_scope = scope.cloned();
+    let selection = Arc::new(selection.clone());
+    let filter_selection = Arc::clone(&selection);
     let walker = WalkBuilder::new(root)
         .hidden(true)
         .git_ignore(true)
@@ -49,12 +57,15 @@ pub(crate) fn source_files_in(
             if SKIPPED_DIRECTORIES.contains(&name.as_ref()) {
                 return false;
             }
-            let Some(scope) = &filter_scope else {
-                return true;
-            };
             let is_directory = entry.file_type().is_some_and(|kind| kind.is_dir());
             let Some(relative) = relative_path(&filter_root, entry.path()) else {
                 return false;
+            };
+            if is_directory && !filter_selection.enters(&relative) {
+                return false;
+            }
+            let Some(scope) = &filter_scope else {
+                return true;
             };
             if is_directory {
                 relative.is_empty() || scope.enters(&relative)
@@ -69,8 +80,11 @@ pub(crate) fn source_files_in(
     let (sender, receiver) = mpsc::channel();
     walker.run(|| {
         let sender = sender.clone();
+        let selection = Arc::clone(&selection);
         Box::new(move |entry| {
-            let found = entry.map(|entry| source_file(root, entry)).transpose();
+            let found = entry
+                .map(|entry| source_file(root, entry, &selection))
+                .transpose();
             if let Some(found) = found {
                 // The receiver outlives the walk, so sending cannot fail.
                 let _ = sender.send(found);
@@ -86,23 +100,25 @@ pub(crate) fn source_files_in(
 }
 
 /// Whether a path relative to the root is one discovery could return: a
-/// supported extension, with no hidden or skipped directory on the way.
-/// Used to keep Git's view of changes to the same files Lemma indexes.
-pub(crate) fn is_in_scope(relative_path: &str) -> bool {
+/// supported extension the selection covers, with no hidden or skipped
+/// directory on the way. Used to keep Git's view of changes to the same
+/// files Lemma indexes.
+pub(crate) fn is_in_scope(relative_path: &str, selection: &Selection) -> bool {
     let mut components = relative_path.split('/').peekable();
     while let Some(component) = components.next() {
         if component.starts_with('.') || SKIPPED_DIRECTORIES.contains(&component) {
             return false;
         }
         if components.peek().is_none() {
-            return language_of(Path::new(component)).is_some();
+            return language_of(Path::new(component))
+                .is_some_and(|language| selection.covers(relative_path, language));
         }
     }
     false
 }
 
 /// The entry as a source file, or `None` if it is not one Lemma parses.
-fn source_file(root: &Path, entry: DirEntry) -> Option<SourceFile> {
+fn source_file(root: &Path, entry: DirEntry, selection: &Selection) -> Option<SourceFile> {
     if !entry
         .file_type()
         .is_some_and(|file_type| file_type.is_file())
@@ -111,6 +127,9 @@ fn source_file(root: &Path, entry: DirEntry) -> Option<SourceFile> {
     }
     let language = language_of(entry.path())?;
     let relative_path = relative_path(root, entry.path())?;
+    if !selection.covers(&relative_path, language) {
+        return None;
+    }
     // A file that cannot be stat'ed gets an empty stamp, which never
     // matches a stored one, so it is read and reported if unreadable.
     let stamp = entry
@@ -175,15 +194,17 @@ mod tests {
 
     #[test]
     fn supported_files_outside_hidden_or_skipped_directories_are_in_scope() {
-        assert!(is_in_scope("src/app.py"));
-        assert!(is_in_scope("main.go"));
+        let everything = Selection::everything();
+        assert!(is_in_scope("src/app.py", &everything));
+        assert!(is_in_scope("main.go", &everything));
     }
 
     #[test]
     fn hidden_skipped_or_unsupported_paths_are_out_of_scope() {
-        assert!(!is_in_scope(".github/scripts/release.py"));
-        assert!(!is_in_scope("web/node_modules/dep/index.ts"));
-        assert!(!is_in_scope("README.md"));
-        assert!(!is_in_scope("src/.hidden.py"));
+        let everything = Selection::everything();
+        assert!(!is_in_scope(".github/scripts/release.py", &everything));
+        assert!(!is_in_scope("web/node_modules/dep/index.ts", &everything));
+        assert!(!is_in_scope("README.md", &everything));
+        assert!(!is_in_scope("src/.hidden.py", &everything));
     }
 }

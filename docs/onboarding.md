@@ -48,7 +48,7 @@ Lemma asks each language's own server, so install the ones your code needs:
 
 Servers answer best when the project's dependencies are installed (`npm install`, a Python virtual environment, `go mod download`, `cargo fetch`).
 
-Index each repository once; the background daemon keeps it current as files change:
+Give each repository a `lemma.yaml` at its root naming its services and the code each is made of (`index.include`; see [Checking links](check.md#files)), then index it once; the background daemon keeps it current as files change:
 
 ```sh
 cd ~/code/billing

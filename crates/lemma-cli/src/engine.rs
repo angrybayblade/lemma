@@ -33,6 +33,7 @@ use crate::cli::{
     LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget, SymbolsArgs,
 };
 use crate::output::{self, Format};
+use crate::selection;
 
 /// Directory, relative to an indexed root, where Lemma keeps its files.
 const LEMMA_DIRECTORY: &str = ".lemma";
@@ -200,13 +201,21 @@ impl Engine {
         let root = path
             .canonicalize()
             .with_context(|| format!("cannot index {}", path.display()))?;
+        let lemma_file = selection::read_lemma_file(&root)?;
+        let selection = selection::repository_selection(&lemma_file)?;
         let key = (db_path.clone(), root);
-        if !self.live_indexes.contains_key(&key) {
+        // A changed selection starts a fresh index, whose first run walks
+        // the whole tree and so drops files no longer selected.
+        let is_current = self
+            .live_indexes
+            .get(&key)
+            .is_some_and(|live| live.selection().description() == selection.description());
+        if !is_current {
             // Only a long-lived engine benefits from watching the tree.
             let live = if self.warms_up_after_index {
-                LiveIndex::watched(&key.1)?
+                LiveIndex::watched(&key.1, selection)?
             } else {
-                LiveIndex::new(&key.1)?
+                LiveIndex::selecting(&key.1, selection)?
             };
             self.live_indexes.insert(key.clone(), live);
         }
