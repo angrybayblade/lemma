@@ -4,7 +4,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use lemma_graph::config::Level;
-use lemma_graph::{Change, CheckOptions, GraphError, Report, Severity};
+use lemma_graph::{Change, CheckOptions, GraphError, Impact, Report, Severity};
 use lemma_logic::ReferenceEngine;
 use lemma_souffle::SouffleEngine;
 
@@ -103,6 +103,7 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
             "        [{}] {}  ({origin})",
             finding.check, finding.link
         )?;
+        print_affects(out, &finding.affects)?;
     }
     let infos = count(Severity::Info);
     let hidden = if all || infos == 0 {
@@ -116,6 +117,47 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
         count(Severity::Error),
         count(Severity::Warning)
     )
+}
+
+/// How many affected items to list per service or repository.
+const LISTED_PER_OWNER: usize = 3;
+
+/// What a problem affects, by service or repository, nearest first.
+fn print_affects(out: &mut dyn Write, affects: &[Impact]) -> std::io::Result<()> {
+    if affects.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "        affects (traced by name):")?;
+    let mut owners: Vec<(&str, Vec<&Impact>)> = Vec::new();
+    for impact in affects {
+        match owners.iter_mut().find(|(owner, _)| *owner == impact.owner) {
+            Some((_, items)) => items.push(impact),
+            None => owners.push((&impact.owner, vec![impact])),
+        }
+    }
+    for (owner, items) in owners {
+        let listed: Vec<String> = items
+            .iter()
+            .take(LISTED_PER_OWNER)
+            .map(|impact| match &impact.calls {
+                Some(operation) => format!("{} -> {operation}", impact.at),
+                None => impact.at.clone(),
+            })
+            .collect();
+        let more = items.len().saturating_sub(LISTED_PER_OWNER);
+        let more = if more > 0 {
+            format!(", and {more} more")
+        } else {
+            String::new()
+        };
+        writeln!(
+            out,
+            "          {owner} ({}): {}{more}",
+            items.len(),
+            listed.join("; ")
+        )?;
+    }
+    Ok(())
 }
 
 fn print_repositories(out: &mut dyn Write, report: &Report) -> std::io::Result<()> {

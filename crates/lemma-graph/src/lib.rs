@@ -10,9 +10,11 @@
 //! each message travels.
 
 pub mod address;
+mod affects;
 mod check;
 pub mod compare;
 pub mod config;
+mod impact;
 mod infer;
 pub mod openapi;
 pub mod repos;
@@ -20,7 +22,9 @@ pub mod schema;
 
 use std::path::PathBuf;
 
-pub use check::{Change, CheckOptions, Finding, Report, ResolvedRepository, Severity, check};
+pub use check::{
+    Change, CheckOptions, Finding, Impact, Report, ResolvedRepository, Severity, check,
+};
 
 /// Why a check could not run.
 #[derive(Debug, thiserror::Error)]
