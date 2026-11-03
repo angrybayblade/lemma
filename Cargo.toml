@@ -21,11 +21,13 @@ lemma-souffle = { path = "crates/lemma-souffle" }
 lemma-store = { path = "crates/lemma-store" }
 lemma-syntax = { path = "crates/lemma-syntax" }
 lemma-verify = { path = "crates/lemma-verify" }
+lemma-graph = { path = "crates/lemma-graph" }
 
 anyhow = "1"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
+json-schema-diff = "0.1.8"
 lsp-types = "0.95"
 memchr = "2"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
