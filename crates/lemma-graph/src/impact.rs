@@ -614,7 +614,7 @@ fn call_seed(call: &Call) -> Seed {
 }
 
 /// The identifiers in some source text.
-pub fn identifiers(text: &str) -> BTreeSet<String> {
+pub(crate) fn identifiers(text: &str) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     let mut current = String::new();
     for character in text.chars() {

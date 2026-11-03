@@ -8,14 +8,14 @@ use std::path::Path;
 use std::str::FromStr;
 
 use lemma_model::{
-    IndexedFile, Language, Location, LocationQuery, Position, ProviderAnswer, Snapshot, Span,
-    Symbol, SymbolKind,
+    Export, ExportKind, ExportLink, IndexedFile, Language, Location, LocationQuery, Position,
+    ProviderAnswer, Snapshot, Span, Symbol, SymbolKind,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 /// Version of `schema.sql`. Databases written with another version are
 /// rejected rather than migrated, since an index can always be rebuilt.
-pub const SCHEMA_VERSION: &str = "3";
+pub const SCHEMA_VERSION: &str = "4";
 
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -472,6 +472,100 @@ impl Store {
             "SELECT path FROM uncommitted_paths WHERE snapshot_id = ?1 ORDER BY path",
         )?;
         let rows = statement.query_map([snapshot_id], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Replaces a snapshot's exports and links, recording what they were
+    /// built from.
+    pub fn replace_exports(
+        &mut self,
+        snapshot_id: i64,
+        fingerprint: &str,
+        exports: &[Export],
+        links: &[ExportLink],
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM exports WHERE snapshot_id = ?1", [snapshot_id])?;
+        transaction.execute(
+            "DELETE FROM export_links WHERE snapshot_id = ?1",
+            [snapshot_id],
+        )?;
+        {
+            let mut insert = transaction.prepare_cached(
+                "INSERT OR REPLACE INTO exports (snapshot_id, service, name, kind, path, symbol, detail)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            for export in exports {
+                insert.execute(params![
+                    snapshot_id,
+                    export.service,
+                    export.name,
+                    export.kind.as_str(),
+                    export.path,
+                    export.symbol,
+                    export.detail
+                ])?;
+            }
+            let mut insert = transaction.prepare_cached(
+                "INSERT OR IGNORE INTO export_links (snapshot_id, caller, provider) VALUES (?1, ?2, ?3)",
+            )?;
+            for link in links {
+                insert.execute(params![snapshot_id, link.caller, link.provider])?;
+            }
+        }
+        transaction.execute(
+            "INSERT OR REPLACE INTO export_sources (snapshot_id, fingerprint) VALUES (?1, ?2)",
+            params![snapshot_id, fingerprint],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// What a snapshot's exports were last built from, if they were.
+    pub fn exports_fingerprint(&self, snapshot_id: i64) -> Result<Option<String>, StoreError> {
+        let fingerprint = self
+            .connection
+            .query_row(
+                "SELECT fingerprint FROM export_sources WHERE snapshot_id = ?1",
+                [snapshot_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(fingerprint)
+    }
+
+    /// A snapshot's exports, by service, name and kind.
+    pub fn exports(&self, snapshot_id: i64) -> Result<Vec<Export>, StoreError> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT service, name, kind, path, symbol, detail FROM exports
+             WHERE snapshot_id = ?1 ORDER BY service, name, kind",
+        )?;
+        let rows = statement.query_map([snapshot_id], |row| {
+            let kind: String = row.get(2)?;
+            Ok(Export {
+                service: row.get(0)?,
+                name: row.get(1)?,
+                kind: kind.parse().unwrap_or(ExportKind::Symbol),
+                path: row.get(3)?,
+                symbol: row.get(4)?,
+                detail: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// A snapshot's declared links, sorted.
+    pub fn export_links(&self, snapshot_id: i64) -> Result<Vec<ExportLink>, StoreError> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT caller, provider FROM export_links WHERE snapshot_id = ?1
+             ORDER BY caller, provider",
+        )?;
+        let rows = statement.query_map([snapshot_id], |row| {
+            Ok(ExportLink {
+                caller: row.get(0)?,
+                provider: row.get(1)?,
+            })
+        })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -1385,6 +1479,37 @@ mod tests {
         let found = store.find_symbols(snapshot_id, &only_functions).unwrap();
 
         assert_eq!(qualified_names(&found), ["delete_all"]);
+    }
+
+    #[test]
+    fn exports_and_links_are_replaced_whole() {
+        let (mut store, snapshot_id) = store_with_sample();
+        let export = Export {
+            service: "api".to_owned(),
+            name: "createCharge".to_owned(),
+            kind: ExportKind::Endpoint,
+            path: Some("src/router.py".to_owned()),
+            symbol: Some("Router.delete".to_owned()),
+            detail: Some("POST /v1/charges".to_owned()),
+        };
+        let link = ExportLink {
+            caller: "services.api.createCharge".to_owned(),
+            provider: "#billing:services.core.charge".to_owned(),
+        };
+
+        store
+            .replace_exports(snapshot_id, "first", std::slice::from_ref(&export), &[link])
+            .unwrap();
+        store
+            .replace_exports(snapshot_id, "second", std::slice::from_ref(&export), &[])
+            .unwrap();
+
+        assert_eq!(store.exports(snapshot_id).unwrap(), [export]);
+        assert_eq!(store.export_links(snapshot_id).unwrap(), []);
+        assert_eq!(
+            store.exports_fingerprint(snapshot_id).unwrap().as_deref(),
+            Some("second")
+        );
     }
 
     #[test]

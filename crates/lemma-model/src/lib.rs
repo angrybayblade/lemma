@@ -446,3 +446,73 @@ pub struct Use {
     /// The node it uses.
     pub to: String,
 }
+
+/// What kind of entry point a service exports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportKind {
+    /// An operation declared in `lemma.yaml`, at its code anchor.
+    Operation,
+    /// An operation an `OpenAPI` document describes, at its route handler.
+    Endpoint,
+    /// A definition in one of the service's public modules.
+    Symbol,
+}
+
+impl ExportKind {
+    /// The `snake_case` name used in storage and output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Operation => "operation",
+            Self::Endpoint => "endpoint",
+            Self::Symbol => "symbol",
+        }
+    }
+}
+
+impl FromStr for ExportKind {
+    type Err = UnknownName;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        [Self::Operation, Self::Endpoint, Self::Symbol]
+            .into_iter()
+            .find(|kind| kind.as_str() == name)
+            .ok_or_else(|| UnknownName(name.to_owned()))
+    }
+}
+
+/// An entry point a service offers, and the code that implements it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Export {
+    /// The service.
+    pub service: String,
+    /// Its name: an operation's name, an `operationId`, or a qualified
+    /// symbol name.
+    pub name: String,
+    /// What kind of entry point it is.
+    pub kind: ExportKind,
+    /// The file implementing it, relative to the snapshot root, if found.
+    pub path: Option<String>,
+    /// The qualified name of the symbol implementing it, if found.
+    pub symbol: Option<String>,
+    /// More about it, such as `POST /v1/charges` for an endpoint.
+    pub detail: Option<String>,
+}
+
+impl Export {
+    /// Its address, as links and queries name it: `services.<service>.<name>`.
+    pub fn address(&self) -> String {
+        format!("services.{}.{}", self.service, self.name)
+    }
+}
+
+/// A link declared in `lemma.yaml`: the caller's operation uses the
+/// provider's. Addresses name exports here (`services.a.op`) or in another
+/// repository (`#repo:services.b.op`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ExportLink {
+    /// The calling operation's address.
+    pub caller: String,
+    /// The provided operation's address.
+    pub provider: String,
+}

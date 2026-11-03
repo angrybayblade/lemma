@@ -68,6 +68,34 @@ struct IndexView<'a> {
     symbol_count: usize,
     files_with_syntax_errors: &'a [String],
     unreadable_files: &'a [String],
+    exports: &'a ExportCounts,
+}
+
+/// How many exports and links an index holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct ExportCounts {
+    /// Operations declared in `lemma.yaml`.
+    pub operations: usize,
+    /// Operations documents describe.
+    pub endpoints: usize,
+    /// Those whose route handler was found.
+    pub endpoints_at_handlers: usize,
+    /// Definitions in public modules.
+    pub symbols: usize,
+    /// Declared links.
+    pub links: usize,
+}
+
+fn export_counts(out: &mut dyn Write, exports: &ExportCounts) -> io::Result<()> {
+    writeln!(
+        out,
+        "exports: {} operations, {} endpoints ({} at their handlers), {} symbols; {} links",
+        exports.operations,
+        exports.endpoints,
+        exports.endpoints_at_handlers,
+        exports.symbols,
+        exports.links
+    )
 }
 
 #[derive(Serialize)]
@@ -88,6 +116,7 @@ struct ProviderView<'a> {
 pub(crate) fn index_summary(
     out: &mut dyn Write,
     summary: &IndexSummary,
+    exports: &ExportCounts,
     database: &Path,
     format: Format,
 ) -> io::Result<()> {
@@ -107,6 +136,7 @@ pub(crate) fn index_summary(
                 symbol_count: summary.symbol_count,
                 files_with_syntax_errors: &summary.files_with_syntax_errors,
                 unreadable_files: &summary.unreadable_files,
+                exports,
             },
         );
     }
@@ -132,6 +162,7 @@ pub(crate) fn index_summary(
         ""
     };
     writeln!(out, "revision {revision}{dirty}")?;
+    export_counts(out, exports)?;
     if !summary.files_with_syntax_errors.is_empty() {
         writeln!(
             out,

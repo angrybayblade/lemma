@@ -12,7 +12,7 @@ use crate::check::{Finding, HEAD, Impact, Repo, Severity};
 use crate::impact::{self, Affected, Call, Function, Route, Seed};
 
 /// Code files the call graph is read from.
-const CODE_EXTENSIONS: [&str; 11] = [
+pub(crate) const CODE_EXTENSIONS: [&str; 11] = [
     "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "go", "rs",
 ];
 
