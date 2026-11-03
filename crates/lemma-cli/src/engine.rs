@@ -181,6 +181,7 @@ impl Engine {
             Command::Daemon(_) => bail!("`lemma daemon` cannot run inside the daemon"),
             Command::Mcp => bail!("`lemma mcp` cannot run inside the daemon"),
             Command::Verify(_) => bail!("`lemma verify` runs in its own process"),
+            Command::Check(_) => bail!("`lemma check` runs in its own process"),
         }
     }
 
