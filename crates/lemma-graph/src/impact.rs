@@ -93,6 +93,49 @@ const MAX_FUNCTION_HOPS: usize = 8;
 /// followed.
 const MAX_DEFINITIONS: usize = 3;
 
+/// Where a trace starts in its first repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Start {
+    /// Callers of these names, found by name.
+    Names(Seed),
+    /// These functions, already known to reach what is traced, such as
+    /// from a language server. Their callers are followed on by name, to
+    /// the handlers of routes.
+    Reached {
+        /// The repository.
+        repository: String,
+        /// Each function's file and first line.
+        functions: Vec<(String, u32)>,
+    },
+}
+
+/// A node a link joins: a function in the first repository, or something
+/// affected.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Node {
+    /// A function in the first repository.
+    Function {
+        /// The file, relative to the repository root.
+        file: String,
+        /// Its first line, counting from 1.
+        line: u32,
+        /// Its qualified name.
+        name: String,
+    },
+    /// An affected operation or caller.
+    Affected(Affected),
+}
+
+/// One step of a trace: `user` uses `used`, directly or through calls
+/// within its repository.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Link {
+    /// The node that uses.
+    pub user: Node,
+    /// The node it uses.
+    pub used: Node,
+}
+
 /// Everything reachable from `seed`: affected operations and callers, each
 /// with how many operations away from the break it is, nearest first.
 /// `functions` gives a repository's functions, read on demand.
@@ -102,84 +145,414 @@ pub fn trace(
     routes: &[Route],
     calls: &[Call],
 ) -> Vec<(usize, Affected)> {
-    let mut indexes: BTreeMap<String, Vec<Function>> = BTreeMap::new();
-    // Traced breadth first, so the first distance recorded is the shortest.
-    let mut affected: BTreeMap<Affected, usize> = BTreeMap::new();
-    let mut seen_operations = BTreeSet::new();
-    let mut pending = VecDeque::from([(seed.clone(), 0usize)]);
-    while let Some((seed, hops)) = pending.pop_front() {
-        let index = indexes
-            .entry(seed.repository.clone())
-            .or_insert_with(|| functions(&seed.repository));
-        let reached = reach(index, &seed.names);
-        let repository_routes = routes
-            .iter()
-            .filter(|route| route.repository == seed.repository);
-        for route in repository_routes.filter(|route| is_reached(route, index, &reached)) {
-            let operation = Affected::Operation {
-                service: route.service.clone(),
-                operation: route.operation.clone(),
-            };
-            affected.entry(operation).or_insert(hops);
-            if hops >= MAX_OPERATION_HOPS || !seen_operations.insert(route.operation.clone()) {
-                continue;
-            }
-            for call in calls
-                .iter()
-                .filter(|call| call.operation == route.operation)
-            {
-                affected.entry(caller(call)).or_insert(hops + 1);
-                pending.push_back((call_seed(call), hops + 1));
+    trace_links(&Start::Names(seed.clone()), functions, routes, calls).0
+}
+
+/// As [`trace`], from `start`, with the links between what it reaches:
+/// operations to the handler (or caller) that reaches them, callers to the
+/// operation they call, and, from reached functions, the calls from a
+/// handler down to them.
+pub fn trace_links(
+    start: &Start,
+    functions: &mut dyn FnMut(&str) -> Vec<Function>,
+    routes: &[Route],
+    calls: &[Call],
+) -> (Vec<(usize, Affected)>, Vec<Link>) {
+    let mut repositories: BTreeMap<String, Repository> = BTreeMap::new();
+    let mut tracer = Tracer::default();
+    tracer.pending.push_back(Step {
+        start: start.clone(),
+        hops: 0,
+        via: None,
+    });
+    while let Some(step) = tracer.pending.pop_front() {
+        let name = step.repository().to_owned();
+        let repository = repositories
+            .entry(name.clone())
+            .or_insert_with(|| Repository::read(functions(&name), routes, &name));
+        let walked = step.walk(&repository.functions);
+        for (route, handler) in &repository.routes {
+            if let Some(found) = handler.resolve(&repository.functions, &walked) {
+                let handled = Handled {
+                    route,
+                    handler: found,
+                    functions: &repository.functions,
+                    walked: &walked,
+                };
+                tracer.visit(&step, &handled, calls);
             }
         }
     }
-    let mut nearest: Vec<(usize, Affected)> = affected
-        .into_iter()
-        .map(|(item, distance)| (distance, item))
-        .collect();
-    nearest.sort();
-    nearest
+    tracer.finish()
+}
+
+/// A repository's functions and routes, with each route's possible
+/// handlers worked out once.
+struct Repository {
+    functions: Vec<Function>,
+    routes: Vec<(Route, Handler)>,
+}
+
+impl Repository {
+    fn read(functions: Vec<Function>, routes: &[Route], name: &str) -> Self {
+        let defined: BTreeSet<&str> = functions
+            .iter()
+            .map(|function| function.name.as_str())
+            .collect();
+        let routes = routes
+            .iter()
+            .filter(|route| route.repository == name)
+            .map(|route| (route.clone(), Handler::of(route, &functions, &defined)))
+            .collect();
+        Self { functions, routes }
+    }
+}
+
+/// Which function handles a route, once it is known what was reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Handler {
+    /// A registration (`r.POST("/x", h.execute)`): a function its line
+    /// names.
+    Named(Vec<String>),
+    /// A route declared inside its handler (a file-based route): the
+    /// function around its line.
+    Enclosing(usize),
+    /// A route outside functions: any function in its file, or the file's
+    /// top-level code.
+    File(String),
+}
+
+impl Handler {
+    fn of(route: &Route, functions: &[Function], defined: &BTreeSet<&str>) -> Self {
+        let enclosing = functions.iter().position(|function| {
+            function.file == route.file
+                && function.lines.0 <= route.line
+                && route.line <= function.lines.1
+        });
+        let enclosing_name = enclosing.map(|index| functions[index].name.as_str());
+        let named: Vec<String> = route
+            .line_mentions
+            .iter()
+            .filter(|name| defined.contains(name.as_str()) && Some(name.as_str()) != enclosing_name)
+            .cloned()
+            .collect();
+        if !named.is_empty() {
+            return Self::Named(named);
+        }
+        match enclosing {
+            Some(index) => Self::Enclosing(index),
+            None => Self::File(route.file.clone()),
+        }
+    }
+
+    /// The reached function that handles the route, if one does.
+    fn resolve(&self, functions: &[Function], walked: &Walked) -> Option<usize> {
+        match self {
+            Self::Named(names) => walked
+                .order
+                .iter()
+                .copied()
+                .find(|index| names.contains(&functions[*index].name)),
+            Self::Enclosing(index) => walked.is_reached[*index].then_some(*index),
+            Self::File(file) => walked
+                .order
+                .iter()
+                .copied()
+                .find(|index| &functions[*index].file == file),
+        }
+    }
+}
+
+/// A route whose handler a walk reached.
+struct Handled<'a> {
+    route: &'a Route,
+    handler: usize,
+    functions: &'a [Function],
+    walked: &'a Walked,
+}
+
+/// What a trace has found so far, and where it has yet to look.
+#[derive(Default)]
+struct Tracer {
+    /// Traced breadth first, so the first distance recorded is the shortest.
+    affected: BTreeMap<Affected, usize>,
+    links: BTreeSet<Link>,
+    seen_operations: BTreeSet<String>,
+    pending: VecDeque<Step>,
+}
+
+impl Tracer {
+    /// Records a route whose handler was reached, and queues the callers of
+    /// its operation.
+    fn visit(&mut self, step: &Step, handled: &Handled<'_>, calls: &[Call]) {
+        let route = handled.route;
+        let operation = Affected::Operation {
+            service: route.service.clone(),
+            operation: route.operation.clone(),
+        };
+        self.affected.entry(operation.clone()).or_insert(step.hops);
+        let used = if let Some(caller) = &step.via {
+            Node::Affected(caller.clone())
+        } else {
+            let functions = handled.functions;
+            self.links
+                .extend(handled.walked.chain(handled.handler, functions));
+            function_node(&functions[handled.handler])
+        };
+        self.links.insert(Link {
+            user: Node::Affected(operation.clone()),
+            used,
+        });
+        if step.hops >= MAX_OPERATION_HOPS || !self.seen_operations.insert(route.operation.clone())
+        {
+            return;
+        }
+        for call in calls
+            .iter()
+            .filter(|call| call.operation == route.operation)
+        {
+            let caller = caller(call);
+            self.affected.entry(caller.clone()).or_insert(step.hops + 1);
+            self.links.insert(Link {
+                user: Node::Affected(caller.clone()),
+                used: Node::Affected(operation.clone()),
+            });
+            self.pending.push_back(Step {
+                start: Start::Names(call_seed(call)),
+                hops: step.hops + 1,
+                via: Some(caller),
+            });
+        }
+    }
+
+    fn finish(self) -> (Vec<(usize, Affected)>, Vec<Link>) {
+        let mut nearest: Vec<(usize, Affected)> = self
+            .affected
+            .into_iter()
+            .map(|(item, distance)| (distance, item))
+            .collect();
+        nearest.sort();
+        (nearest, self.links.into_iter().collect())
+    }
+}
+
+fn function_node(function: &Function) -> Node {
+    Node::Function {
+        file: function.file.clone(),
+        line: function.lines.0,
+        name: function.qualified_name.clone(),
+    }
+}
+
+/// A repository to look for routes in, and how it was reached.
+struct Step {
+    start: Start,
+    hops: usize,
+    /// The caller in this repository that led here, after the first.
+    via: Option<Affected>,
+}
+
+impl Step {
+    fn repository(&self) -> &str {
+        match &self.start {
+            Start::Names(seed) => &seed.repository,
+            Start::Reached { repository, .. } => repository,
+        }
+    }
+
+    fn walk(&self, functions: &[Function]) -> Walked {
+        match &self.start {
+            Start::Names(seed) => {
+                let seeds = seed.names.iter().map(|name| (name.clone(), None)).collect();
+                let mut walked = Walked::from_names(functions, seeds, Vec::new());
+                // Functions named by the seed are reached themselves.
+                let named = functions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, function)| seed.names.contains(&function.name));
+                for (index, _) in named {
+                    walked.add(index, None);
+                }
+                walked
+            }
+            Start::Reached {
+                functions: given, ..
+            } => {
+                let given: Vec<usize> = functions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, function)| {
+                        given
+                            .iter()
+                            .any(|(file, line)| &function.file == file && function.lines.0 == *line)
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                // The walk that found them may stop short of a route's
+                // handler (a constructor registered for a method's type), so
+                // it goes on by name from them.
+                let definitions = definition_counts(functions);
+                let reached: Vec<(usize, Option<usize>)> =
+                    given.iter().map(|index| (*index, None)).collect();
+                let seeds = next_names(functions, &reached, &definitions, &BTreeSet::new())
+                    .into_iter()
+                    .collect();
+                Walked::from_names(functions, seeds, given)
+            }
+        }
+    }
+}
+
+/// The functions a walk reached, in order, each with the reached function
+/// it calls that led to it.
+struct Walked {
+    order: Vec<usize>,
+    is_reached: Vec<bool>,
+    /// The function each reached one was reached through: the one it calls.
+    callee: BTreeMap<usize, usize>,
+    /// Functions reached before walking, which a chain stops at.
+    given: BTreeSet<usize>,
+}
+
+impl Walked {
+    /// Walks upwards from `seeds` (names, each with the function it came
+    /// from), after the `given` functions, which are reached already.
+    fn from_names(
+        functions: &[Function],
+        seeds: Vec<(String, Option<usize>)>,
+        given: Vec<usize>,
+    ) -> Self {
+        let mut walked = Self {
+            order: Vec::new(),
+            is_reached: vec![false; functions.len()],
+            callee: BTreeMap::new(),
+            given: given.iter().copied().collect(),
+        };
+        for index in given {
+            walked.add(index, None);
+        }
+        let definitions = definition_counts(functions);
+        let mut frontier: BTreeMap<String, Option<usize>> = BTreeMap::new();
+        for (name, from) in seeds {
+            frontier.entry(name).or_insert(from);
+        }
+        let mut followed: BTreeSet<String> = BTreeSet::new();
+        for _ in 0..MAX_FUNCTION_HOPS {
+            let next = walked.callers(functions, &frontier);
+            if next.is_empty() {
+                break;
+            }
+            followed.extend(frontier.keys().cloned());
+            let names = next_names(functions, &next, &definitions, &followed);
+            for (index, from) in next {
+                walked.add(index, from);
+            }
+            frontier = names;
+        }
+        walked
+    }
+
+    /// Functions not yet reached that mention a name in `frontier`, other
+    /// than their own or their type's: each with the function the name came
+    /// from.
+    fn callers(
+        &self,
+        functions: &[Function],
+        frontier: &BTreeMap<String, Option<usize>>,
+    ) -> Vec<(usize, Option<usize>)> {
+        let mut found = Vec::new();
+        for (index, function) in functions.iter().enumerate() {
+            if self.is_reached[index] {
+                continue;
+            }
+            let own = callable_names(function);
+            // A call by name stays within one language.
+            let same_language = |from: &Option<usize>| {
+                from.is_none_or(|from| language(&functions[from].file) == language(&function.file))
+            };
+            let from = function
+                .mentions
+                .iter()
+                .filter(|name| !own.contains(&name.as_str()))
+                .filter_map(|name| frontier.get(name))
+                .find(|from| same_language(from));
+            if let Some(from) = from {
+                found.push((index, *from));
+            }
+        }
+        found
+    }
+
+    fn add(&mut self, index: usize, callee: Option<usize>) {
+        if self.is_reached[index] {
+            return;
+        }
+        self.is_reached[index] = true;
+        self.order.push(index);
+        if let Some(callee) = callee {
+            self.callee.insert(index, callee);
+        }
+    }
+
+    /// The calls from `handler` down to a given function, as links.
+    fn chain(&self, handler: usize, functions: &[Function]) -> Vec<Link> {
+        let mut links = Vec::new();
+        let mut current = handler;
+        while !self.given.contains(&current) {
+            let Some(&callee) = self.callee.get(&current) else {
+                break;
+            };
+            links.push(Link {
+                user: function_node(&functions[current]),
+                used: function_node(&functions[callee]),
+            });
+            current = callee;
+        }
+        links
+    }
+}
+
+/// The names to look for next: those of the functions just reached, unless
+/// followed already or shared by several functions, each with the function
+/// it belongs to.
+fn next_names(
+    functions: &[Function],
+    reached: &[(usize, Option<usize>)],
+    definitions: &BTreeMap<&str, usize>,
+    followed: &BTreeSet<String>,
+) -> BTreeMap<String, Option<usize>> {
+    let mut names = BTreeMap::new();
+    for (index, _) in reached {
+        let candidates = callable_names(&functions[*index])
+            .into_iter()
+            .filter(|name| {
+                definitions.get(name).copied().unwrap_or(0) <= MAX_DEFINITIONS
+                    && !followed.contains(*name)
+            });
+        for name in candidates {
+            names.entry(name.to_owned()).or_insert(Some(*index));
+        }
+    }
+    names
 }
 
 /// The functions reached from `names` by following mentions upwards.
+#[cfg(test)]
 fn reach<'a>(index: &'a [Function], names: &[String]) -> Vec<&'a Function> {
-    let definitions = definition_counts(index);
-    let mut reached: Vec<&Function> = Vec::new();
-    let mut frontier: BTreeSet<&str> = names.iter().map(String::as_str).collect();
-    let mut followed: BTreeSet<&str> = BTreeSet::new();
-    for _ in 0..MAX_FUNCTION_HOPS {
-        let next: Vec<&Function> = index
-            .iter()
-            .filter(|function| !reached.contains(function))
-            .filter(|function| {
-                // A type's own methods are not its users: a sibling is
-                // reached only by its own name being called.
-                let own = callable_names(function);
-                function
-                    .mentions
-                    .iter()
-                    .any(|name| frontier.contains(name.as_str()) && !own.contains(&name.as_str()))
-            })
-            .collect();
-        if next.is_empty() {
-            break;
-        }
-        followed.extend(frontier.iter().copied());
-        frontier = next
-            .iter()
-            .flat_map(|function| callable_names(function))
-            .filter(|name| definitions.get(name).copied().unwrap_or(0) <= MAX_DEFINITIONS)
-            .filter(|name| !followed.contains(name))
-            .collect();
-        reached.extend(next);
-    }
-    // Functions named by the seed are reached themselves.
-    for function in index {
-        if names.contains(&function.name) && !reached.contains(&function) {
-            reached.push(function);
-        }
-    }
-    reached
+    let seed = Seed {
+        repository: String::new(),
+        names: names.to_vec(),
+    };
+    let step = Step {
+        start: Start::Names(seed),
+        hops: 0,
+        via: None,
+    };
+    step.walk(index)
+        .order
+        .into_iter()
+        .map(|position| &index[position])
+        .collect()
 }
 
 /// The names a function is reached by: its own, and for a method its
@@ -196,43 +569,21 @@ fn callable_names(function: &Function) -> Vec<&str> {
     names
 }
 
+/// A file's language, as far as calls by name go: its extension, with
+/// JavaScript and TypeScript as one.
+fn language(file: &str) -> &str {
+    match file.rsplit_once('.').map_or("", |(_, extension)| extension) {
+        "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => "typescript",
+        other => other,
+    }
+}
+
 fn definition_counts(index: &[Function]) -> BTreeMap<&str, usize> {
     let mut counts = BTreeMap::new();
     for function in index {
         *counts.entry(function.name.as_str()).or_insert(0) += 1;
     }
     counts
-}
-
-/// Whether a route's handler is reached. A registration (`r.POST("/x",
-/// h.execute)`) is reached when its line names a reached function; a route
-/// declared inside its handler (a file-based route) when the function
-/// around its line is.
-fn is_reached(route: &Route, index: &[Function], reached: &[&Function]) -> bool {
-    let enclosing = index.iter().find(|function| {
-        function.file == route.file
-            && function.lines.0 <= route.line
-            && route.line <= function.lines.1
-    });
-    let defined: BTreeSet<&str> = index
-        .iter()
-        .map(|function| function.name.as_str())
-        .collect();
-    let named_handlers: Vec<&String> = route
-        .line_mentions
-        .iter()
-        .filter(|name| defined.contains(name.as_str()))
-        .filter(|name| enclosing.is_none_or(|function| &function.name != *name))
-        .collect();
-    if !named_handlers.is_empty() {
-        return reached
-            .iter()
-            .any(|function| named_handlers.contains(&&function.name));
-    }
-    match enclosing {
-        Some(function) => reached.contains(&function),
-        None => reached.iter().any(|function| function.file == route.file),
-    }
 }
 
 fn caller(call: &Call) -> Affected {
@@ -416,6 +767,46 @@ mod tests {
                 operation: "POST /v1/execute".to_owned(),
             }
         )));
+    }
+
+    #[test]
+    fn a_trace_from_reached_functions_links_handlers_operations_and_callers() {
+        let mut functions = fixture_functions;
+        let start = Start::Reached {
+            repository: "tools".to_owned(),
+            functions: vec![("handlers/execute.go".to_owned(), 1)],
+        };
+
+        let (_, links) = trace_links(&start, &mut functions, &fixture_routes(), &fixture_calls());
+
+        let execute = Node::Affected(Affected::Operation {
+            service: "tools".to_owned(),
+            operation: "POST /execute".to_owned(),
+        });
+        assert!(links.contains(&Link {
+            user: execute.clone(),
+            used: Node::Function {
+                file: "handlers/execute.go".to_owned(),
+                line: 1,
+                name: "Execute".to_owned(),
+            },
+        }));
+        let gateway_handler = Node::Affected(Affected::Caller {
+            repository: "gateway".to_owned(),
+            location: "api/execute.ts::handler".to_owned(),
+            operation: "POST /execute".to_owned(),
+        });
+        assert!(links.contains(&Link {
+            user: gateway_handler.clone(),
+            used: execute,
+        }));
+        assert!(links.contains(&Link {
+            user: Node::Affected(Affected::Operation {
+                service: "gateway".to_owned(),
+                operation: "POST /v1/execute".to_owned(),
+            }),
+            used: gateway_handler,
+        }));
     }
 
     #[test]

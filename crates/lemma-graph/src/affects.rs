@@ -165,12 +165,7 @@ pub fn attach(
         return Ok(());
     }
     let routes = read_routes(&walkable.routes, repos)?;
-    let mut code = Code {
-        repos,
-        extractor: Extractor::new().map_err(|source| GraphError::Syntax { source })?,
-        functions: BTreeMap::new(),
-        failure: None,
-    };
+    let mut code = Code::new(repos)?;
     let mut traces: BTreeMap<&Seed, Vec<Impact>> = BTreeMap::new();
     for (index, seed) in problems {
         if !traces.contains_key(seed) {
@@ -180,20 +175,34 @@ pub fn attach(
         }
         findings[*index].affects.clone_from(&traces[seed]);
     }
-    code.failure.map_or(Ok(()), Err)
+    code.into_failure().map_or(Ok(()), Err)
 }
 
 /// Repositories' functions, read once each. A repository that cannot be
 /// read gives none, and the first such error is kept to report.
-struct Code<'a> {
+pub(crate) struct Code<'a> {
     repos: &'a BTreeMap<String, Repo>,
     extractor: Extractor,
     functions: BTreeMap<String, Vec<Function>>,
     failure: Option<GraphError>,
 }
 
-impl Code<'_> {
-    fn functions(&mut self, repository: &str) -> Vec<Function> {
+impl<'a> Code<'a> {
+    pub(crate) fn new(repos: &'a BTreeMap<String, Repo>) -> Result<Self, GraphError> {
+        Ok(Self {
+            repos,
+            extractor: Extractor::new().map_err(|source| GraphError::Syntax { source })?,
+            functions: BTreeMap::new(),
+            failure: None,
+        })
+    }
+
+    /// The first repository that could not be read, if one could not.
+    pub(crate) fn into_failure(self) -> Option<GraphError> {
+        self.failure
+    }
+
+    pub(crate) fn functions(&mut self, repository: &str) -> Vec<Function> {
         if let Some(functions) = self.functions.get(repository) {
             return functions.clone();
         }
@@ -239,7 +248,7 @@ fn describe(affected: &[(usize, Affected)]) -> Vec<Impact> {
 }
 
 /// Routes with the identifiers on their declaring lines, read at head.
-fn read_routes(
+pub(crate) fn read_routes(
     sites: &[RouteSite],
     repos: &BTreeMap<String, Repo>,
 ) -> Result<Vec<Route>, GraphError> {
@@ -272,7 +281,10 @@ fn read_routes(
 
 /// A repository's functions and methods at head, from the directories its
 /// services' code, routes and operations are in.
-fn functions_of(repo: &Repo, extractor: &mut Extractor) -> Result<Vec<Function>, GraphError> {
+pub(crate) fn functions_of(
+    repo: &Repo,
+    extractor: &mut Extractor,
+) -> Result<Vec<Function>, GraphError> {
     let Some(prefixes) = code_directories(repo) else {
         return Ok(Vec::new());
     };
