@@ -109,6 +109,35 @@ Shows a symbol's declaration and what its language server says about it. These c
 
 It exits with 0 if either part was found, and 3 if neither was.
 
+## `lemma graph <symbol>`
+
+Shows what uses a symbol and what it uses, followed to a depth: as indented trees to read in a terminal, or as Graphviz DOT or Mermaid to draw.
+
+```text
+$ lemma graph find_definitions --direction callers --depth 3
+find_definitions  (function, lemma-query/src/navigation.rs:38)
+  used by
+  ├─ Engine.definition  (method, lemma-cli/src/engine.rs:311)
+  │  └─ Engine.execute  (method, lemma-cli/src/engine.rs:158)
+  │     ├─ run  (function, lemma-cli/src/daemon.rs:253)
+  │     └─ run_in_process  (function, lemma-cli/src/main.rs:71)
+  └─ ServerNeighbours.defined_at  (method, lemma-query/src/graph.rs:483)
+6 nodes, 5 relationships (lsp)
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--direction <way>` | `callers` (what uses it), `callees` (what it uses), or `both` (the default). |
+| `--depth <n>` | How many uses away to go. Default: 2. |
+| `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Answers are cached in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones. |
+| `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`), `notes` and `truncated`. |
+| `--max-nodes <n>` | The most nodes to include. Default: 200. |
+| `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
+
+References from a file's top-level code appear as the file; imports are left out. Questions the server could not answer, such as a stale file or a missing server, are listed as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
+
+Render a drawing with Graphviz (`lemma graph X --format dot | dot -Tsvg > graph.svg`) or paste Mermaid into a Markdown file.
+
 ## `lemma providers`
 
 Lists every configured language server, whether its command was found, and the order they are tried in for each language. It reads the configuration of the indexed project if there is one, otherwise `.lemma/providers.toml` in the current directory.
@@ -206,6 +235,6 @@ There is one daemon per user. It talks to `lemma` over a Unix socket in the temp
 | --- | --- |
 | `0` | Success. For `refs`, the server answered, including "no references found". |
 | `1` | Error, such as no index, an unknown symbol, or an invalid configuration file. The message is printed to stderr. |
-| `2` | `refs` only: the name matches several symbols. The candidates are printed. |
-| `3` | `refs` only: no answer. The file is stale, no server is installed, the server failed, or it does not support references. |
+| `2` | `refs`, `implementations`, `signature` and `graph`: the name matches several symbols. The candidates are printed. |
+| `3` | `refs`, `definition`, `implementations`, `signature` and `graph`: no answer. The file is stale, no server is installed, the server failed, or it does not support the question. |
 | `4` | `verify` and `check` only: a finding is an error. |

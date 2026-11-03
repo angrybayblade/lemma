@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use lemma_model::{Language, SymbolKind};
 
 #[derive(Parser)]
@@ -66,6 +66,12 @@ pub(crate) enum Command {
     /// Exits with 2 if the name matches several symbols and 3 if no provider
     /// could answer.
     Implementations(SymbolLookupArgs),
+    /// Show what uses a symbol and what it uses, followed to a depth, as a
+    /// tree, Graphviz DOT or Mermaid.
+    ///
+    /// Exits with 2 if the name matches several symbols and 3 if no provider
+    /// could answer anything.
+    Graph(GraphArgs),
     /// Show a symbol's declaration and what its provider says about it.
     ///
     /// Exits with 2 if the name matches several symbols and 3 if neither the
@@ -198,6 +204,62 @@ pub(crate) struct RefsArgs {
     pub include_declaration: bool,
     #[command(flatten)]
     pub lookup: LookupArgs,
+}
+
+#[derive(Args)]
+pub(crate) struct GraphArgs {
+    #[command(flatten)]
+    pub target: SymbolTarget,
+    /// Which way to follow uses from the symbol.
+    #[arg(long, value_enum, default_value_t = GraphDirection::Both)]
+    pub direction: GraphDirection,
+    /// How many uses away from the symbol to go.
+    #[arg(long, default_value_t = 2)]
+    pub depth: usize,
+    /// Where relationships come from: `lsp` asks the language server
+    /// (precise, cached); `names` matches names in the indexed code
+    /// (instant, approximate, no server needed).
+    #[arg(long, value_enum, default_value_t = GraphSourceArg::Lsp)]
+    pub source: GraphSourceArg,
+    /// How to draw it. `--json` prints the graph as data instead.
+    #[arg(long, value_enum, default_value_t = GraphDrawing::Tree)]
+    pub format: GraphDrawing,
+    /// The most nodes to include.
+    #[arg(long, default_value_t = 200)]
+    pub max_nodes: usize,
+    #[command(flatten)]
+    pub lookup: LookupArgs,
+}
+
+/// Which way `lemma graph` follows uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum GraphDirection {
+    /// What uses the symbol.
+    Callers,
+    /// What the symbol uses.
+    Callees,
+    /// Both.
+    Both,
+}
+
+/// Where `lemma graph` finds relationships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum GraphSourceArg {
+    /// The language server.
+    Lsp,
+    /// Names in the indexed code.
+    Names,
+}
+
+/// How `lemma graph` draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum GraphDrawing {
+    /// Indented trees.
+    Tree,
+    /// Graphviz DOT.
+    Dot,
+    /// A Mermaid flowchart.
+    Mermaid,
 }
 
 #[derive(Args)]
