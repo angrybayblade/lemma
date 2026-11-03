@@ -15,25 +15,23 @@ pub(crate) struct LemmaSource {
 }
 
 /// Where `lemma index` reads from: `path` itself if it is a file, else the
-/// `lemma.yaml` in it; and the directory the file describes.
-pub(crate) fn locate(path: &Path) -> anyhow::Result<(PathBuf, PathBuf)> {
+/// `lemma.yaml` in it if there is one; and the directory indexed.
+pub(crate) fn locate(path: &Path) -> anyhow::Result<(PathBuf, Option<PathBuf>)> {
     let path = path
         .canonicalize()
         .with_context(|| format!("cannot index {}", path.display()))?;
     if path.is_file() {
         let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        return Ok((root, path));
+        return Ok((root, Some(path)));
     }
     let file = path.join(LEMMA_FILE);
-    if !file.is_file() {
-        bail!(
-            "{} has no {LEMMA_FILE}; describe its services and the code each is made of \
-             (`index.include`) before indexing it (see docs/check.md)",
-            path.display()
-        );
-    }
-    Ok((path, file))
+    Ok((path, file.is_file().then_some(file)))
 }
+
+/// What `lemma index` says when a directory has no `lemma.yaml`.
+pub(crate) const MISSING_LEMMA_FILE: &str = "no lemma.yaml here, so every supported file was \
+    indexed; describe the services and the code each is made of (`index.include`) to index only \
+    that, with their exports and links (see docs/check.md)";
 
 /// Whether a `lemma.yaml` describes a workspace: repositories it composes
 /// (`#name` services) and no code of its own.

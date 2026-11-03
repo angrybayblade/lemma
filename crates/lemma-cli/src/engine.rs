@@ -205,23 +205,32 @@ impl Engine {
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
         let (root, lemma_path) = selection::locate(path)?;
-        let source = selection::read_lemma_file(&lemma_path)?;
-        if selection::is_workspace(&source.file) {
-            return self.index_workspace(request, &lemma_path, retention, out);
+        let source = lemma_path
+            .as_deref()
+            .map(selection::read_lemma_file)
+            .transpose()?;
+        if let (Some(source), Some(lemma_path)) = (&source, &lemma_path) {
+            if selection::is_workspace(&source.file) {
+                return self.index_workspace(request, lemma_path, retention, out);
+            }
         }
         let db_path = match &request.db {
             Some(db) => db.clone(),
             None => default_index_path(&root)?,
         };
-        let indexed = self.index_repository(&db_path, &root, &source)?;
+        let indexed = self.index_repository(&db_path, &root, source.as_ref())?;
         self.apply_retention(&db_path, &root, retention)?;
-        output::index_summary(
-            out,
-            &indexed.summary,
-            &indexed.exports,
-            &db_path,
-            request.format,
-        )?;
+        let warnings: Vec<String> = source
+            .is_none()
+            .then(|| selection::MISSING_LEMMA_FILE.to_owned())
+            .into_iter()
+            .collect();
+        let report = output::IndexReport {
+            summary: &indexed.summary,
+            exports: &indexed.exports,
+            warnings: &warnings,
+        };
+        output::index_summary(out, &report, &db_path, request.format)?;
         if self.warms_up_after_index {
             let origin = request.origin();
             let summary = &indexed.summary;
@@ -235,14 +244,18 @@ impl Engine {
     }
 
     /// Indexes the code `source`'s services are made of under `root` into
-    /// `db_path`, with their exports.
+    /// `db_path`, with their exports; without a `lemma.yaml`, every
+    /// supported file, with no exports.
     fn index_repository(
         &mut self,
         db_path: &Path,
         root: &Path,
-        source: &selection::LemmaSource,
+        source: Option<&selection::LemmaSource>,
     ) -> anyhow::Result<Indexed> {
-        let selection = selection::repository_selection(&source.file)?;
+        let selection = match source {
+            Some(source) => selection::repository_selection(&source.file)?,
+            None => lemma_index::Selection::everything(),
+        };
         let key = (db_path.to_path_buf(), root.to_path_buf());
         // A changed selection starts a fresh index, whose first run walks
         // the whole tree and so drops files no longer selected.
@@ -265,7 +278,10 @@ impl Engine {
             .get_mut(&key)
             .context("the live index was lost")?;
         let summary = live.index(store)?;
-        let exports = update_exports(store, &summary, source, root)?;
+        let exports = match source {
+            Some(source) => update_exports(store, &summary, source, root)?,
+            None => clear_exports(store, &summary)?,
+        };
         Ok(Indexed { summary, exports })
     }
 
@@ -359,7 +375,7 @@ impl Engine {
             text: format!("{:?}", member.file),
             file: member.file.clone(),
         };
-        let indexed = self.index_repository(&db_path, &indexed_root, &source)?;
+        let indexed = self.index_repository(&db_path, &indexed_root, Some(&source))?;
         let stored = StoredMember {
             name: member.name.clone(),
             root: member.root.display().to_string(),
@@ -841,6 +857,19 @@ fn absolute_address(member: &str, address: &str) -> String {
         return address.to_owned();
     }
     format!("{member}:{address}")
+}
+
+/// Clears exports and links a `lemma.yaml` since removed left behind.
+fn clear_exports(
+    store: &mut Store,
+    summary: &lemma_index::IndexSummary,
+) -> anyhow::Result<output::ExportCounts> {
+    const NO_LEMMA_FILE: &str = "no lemma.yaml";
+    let snapshot_id = summary.snapshot_id;
+    if store.exports_fingerprint(snapshot_id)?.as_deref() != Some(NO_LEMMA_FILE) {
+        store.replace_exports(snapshot_id, NO_LEMMA_FILE, &[], &[])?;
+    }
+    Ok(output::ExportCounts::default())
 }
 
 /// Rebuilds the snapshot's exports and links unless they were built from

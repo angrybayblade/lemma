@@ -69,6 +69,8 @@ struct IndexView<'a> {
     files_with_syntax_errors: &'a [String],
     unreadable_files: &'a [String],
     exports: &'a ExportCounts,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    warnings: &'a [String],
 }
 
 /// How many exports and links an index holds.
@@ -224,32 +226,50 @@ struct ProviderView<'a> {
     executable: Option<String>,
 }
 
+impl<'a> IndexView<'a> {
+    fn new(report: &IndexReport<'a>, database: &Path) -> Self {
+        let summary = report.summary;
+        let snapshot = &summary.snapshot;
+        Self {
+            database: database.display().to_string(),
+            snapshot_id: summary.snapshot_id,
+            root: &snapshot.root,
+            revision: snapshot.revision.as_deref(),
+            is_dirty: snapshot.is_dirty,
+            fingerprint: &snapshot.fingerprint,
+            is_unchanged: summary.is_unchanged,
+            files_by_language: &summary.files_by_language,
+            symbol_count: summary.symbol_count,
+            files_with_syntax_errors: &summary.files_with_syntax_errors,
+            unreadable_files: &summary.unreadable_files,
+            exports: report.exports,
+            warnings: report.warnings,
+        }
+    }
+}
+
+/// What one `lemma index` of a repository produced.
+pub(crate) struct IndexReport<'a> {
+    pub summary: &'a IndexSummary,
+    pub exports: &'a ExportCounts,
+    /// What the person should know, such as a missing `lemma.yaml`.
+    pub warnings: &'a [String],
+}
+
 pub(crate) fn index_summary(
     out: &mut dyn Write,
-    summary: &IndexSummary,
-    exports: &ExportCounts,
+    report: &IndexReport<'_>,
     database: &Path,
     format: Format,
 ) -> io::Result<()> {
+    let IndexReport {
+        summary,
+        exports,
+        warnings,
+    } = *report;
     let snapshot = &summary.snapshot;
     if format == Format::Json {
-        return print_json(
-            out,
-            &IndexView {
-                database: database.display().to_string(),
-                snapshot_id: summary.snapshot_id,
-                root: &snapshot.root,
-                revision: snapshot.revision.as_deref(),
-                is_dirty: snapshot.is_dirty,
-                fingerprint: &snapshot.fingerprint,
-                is_unchanged: summary.is_unchanged,
-                files_by_language: &summary.files_by_language,
-                symbol_count: summary.symbol_count,
-                files_with_syntax_errors: &summary.files_with_syntax_errors,
-                unreadable_files: &summary.unreadable_files,
-                exports,
-            },
-        );
+        return print_json(out, &IndexView::new(report, database));
     }
 
     let state = if summary.is_unchanged {
@@ -283,6 +303,9 @@ pub(crate) fn index_summary(
     }
     for path in &summary.unreadable_files {
         writeln!(out, "skipped {path}: not valid UTF-8")?;
+    }
+    for warning in warnings {
+        writeln!(out, "warning: {warning}")?;
     }
     writeln!(out, "index {}", database.display())
 }
