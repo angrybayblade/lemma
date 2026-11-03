@@ -14,10 +14,12 @@ use lemma_store::StoredSymbol;
 use serde::Serialize;
 
 mod answers;
+mod graph;
 
 pub(crate) use answers::{
     definition_report, implementation_report, outline, reference_report, signature_report,
 };
+pub(crate) use graph::{Drawing, use_graph};
 
 /// How results are printed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

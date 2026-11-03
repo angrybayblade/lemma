@@ -29,7 +29,8 @@ use lemma_store::{
 };
 
 use crate::cli::{
-    Cli, Command, DefinitionArgs, LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget, SymbolsArgs,
+    Cli, Command, DefinitionArgs, GraphArgs, GraphDirection, GraphDrawing, GraphSourceArg,
+    LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget, SymbolsArgs,
 };
 use crate::output::{self, Format};
 
@@ -177,6 +178,7 @@ impl Engine {
             Command::Definition(args) => self.definition(&request, &args, out),
             Command::Implementations(args) => self.implementations(&request, args, out),
             Command::Signature(args) => self.signature(&request, args, out),
+            Command::Graph(args) => self.graph(&request, args, out),
             Command::Providers => self.providers(&request, out),
             Command::Daemon(_) => bail!("`lemma daemon` cannot run inside the daemon"),
             Command::Mcp => bail!("`lemma mcp` cannot run inside the daemon"),
@@ -376,6 +378,38 @@ impl Engine {
         output::signature_report(out, &report, request.format)?;
         let is_described = report.declaration.is_some() || report.hover.outcome.is_answered();
         Ok(if is_described { 0 } else { EXIT_NO_ANSWER })
+    }
+
+    fn graph(
+        &mut self,
+        request: &Request<'_>,
+        args: GraphArgs,
+        out: &mut dyn Write,
+    ) -> anyhow::Result<u8> {
+        let db_path = request.find_index()?;
+        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
+        let Some(target) = choose_symbol(store, &snapshot, args.target, request.format, out)?
+        else {
+            return Ok(EXIT_AMBIGUOUS);
+        };
+        let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
+        let options = lookup_options(&args.lookup);
+        let context = LookupContext {
+            snapshot: &snapshot,
+            registry: &registry,
+            options: &options,
+        };
+        let graph_options = graph_options(args.direction, args.depth, args.source, args.max_nodes);
+        let graph =
+            lemma_query::symbol_graph(store, &context, &target, &graph_options, &mut self.pool)?;
+        let drawing = match args.format {
+            GraphDrawing::Tree => output::Drawing::Tree,
+            GraphDrawing::Dot => output::Drawing::Dot,
+            GraphDrawing::Mermaid => output::Drawing::Mermaid,
+        };
+        output::use_graph(out, &graph, drawing, request.format)?;
+        let is_unanswered = graph.relationships.is_empty() && !graph.notes.is_empty();
+        Ok(if is_unanswered { EXIT_NO_ANSWER } else { 0 })
     }
 
     fn providers(&mut self, request: &Request<'_>, out: &mut dyn Write) -> anyhow::Result<u8> {
@@ -666,6 +700,27 @@ fn select_symbol(
         path_contains: filters.path,
     };
     Ok(lemma_query::resolve_symbol(store, snapshot.id, &selector)?)
+}
+
+fn graph_options(
+    direction: GraphDirection,
+    depth: usize,
+    source: GraphSourceArg,
+    max_nodes: usize,
+) -> lemma_query::GraphOptions {
+    lemma_query::GraphOptions {
+        direction: match direction {
+            GraphDirection::Callers => lemma_query::Direction::Callers,
+            GraphDirection::Callees => lemma_query::Direction::Callees,
+            GraphDirection::Both => lemma_query::Direction::Both,
+        },
+        depth,
+        source: match source {
+            GraphSourceArg::Lsp => lemma_query::GraphSource::Lsp,
+            GraphSourceArg::Names => lemma_query::GraphSource::Names,
+        },
+        max_nodes,
+    }
 }
 
 fn lookup_options(args: &LookupArgs) -> LookupOptions {
