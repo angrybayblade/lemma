@@ -129,3 +129,33 @@ CREATE TABLE IF NOT EXISTS export_sources (
     snapshot_id INTEGER PRIMARY KEY REFERENCES snapshots (id) ON DELETE CASCADE,
     fingerprint TEXT NOT NULL
 );
+
+-- A workspace index: the repositories a workspace lemma.yaml composes, each
+-- with the index holding its symbols, and every member's exports and links
+-- with addresses made absolute (#member:services.<service>.<name>).
+CREATE TABLE IF NOT EXISTS workspace_members (
+    name         TEXT PRIMARY KEY,
+    root         TEXT NOT NULL,
+    revision     TEXT,
+    -- The directory indexed: the clone, or a worktree at the pin.
+    indexed_root TEXT NOT NULL,
+    database     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspace_exports (
+    member  TEXT NOT NULL,
+    service TEXT NOT NULL,
+    name    TEXT NOT NULL,
+    kind    TEXT NOT NULL,
+    path    TEXT,
+    symbol  TEXT,
+    detail  TEXT,
+    PRIMARY KEY (member, service, name, kind)
+);
+
+CREATE TABLE IF NOT EXISTS workspace_links (
+    member   TEXT NOT NULL,
+    caller   TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    PRIMARY KEY (member, caller, provider)
+);

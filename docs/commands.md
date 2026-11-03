@@ -19,10 +19,13 @@ Every command runs in a background daemon that keeps the index open, watches ind
 
 ## `lemma index [path]`
 
+`path` is a directory holding a `lemma.yaml`, or a `lemma.yaml` itself.
+
 Reads the source files that `path`'s `lemma.yaml` (default: the current directory's) says its services are made of, and records their definitions in a snapshot. Re-indexing is incremental: only new or changed files are read and parsed, so running it after every edit is cheap (see [How Lemma works](concepts.md#re-indexing-is-incremental)).
 
 - `lemma.yaml` is required. Each local service's `index` section selects files: under `include`, not matching `exclude`, in `languages` if given. A file any service selects is indexed. A service without `index.include` adds nothing; if no service has one, indexing fails. Changing the selection re-indexes from scratch on the next run, dropping files no longer selected.
 - Each service's exports are stored with the snapshot: declared operations at their code anchors, operations its OpenAPI documents describe at their route handlers (the function a route's line names, or the function around the route), and the top-level definitions of its public modules. Links in `graph.links` are stored too. They are rebuilt when `lemma.yaml` or the code changes. The summary counts them, including how many documented operations a handler was found for; routes whose paths are built at run time are not found.
+- A `lemma.yaml` with no services of its own, only repositories it composes (`#name`), is a workspace. Each repository is indexed into its own `.lemma/index.db`: at its pinned `ref` through a Git worktree in `~/.cache/lemma/worktrees` (kept beside its working-directory snapshot, so language servers read the pinned code), or as its working directory. A repository whose `lemma.yaml` selects nothing is skipped and says why. The workspace's own `.lemma/index.db` then records the members and every member's exports and links, with addresses made absolute (`#platform:services.thermos.execute_action`). Symbols stay in the members' indexes.
 - Supported files: `.ts`, `.mts`, `.cts`, `.tsx`, `.py`, `.pyi`, `.go`, `.rs`.
 - Skipped even when selected: anything matched by `.gitignore`, hidden files and directories (including `.lemma/`), and `node_modules`.
 - If no file's contents changed since the last run, the snapshot is reported as `unchanged` and cached answers stay valid.
@@ -62,7 +65,9 @@ Finds references to one symbol by asking a language server for its language.
 - a name, such as `delete`;
 - a qualified name, such as `Router.delete`;
 - an id from `lemma symbols`, such as `'#415'`. Quote it, because `#` starts a comment in most shells;
-- an export's address from `lemma.yaml`, such as `services.thermos.execute_action` (a declared operation) or `services.apollo.listToolkits` (an `operationId`): the symbol implementing it. An address in another repository (`'#mercury:services.serverless.execute_action'`) needs a workspace index.
+- an export's address from `lemma.yaml`, such as `services.thermos.execute_action` (a declared operation) or `services.apollo.listToolkits` (an `operationId`): the symbol implementing it. An address in another repository (`'#mercury:services.serverless.execute_action'`) is resolved from inside a workspace's directory, through its index, in the member's index at its pin. There, a symbol is always named by address.
+
+When the symbol implements an export that `graph.links` links to or from, `refs` lists those links after the server's references (`linked by lemma.yaml`, and `linked` in JSON), resolved to the code on the other end when a workspace index knows it.
 
 Names must match exactly. The same filters as `lemma symbols` narrow a name: `--kind`, `--language`, `--path`.
 

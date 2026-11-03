@@ -86,6 +86,117 @@ pub(crate) struct ExportCounts {
     pub links: usize,
 }
 
+/// A symbol `lemma.yaml` links to (`to`) or from (`from`) the one asked
+/// about, by its export's address, with the code implementing it when the
+/// index knows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct Linked {
+    /// `to` (the asked symbol's operation uses it) or `from` (it uses the
+    /// asked symbol's operation).
+    pub direction: &'static str,
+    /// Its export's address.
+    pub address: String,
+    /// The file implementing it, as `#member:path` in a workspace.
+    pub path: Option<String>,
+    /// The qualified name of the symbol implementing it.
+    pub symbol: Option<String>,
+}
+
+/// One member of a workspace, as indexing it went.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemberLine {
+    name: String,
+    revision: Option<String>,
+    indexed_root: Option<String>,
+    files: usize,
+    symbols: usize,
+    exports: Option<ExportCounts>,
+    skipped: Option<String>,
+}
+
+impl MemberLine {
+    pub(crate) fn indexed(
+        member: &lemma_store::StoredMember,
+        summary: &IndexSummary,
+        exports: &ExportCounts,
+    ) -> Self {
+        Self {
+            name: member.name.clone(),
+            revision: member.revision.clone(),
+            indexed_root: Some(member.indexed_root.clone()),
+            files: summary.files_by_language.values().sum(),
+            symbols: summary.symbol_count,
+            exports: Some(exports.clone()),
+            skipped: None,
+        }
+    }
+
+    pub(crate) fn skipped(name: &str, reason: String) -> Self {
+        Self {
+            name: name.to_owned(),
+            revision: None,
+            indexed_root: None,
+            files: 0,
+            symbols: 0,
+            exports: None,
+            skipped: Some(reason),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct WorkspaceView<'a> {
+    database: String,
+    members: &'a [MemberLine],
+}
+
+/// What indexing a workspace did, member by member.
+pub(crate) fn workspace_summary(
+    out: &mut dyn Write,
+    members: &[MemberLine],
+    database: &Path,
+    format: Format,
+) -> io::Result<()> {
+    if format == Format::Json {
+        let view = WorkspaceView {
+            database: database.display().to_string(),
+            members,
+        };
+        return print_json(out, &view);
+    }
+    let indexed = members
+        .iter()
+        .filter(|member| member.skipped.is_none())
+        .count();
+    writeln!(
+        out,
+        "workspace {}: {indexed} of {} repositories indexed",
+        database.display(),
+        members.len()
+    )?;
+    for member in members {
+        let at = member
+            .revision
+            .as_deref()
+            .map_or_else(String::new, |revision| {
+                format!(" at {}", &revision[..revision.len().min(10)])
+            });
+        if let Some(reason) = &member.skipped {
+            writeln!(out, "  {}{at}: skipped, {reason}", member.name)?;
+            continue;
+        }
+        write!(
+            out,
+            "  {}{at}: {} files, {} symbols; ",
+            member.name, member.files, member.symbols
+        )?;
+        if let Some(exports) = &member.exports {
+            export_counts(out, exports)?;
+        }
+    }
+    Ok(())
+}
+
 fn export_counts(out: &mut dyn Write, exports: &ExportCounts) -> io::Result<()> {
     writeln!(
         out,

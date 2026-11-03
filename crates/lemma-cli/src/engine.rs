@@ -25,7 +25,8 @@ use lemma_query::{
     SymbolSearch, SymbolSelector, WarmUp,
 };
 use lemma_store::{
-    FactStore, NameMatch, Store, StoreError, StoredSnapshot, StoredSymbol, SymbolFilter,
+    FactStore, NameMatch, Store, StoreError, StoredMember, StoredSnapshot, StoredSymbol,
+    SymbolFilter,
 };
 
 use crate::addresses;
@@ -195,16 +196,45 @@ impl Engine {
         path: &Path,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
+        let (root, lemma_path) = selection::locate(path)?;
+        let source = selection::read_lemma_file(&lemma_path)?;
+        if selection::is_workspace(&source.file) {
+            return self.index_workspace(request, &root, &lemma_path, out);
+        }
         let db_path = match &request.db {
             Some(db) => db.clone(),
-            None => default_index_path(path)?,
+            None => default_index_path(&root)?,
         };
-        let root = path
-            .canonicalize()
-            .with_context(|| format!("cannot index {}", path.display()))?;
-        let lemma_source = selection::read_lemma_file(&root)?;
-        let selection = selection::repository_selection(&lemma_source.file)?;
-        let key = (db_path.clone(), root);
+        let indexed = self.index_repository(&db_path, &root, &source)?;
+        output::index_summary(
+            out,
+            &indexed.summary,
+            &indexed.exports,
+            &db_path,
+            request.format,
+        )?;
+        if self.warms_up_after_index {
+            let origin = request.origin();
+            let summary = &indexed.summary;
+            let languages: Vec<Language> = summary.files_by_language.keys().copied().collect();
+            self.warm_up(&db_path, &root, &languages, &origin)?;
+            self.origins.insert((db_path.clone(), root), origin);
+            let slot = self.searches.entry(db_path.clone()).or_default();
+            build_search(slot, &db_path, &summary.snapshot.fingerprint);
+        }
+        Ok(0)
+    }
+
+    /// Indexes the code `source`'s services are made of under `root` into
+    /// `db_path`, with their exports.
+    fn index_repository(
+        &mut self,
+        db_path: &Path,
+        root: &Path,
+        source: &selection::LemmaSource,
+    ) -> anyhow::Result<Indexed> {
+        let selection = selection::repository_selection(&source.file)?;
+        let key = (db_path.to_path_buf(), root.to_path_buf());
         // A changed selection starts a fresh index, whose first run walks
         // the whole tree and so drops files no longer selected.
         let is_current = self
@@ -214,29 +244,78 @@ impl Engine {
         if !is_current {
             // Only a long-lived engine benefits from watching the tree.
             let live = if self.warms_up_after_index {
-                LiveIndex::watched(&key.1, selection)?
+                LiveIndex::watched(root, selection)?
             } else {
-                LiveIndex::selecting(&key.1, selection)?
+                LiveIndex::selecting(root, selection)?
             };
             self.live_indexes.insert(key.clone(), live);
         }
-        let store = store_for_writing(&mut self.stores, &db_path)?;
+        let store = store_for_writing(&mut self.stores, db_path)?;
         let live = self
             .live_indexes
             .get_mut(&key)
             .context("the live index was lost")?;
         let summary = live.index(store)?;
-        let exports = update_exports(store, &summary, &lemma_source, &key.1)?;
-        output::index_summary(out, &summary, &exports, &db_path, request.format)?;
-        if self.warms_up_after_index {
-            let origin = request.origin();
-            let languages: Vec<Language> = summary.files_by_language.keys().copied().collect();
-            self.warm_up(&db_path, &key.1, &languages, &origin)?;
-            self.origins.insert(key, origin);
-            let slot = self.searches.entry(db_path.clone()).or_default();
-            build_search(slot, &db_path, &summary.snapshot.fingerprint);
+        let exports = update_exports(store, &summary, source, root)?;
+        Ok(Indexed { summary, exports })
+    }
+
+    /// Indexes every repository a workspace composes into its own index,
+    /// then records the members and their exports and links in the
+    /// workspace's index.
+    fn index_workspace(
+        &mut self,
+        request: &Request<'_>,
+        root: &Path,
+        lemma_path: &Path,
+        out: &mut dyn Write,
+    ) -> anyhow::Result<u8> {
+        let cache = lemma_graph::repos::cache_directory();
+        let members = lemma_graph::compose::members(lemma_path, &cache)?;
+        let mut workspace = WorkspaceIndex::default();
+        for member in &members {
+            let result = self.index_member(member, &cache);
+            workspace.record(member, result)?;
         }
+        let db_path = match &request.db {
+            Some(db) => db.clone(),
+            None => default_index_path(root)?,
+        };
+        let store = store_for_writing(&mut self.stores, &db_path)?;
+        store.replace_workspace(&workspace.members, &workspace.exports, &workspace.links)?;
+        output::workspace_summary(out, &workspace.lines, &db_path, request.format)?;
         Ok(0)
+    }
+
+    /// Indexes one member into the index in its clone: at its pin through a
+    /// worktree, or its working directory.
+    fn index_member(
+        &mut self,
+        member: &lemma_graph::compose::Member,
+        cache: &Path,
+    ) -> anyhow::Result<(StoredMember, Indexed)> {
+        let indexed_root = match &member.commit {
+            Some(commit) => lemma_graph::repos::Checkout {
+                root: member.root.clone(),
+                commit: Some(commit.clone()),
+            }
+            .worktree(cache)?,
+            None => member.root.clone(),
+        };
+        let db_path = default_index_path(&member.root)?;
+        let source = selection::LemmaSource {
+            text: format!("{:?}", member.file),
+            file: member.file.clone(),
+        };
+        let indexed = self.index_repository(&db_path, &indexed_root, &source)?;
+        let stored = StoredMember {
+            name: member.name.clone(),
+            root: member.root.display().to_string(),
+            revision: member.commit.clone(),
+            indexed_root: indexed_root.display().to_string(),
+            database: db_path.display().to_string(),
+        };
+        Ok((stored, indexed))
     }
 
     fn symbols(
@@ -294,12 +373,16 @@ impl Engine {
         args: RefsArgs,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
-        let db_path = request.find_index()?;
-        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
-        let Some(target) = choose_symbol(store, &snapshot, args.target, request.format, out)?
-        else {
+        let Some(located) = self.locate(request, args.target, out)? else {
             return Ok(EXIT_AMBIGUOUS);
         };
+        let Located {
+            db_path,
+            snapshot,
+            symbol: target,
+            linked,
+        } = located;
+        let store = open_store(&mut self.stores, &db_path)?;
         let root = snapshot.snapshot.root.clone();
         let registry = request.registry(Path::new(&root))?;
         let options = lookup_options(&args.lookup);
@@ -315,7 +398,7 @@ impl Engine {
             args.include_declaration,
             &mut self.pool,
         )?;
-        output::reference_report(out, &report, &root, request.format)?;
+        output::reference_report(out, &report, &linked, &root, request.format)?;
         Ok(exit_code(&report.answer.outcome))
     }
 
@@ -348,12 +431,16 @@ impl Engine {
         args: SymbolLookupArgs,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
-        let db_path = request.find_index()?;
-        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
-        let Some(target) = choose_symbol(store, &snapshot, args.target, request.format, out)?
-        else {
+        let Some(located) = self.locate(request, args.target, out)? else {
             return Ok(EXIT_AMBIGUOUS);
         };
+        let Located {
+            db_path,
+            snapshot,
+            symbol: target,
+            linked: _,
+        } = located;
+        let store = open_store(&mut self.stores, &db_path)?;
         let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
         let options = lookup_options(&args.lookup);
         let context = LookupContext {
@@ -372,12 +459,16 @@ impl Engine {
         args: SymbolLookupArgs,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
-        let db_path = request.find_index()?;
-        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
-        let Some(target) = choose_symbol(store, &snapshot, args.target, request.format, out)?
-        else {
+        let Some(located) = self.locate(request, args.target, out)? else {
             return Ok(EXIT_AMBIGUOUS);
         };
+        let Located {
+            db_path,
+            snapshot,
+            symbol: target,
+            linked: _,
+        } = located;
+        let store = open_store(&mut self.stores, &db_path)?;
         let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
         let options = lookup_options(&args.lookup);
         let context = LookupContext {
@@ -397,12 +488,16 @@ impl Engine {
         args: GraphArgs,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
-        let db_path = request.find_index()?;
-        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
-        let Some(target) = choose_symbol(store, &snapshot, args.target, request.format, out)?
-        else {
+        let Some(located) = self.locate(request, args.target, out)? else {
             return Ok(EXIT_AMBIGUOUS);
         };
+        let Located {
+            db_path,
+            snapshot,
+            symbol: target,
+            linked,
+        } = located;
+        let store = open_store(&mut self.stores, &db_path)?;
         let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
         let options = lookup_options(&args.lookup);
         let context = LookupContext {
@@ -413,6 +508,7 @@ impl Engine {
         let graph_options = graph_options(args.direction, args.depth, args.source, args.max_nodes);
         let mut graph =
             lemma_query::symbol_graph(store, &context, &target, &graph_options, &mut self.pool)?;
+        addresses::add_root_links(&mut graph, &linked, graph_options.direction);
         if graph_options.direction != lemma_query::Direction::Callers {
             let exports = store.exports(snapshot.id)?;
             let links = store.export_links(snapshot.id)?;
@@ -431,6 +527,84 @@ impl Engine {
         output::use_graph(out, &graph, drawing, request.format)?;
         let is_unanswered = graph.relationships.is_empty() && !graph.notes.is_empty();
         Ok(if is_unanswered { EXIT_NO_ANSWER } else { 0 })
+    }
+
+    /// The symbol a command is about, the index holding it, and what
+    /// lemma.yaml links it to. In a workspace's index the symbol is named by
+    /// an export's address and found in its member's index. `None` when a
+    /// name matches several symbols, which are printed.
+    fn locate(
+        &mut self,
+        request: &Request<'_>,
+        target: SymbolTarget,
+        out: &mut dyn Write,
+    ) -> anyhow::Result<Option<Located>> {
+        let db_path = request.find_index()?;
+        let members = open_store(&mut self.stores, &db_path)?.workspace_members()?;
+        if !members.is_empty() {
+            return self
+                .locate_in_workspace(&db_path, &members, &target.symbol)
+                .map(Some);
+        }
+        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
+        let Some(symbol) = choose_symbol(store, &snapshot, target, request.format, out)? else {
+            return Ok(None);
+        };
+        let linked = addresses::repository_links(store, &snapshot, &symbol)?;
+        Ok(Some(Located {
+            db_path,
+            snapshot,
+            symbol,
+            linked,
+        }))
+    }
+
+    fn locate_in_workspace(
+        &mut self,
+        workspace_db: &Path,
+        members: &[StoredMember],
+        text: &str,
+    ) -> anyhow::Result<Located> {
+        let Some(address) =
+            addresses::as_address(text).filter(|address| address.repository.is_some())
+        else {
+            bail!(
+                "this is a workspace's index: name an export by its address, such as \
+                 '#repo:services.api.op', or run the command inside one of its repositories"
+            );
+        };
+        let repository = address.repository.clone().unwrap_or_default();
+        let Some(member) = members.iter().find(|member| member.name == repository) else {
+            bail!("the workspace composes no repository `{repository}`");
+        };
+        let (exports, links) = {
+            let store = open_store(&mut self.stores, workspace_db)?;
+            (store.workspace_exports()?, store.workspace_links()?)
+        };
+        let db_path = PathBuf::from(&member.database);
+        let store = open_store(&mut self.stores, &db_path)?;
+        let Some(snapshot) = store.snapshot_for_root(&member.indexed_root)? else {
+            bail!(
+                "{repository} has no index of {}; run `lemma index` on the workspace",
+                member.indexed_root
+            );
+        };
+        let local = lemma_graph::address::Address {
+            repository: None,
+            ..address.clone()
+        };
+        let SymbolResolution::Resolved(symbol) =
+            addresses::resolve_export(store, &snapshot, &local)?
+        else {
+            bail!("`{address}` resolves to no indexed symbol");
+        };
+        let linked = addresses::workspace_links(&address.to_string(), &exports, &links);
+        Ok(Located {
+            db_path,
+            snapshot,
+            symbol,
+            linked,
+        })
     }
 
     fn providers(&mut self, request: &Request<'_>, out: &mut dyn Write) -> anyhow::Result<u8> {
@@ -534,6 +708,77 @@ impl Engine {
     fn store(&mut self, db_path: &Path) -> anyhow::Result<&mut Store> {
         open_store(&mut self.stores, db_path)
     }
+}
+
+/// A symbol a command is about, where it is indexed, and the symbols
+/// lemma.yaml links it to.
+struct Located {
+    db_path: PathBuf,
+    snapshot: StoredSnapshot,
+    symbol: StoredSymbol,
+    linked: Vec<output::Linked>,
+}
+
+/// What indexing one repository produced.
+struct Indexed {
+    summary: lemma_index::IndexSummary,
+    exports: output::ExportCounts,
+}
+
+/// A workspace index as its members are indexed.
+#[derive(Default)]
+struct WorkspaceIndex {
+    members: Vec<StoredMember>,
+    exports: Vec<(String, lemma_model::Export)>,
+    links: Vec<lemma_model::ExportLink>,
+    lines: Vec<output::MemberLine>,
+}
+
+impl WorkspaceIndex {
+    /// Records a member's index, or why it has none.
+    fn record(
+        &mut self,
+        member: &lemma_graph::compose::Member,
+        result: anyhow::Result<(StoredMember, Indexed)>,
+    ) -> anyhow::Result<()> {
+        let (stored, indexed) = match result {
+            Ok(found) => found,
+            Err(error) => {
+                self.lines.push(output::MemberLine::skipped(
+                    &member.name,
+                    format!("{error:#}"),
+                ));
+                return Ok(());
+            }
+        };
+        let store = Store::open(Path::new(&stored.database))?;
+        let snapshot_id = indexed.summary.snapshot_id;
+        for export in store.exports(snapshot_id)? {
+            self.exports.push((member.name.clone(), export));
+        }
+        for link in store.export_links(snapshot_id)? {
+            self.links.push(lemma_model::ExportLink {
+                caller: absolute_address(&member.name, &link.caller),
+                provider: absolute_address(&member.name, &link.provider),
+            });
+        }
+        self.lines.push(output::MemberLine::indexed(
+            &stored,
+            &indexed.summary,
+            &indexed.exports,
+        ));
+        self.members.push(stored);
+        Ok(())
+    }
+}
+
+/// An address as a workspace names it: one written inside `member`'s
+/// lemma.yaml (`services.a.op`) gets the member's name.
+fn absolute_address(member: &str, address: &str) -> String {
+    if address.starts_with('#') {
+        return address.to_owned();
+    }
+    format!("{member}:{address}")
 }
 
 /// Rebuilds the snapshot's exports and links unless they were built from
@@ -691,13 +936,25 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The database and its newest snapshot.
+/// The database and the snapshot of the directory it belongs to: the one
+/// holding `.lemma/`, whose index may also hold snapshots of worktrees at
+/// pinned commits. The newest snapshot for a database kept elsewhere.
 fn index_at<'a>(
     stores: &'a mut HashMap<PathBuf, OpenStore>,
     db_path: &Path,
 ) -> anyhow::Result<(&'a mut Store, StoredSnapshot)> {
     let store = open_store(stores, db_path)?;
-    let Some(snapshot) = store.latest_snapshot()? else {
+    let own_root = db_path
+        .parent()
+        .filter(|directory| directory.ends_with(LEMMA_DIRECTORY))
+        .and_then(Path::parent)
+        .and_then(|root| root.canonicalize().ok());
+    let own = match own_root {
+        Some(root) => store.snapshot_for_root(&root.display().to_string())?,
+        None => None,
+    };
+    let Some(snapshot) = own.map_or_else(|| store.latest_snapshot(), |found| Ok(Some(found)))?
+    else {
         bail!(
             "{} has no snapshot; run `lemma index` first",
             db_path.display()
