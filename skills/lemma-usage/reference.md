@@ -4,7 +4,7 @@
 
 | Command | Does |
 | --- | --- |
-| `lemma index <directory>` | Indexes source files and symbols; writes `<directory>/.lemma/index.db`. The daemon then keeps it current. |
+| `lemma index <directory>` | Indexes the code `<directory>/lemma.yaml` says its services are made of (`index.include`, `exclude`, `languages`); writes `<directory>/.lemma/index.db`. The daemon then keeps it current. Fails without a `lemma.yaml`. |
 | `lemma symbols <query>` | Searches indexed symbols by name or qualified name. |
 | `lemma outline <file>` | Lists a file's symbols in source order. |
 | `lemma refs <symbol>` | References through the symbol's language server. |

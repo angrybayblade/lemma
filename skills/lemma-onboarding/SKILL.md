@@ -32,7 +32,7 @@ Run `lemma providers` and install what the repositories need:
 | Go | `go install golang.org/x/tools/gopls@latest` |
 | Rust | `rustup component add rust-analyzer` |
 
-In each repository: install its dependencies, run `lemma index .`, add `.lemma/` to `.gitignore`, and try `lemma symbols <a known name>` and `lemma refs <it>`.
+In each repository: install its dependencies, write a `lemma.yaml` with a service per part of the repository and the code each is made of (`index.include`), run `lemma index .`, add `.lemma/` to `.gitignore`, and try `lemma symbols <a known name>` and `lemma refs <it>`.
 
 ## 3. Agents
 

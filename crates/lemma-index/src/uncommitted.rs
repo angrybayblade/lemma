@@ -6,13 +6,17 @@ use std::path::Path;
 
 use crate::discover;
 use crate::git::{self, Head};
+use crate::selection::Selection;
 
 /// Most paths Git is asked about by name before a full status is cheaper.
 const MAX_NAMED_PATHS: usize = 1000;
 
-/// Every source file that differs from `HEAD`.
-pub(crate) fn all(root: &Path, head: &Head) -> Vec<String> {
-    in_scope(git::uncommitted_paths(root, head, None).unwrap_or_default())
+/// Every selected source file that differs from `HEAD`.
+pub(crate) fn all(root: &Path, head: &Head, selection: &Selection) -> Vec<String> {
+    in_scope(
+        git::uncommitted_paths(root, head, None).unwrap_or_default(),
+        selection,
+    )
 }
 
 /// Updates `previous` by asking Git only about `paths` (files or whole
@@ -23,29 +27,30 @@ pub(crate) fn refreshed(
     head: &Head,
     previous: &[String],
     paths: &[&str],
+    selection: &Selection,
 ) -> Vec<String> {
     if paths.is_empty() {
         return previous.to_vec();
     }
     if paths.len() > MAX_NAMED_PATHS {
-        return all(root, head);
+        return all(root, head, selection);
     }
     let Some(now_uncommitted) = git::uncommitted_paths(root, head, Some(paths)) else {
-        return all(root, head);
+        return all(root, head, selection);
     };
     let mut merged: BTreeSet<String> = previous
         .iter()
         .filter(|path| !paths.iter().any(|asked| is_within(path, asked)))
         .cloned()
         .collect();
-    merged.extend(in_scope(now_uncommitted));
+    merged.extend(in_scope(now_uncommitted, selection));
     merged.into_iter().collect()
 }
 
-fn in_scope(paths: Vec<String>) -> Vec<String> {
+fn in_scope(paths: Vec<String>, selection: &Selection) -> Vec<String> {
     paths
         .into_iter()
-        .filter(|path| discover::is_in_scope(path))
+        .filter(|path| discover::is_in_scope(path, selection))
         .collect()
 }
 

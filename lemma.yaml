@@ -1,0 +1,7 @@
+# Lemma, as Lemma reads it: `lemma index .` indexes the crates.
+services:
+  lemma:
+    index:
+      include: [crates]
+      exclude: ["crates/*/tests/fixtures/**"]
+      languages: [rust]
