@@ -1,7 +1,7 @@
 //! What `lemma index` reads: the code each service in a directory's
 //! `lemma.yaml` says it is made of.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use lemma_graph::config::{LEMMA_FILE, LemmaFile, Service};
@@ -14,17 +14,38 @@ pub(crate) struct LemmaSource {
     pub file: LemmaFile,
 }
 
-/// The `lemma.yaml` in `root`, read and checked.
-pub(crate) fn read_lemma_file(root: &Path) -> anyhow::Result<LemmaSource> {
-    let path = root.join(LEMMA_FILE);
-    if !path.is_file() {
+/// Where `lemma index` reads from: `path` itself if it is a file, else the
+/// `lemma.yaml` in it; and the directory the file describes.
+pub(crate) fn locate(path: &Path) -> anyhow::Result<(PathBuf, PathBuf)> {
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("cannot index {}", path.display()))?;
+    if path.is_file() {
+        let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        return Ok((root, path));
+    }
+    let file = path.join(LEMMA_FILE);
+    if !file.is_file() {
         bail!(
             "{} has no {LEMMA_FILE}; describe its services and the code each is made of \
              (`index.include`) before indexing it (see docs/check.md)",
-            root.display()
+            path.display()
         );
     }
-    let text = std::fs::read_to_string(&path)
+    Ok((path, file))
+}
+
+/// Whether a `lemma.yaml` describes a workspace: repositories it composes
+/// (`#name` services) and no code of its own.
+pub(crate) fn is_workspace(file: &LemmaFile) -> bool {
+    let mut names = file.services.keys();
+    file.services.keys().any(|name| name.starts_with('#'))
+        && names.all(|name| name.starts_with('#'))
+}
+
+/// The `lemma.yaml` at `path`, read and checked.
+pub(crate) fn read_lemma_file(path: &Path) -> anyhow::Result<LemmaSource> {
+    let text = std::fs::read_to_string(path)
         .with_context(|| format!("could not read {}", path.display()))?;
     let file =
         lemma_graph::config::parse(&text).with_context(|| format!("invalid {}", path.display()))?;

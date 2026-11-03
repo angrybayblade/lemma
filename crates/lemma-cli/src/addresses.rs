@@ -5,7 +5,9 @@
 use anyhow::bail;
 use lemma_graph::address::{Address, parse_address};
 use lemma_model::{Export, ExportLink, GraphNode, Use, UseGraph};
-use lemma_query::SymbolResolution;
+
+use crate::output::Linked;
+use lemma_query::{Direction, SymbolResolution};
 use lemma_store::{FactStore, Store, StoredSnapshot, StoredSymbol};
 
 /// The address `text` names, if it is one rather than a symbol name or id:
@@ -69,6 +71,142 @@ fn symbol_in(
     }))
 }
 
+/// The exports a symbol implements.
+fn implemented_by<'a>(exports: &'a [Export], path: &str, qualified: &str) -> Vec<&'a Export> {
+    exports
+        .iter()
+        .filter(|export| {
+            export.path.as_deref() == Some(path)
+                && export.symbol.as_deref().is_some_and(|symbol| {
+                    qualified == symbol || qualified.ends_with(&format!(".{symbol}"))
+                })
+        })
+        .collect()
+}
+
+/// What a repository's own index says a symbol is linked to: the links
+/// declared from or to the exports it implements. Another repository's end
+/// is named by address only; a workspace index resolves it.
+pub(crate) fn repository_links(
+    store: &Store,
+    snapshot: &StoredSnapshot,
+    symbol: &StoredSymbol,
+) -> anyhow::Result<Vec<Linked>> {
+    let exports = store.exports(snapshot.id)?;
+    let links = store.export_links(snapshot.id)?;
+    let mut linked = Vec::new();
+    for export in implemented_by(&exports, &symbol.path, &symbol.symbol.qualified_name) {
+        let address = export.address();
+        for link in &links {
+            if link.caller == address {
+                linked.push(local_end("to", &link.provider, &exports));
+            }
+            if link.provider == address {
+                linked.push(local_end("from", &link.caller, &exports));
+            }
+        }
+    }
+    Ok(linked)
+}
+
+/// A link's other end as this repository knows it: resolved if it is one
+/// of its own exports.
+fn local_end(direction: &'static str, address: &str, exports: &[Export]) -> Linked {
+    let export = as_address(address)
+        .filter(|address| address.repository.is_none())
+        .and_then(|address| {
+            exports.iter().find(|export| {
+                export.service == address.service && export.name == address.operation
+            })
+        });
+    Linked {
+        direction,
+        address: address.to_owned(),
+        path: export.and_then(|export| export.path.clone()),
+        symbol: export.and_then(|export| export.symbol.clone()),
+    }
+}
+
+/// What a workspace index says the export at `address` (absolute) is linked
+/// to, each end resolved to the code implementing it.
+pub(crate) fn workspace_links(
+    address: &str,
+    exports: &[(String, Export)],
+    links: &[ExportLink],
+) -> Vec<Linked> {
+    let mut linked = Vec::new();
+    for link in links {
+        if link.caller == address {
+            linked.push(member_end("to", &link.provider, exports));
+        }
+        if link.provider == address {
+            linked.push(member_end("from", &link.caller, exports));
+        }
+    }
+    linked
+}
+
+/// A link's end, found among the members' exports.
+fn member_end(direction: &'static str, address: &str, exports: &[(String, Export)]) -> Linked {
+    let export = as_address(address).and_then(|parsed| {
+        exports.iter().find(|(member, export)| {
+            Some(member.as_str()) == parsed.repository.as_deref()
+                && export.service == parsed.service
+                && export.name == parsed.operation
+        })
+    });
+    Linked {
+        direction,
+        address: address.to_owned(),
+        path: export.and_then(|(member, export)| {
+            export.path.as_ref().map(|path| format!("{member}:{path}"))
+        }),
+        symbol: export.and_then(|(_, export)| export.symbol.clone()),
+    }
+}
+
+/// Adds `linked`, the root's links, to `graph` as nodes the root uses or is
+/// used by, following the graph's direction.
+pub(crate) fn add_root_links(graph: &mut UseGraph, linked: &[Linked], direction: Direction) {
+    let Some(root) = graph.root.clone() else {
+        return;
+    };
+    for link in linked {
+        let wanted = match direction {
+            Direction::Both => true,
+            Direction::Callees => link.direction == "to",
+            Direction::Callers => link.direction == "from",
+        };
+        if !wanted {
+            continue;
+        }
+        let id = format!("export:{}", link.address);
+        if !graph.nodes.iter().any(|node| node.id == id) {
+            graph.nodes.push(GraphNode {
+                id: id.clone(),
+                label: link.symbol.clone().unwrap_or_else(|| link.address.clone()),
+                kind: "linked operation".to_owned(),
+                path: link.path.clone().or_else(|| Some(link.address.clone())),
+                line: None,
+            });
+        }
+        let relationship = if link.direction == "to" {
+            Use {
+                from: root.clone(),
+                to: id,
+            }
+        } else {
+            Use {
+                from: id,
+                to: root.clone(),
+            }
+        };
+        graph.relationships.push(relationship);
+    }
+    graph.relationships.sort();
+    graph.relationships.dedup();
+}
+
 /// Adds to `graph` the links declared from its symbols' exports: each
 /// linked operation becomes a node its caller uses, named by address. The
 /// other end is resolved in a workspace; here it stays an address.
@@ -78,13 +216,7 @@ pub(crate) fn add_links(graph: &mut UseGraph, exports: &[Export], links: &[Expor
         let (Some(path), Some(_)) = (&node.path, node.line) else {
             continue;
         };
-        let implemented = exports.iter().filter(|export| {
-            export.path.as_deref() == Some(path.as_str())
-                && export.symbol.as_deref().is_some_and(|symbol| {
-                    node.label == symbol || node.label.ends_with(&format!(".{symbol}"))
-                })
-        });
-        for export in implemented {
+        for export in implemented_by(exports, path, &node.label) {
             let address = export.address();
             for link in links.iter().filter(|link| link.caller == address) {
                 added.push((node.id.clone(), link.provider.clone()));

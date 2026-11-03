@@ -13,6 +13,7 @@ pub mod address;
 mod affects;
 mod check;
 pub mod compare;
+pub mod compose;
 pub mod config;
 pub mod exports;
 mod impact;
