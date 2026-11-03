@@ -15,6 +15,8 @@ pub use code::{
     SchemaUnion, SchemaUse, extract,
 };
 pub use openapi::{Field, Operation, Parameter, operations};
-pub use paths::{canonical_method, canonical_path, canonical_route, has_marker, path_markers};
+pub use paths::{
+    canonical_method, canonical_path, canonical_route, has_marker, is_test_file, path_markers,
+};
 pub use source::{SourceError, SourceFile, read_file, read_files, read_files_where};
 pub use tsconfig::PathAliases;

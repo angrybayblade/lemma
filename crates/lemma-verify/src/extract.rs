@@ -247,7 +247,10 @@ fn service(
         route_aliases: &repository.route_aliases,
         imports: read_import_aliases(repository, commit)?,
     };
-    for file in files.iter().filter(|file| !is_test_file(&file.path)) {
+    for file in files
+        .iter()
+        .filter(|file| !lemma_http::is_test_file(&file.path))
+    {
         let facts = code_facts(file, &CodeOptions::default(), extractor)?;
         schema_facts(&scope, &file.path, &facts, writer);
         let is_route_file = repository
@@ -517,7 +520,10 @@ fn consumer(
         system: snapshot.system,
         imports: read_import_aliases(repository, snapshot.commit)?,
     };
-    for file in files.iter().filter(|file| !is_test_file(&file.path)) {
+    for file in files
+        .iter()
+        .filter(|file| !lemma_http::is_test_file(&file.path))
+    {
         let facts = code_facts(file, &scope.options, extractor)?;
         consumer_file(&scope, &file.path, &facts, writer);
     }
@@ -763,18 +769,6 @@ fn capitalize(word: &str) -> String {
         .unwrap_or_default()
 }
 
-fn is_test_file(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with("_test.go")
-        || lower.ends_with("_test.py")
-        || lower.contains("/test/")
-        || lower.contains("/tests/")
-        || lower.contains("__tests__")
-        || lower.contains(".test.")
-        || lower.contains(".spec.")
-        || lower.contains("/test_")
-}
-
 fn has_extension(path: &str, extension: &str) -> bool {
     Path::new(path)
         .extension()
@@ -793,7 +787,7 @@ fn same_package(path: &str, known: &BTreeSet<String>) -> Vec<String> {
         .filter(|other| {
             other.as_str() != path
                 && has_extension(other, "go")
-                && !is_test_file(other)
+                && !lemma_http::is_test_file(other)
                 && Path::new(other.as_str()).parent() == Some(directory)
         })
         .cloned()

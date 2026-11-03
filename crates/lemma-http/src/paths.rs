@@ -106,6 +106,21 @@ fn is_parameter(segment: &str) -> bool {
         || segment.contains("${")
 }
 
+/// Whether a file is a test, by the naming conventions of the languages
+/// Lemma reads: tests are not part of what a service serves or a consumer
+/// calls.
+pub fn is_test_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with("_test.go")
+        || lower.ends_with("_test.py")
+        || lower.contains("/test/")
+        || lower.contains("/tests/")
+        || lower.contains("__tests__")
+        || lower.contains(".test.")
+        || lower.contains(".spec.")
+        || lower.contains("/test_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
