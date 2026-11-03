@@ -16,6 +16,7 @@ use lemma_syntax::Extractor;
 
 use crate::GraphError;
 use crate::address::{Address, Link, parse_link};
+use crate::affects::{self, Walkable};
 use crate::compare::{Difference, compare};
 use crate::config::{LEMMA_FILE, LemmaFile, Level, Operation, SchemaSource, Service, parse};
 use crate::infer;
@@ -25,7 +26,7 @@ use crate::schema::{self, Context, Role};
 /// The name of the repository holding the parent `lemma.yaml`.
 pub(crate) const SELF: &str = "self";
 const BASE: usize = 0;
-const HEAD: usize = 1;
+pub(crate) const HEAD: usize = 1;
 
 /// The change being checked: a repository and its commits before and with
 /// the change.
@@ -78,6 +79,26 @@ pub struct Finding {
     pub message: String,
     /// Whether the change introduced it, rather than it being there before.
     pub introduced: bool,
+    /// For a problem: the operations whose handlers reach it and the code
+    /// elsewhere that calls them, nearest first, traced through the call
+    /// graph by name, so approximate.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub affects: Vec<Impact>,
+}
+
+/// Something a problem affects further up.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Impact {
+    /// How many operations away from the problem: 0 for an operation whose
+    /// handler reaches it, 1 for code calling that operation, and so on.
+    pub distance: usize,
+    /// The service serving an operation, or the repository of calling code.
+    pub owner: String,
+    /// `METHOD /path` for an operation; `file::Function` for calling code.
+    pub at: String,
+    /// For calling code, the operation it calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calls: Option<String>,
 }
 
 /// A repository as it was read.
@@ -114,10 +135,10 @@ pub struct Report {
 }
 
 /// A repository at both snapshots.
-struct Repo {
-    checkouts: [Checkout; 2],
-    files: [LemmaFile; 2],
-    manifest_from_working_directory: bool,
+pub(crate) struct Repo {
+    pub(crate) checkouts: [Checkout; 2],
+    pub(crate) files: [LemmaFile; 2],
+    pub(crate) manifest_from_working_directory: bool,
 }
 
 /// Checks the links of the system whose parent `lemma.yaml` is `root_file`,
@@ -153,10 +174,17 @@ pub fn check<E: Engine>(
         checker.check_link(link)?;
     }
     let mut findings = checker.findings;
-    let inferred_links = match &options.change {
+    let mut seeds = declared_seeds(&findings, &links, &repos);
+    let inference = match &options.change {
         Some(change) => infer_links(&repos, change, level, engine, &mut findings)?,
         None => None,
     };
+    let (inferred_links, walkable) = match inference {
+        Some((count, walkable)) => (Some(count), walkable),
+        None => (None, Walkable::default()),
+    };
+    seeds.extend(walkable.seeds.iter().cloned());
+    affects::attach(&mut findings, &seeds, &walkable, &repos)?;
     findings.sort_by(|left, right| {
         (left.severity, &left.link, &left.check, &left.message).cmp(&(
             right.severity,
@@ -174,15 +202,37 @@ pub fn check<E: Engine>(
     })
 }
 
+/// Where each declared link's problems start a trace: the link's caller.
+fn declared_seeds(
+    findings: &[Finding],
+    links: &BTreeSet<Link>,
+    repos: &BTreeMap<String, Repo>,
+) -> Vec<(usize, crate::impact::Seed)> {
+    let by_label: BTreeMap<String, &Link> = links
+        .iter()
+        .map(|link| (format!("{} -> {}", link.caller, link.provider), link))
+        .collect();
+    findings
+        .iter()
+        .enumerate()
+        .filter(|(_, finding)| finding.check != "schema")
+        .filter_map(|(index, finding)| {
+            let link = by_label.get(&finding.link)?;
+            Some((index, affects::declared_seed(link, repos)?))
+        })
+        .collect()
+}
+
 /// Finds and checks calls from code to documented operations, adding their
-/// findings; the number of distinct calls found.
+/// findings; the number of distinct calls found, and the calls and routes a
+/// trace can walk.
 fn infer_links<E: Engine>(
     repos: &BTreeMap<String, Repo>,
     change: &Change,
     level: Level,
     engine: &E,
     findings: &mut Vec<Finding>,
-) -> Result<Option<usize>, GraphError> {
+) -> Result<Option<(usize, Walkable)>, GraphError> {
     let changed_repo = &repos[&change.repository];
     let (Some(base), Some(head)) = (
         changed_repo.checkouts[BASE].commit.as_deref(),
@@ -209,16 +259,20 @@ fn infer_links<E: Engine>(
         base,
         head,
     };
-    let Some(manifest) = infer::manifest(&sources, &changed) else {
+    let Some(inferred) = infer::manifest(&sources, &changed) else {
         return Ok(None);
     };
     let options = lemma_verify::Options {
         explain: false,
-        relations: vec!["calls".to_owned()],
+        relations: vec!["calls".to_owned(), "route".to_owned()],
     };
-    let report = lemma_verify::verify(&manifest, engine, &options)
+    let report = lemma_verify::verify(&inferred.manifest, engine, &options)
         .map_err(|source| GraphError::Inference { source })?;
+    let mut walkable = affects::walkable(&report.relations, &inferred.repositories);
     for found in &report.findings {
+        if let Some(seed) = affects::inferred_seed(&found.values, &inferred.repositories) {
+            walkable.seeds.push((findings.len(), seed));
+        }
         findings.push(inferred_finding(found, level));
     }
     let calls: BTreeSet<(&String, &String)> = report
@@ -228,7 +282,7 @@ fn infer_links<E: Engine>(
         .flatten()
         .filter_map(|row| Some((row.first()?, row.get(1)?)))
         .collect();
-    Ok(Some(calls.len()))
+    Ok(Some((calls.len(), walkable)))
 }
 
 /// A repository's `lemma.yaml` as inference reads it. One borrowed from the
@@ -287,6 +341,7 @@ fn inferred_finding(found: &lemma_verify::Finding, level: Level) -> Finding {
         check: found.requirement.clone(),
         message: found.message.clone(),
         introduced: true,
+        affects: Vec::new(),
     }
 }
 
@@ -770,6 +825,7 @@ impl Checker<'_> {
             check: check.to_owned(),
             message,
             introduced,
+            affects: Vec::new(),
         };
         if !self.findings.contains(&finding) {
             self.findings.push(finding);

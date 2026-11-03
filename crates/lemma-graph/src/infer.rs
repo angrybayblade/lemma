@@ -37,10 +37,20 @@ pub struct Changed<'a> {
     pub head: &'a str,
 }
 
+/// A verification manifest, and the repository each of its entries
+/// describes.
+pub struct Inferred {
+    /// The manifest.
+    pub manifest: Manifest,
+    /// Each entry's repository, by entry name.
+    pub repositories: BTreeMap<String, String>,
+}
+
 /// The verification manifest for `sources`, or `None` when the changed
 /// repository plays no part inference reads.
-pub fn manifest(sources: &[Source<'_>], changed: &Changed<'_>) -> Option<Manifest> {
-    let mut repositories = BTreeMap::new();
+pub fn manifest(sources: &[Source<'_>], changed: &Changed<'_>) -> Option<Inferred> {
+    let mut entries_found = BTreeMap::new();
+    let mut owners = BTreeMap::new();
     let mut changed_entry = None;
     for source in sources {
         let is_changed = source.name == changed.name;
@@ -49,17 +59,22 @@ pub fn manifest(sources: &[Source<'_>], changed: &Changed<'_>) -> Option<Manifes
             if is_changed && changed_entry.is_none() {
                 changed_entry = Some(name.clone());
             }
-            repositories.insert(name, repository);
+            owners.insert(name.clone(), source.name.to_owned());
+            entries_found.insert(name, repository);
         }
     }
-    Some(Manifest {
+    let manifest = Manifest {
         grammar: None,
         change: VerifyChange {
             repository: changed_entry?,
             base: changed.base.to_owned(),
             head: changed.head.to_owned(),
         },
-        repositories,
+        repositories: entries_found,
+    };
+    Some(Inferred {
+        manifest,
+        repositories: owners,
     })
 }
 
@@ -209,10 +224,12 @@ mod tests {
             head: "h",
         };
 
-        let manifest = manifest(&sources, &changed).unwrap();
+        let inferred = manifest(&sources, &changed).unwrap();
 
+        let manifest = inferred.manifest;
         let names: Vec<&String> = manifest.repositories.keys().collect();
         assert_eq!(names, ["#billing:api", "#billing:api (code)", "#web:web"]);
+        assert_eq!(inferred.repositories["#billing:api (code)"], "#billing");
         assert_eq!(manifest.change.repository, "#billing:api");
         assert_eq!(manifest.repositories["#billing:api"].commit, None);
         assert_eq!(
@@ -242,7 +259,7 @@ mod tests {
             head: "h",
         };
 
-        let manifest = manifest(&sources, &changed).unwrap();
+        let manifest = manifest(&sources, &changed).unwrap().manifest;
 
         let names: Vec<&String> = manifest.repositories.keys().collect();
         assert_eq!(names, ["#sdk:sdk"]);
