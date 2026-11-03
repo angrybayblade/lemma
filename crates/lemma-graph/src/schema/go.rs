@@ -15,6 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value, json};
 use tree_sitter::{Node, Parser};
 
+use super::shape::{View, nullable, object};
+
 /// How deep to follow named struct types inside each other.
 const MAX_DEPTH: usize = 12;
 
@@ -25,19 +27,6 @@ pub struct GoSchema {
     pub schema: Value,
     /// Named types used but not defined in the package, such as `models.X`.
     pub unresolved: BTreeSet<String>,
-}
-
-/// Which side of a message a Go type is on: `encoding/json` encodes and
-/// decodes by different rules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View {
-    /// The type is sent: fields without `omitempty` are always present, and
-    /// only pointers, slices and maps can be `null`.
-    Encode,
-    /// The type receives: a missing field is left at its zero value and
-    /// `null` decodes into any field, so nothing is required and every field
-    /// accepts `null`. Only a value of the wrong type fails to decode.
-    Decode,
 }
 
 /// The schema of `type_name`, defined in one of a package's files, as seen
@@ -180,11 +169,7 @@ impl Reader<'_, '_> {
         {
             self.field(field, source, &mut properties, &mut required);
         }
-        let mut schema = json!({ "type": "object", "properties": properties });
-        if !required.is_empty() {
-            schema["required"] = json!(required);
-        }
-        schema
+        object(properties, required)
     }
 
     fn field(
@@ -287,20 +272,6 @@ fn primitive(name: &str) -> Option<Value> {
         _ => return None,
     };
     Some(schema)
-}
-
-/// `schema`, also allowing `null`.
-fn nullable(schema: Value) -> Value {
-    match schema.get("type") {
-        Some(Value::String(kind)) => {
-            let mut nullable = schema.clone();
-            nullable["type"] = json!([kind, "null"]);
-            nullable
-        }
-        Some(_) => schema,
-        None if schema == json!({}) => schema,
-        None => json!({ "anyOf": [schema, { "type": "null" }] }),
-    }
 }
 
 fn text<'s>(node: Node<'_>, source: &'s str) -> &'s str {

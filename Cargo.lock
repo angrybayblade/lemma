@@ -627,6 +627,9 @@ dependencies = [
  "thiserror 2.0.21",
  "tree-sitter",
  "tree-sitter-go",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
  "yaml_serde",
 ]
 
