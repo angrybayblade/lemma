@@ -46,7 +46,10 @@ fn main() -> ExitCode {
         eprintln!("error: could not read the current directory");
         return ExitCode::FAILURE;
     };
-    if !cli.no_daemon && !daemon_disabled_by_environment() {
+    // Tracing through a workspace runs inference over every repository,
+    // which runs in its own process, as `lemma check` does.
+    let traces_workspace = matches!(&cli.command, Command::Graph(args) if args.workspace.is_some());
+    if !cli.no_daemon && !daemon_disabled_by_environment() && !traces_workspace {
         if let Some(code) = forward(cwd.clone()) {
             return code;
         }

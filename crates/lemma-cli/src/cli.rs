@@ -227,6 +227,12 @@ pub(crate) struct GraphArgs {
     /// The most nodes to include.
     #[arg(long, default_value_t = 200)]
     pub max_nodes: usize,
+    /// A workspace lemma.yaml: follow callers out of the repository too,
+    /// through the operations their handlers serve to the code in other
+    /// repositories that calls them, and on up. Runs inference over the
+    /// whole system, so it takes as long as `lemma check`.
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
     #[command(flatten)]
     pub lookup: LookupArgs,
 }
