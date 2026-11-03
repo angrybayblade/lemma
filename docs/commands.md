@@ -151,6 +151,20 @@ Checks a change across the repositories listed in a manifest and reports what it
 
 Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
+## `lemma check [lemma.yaml]`
+
+Checks a change against every repository composed by a parent `lemma.yaml`: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Checking links](check.md).
+
+| Option | Meaning |
+| --- | --- |
+| `--change <name>` | The changed repository, as the parent's services name it (`#billing`), or `self`. Needs `--base` and `--head`. |
+| `--base <commit>`, `--head <commit>` | The commits before and with the change. |
+| `--level <level>` | `audit` (problems are warnings) or `check` (problems are errors). Overrides the graph's level. |
+| `--all` | List informational findings too, not just their count. |
+| `--engine <name>` | The rule engine for inferred links: `souffle` or `reference`. Default: Soufflé if installed. |
+
+Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
+
 ## `lemma daemon`
 
 Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground.
@@ -194,4 +208,4 @@ There is one daemon per user. It talks to `lemma` over a Unix socket in the temp
 | `1` | Error, such as no index, an unknown symbol, or an invalid configuration file. The message is printed to stderr. |
 | `2` | `refs` only: the name matches several symbols. The candidates are printed. |
 | `3` | `refs` only: no answer. The file is stale, no server is installed, the server failed, or it does not support references. |
-| `4` | `verify` only: a finding is an error. |
+| `4` | `verify` and `check` only: a finding is an error. |
