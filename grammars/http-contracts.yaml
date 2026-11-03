@@ -152,14 +152,15 @@ rules:
   - rejects_unknown_parameter(op) :- operation@head(s, op, _, _), rejects_unknown_fields(s).
 
   # Calls a changed consumer adds to paths under a service's prefixes that
-  # the service does not serve. Calls that were already there, and paths
-  # under no service's prefixes (a consumer's own routes, other APIs), are
-  # not the change's doing.
+  # the service does not serve. Calls that were already there, paths under
+  # no service's prefixes (a consumer's own routes, other APIs), and a
+  # service's own code naming paths under its own prefixes, are not the
+  # change's doing.
   - served(m, p) :- operation(_, _, m, p).
   - served_path(p) :- operation(_, _, _, p).
   - called_before(c, m, p) :- calls_path@base(c, m, p, _, _).
-  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m != "*", !served(m, p), !called_before(c, m, p), addressed_to(p, _).
-  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m = "*", !served_path(p), !called_before(c, m, p), addressed_to(p, _).
+  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m != "*", !served(m, p), !called_before(c, m, p), addressed_to(p, s), !part_of_service(f, s).
+  - unserved_call(c, m, p, f, l) :- calls_path(c, m, p, f, l), m = "*", !served_path(p), !called_before(c, m, p), addressed_to(p, s), !part_of_service(f, s).
 
   # Spec against code, in the head snapshot.
   - specified(s, m, p) :- operation(s, _, m, p).
