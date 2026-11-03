@@ -5,6 +5,10 @@
 mod document;
 mod go;
 mod python;
+mod python_syntax;
+mod rust;
+mod shape;
+mod typescript;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -111,31 +115,76 @@ fn code_schema(anchor: &str, context: &mut Context<'_>) -> Result<Resolved, Grap
         message: format!("`{anchor}` is not a type anchor like `path/to/file.go#Type`"),
     })?;
     let extension = file.rsplit_once('.').map_or("", |(_, extension)| extension);
+    let missing = || GraphError::Schema {
+        message: format!("no type `{symbol}` in {file} or the files beside it"),
+    };
+    let checkout = context.checkout;
     match extension {
-        "go" => go_schema(file, symbol, context.checkout, context.role),
-        "py" => {
-            let root = context.checkout.worktree(context.cache)?;
-            let python = context.runtime.python.as_deref().unwrap_or("python3");
-            let python = absolute_interpreter(python, &context.checkout.root);
-            let schema = python::type_schema(&root, &python, file, symbol, &context.runtime.env)?;
-            Ok(Resolved {
-                schema: inline_references(&schema, &schema),
-                source: "python",
-                unresolved: Vec::new(),
-            })
+        "go" => {
+            let package = directory_files(checkout, file, "go", "_test.go")?;
+            let found =
+                go::struct_schema(&package, symbol, view(context.role)).ok_or_else(missing)?;
+            Ok(syntax(found.schema, found.unresolved))
         }
+        "rs" => {
+            let module = directory_files(checkout, file, "rs", "")?;
+            let found =
+                rust::type_schema(&module, symbol, view(context.role)).ok_or_else(missing)?;
+            Ok(syntax(found.schema, found.unresolved))
+        }
+        "ts" | "tsx" | "mts" | "cts" => {
+            let mut read = |path: &str| checkout.read(path);
+            let found = typescript::type_schema(file, symbol, &mut read)?.ok_or_else(missing)?;
+            Ok(syntax(found.schema, found.unresolved))
+        }
+        "py" => python_schema(file, symbol, context),
         _ => Err(GraphError::Schema {
             message: format!("no schema reader for `.{extension}` files yet ({anchor})"),
         }),
     }
 }
 
-fn go_schema(
-    file: &str,
-    symbol: &str,
+/// A schema read with Tree-sitter.
+fn syntax(schema: Value, unresolved: std::collections::BTreeSet<String>) -> Resolved {
+    Resolved {
+        schema,
+        source: "tree-sitter",
+        unresolved: unresolved.into_iter().collect(),
+    }
+}
+
+/// A Python type by Pydantic in the repository's environment, or by
+/// Tree-sitter when that cannot import it.
+fn python_schema(file: &str, symbol: &str, context: &Context<'_>) -> Result<Resolved, GraphError> {
+    let root = context.checkout.worktree(context.cache)?;
+    let python = context.runtime.python.as_deref().unwrap_or("python3");
+    let python = absolute_interpreter(python, &context.checkout.root);
+    let imported = python::type_schema(&root, &python, file, symbol, &context.runtime.env);
+    let error = match imported {
+        Ok(schema) => {
+            return Ok(Resolved {
+                schema: inline_references(&schema, &schema),
+                source: "python",
+                unresolved: Vec::new(),
+            });
+        }
+        Err(error) => error,
+    };
+    let package = directory_files(context.checkout, file, "py", "")?;
+    match python_syntax::type_schema(&package, symbol) {
+        Some(found) => Ok(syntax(found.schema, found.unresolved)),
+        None => Err(error),
+    }
+}
+
+/// The files with `extension` in `file`'s directory at the checkout, but
+/// not those ending in `excluded` (when it is not empty), `file` first.
+fn directory_files(
     checkout: &Checkout,
-    role: Role,
-) -> Result<Resolved, GraphError> {
+    file: &str,
+    extension: &str,
+    excluded: &str,
+) -> Result<Vec<(String, String)>, GraphError> {
     let directory = file.rsplit_once('/').map_or("", |(directory, _)| directory);
     let prefixes = if directory.is_empty() {
         Vec::new()
@@ -146,33 +195,30 @@ fn go_schema(
         &checkout.root,
         checkout.commit.as_deref(),
         &prefixes,
-        &["go"],
+        &[extension],
     )
     .map_err(|source| GraphError::Source { source })?;
-    let package: Vec<(String, String)> = files
+    let mut found: Vec<(String, String)> = files
         .into_iter()
         .filter(|candidate| {
-            candidate
+            let parent = candidate
                 .path
                 .rsplit_once('/')
-                .map_or("", |(parent, _)| parent)
-                == directory
-                && !candidate.path.ends_with("_test.go")
+                .map_or("", |(parent, _)| parent);
+            parent == directory && (excluded.is_empty() || !candidate.path.ends_with(excluded))
         })
         .map(|candidate| (candidate.path, candidate.contents))
         .collect();
-    let view = match role {
-        Role::Sender => go::View::Encode,
-        Role::Receiver => go::View::Decode,
-    };
-    let found = go::struct_schema(&package, symbol, view).ok_or_else(|| GraphError::Schema {
-        message: format!("no type `{symbol}` in the Go package {directory}"),
-    })?;
-    Ok(Resolved {
-        schema: found.schema,
-        source: "tree-sitter",
-        unresolved: found.unresolved.into_iter().collect(),
-    })
+    // The anchored file's definitions win over its neighbours'.
+    found.sort_by_key(|(path, _)| path != file);
+    Ok(found)
+}
+
+fn view(role: Role) -> shape::View {
+    match role {
+        Role::Sender => shape::View::Encode,
+        Role::Receiver => shape::View::Decode,
+    }
 }
 
 fn read_json(checkout: &Checkout, file: &str) -> Result<Value, GraphError> {
