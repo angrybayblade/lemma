@@ -83,18 +83,41 @@ pub struct Service {
     /// `/v1/` routes also published as `/v2/`.
     #[serde(default)]
     pub route_aliases: BTreeMap<String, String>,
-    /// Defined here: names its code calls generated clients through, such
-    /// as `client`.
+    /// Defined here: how its code calls other services.
     #[serde(default)]
-    pub client_receivers: Vec<String>,
-    /// Defined here: modules of generated clients its code imports, such as
+    pub calls: Calls,
+}
+
+/// How a service's code calls other services. Its code is searched for
+/// calls unless the service is itself a client (`exports.client`).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Calls {
+    /// Clients it calls through, generated from other services' documents
+    /// (at build time, say) rather than written here.
+    #[serde(default)]
+    pub clients: Vec<UsedClient>,
+}
+
+/// A client a service's code calls other services through.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UsedClient {
+    /// Documents it is generated from, one function per operation.
+    #[serde(default)]
+    pub generated_from: Vec<String>,
+    /// How it names an operation's function from its `operationId`:
+    /// templates with `{operationId}`, `{camel}`, `{pascal}` or `{snake}`.
+    /// The `operationId` as written if empty.
+    #[serde(default)]
+    pub call_names: Vec<String>,
+    /// Names the code calls it through, such as `client`.
+    #[serde(default)]
+    pub receivers: Vec<String>,
+    /// Modules of it the code imports functions from, such as
     /// `generated/billing`.
     #[serde(default)]
-    pub client_modules: Vec<String>,
-    /// Defined here: a client of another service, generated from its
-    /// documents.
-    #[serde(default)]
-    pub client: Option<GeneratedClient>,
+    pub modules: Vec<String>,
 }
 
 /// The code a service is made of, which Lemma indexes and searches.
@@ -131,16 +154,24 @@ pub struct Exports {
     /// entry modules.
     #[serde(default)]
     pub symbols: Vec<String>,
+    /// Set when the service is a client of another service, generated from
+    /// its documents: its code is the client, so it is not searched for
+    /// calls.
+    #[serde(default)]
+    pub client: Option<GeneratedClient>,
 }
 
 impl Exports {
     /// Whether it exports nothing.
     pub fn is_empty(&self) -> bool {
-        self.openapi.is_empty() && self.operations.is_empty() && self.symbols.is_empty()
+        self.openapi.is_empty()
+            && self.operations.is_empty()
+            && self.symbols.is_empty()
+            && self.client.is_none()
     }
 }
 
-/// A client generated from `OpenAPI` documents.
+/// A service that is a client of another, generated from its documents.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratedClient {
@@ -161,20 +192,21 @@ pub struct GeneratedClient {
 }
 
 impl Service {
-    /// Whether it defines anything: code, exports, settings or a client.
+    /// Whether it defines anything: code, exports, calls or settings.
     fn defines_anything(&self) -> bool {
-        let lists = [
-            &self.path_prefixes,
-            &self.client_receivers,
-            &self.client_modules,
-        ];
         self.index != IndexSettings::default()
             || !self.exports.is_empty()
+            || self.calls != Calls::default()
             || self.runtime != Runtime::default()
-            || lists.iter().any(|list| !list.is_empty())
+            || !self.path_prefixes.is_empty()
             || self.rejects_unknown_fields
             || !self.route_aliases.is_empty()
-            || self.client.is_some()
+    }
+
+    /// Whether its code is searched for calls to other services: unless it
+    /// is itself a client, whose code is the client, not a caller of it.
+    pub fn searches_calls(&self) -> bool {
+        self.exports.client.is_none()
     }
 }
 

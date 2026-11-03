@@ -29,15 +29,19 @@ services:
             response: { path: "$.op.response" }                # in the resolver's output
             # or: { file: spec.json, path: "$...", format: openapi }
       symbols: [src/index.ts]         # a library's public modules
+      client:                         # only if this service IS a generated client of another;
+        generated_from: [openapi.json]  # its code is then not searched for calls
+        call_names: ["{camel}"]
+        specs: [openapi.json]
+    calls:                            # how its code calls others (it is searched for calls)
+      clients:                        # clients it calls through, generated elsewhere or at build time
+        - generated_from: [billing.json]
+          call_names: ["{camel}"]
+          receivers: [client]         # client.createInvoice(...)
+          modules: [generated/billing]  # import { createInvoice } from '../generated/billing'
     path_prefixes: [/v1/billing/]
     route_aliases: { /v1/: /v2/ }
     rejects_unknown_fields: false
-    client_receivers: [client]
-    client_modules: [generated/billing]
-    client:                           # a generated client of another service
-      generated_from: [openapi.json]
-      call_names: ["{camel}"]
-      specs: [openapi.json]
   "#<name>":                          # an external service: another repository
     path: ../other                    # or git: <url>
     ref: <commit, branch or tag>
