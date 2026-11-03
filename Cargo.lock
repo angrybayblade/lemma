@@ -653,6 +653,7 @@ name = "lemma-index"
 version = "0.1.0-rc0"
 dependencies = [
  "blake3",
+ "globset",
  "ignore",
  "lemma-model",
  "lemma-store",

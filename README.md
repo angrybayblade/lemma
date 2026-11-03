@@ -15,8 +15,16 @@ Or from source: `cargo install --path crates/lemma-cli --locked` (Rust 1.85+). D
 
 ## Quick start
 
-```sh
+Describe the project in `lemma.yaml` at its root: its services and the code each is made of.
 
+```yaml
+services:
+  api:
+    index:
+      include: [src]
+```
+
+```sh
 lemma index ~/code/project              # writes ~/code/project/.lemma/index.db
 cd ~/code/project
 lemma symbols Router                    # search by name or qualified name

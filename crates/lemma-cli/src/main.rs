@@ -14,6 +14,7 @@ mod daemon;
 mod engine;
 mod mcp;
 mod output;
+mod selection;
 #[cfg(unix)]
 mod service;
 mod verify;

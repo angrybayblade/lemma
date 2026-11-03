@@ -7,6 +7,7 @@ mod discover;
 mod git;
 mod scan;
 mod scope;
+mod selection;
 mod state;
 mod uncommitted;
 mod watch;
@@ -19,6 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use lemma_model::{Language, Snapshot};
 use lemma_store::{FactStore, NewSnapshot, SnapshotUpdate, Store, StoreError, StoredSnapshot};
 use lemma_syntax::{EXTRACTOR_VERSION, SyntaxError};
+
+pub use crate::selection::{InvalidPattern, RuleSpec, Selection};
 
 use crate::scan::{ExtractorPool, ReusePolicy};
 use crate::scope::{DirtyScope, WalkScope};
@@ -89,6 +92,8 @@ pub struct LiveIndex {
     last_head: HeadState,
     watch: Option<watch::Watch>,
     extractors: ExtractorPool,
+    /// The files it covers.
+    selection: Selection,
 }
 
 /// What is known about the checked-out commit.
@@ -109,8 +114,15 @@ struct Previous {
 }
 
 impl LiveIndex {
-    /// An index that walks the whole tree on every run.
+    /// An index of every supported file that walks the whole tree on every
+    /// run.
     pub fn new(root: &Path) -> Result<Self, IndexError> {
+        Self::selecting(root, Selection::everything())
+    }
+
+    /// An index of the files `selection` covers that walks the whole tree
+    /// on every run.
+    pub fn selecting(root: &Path, selection: Selection) -> Result<Self, IndexError> {
         let root = root.canonicalize().map_err(|source| IndexError::Root {
             path: root.to_owned(),
             source,
@@ -121,15 +133,22 @@ impl LiveIndex {
             last_head: HeadState::Unknown,
             watch: None,
             extractors: ExtractorPool::new(),
+            selection,
         })
     }
 
-    /// An index that watches the tree and walks only what changed. Falls back
-    /// to full walks if the platform cannot watch.
-    pub fn watched(root: &Path) -> Result<Self, IndexError> {
-        let mut index = Self::new(root)?;
+    /// An index of the files `selection` covers that watches the tree and
+    /// walks only what changed. Falls back to full walks if the platform
+    /// cannot watch.
+    pub fn watched(root: &Path, selection: Selection) -> Result<Self, IndexError> {
+        let mut index = Self::selecting(root, selection)?;
         index.watch = watch::Watch::start(&index.root);
         Ok(index)
+    }
+
+    /// The files this index covers.
+    pub fn selection(&self) -> &Selection {
+        &self.selection
     }
 
     /// The directory this index covers.
@@ -163,8 +182,12 @@ impl LiveIndex {
             Plan::Scan(plan) => *plan,
         };
 
+        let area = Area {
+            root: &self.root,
+            selection: &self.selection,
+        };
         let survey = survey(
-            &self.root,
+            &area,
             previous.as_ref(),
             &walk_scope,
             known_head,
@@ -375,20 +398,27 @@ enum GitPlan {
     AfterScan(git::Head),
 }
 
+/// The part of a tree an index covers.
+struct Area<'a> {
+    root: &'a Path,
+    selection: &'a Selection,
+}
+
 /// Scans the directory and asks Git what changed, overlapping the slow
 /// parts: Git runs while the walk and parse do.
 fn survey(
-    root: &Path,
+    area: &Area<'_>,
     previous: Option<&Previous>,
     walk_scope: &WalkScope,
     known_head: HeadState,
     extractors: &ExtractorPool,
 ) -> Result<Survey, IndexError> {
+    let Area { root, selection } = *area;
     let head_probe = matches!(known_head, HeadState::Unknown).then(|| git::HeadProbe::start(root));
     thread::scope(|scope| {
         let walk = scope.spawn(|| match walk_scope {
-            WalkScope::Full => discover::source_files(root),
-            WalkScope::Partial(dirty) => discover::source_files_in(root, Some(dirty)),
+            WalkScope::Full => discover::source_files(root, selection),
+            WalkScope::Partial(dirty) => discover::source_files_in(root, Some(dirty), selection),
         });
         let head = match (head_probe, known_head) {
             (Some(probe), _) => probe.finish(),
@@ -401,14 +431,14 @@ fn survey(
         let early_git = match &plan {
             GitPlan::Everything(head) => {
                 let head = head.clone();
-                Some(scope.spawn(move || uncommitted::all(root, &head)))
+                Some(scope.spawn(move || uncommitted::all(root, &head, selection)))
             }
             GitPlan::Paths(head, paths) => {
                 let head = head.clone();
                 let paths = paths.clone();
                 Some(scope.spawn(move || {
                     let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
-                    uncommitted::refreshed(root, &head, previous_uncommitted, &paths)
+                    uncommitted::refreshed(root, &head, previous_uncommitted, &paths, selection)
                 }))
             }
             GitPlan::NoRepository | GitPlan::AfterScan(_) => None,
@@ -433,7 +463,7 @@ fn survey(
             (_, Some(early)) => join(early),
             (GitPlan::AfterScan(head), None) => {
                 let touched: Vec<&str> = changes.touched_paths().collect();
-                uncommitted::refreshed(root, &head, previous_uncommitted, &touched)
+                uncommitted::refreshed(root, &head, previous_uncommitted, &touched, selection)
             }
             _ => Vec::new(),
         };

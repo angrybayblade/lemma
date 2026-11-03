@@ -19,10 +19,11 @@ Every command runs in a background daemon that keeps the index open, watches ind
 
 ## `lemma index [path]`
 
-Reads the source files under `path` (default: the current directory) and records their definitions in a snapshot. Re-indexing is incremental: only new or changed files are read and parsed, so running it after every edit is cheap (see [How Lemma works](concepts.md#re-indexing-is-incremental)).
+Reads the source files that `path`'s `lemma.yaml` (default: the current directory's) says its services are made of, and records their definitions in a snapshot. Re-indexing is incremental: only new or changed files are read and parsed, so running it after every edit is cheap (see [How Lemma works](concepts.md#re-indexing-is-incremental)).
 
-- Supported files: `.ts`, `.mts`, `.cts`, `.tsx`, `.py`, `.pyi`, `.go`.
-- Skipped: anything matched by `.gitignore`, hidden files and directories (including `.lemma/`), and `node_modules`.
+- `lemma.yaml` is required. Each local service's `index` section selects files: under `include`, not matching `exclude`, in `languages` if given. A file any service selects is indexed. A service without `index.include` adds nothing; if no service has one, indexing fails. Changing the selection re-indexes from scratch on the next run, dropping files no longer selected.
+- Supported files: `.ts`, `.mts`, `.cts`, `.tsx`, `.py`, `.pyi`, `.go`, `.rs`.
+- Skipped even when selected: anything matched by `.gitignore`, hidden files and directories (including `.lemma/`), and `node_modules`.
 - If no file's contents changed since the last run, the snapshot is reported as `unchanged` and cached answers stay valid.
 - Otherwise only the changed files are rewritten, and cached answers for the snapshot are dropped.
 - An index written by an older version of Lemma is rebuilt from scratch.

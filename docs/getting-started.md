@@ -63,6 +63,19 @@ Language servers work best when the project's own dependencies are installed (`n
 
 ## 3. Index a project
 
+Lemma indexes what a project's `lemma.yaml` says it is made of. Create one at the project's root with a service for each part of it, listing the directories its code is in:
+
+```yaml
+# ~/code/my-project/lemma.yaml
+services:
+  api:
+    index:
+      include: [src, scripts]
+      exclude: ["**/generated/**"]
+```
+
+The same file later describes what each service offers and how it relates to others (see [Checking links](check.md)). Then:
+
 ```sh
 lemma index ~/code/my-project
 ```
