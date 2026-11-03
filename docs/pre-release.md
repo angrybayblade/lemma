@@ -33,14 +33,26 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 | Field changes compare names, not types or allowed values | A field whose type or allowed values change is not reported | Medium | Review enum and type changes by hand |
 | URLs built at run time from values the code does not show are not matched | Those calls are missed, so their breaks are too | Medium for code that builds URLs dynamically | Check coverage with `--relation calls` ([Onboarding](onboarding.md#4-map-the-system)) |
 | Strictness is read from TypeScript zod `.strict()` and specs' `additionalProperties: false` only | In Go and Rust services, sending a removed field is a warning even where the service rejects it | Low | Declare `rejects_unknown_fields: true` on the service |
-| Only HTTP with OpenAPI specs | gRPC, GraphQL, queues, events and other RPC (such as serverless function invocations) are not checked | High outside HTTP | Out of scope for 0.1 |
-| Only direct contracts | A change is traced to the callers of the changed service, not on through services that pass its data to their own callers | High in layered systems | Run `lemma verify` for each service in the chain |
+| Only HTTP with OpenAPI specs | gRPC, GraphQL, queues, events and other RPC (such as serverless function invocations) are not checked | High outside HTTP | Declare those links in `lemma check`'s `lemma.yaml` files |
+| Only direct contracts | A change is traced to the callers of the changed service, not on through services that pass its data to their own callers | High in layered systems | Use `lemma check`, which traces what a break affects further up, or run `lemma verify` for each service in the chain |
 | Only contract breaks, not behaviour | A change that keeps the contract but changes what it does (rate limits, defaults, ordering) is not caught | High for incidents caused by behaviour changes | Behavioural rules are the next stage, after 0.1 |
 | Rust consumers (code calling HTTP from Rust) are tested only by unit tests | Real-world gaps in reqwest call detection may exist | Low | Report missed calls |
 | Calls through a generated client are matched by function names derived from `operationId`s (`call_names`) | A generator that names functions some other way (by resource and verb, say) is not matched | Medium for such generators | Report the generator |
 | Consumers are matched to the operation they were written for (the base snapshot) | A call that only exists after the change is checked by `consumer_calls_unserved_operation`, not the field rules | Low | None needed |
 | The manifest is written by hand | Setup takes an afternoon for a few repositories | Medium | [Onboarding](onboarding.md#4-map-the-system); the `lemma-onboarding` skill helps an agent write it |
 | Grammars are YAML; `.ls` files are not implemented | None beyond syntax | Low | Use YAML |
+
+### Checking links (`lemma check`)
+
+`lemma check` lifts two of the limits above: links it cannot infer (queues, function runtimes) can be declared, and a break is traced on through the services that pass it along. It is new in this release candidate.
+
+| Limitation | Effect | Until fixed |
+| --- | --- | --- |
+| The head of a change must be a commit | Uncommitted edits are not checked | Commit on a branch first |
+| One commit per repository | Services in one repository cannot be checked at different commits, as when one deploys before another | Check each deploy order with its own parent `lemma.yaml` |
+| Types are followed within the files read (Go and Rust: the anchored file's directory; TypeScript: relative imports; Python without Pydantic: the anchored file's directory) | Fields under types from elsewhere are not compared; each such type is reported as informational | Anchor schemas where their types are defined |
+| Tracing reads the call graph by name | `affects` can list functions that only share a name with a caller, and misses routes whose paths are built at run time | Treat `affects` as where to look |
+| Language servers are not used yet | Schemas and the call graph come from Tree-sitter and each language's own resolver | None needed for now |
 
 ### Code intelligence
 
