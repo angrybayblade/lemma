@@ -28,6 +28,7 @@ Prefer Lemma's MCP tools when they are available (`references`, `definition`, `i
 
 - A name: `Router`. A qualified name: `Router.delete` (class or type, then member; Go methods by receiver type, Rust methods by impl type).
 - An id from `lemma symbols`: `'#415'`.
+- An export's address from `lemma.yaml`: `services.api.createCharge` (a declared operation or an `operationId`), which resolves to the symbol implementing it.
 - Narrow an ambiguous name with `--language python` or by qualifying it.
 - `lemma refs` exits with 2 when the name matched several symbols: the output lists them; pick one.
 - `lemma refs` exits with 3 when no language server could answer (stale file, server missing or failed): run `lemma providers` to see which servers are installed.

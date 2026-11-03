@@ -288,8 +288,9 @@ pub(crate) struct DefinitionArgs {
 /// Which symbol a command is about.
 #[derive(Args)]
 pub(crate) struct SymbolTarget {
-    /// A name, a qualified name such as `Router.delete`, or `#<id>` from
-    /// `lemma symbols`.
+    /// A name, a qualified name such as `Router.delete`, `#<id>` from
+    /// `lemma symbols`, or an export's address from lemma.yaml, such as
+    /// `services.api.charge`.
     pub symbol: String,
     #[command(flatten)]
     pub filters: Filters,
