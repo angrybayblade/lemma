@@ -378,7 +378,7 @@ fn code_directories(repo: &Repo) -> Option<Vec<String>> {
     let whole = local.len() == 1
         && local[0].index.include.is_empty()
         && local[0].exports.is_empty()
-        && local[0].client.is_none();
+        && local[0].calls.clients.is_empty();
     if whole {
         return Some(Vec::new());
     }

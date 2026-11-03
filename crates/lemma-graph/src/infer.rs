@@ -78,8 +78,8 @@ pub fn manifest(sources: &[Source<'_>], changed: &Changed<'_>) -> Option<Inferre
     })
 }
 
-/// A source's entries: per local service, its served documents, its
-/// generated client, and its code.
+/// A source's entries: per local service, its served documents, the
+/// generated clients it is or uses, and its code.
 fn entries(source: &Source<'_>, commit: Option<&str>) -> Vec<(String, Repository)> {
     let local: Vec<(&String, &Service)> = source
         .file
@@ -91,7 +91,8 @@ fn entries(source: &Source<'_>, commit: Option<&str>) -> Vec<(String, Repository
     let mut found = Vec::new();
     for (service_name, service) in local {
         let name = entry_name(source.name, service_name);
-        let reads_code = !service.index.include.is_empty() || (only_service && is_plain(service));
+        let has_code = !service.index.include.is_empty() || (only_service && is_plain(service));
+        let reads_code = has_code && service.searches_calls();
         let parts = parts(&name, service, reads_code, |role| {
             entry(source.root, commit, role)
         });
@@ -116,41 +117,54 @@ fn parts(
     service: &Service,
     reads_code: bool,
     entry: impl Fn(Role) -> Repository,
-) -> Vec<(Option<&'static str>, Repository)> {
+) -> Vec<(Option<String>, Repository)> {
     let mut parts = Vec::new();
     let serves = !service.exports.openapi.is_empty();
     if serves {
         parts.push((None, served(entry(Role::Service), service)));
     }
-    if let Some(client) = &service.client {
+    if let Some(client) = &service.exports.client {
         let mut repository = entry(Role::Client);
         repository.generated_from.clone_from(&client.generated_from);
         repository.specs.clone_from(&client.specs);
         repository.call_names.clone_from(&client.call_names);
-        parts.push((Some("client"), repository));
+        parts.push((Some("client".to_owned()), repository));
+    }
+    let used = &service.calls.clients;
+    for (position, client) in used.iter().enumerate() {
+        let mut repository = entry(Role::Client);
+        repository.generated_from.clone_from(&client.generated_from);
+        repository.call_names.clone_from(&client.call_names);
+        let part = if used.len() == 1 {
+            "uses client".to_owned()
+        } else {
+            format!("uses client {}", position + 1)
+        };
+        parts.push((Some(part), repository));
     }
     if reads_code {
         let mut repository = entry(Role::Consumer);
         repository.include.clone_from(&service.index.include);
-        repository
-            .client_receivers
-            .clone_from(&service.client_receivers);
-        repository
-            .client_modules
-            .clone_from(&service.client_modules);
+        for client in used {
+            repository
+                .client_receivers
+                .extend(client.receivers.iter().cloned());
+            repository
+                .client_modules
+                .extend(client.modules.iter().cloned());
+        }
         // Its own routes, if it serves any, are not calls.
         repository.service = serves.then(|| name.to_owned());
-        parts.push((Some("code"), repository));
+        parts.push((Some("code".to_owned()), repository));
     }
     parts
 }
 
-/// Whether a service declares nothing but code: no documents, client or
-/// operations. Only such a service, alone in its repository, has the whole
-/// repository read as its code by default; a service or generated client's
-/// own code is not a caller unless `code` says so.
+/// Whether a service declares nothing but code: no exports or clients.
+/// Only such a service, alone in its repository, has the whole repository
+/// read as its code by default.
 fn is_plain(service: &Service) -> bool {
-    service.exports.is_empty() && service.client.is_none()
+    service.exports.is_empty() && service.calls.clients.is_empty()
 }
 
 fn served(mut repository: Repository, service: &Service) -> Repository {
@@ -247,8 +261,11 @@ mod tests {
     }
 
     #[test]
-    fn a_generated_client_alone_in_its_repository_is_not_read_as_a_caller() {
-        let client = parse("services:\n  sdk:\n    client: { specs: [openapi.json] }\n").unwrap();
+    fn a_generated_client_is_not_searched_for_calls_even_with_its_code_indexed() {
+        let client = parse(
+            "services:\n  sdk:\n    index: { include: [src] }\n    exports:\n      client: { specs: [openapi.json] }\n",
+        )
+        .unwrap();
         let sources = [Source {
             name: "#sdk",
             root: Path::new("/sdk"),
@@ -265,5 +282,35 @@ mod tests {
 
         let names: Vec<&String> = manifest.repositories.keys().collect();
         assert_eq!(names, ["#sdk:sdk"]);
+    }
+
+    #[test]
+    fn code_calling_through_a_client_is_searched_with_its_receivers() {
+        let file = parse(
+            "services:\n  api:\n    index: { include: [src] }\n    calls:\n      clients:\n        - generated_from: [billing.json]\n          call_names: [\"{camel}\"]\n          receivers: [billing]\n",
+        )
+        .unwrap();
+        let sources = [Source {
+            name: "#api",
+            root: Path::new("/api"),
+            commit: None,
+            file: &file,
+        }];
+        let changed = Changed {
+            name: "#api",
+            base: "b",
+            head: "h",
+        };
+
+        let manifest = manifest(&sources, &changed).unwrap().manifest;
+
+        let names: Vec<&String> = manifest.repositories.keys().collect();
+        assert_eq!(names, ["#api:api (code)", "#api:api (uses client)"]);
+        let code = &manifest.repositories["#api:api (code)"];
+        assert_eq!(code.client_receivers, ["billing"]);
+        assert_eq!(
+            manifest.repositories["#api:api (uses client)"].generated_from,
+            ["billing.json"]
+        );
     }
 }
