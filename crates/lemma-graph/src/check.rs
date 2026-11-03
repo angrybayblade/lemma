@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+use lemma_logic::Engine;
 use lemma_model::Language;
 use lemma_syntax::Extractor;
 
@@ -17,11 +18,12 @@ use crate::GraphError;
 use crate::address::{Address, Link, parse_link};
 use crate::compare::{Difference, compare};
 use crate::config::{LEMMA_FILE, LemmaFile, Level, Operation, SchemaSource, Service, parse};
+use crate::infer;
 use crate::repos::{Checkout, clone_remote, resolve_commit};
 use crate::schema::{self, Context, Role};
 
 /// The name of the repository holding the parent `lemma.yaml`.
-const SELF: &str = "self";
+pub(crate) const SELF: &str = "self";
 const BASE: usize = 0;
 const HEAD: usize = 1;
 
@@ -69,8 +71,9 @@ pub struct Finding {
     pub severity: Severity,
     /// The link, as `caller -> provider`.
     pub link: String,
-    /// Which check found it: `link`, `request`, `response` or `schema`.
-    pub check: &'static str,
+    /// Which check found it: `link`, `request`, `response` or `schema` for a
+    /// declared link; the grammar requirement's name for an inferred one.
+    pub check: String,
     /// What was found.
     pub message: String,
     /// Whether the change introduced it, rather than it being there before.
@@ -99,8 +102,11 @@ pub struct ResolvedRepository {
 pub struct Report {
     /// The level the links were checked at.
     pub level: Level,
-    /// How many links were checked.
+    /// How many declared links were checked.
     pub links: usize,
+    /// How many calls from code to documented operations were found and
+    /// checked; `None` without a change, when inference does not run.
+    pub inferred_links: Option<usize>,
     /// Every repository read.
     pub repositories: Vec<ResolvedRepository>,
     /// Findings, most severe first.
@@ -114,8 +120,13 @@ struct Repo {
     manifest_from_working_directory: bool,
 }
 
-/// Checks the links of the system whose parent `lemma.yaml` is `root_file`.
-pub fn check(root_file: &Path, options: &CheckOptions) -> Result<Report, GraphError> {
+/// Checks the links of the system whose parent `lemma.yaml` is `root_file`,
+/// evaluating inferred links' grammar with `engine`.
+pub fn check<E: Engine>(
+    root_file: &Path,
+    options: &CheckOptions,
+    engine: &E,
+) -> Result<Report, GraphError> {
     let repos = load(root_file, options)?;
     if let Some(change) = &options.change {
         if !repos.contains_key(&change.repository) {
@@ -142,20 +153,141 @@ pub fn check(root_file: &Path, options: &CheckOptions) -> Result<Report, GraphEr
         checker.check_link(link)?;
     }
     let mut findings = checker.findings;
+    let inferred_links = match &options.change {
+        Some(change) => infer_links(&repos, change, level, engine, &mut findings)?,
+        None => None,
+    };
     findings.sort_by(|left, right| {
-        (left.severity, &left.link, left.check, &left.message).cmp(&(
+        (left.severity, &left.link, &left.check, &left.message).cmp(&(
             right.severity,
             &right.link,
-            right.check,
+            &right.check,
             &right.message,
         ))
     });
     Ok(Report {
         level,
         links: links.len(),
+        inferred_links,
         repositories: resolved(&repos),
         findings,
     })
+}
+
+/// Finds and checks calls from code to documented operations, adding their
+/// findings; the number of distinct calls found.
+fn infer_links<E: Engine>(
+    repos: &BTreeMap<String, Repo>,
+    change: &Change,
+    level: Level,
+    engine: &E,
+    findings: &mut Vec<Finding>,
+) -> Result<Option<usize>, GraphError> {
+    let changed_repo = &repos[&change.repository];
+    let (Some(base), Some(head)) = (
+        changed_repo.checkouts[BASE].commit.as_deref(),
+        changed_repo.checkouts[HEAD].commit.as_deref(),
+    ) else {
+        return Ok(None);
+    };
+    let files = repos
+        .values()
+        .map(inference_file)
+        .collect::<Result<Vec<LemmaFile>, GraphError>>()?;
+    let sources: Vec<infer::Source<'_>> = repos
+        .iter()
+        .zip(&files)
+        .map(|((name, repo), file)| infer::Source {
+            name,
+            root: &repo.checkouts[HEAD].root,
+            commit: repo.checkouts[HEAD].commit.as_deref(),
+            file,
+        })
+        .collect();
+    let changed = infer::Changed {
+        name: &change.repository,
+        base,
+        head,
+    };
+    let Some(manifest) = infer::manifest(&sources, &changed) else {
+        return Ok(None);
+    };
+    let options = lemma_verify::Options {
+        explain: false,
+        relations: vec!["calls".to_owned()],
+    };
+    let report = lemma_verify::verify(&manifest, engine, &options)
+        .map_err(|source| GraphError::Inference { source })?;
+    for found in &report.findings {
+        findings.push(inferred_finding(found, level));
+    }
+    let calls: BTreeSet<(&String, &String)> = report
+        .relations
+        .get("calls")
+        .into_iter()
+        .flatten()
+        .filter_map(|row| Some((row.first()?, row.get(1)?)))
+        .collect();
+    Ok(Some(calls.len()))
+}
+
+/// A repository's `lemma.yaml` as inference reads it. One borrowed from the
+/// working directory for a commit that had none names documents as they are
+/// today; those missing at both of the repository's checkouts are dropped
+/// rather than failing the check. A `lemma.yaml` from the commit itself is
+/// taken as written, so a misspelt document is still an error.
+fn inference_file(repo: &Repo) -> Result<LemmaFile, GraphError> {
+    let mut file = repo.files[HEAD].clone();
+    if !repo.manifest_from_working_directory {
+        return Ok(file);
+    }
+    for service in file.services.values_mut() {
+        retain_existing(&mut service.openapi, &repo.checkouts)?;
+        if let Some(client) = &mut service.client {
+            retain_existing(&mut client.generated_from, &repo.checkouts)?;
+            retain_existing(&mut client.specs, &repo.checkouts)?;
+        }
+    }
+    Ok(file)
+}
+
+fn retain_existing(
+    documents: &mut Vec<String>,
+    checkouts: &[Checkout; 2],
+) -> Result<(), GraphError> {
+    let mut kept = Vec::new();
+    for document in documents.drain(..) {
+        let mut exists = false;
+        for checkout in checkouts {
+            exists = exists || checkout.read(&document)?.is_some();
+        }
+        if exists {
+            kept.push(document);
+        }
+    }
+    *documents = kept;
+    Ok(())
+}
+
+/// A grammar finding as a finding: its errors are problems, which the level
+/// makes warnings or errors; everything it reports is about the change.
+fn inferred_finding(found: &lemma_verify::Finding, level: Level) -> Finding {
+    let severity = match (found.severity, level) {
+        ("error", Level::Check) => Severity::Error,
+        ("error" | "warning", _) => Severity::Warning,
+        _ => Severity::Info,
+    };
+    let link = match (found.values.get("c"), found.values.get("op")) {
+        (Some(caller), Some(operation)) => format!("{caller} -> {operation}"),
+        _ => found.requirement.clone(),
+    };
+    Finding {
+        severity,
+        link,
+        check: found.requirement.clone(),
+        message: found.message.clone(),
+        introduced: true,
+    }
 }
 
 fn resolved(repos: &BTreeMap<String, Repo>) -> Vec<ResolvedRepository> {
@@ -187,7 +319,10 @@ fn load(root_file: &Path, options: &CheckOptions) -> Result<BTreeMap<String, Rep
         let checkouts = checkouts(&name, &root, reference.as_deref(), options)?;
         let (base_file, base_fallback) = read_manifest(&name, &checkouts[BASE], &manifest)?;
         let (head_file, head_fallback) = read_manifest(&name, &checkouts[HEAD], &manifest)?;
-        let files = [base_file, head_file];
+        let mut files = [base_file, head_file];
+        for (file, checkout) in files.iter_mut().zip(&checkouts) {
+            add_documented_operations(file, checkout)?;
+        }
         let manifest_from_working_directory = base_fallback || head_fallback;
         let base_directory = root.join(Path::new(&manifest).parent().unwrap_or(Path::new("")));
         for file in &files {
@@ -321,6 +456,31 @@ fn read_manifest(
     file.validate()
         .map_err(|source| GraphError::InvalidService { path, source })?;
     Ok((file, fallback))
+}
+
+/// Adds every operation a local service's `OpenAPI` documents declare, at
+/// the checkout, to its operations; one declared by name in `lemma.yaml`
+/// wins. A document missing at the checkout adds nothing.
+fn add_documented_operations(file: &mut LemmaFile, checkout: &Checkout) -> Result<(), GraphError> {
+    for (name, service) in &mut file.services {
+        if name.starts_with('#') {
+            continue;
+        }
+        for document_file in &service.openapi {
+            let Some(text) = checkout.read(document_file)? else {
+                continue;
+            };
+            let document: serde_json::Value =
+                serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
+                    command: format!("reading {document_file}"),
+                    source,
+                })?;
+            for (id, operation) in crate::openapi::operations(document_file, &document) {
+                service.operations.entry(id).or_insert(operation);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Every link in every repository's `graph` at head, with addresses made
@@ -607,7 +767,7 @@ impl Checker<'_> {
         let finding = Finding {
             severity,
             link: link.to_owned(),
-            check,
+            check: check.to_owned(),
             message,
             introduced,
         };
