@@ -586,6 +586,7 @@ version = "0.1.0-rc0"
 dependencies = [
  "anyhow",
  "clap",
+ "lemma-graph",
  "lemma-index",
  "lemma-logic",
  "lemma-model",

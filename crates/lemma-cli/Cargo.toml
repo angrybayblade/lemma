@@ -19,6 +19,7 @@ lemma-providers.workspace = true
 lemma-query.workspace = true
 lemma-souffle.workspace = true
 lemma-store.workspace = true
+lemma-graph.workspace = true
 lemma-verify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
