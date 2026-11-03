@@ -14,6 +14,7 @@ mod affects;
 mod check;
 pub mod compare;
 pub mod config;
+pub mod exports;
 mod impact;
 mod infer;
 pub mod openapi;

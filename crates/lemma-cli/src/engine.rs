@@ -201,8 +201,8 @@ impl Engine {
         let root = path
             .canonicalize()
             .with_context(|| format!("cannot index {}", path.display()))?;
-        let lemma_file = selection::read_lemma_file(&root)?;
-        let selection = selection::repository_selection(&lemma_file)?;
+        let lemma_source = selection::read_lemma_file(&root)?;
+        let selection = selection::repository_selection(&lemma_source.file)?;
         let key = (db_path.clone(), root);
         // A changed selection starts a fresh index, whose first run walks
         // the whole tree and so drops files no longer selected.
@@ -225,7 +225,8 @@ impl Engine {
             .get_mut(&key)
             .context("the live index was lost")?;
         let summary = live.index(store)?;
-        output::index_summary(out, &summary, &db_path, request.format)?;
+        let exports = update_exports(store, &summary, &lemma_source, &key.1)?;
+        output::index_summary(out, &summary, &exports, &db_path, request.format)?;
         if self.warms_up_after_index {
             let origin = request.origin();
             let languages: Vec<Language> = summary.files_by_language.keys().copied().collect();
@@ -527,6 +528,89 @@ impl Engine {
     fn store(&mut self, db_path: &Path) -> anyhow::Result<&mut Store> {
         open_store(&mut self.stores, db_path)
     }
+}
+
+/// Rebuilds the snapshot's exports and links unless they were built from
+/// this `lemma.yaml` and snapshot already; how many there are.
+fn update_exports(
+    store: &mut Store,
+    summary: &lemma_index::IndexSummary,
+    source: &selection::LemmaSource,
+    root: &Path,
+) -> anyhow::Result<output::ExportCounts> {
+    let snapshot_id = summary.snapshot_id;
+    let fingerprint = lemma_model::content_hash(
+        format!(
+            "{}\n{}\n{}",
+            lemma_graph::exports::VERSION,
+            source.text,
+            summary.snapshot.fingerprint
+        )
+        .as_bytes(),
+    );
+    if store.exports_fingerprint(snapshot_id)?.as_deref() != Some(fingerprint.as_str()) {
+        let (exports, links) = {
+            let unique = |name: &str| unique_definition(store, snapshot_id, name);
+            let top_level = |path: &str| top_level_definitions(store, snapshot_id, path);
+            let symbols = lemma_graph::exports::IndexedSymbols {
+                unique: &unique,
+                top_level: &top_level,
+            };
+            lemma_graph::exports::exports(&source.file, root, &symbols)?
+        };
+        store.replace_exports(snapshot_id, &fingerprint, &exports, &links)?;
+    }
+    let exports = store.exports(snapshot_id)?;
+    let count =
+        |kind: lemma_model::ExportKind| exports.iter().filter(|export| export.kind == kind).count();
+    Ok(output::ExportCounts {
+        operations: count(lemma_model::ExportKind::Operation),
+        endpoints: count(lemma_model::ExportKind::Endpoint),
+        endpoints_at_handlers: exports
+            .iter()
+            .filter(|export| {
+                export.kind == lemma_model::ExportKind::Endpoint && export.symbol.is_some()
+            })
+            .count(),
+        symbols: count(lemma_model::ExportKind::Symbol),
+        links: store.export_links(snapshot_id)?.len(),
+    })
+}
+
+/// The function, method or type named `name`, if exactly one is.
+fn unique_definition(store: &Store, snapshot_id: i64, name: &str) -> Option<(String, String)> {
+    let filter = SymbolFilter {
+        text: name.to_owned(),
+        name_match: NameMatch::Exact,
+        kind: None,
+        language: None,
+        path_contains: None,
+        limit: 3,
+    };
+    let found = store.find_symbols(snapshot_id, &filter).ok()?;
+    let mut matching = found.into_iter().filter(|symbol| {
+        symbol.symbol.name == name
+            && !matches!(
+                symbol.symbol.kind,
+                lemma_model::SymbolKind::Variable | lemma_model::SymbolKind::Constant
+            )
+    });
+    let only = matching.next()?;
+    if matching.next().is_some() {
+        return None;
+    }
+    Some((only.path, only.symbol.qualified_name))
+}
+
+/// The qualified names of a file's top-level definitions.
+fn top_level_definitions(store: &Store, snapshot_id: i64, path: &str) -> Vec<String> {
+    store
+        .symbols_in_file(snapshot_id, path)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|symbol| symbol.symbol.qualified_name)
+        .filter(|qualified| !qualified.contains('.'))
+        .collect()
 }
 
 /// Opens the index for writing. One written by another version of Lemma is
