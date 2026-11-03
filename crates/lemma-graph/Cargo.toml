@@ -12,8 +12,10 @@ workspace = true
 [dependencies]
 json-schema-diff.workspace = true
 lemma-http.workspace = true
+lemma-logic.workspace = true
 lemma-model.workspace = true
 lemma-syntax.workspace = true
+lemma-verify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

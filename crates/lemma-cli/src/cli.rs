@@ -119,6 +119,10 @@ pub(crate) struct CheckArgs {
     /// Also list informational findings, not just their count.
     #[arg(long)]
     pub all: bool,
+    /// The rule engine for inferred links: `souffle` or `reference`.
+    /// Default: Soufflé if it is installed, otherwise the reference engine.
+    #[arg(long)]
+    pub engine: Option<String>,
 }
 
 #[derive(Args)]

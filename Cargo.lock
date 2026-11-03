@@ -617,8 +617,10 @@ version = "0.1.0-rc0"
 dependencies = [
  "json-schema-diff",
  "lemma-http",
+ "lemma-logic",
  "lemma-model",
  "lemma-syntax",
+ "lemma-verify",
  "serde",
  "serde_json",
  "tempfile",

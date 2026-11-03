@@ -8,6 +8,7 @@ use std::process::Command;
 
 use lemma_graph::config::Level;
 use lemma_graph::{Change, CheckOptions, Severity, check};
+use lemma_logic::ReferenceEngine;
 
 fn git(directory: &Path, args: &[&str]) {
     let status = Command::new("git")
@@ -119,7 +120,12 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
         cache: workspace.path().join("cache"),
     };
 
-    let report = check(&workspace.path().join("lemma.yaml"), &options).unwrap();
+    let report = check(
+        &workspace.path().join("lemma.yaml"),
+        &options,
+        &ReferenceEngine,
+    )
+    .unwrap();
 
     let errors: Vec<&str> = report
         .findings
