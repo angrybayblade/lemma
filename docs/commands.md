@@ -132,9 +132,31 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Answers are cached in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones. |
 | `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`), `notes` and `truncated`. |
 | `--max-nodes <n>` | The most nodes to include. Default: 200. |
+| `--workspace <lemma.yaml>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations, and on up. See below. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
 
 References from a file's top-level code appear as the file; imports are left out. Questions the server could not answer, such as a stale file or a missing server, are listed as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
+
+### Across repositories
+
+With `--workspace`, the callers found in the symbol's repository are followed on to the routes they handle, using the workspace `lemma.yaml` (see [Checking links](check.md)): each route's operation becomes a node, the code in other repositories that calls it comes next, then the operations that code serves, and so on, up to four operations away.
+
+```text
+$ lemma graph ExecuteTool --direction callers --workspace ../workspace/lemma.yaml
+ExecuteTool  (function, lib/tools/execute.go:50)
+  used by
+  └─ ExecuteToolHandler.handleToolExecution  (method, handlers/tools/execute.go:98)
+     └─ ExecuteToolHandler.handle  (method, handlers/tools/execute.go:78)
+        └─ NewExecuteToolHandler  (function, handlers/tools/execute.go:214)
+           └─ POST /api/tools_/{}/execute  (operation, #platform:worker)
+              └─ executeTool  (function, #platform:apps/gateway/src/lib/tool_execution/execute_tool.ts)
+                 └─ POST /api/v3/tool_router/session/{}/execute  (operation, #platform:gateway)
+                    └─ executeOnce  (function, #dashboard:src/server/clients/tool-router/build-session-tools.ts)
+```
+
+- The index's directory must be inside one of the repositories the workspace composes.
+- Within the symbol's repository, callers come from `--source`. From there to a route's handler (a constructor registered for a handler type, say), and within every other repository, they are followed by name: approximate, within one language, skipping names several functions share.
+- Operations and their callers come from inference over the whole system, as `lemma check` finds them, so the command runs in its own process and takes about as long. Routes whose paths are built at run time are not found, and the trace stops there.
 
 Render a drawing with Graphviz (`lemma graph X --format dot | dot -Tsvg > graph.svg`) or paste Mermaid into a Markdown file.
 

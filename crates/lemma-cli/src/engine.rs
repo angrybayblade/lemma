@@ -400,8 +400,13 @@ impl Engine {
             options: &options,
         };
         let graph_options = graph_options(args.direction, args.depth, args.source, args.max_nodes);
-        let graph =
+        let mut graph =
             lemma_query::symbol_graph(store, &context, &target, &graph_options, &mut self.pool)?;
+        if let Some(workspace) = &args.workspace {
+            let workspace = request.invocation.resolve(workspace);
+            let root = PathBuf::from(&snapshot.snapshot.root);
+            add_system_trace(&mut graph, &workspace, &root, graph_options.direction)?;
+        }
         let drawing = match args.format {
             GraphDrawing::Tree => output::Drawing::Tree,
             GraphDrawing::Dot => output::Drawing::Dot,
@@ -700,6 +705,57 @@ fn select_symbol(
         path_contains: filters.path,
     };
     Ok(lemma_query::resolve_symbol(store, snapshot.id, &selector)?)
+}
+
+/// Adds to `graph` what its callers reach beyond their repository: the
+/// operations their handlers serve and the code elsewhere calling them.
+fn add_system_trace(
+    graph: &mut lemma_model::UseGraph,
+    workspace: &Path,
+    index_root: &Path,
+    direction: lemma_query::Direction,
+) -> anyhow::Result<()> {
+    if direction == lemma_query::Direction::Callees {
+        graph
+            .notes
+            .push("--workspace follows callers; it adds nothing to callees".to_owned());
+        return Ok(());
+    }
+    let reached: Vec<lemma_graph::Reached> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.id.starts_with("symbol:"))
+        .filter_map(|node| {
+            Some(lemma_graph::Reached {
+                node: node.id.clone(),
+                file: node.path.clone()?,
+                line: node.line?,
+            })
+        })
+        .collect();
+    let cache = lemma_graph::repos::cache_directory();
+    let trace = match lemma_souffle::SouffleEngine::find() {
+        Ok(souffle) => {
+            lemma_graph::trace_through_system(workspace, index_root, &reached, &cache, &souffle)?
+        }
+        Err(_) => lemma_graph::trace_through_system(
+            workspace,
+            index_root,
+            &reached,
+            &cache,
+            &lemma_logic::ReferenceEngine,
+        )?,
+    };
+    for node in trace.nodes {
+        if !graph.nodes.iter().any(|existing| existing.id == node.id) {
+            graph.nodes.push(node);
+        }
+    }
+    graph.relationships.extend(trace.relationships);
+    graph.relationships.sort();
+    graph.relationships.dedup();
+    graph.notes.extend(trace.notes);
+    Ok(())
 }
 
 fn graph_options(
