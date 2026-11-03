@@ -97,7 +97,7 @@ fn parse(text: &str) -> anyhow::Result<Config> {
     let file: ConfigFile = toml::from_str(text)?;
     let defaults = Config::default();
     let pick = |value: Option<String>, default: Option<Duration>| match value {
-        Some(text) => parse_duration(&text),
+        Some(text) => crate::duration::parse_duration(&text),
         None => Ok(default),
     };
     Ok(Config {
@@ -117,33 +117,13 @@ fn parse(text: &str) -> anyhow::Result<Config> {
     })
 }
 
-/// `30s`, `10m`, `2h`, `1d`, or `never`.
-fn parse_duration(text: &str) -> anyhow::Result<Option<Duration>> {
-    let text = text.trim();
-    if text.eq_ignore_ascii_case("never") {
-        return Ok(None);
-    }
-    let (number, unit) = split_number(text);
-    let Ok(amount) = number.parse::<u64>() else {
-        bail!("`{text}` is not a duration; use a number with s, m, h or d, or `never`");
-    };
-    let seconds = match unit {
-        "s" => amount,
-        "m" => amount * 60,
-        "h" => amount * 60 * 60,
-        "d" => amount * 24 * 60 * 60,
-        _ => bail!("`{text}` needs a unit: s, m, h or d"),
-    };
-    Ok(Some(Duration::from_secs(seconds)))
-}
-
 /// `512MB`, `2GB`, or `none`.
 fn parse_size(text: &str) -> anyhow::Result<Option<u64>> {
     let text = text.trim();
     if text.eq_ignore_ascii_case("none") {
         return Ok(None);
     }
-    let (number, unit) = split_number(text);
+    let (number, unit) = crate::duration::split_number(text);
     let Ok(amount) = number.parse::<u64>() else {
         bail!("`{text}` is not a size; use a number with MB or GB, or `none`");
     };
@@ -153,14 +133,6 @@ fn parse_size(text: &str) -> anyhow::Result<Option<u64>> {
         _ => bail!("`{text}` needs a unit: MB or GB"),
     };
     Ok(Some(bytes))
-}
-
-fn split_number(text: &str) -> (&str, &str) {
-    let digits = text
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(text.len());
-    let (number, unit) = text.split_at(digits);
-    (number, unit.trim())
 }
 
 #[cfg(test)]

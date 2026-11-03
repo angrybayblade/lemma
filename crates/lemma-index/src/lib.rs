@@ -5,6 +5,7 @@
 
 mod discover;
 mod git;
+pub mod retention;
 mod scan;
 mod scope;
 mod selection;

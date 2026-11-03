@@ -52,6 +52,13 @@ impl Checkout {
     }
 }
 
+/// Removes a worktree of the clone at `root`, made by [`Checkout::worktree`].
+pub fn remove_worktree(root: &Path, worktree: &Path) -> Result<(), GraphError> {
+    let target = worktree.to_string_lossy().into_owned();
+    git(root, &["worktree", "remove", "--force", &target])?;
+    Ok(())
+}
+
 /// The commit a reference names in a clone.
 pub fn resolve_commit(root: &Path, reference: &str) -> Result<String, GraphError> {
     let spec = format!("{reference}^{{commit}}");

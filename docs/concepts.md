@@ -71,7 +71,7 @@ The daemon keeps running, and looks after idle servers itself: a server nobody h
 
 ## The index file
 
-`.lemma/index.db` is a SQLite database. It holds the snapshot, files, symbols, and cached answers, and is safe to delete; `lemma index` recreates it. It contains absolute paths from your machine, so do not commit it.
+`.lemma/index.db` is a SQLite database. It holds the snapshot, files, symbols, cached answers, and each service's exports and links, and is safe to delete; `lemma index` recreates it. Indexing a workspace adds snapshots of the commits it pins to each repository's database, beside its working directory's, until retention drops them (see [`lemma index`](commands.md#lemma-index-path)); the workspace's own database records its members and their links. It contains absolute paths from your machine, so do not commit it.
 
 ## Limits of this version
 

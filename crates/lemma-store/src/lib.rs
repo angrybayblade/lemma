@@ -692,6 +692,24 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Every snapshot in the database, by id.
+    pub fn snapshots(&self) -> Result<Vec<StoredSnapshot>, StoreError> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT id, root, revision, is_dirty, fingerprint, extractor_version, indexed_at_ns
+             FROM snapshots ORDER BY id",
+        )?;
+        let rows = statement.query_map([], read_stored_snapshot)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Deletes a snapshot and everything derived from it: files, symbols,
+    /// cached answers and exports.
+    pub fn delete_snapshot(&mut self, snapshot_id: i64) -> Result<(), StoreError> {
+        self.connection
+            .execute("DELETE FROM snapshots WHERE id = ?1", [snapshot_id])?;
+        Ok(())
+    }
+
     /// The most recently stored snapshot.
     pub fn latest_snapshot(&self) -> Result<Option<StoredSnapshot>, StoreError> {
         let snapshot = self
