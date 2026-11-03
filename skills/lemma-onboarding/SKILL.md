@@ -60,9 +60,9 @@ Pick three or four calls you can see in the code and confirm they appear. If one
 
 For a system with calls inference cannot see (function runtimes, queues, RPC), or to compare schemas field by field, describe each repository in its own `lemma.yaml` and compose them from a parent in a workspace repository; check with `lemma check` instead of `lemma verify`. The format and checks are in [Checking links](https://github.com/angrybayblade/lemma/blob/main/docs/check.md).
 
-1. In each repository serving an API, add a service with its `openapi` documents, `routes` and `code`; calls to it are then inferred everywhere.
-2. In each repository calling others, add a service with its `code` (or nothing, if it is the repository's only service: the whole repository is read).
-3. For each call inference cannot see, declare an operation on both sides with `schema` sources, and a link in the caller's `graph.links`.
+1. In each repository serving an API, add a service with what it is made of (`index.include`) and its OpenAPI documents (`exports.openapi`); calls to it are then inferred everywhere.
+2. In each repository calling others, add a service with its `index.include`.
+3. For each call inference cannot see, declare an operation on both sides in `exports.operations` with `schema` sources, and a link in the caller's `graph.links`.
 4. Write the parent: one `#name` service per repository with `path` or `git` and a pinned `ref`, and `graph.level`.
 5. Run the `lemma-audit` skill to find what the files miss, then replay history as in step 5 with `lemma check --change '#repo' --base <commit>^ --head <commit>`.
 

@@ -63,7 +63,7 @@ fn system(workspace: &Path) {
     let consumer = workspace.join("web");
     write(
         &provider.join("lemma.yaml"),
-        "services:\n  api:\n    openapi: [openapi.json]\n",
+        "services:\n  api:\n    exports: { openapi: [openapi.json] }\n",
     );
     write(
         &provider.join("openapi.json"),

@@ -296,7 +296,7 @@ pub(crate) fn inference_file(repo: &Repo) -> Result<LemmaFile, GraphError> {
         return Ok(file);
     }
     for service in file.services.values_mut() {
-        retain_existing(&mut service.openapi, &repo.checkouts)?;
+        retain_existing(&mut service.exports.openapi, &repo.checkouts)?;
         if let Some(client) = &mut service.client {
             retain_existing(&mut client.generated_from, &repo.checkouts)?;
             retain_existing(&mut client.specs, &repo.checkouts)?;
@@ -524,7 +524,7 @@ fn add_documented_operations(file: &mut LemmaFile, checkout: &Checkout) -> Resul
         if name.starts_with('#') {
             continue;
         }
-        for document_file in &service.openapi {
+        for document_file in &service.exports.openapi {
             let Some(text) = checkout.read(document_file)? else {
                 continue;
             };
@@ -534,7 +534,7 @@ fn add_documented_operations(file: &mut LemmaFile, checkout: &Checkout) -> Resul
                     source,
                 })?;
             for (id, operation) in crate::openapi::operations(document_file, &document) {
-                service.operations.entry(id).or_insert(operation);
+                service.exports.operations.entry(id).or_insert(operation);
             }
         }
     }
@@ -669,7 +669,7 @@ impl Checker<'_> {
     fn find(&self, address: &Address, snapshot: usize) -> Option<Found<'_>> {
         let repo = self.repos.get(address.repository.as_deref()?)?;
         let service = repo.files[snapshot].services.get(&address.service)?;
-        let operation = service.operations.get(&address.operation)?;
+        let operation = service.exports.operations.get(&address.operation)?;
         Some(Found {
             repo,
             service,

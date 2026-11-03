@@ -28,7 +28,7 @@ error   response: the receiver expects `receipt_url` at the root; the sender doe
 
 Every repository has a `lemma.yaml` at its root. It has two sections:
 
-- `services`: what the repository is. A service defines operations, documents it serves, code that calls others, or a generated client. A name starting with `#` is an **external service**: another repository's `lemma.yaml`.
+- `services`: what the repository is. Each service says what it is made of (`index`: the code Lemma reads for it) and what it offers (`exports`: OpenAPI documents, operations and public modules, the entry points queries and links start from), and may be a generated client. A name starting with `#` is an **external service**: another repository's `lemma.yaml`.
 - `graph`: how it relates to others. `links` between operations that Lemma cannot infer, and the `level` of checking.
 
 ```yaml
@@ -36,26 +36,32 @@ Every repository has a `lemma.yaml` at its root. It has two sections:
 services:
   api:
     runtime: { python: .venv/bin/python }
-    openapi: [openapi.json]                 # calls to these operations are inferred
-    operations:
-      create_charge:                        # one Lemma cannot infer: a queue message handler
-        path: billing/handlers.py:create_charge
-        schema:
-          request: billing/handlers.py#CreateChargeRequest
-          response: billing/handlers.py#CreateChargeResponse
+    index:
+      include: [billing]
+    exports:
+      openapi: [openapi.json]               # calls to these operations are inferred
+      operations:
+        create_charge:                      # one Lemma cannot infer: a queue message handler
+          path: billing/handlers.py:create_charge
+          schema:
+            request: billing/handlers.py#CreateChargeRequest
+            response: billing/handlers.py#CreateChargeResponse
 ```
 
 ```yaml
 # web/lemma.yaml
 services:
   web:
-    code: [src, cmd]
-    operations:
-      create_charge:
-        path: client/charges.go:Charges.Create
-        schema:
-          request: client/charges.go#CreateChargeRequest
-          response: client/charges.go#CreateChargeResponse
+    index:
+      include: [src, cmd, client]
+      exclude: ["**/*_test.go"]
+    exports:
+      operations:
+        create_charge:
+          path: client/charges.go:Charges.Create
+          schema:
+            request: client/charges.go#CreateChargeRequest
+            response: client/charges.go#CreateChargeResponse
   "#billing":
     git: git@github.com:example/billing.git
     ref: 3f2a1c9e04                         # a commit, branch or tag
@@ -111,14 +117,17 @@ Types that cannot be followed, such as a type from another package, are left ope
 
 ### Inferred links
 
-A service that lists its OpenAPI documents (`openapi`) needs no links: calls to its operations from any repository's code are found and checked, as `lemma verify` does. A service's code is searched when it lists `code`, or, for a service alone in its repository that declares nothing else, the whole repository.
+A service that exports its OpenAPI documents (`exports.openapi`) needs no links: calls to its operations from any repository's code are found and checked, as `lemma verify` does. A service's code (`index.include`) is searched for calls to others and for its route code; a service alone in its repository that declares nothing else has the whole repository searched.
 
 | Field | Meaning |
 | --- | --- |
-| `openapi` | OpenAPI documents the service serves. Each operation with an `operationId` also becomes one of its operations, so a link can name it. |
-| `routes` | Directories with its route code. |
-| `path_prefixes`, `route_aliases`, `shared_schemas`, `rejects_unknown_fields` | As in `lemma verify`'s manifest (see [Verifying changes](verify.md#the-manifest)). |
-| `code` | Directories whose code calls other services. |
+| `index.include` | Directories or files the service is made of, relative to the repository root. |
+| `index.exclude` | Glob patterns never read, such as `**/generated/**`. |
+| `index.languages` | Only files in these languages (`typescript`, `tsx`, `python`, `go`, `rust`). |
+| `exports.openapi` | OpenAPI documents the service serves. Each operation with an `operationId` also becomes one of its operations, so a link can name it. |
+| `exports.operations` | Operations declared where documents do not describe them (above). |
+| `exports.symbols` | Files whose definitions are the service's public interface, as a library's entry modules. |
+| `path_prefixes`, `route_aliases`, `rejects_unknown_fields` | As in `lemma verify`'s manifest (see [Verifying changes](verify.md#the-manifest)). |
 | `client_receivers`, `client_modules` | How its code calls generated clients. |
 | `client` | A generated client: `generated_from` (documents it makes one function per operation from) and `call_names`, and `specs` (its copy of the documents, whose declared parameters are checked). |
 
