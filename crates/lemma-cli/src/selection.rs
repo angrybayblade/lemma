@@ -8,8 +8,14 @@ use lemma_graph::config::{LEMMA_FILE, LemmaFile, Service};
 use lemma_index::{RuleSpec, Selection};
 use lemma_model::Language;
 
+/// A `lemma.yaml` as read: its text and what it says.
+pub(crate) struct LemmaSource {
+    pub text: String,
+    pub file: LemmaFile,
+}
+
 /// The `lemma.yaml` in `root`, read and checked.
-pub(crate) fn read_lemma_file(root: &Path) -> anyhow::Result<LemmaFile> {
+pub(crate) fn read_lemma_file(root: &Path) -> anyhow::Result<LemmaSource> {
     let path = root.join(LEMMA_FILE);
     if !path.is_file() {
         bail!(
@@ -24,7 +30,7 @@ pub(crate) fn read_lemma_file(root: &Path) -> anyhow::Result<LemmaFile> {
         lemma_graph::config::parse(&text).with_context(|| format!("invalid {}", path.display()))?;
     file.validate()
         .with_context(|| format!("invalid {}", path.display()))?;
-    Ok(file)
+    Ok(LemmaSource { text, file })
 }
 
 /// The files a repository's index covers: those any of its services
