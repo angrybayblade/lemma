@@ -26,9 +26,8 @@ Check each item against the code. Record the file and line that shows the gap.
 
 | Gap | How to find it | Edit |
 | --- | --- | --- |
-| A served API's documents are not listed | `git ls-files \| grep -iE 'openapi\|swagger' \| grep -E '\.(json\|ya?ml)$'` in each repository; compare with `openapi:` | Add them to the serving service's `openapi` |
-| Route code is not listed | Route directories (`pages/api`, `routes`, `handlers`, `router`) not in `routes:` | Add to `routes` |
-| Calling code is not searched | A service with several services in its repository and no `code:`; directories that build URLs or call clients outside `code:` | Add to `code` |
+| A served API's documents are not exported | `git ls-files \| grep -iE 'openapi\|swagger' \| grep -E '\.(json\|ya?ml)$'` in each repository; compare with `exports.openapi` | Add them to the serving service's `exports.openapi` |
+| Code is not part of any service | Route directories (`pages/api`, `routes`, `handlers`, `router`), directories that build URLs or call clients, and shared libraries outside every service's `index.include` | Add them to the service they belong to |
 | A generated client is not recognised | Operation tables, `openapi-ts` or `openapi-generator` in build scripts, a `generated/` directory; calls through a client object | Add a `client` (`generated_from`, `call_names`, `specs`), and `client_receivers` or `client_modules` on the code calling it |
 | A cross-repository call inference cannot see | Calls not over documented HTTP: function runtimes (Lambda `Invoke`), queues and topics, RPC stubs, webhooks, shared databases | Declare an operation on each side with schemas, and a link in `graph.links` |
 | A declared operation's schema is missing or open | Operations without `schema`; informational findings about types that could not be followed | Point `request`/`response` at the types (`file#Type`), or a resolver command |

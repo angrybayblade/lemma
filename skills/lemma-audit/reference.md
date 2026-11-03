@@ -11,24 +11,27 @@ services:
       go: go
       cargo: cargo
       env: { PYTHONPATH: src }        # environment for every command
-    operations:
-      <operation>:
-        path: <file>:<Symbol>         # must resolve: `Charges.Create`, `create_charge`
-        schema:
-          resolver:                   # optional: a command whose JSON output the locations are in
-            command: "{python} scripts/spec.py"
-            output: spec.json         # its standard output if absent
-            env: { KEY: value }
-          request: <file>#<Type>      # a type in code
-          response: { path: "$.op.response" }                  # in the resolver's output
-          # or: { file: spec.json, path: "$...", format: openapi }
-    openapi: [openapi.json]           # documents it serves: calls to them are inferred
-    routes: [src/routes]
+    index:                            # what the service is made of: indexed and searched
+      include: [src]
+      exclude: ["**/generated/**"]
+      languages: [typescript]
+    exports:                          # what it offers: entry points for queries and links
+      openapi: [openapi.json]         # documents it serves: calls to them are inferred
+      operations:
+        <operation>:
+          path: <file>:<Symbol>       # must resolve: `Charges.Create`, `create_charge`
+          schema:
+            resolver:                 # optional: a command whose JSON output the locations are in
+              command: "{python} scripts/spec.py"
+              output: spec.json       # its standard output if absent
+              env: { KEY: value }
+            request: <file>#<Type>    # a type in code
+            response: { path: "$.op.response" }                # in the resolver's output
+            # or: { file: spec.json, path: "$...", format: openapi }
+      symbols: [src/index.ts]         # a library's public modules
     path_prefixes: [/v1/billing/]
     route_aliases: { /v1/: /v2/ }
-    shared_schemas: [src/schemas]
     rejects_unknown_fields: false
-    code: [src]                       # code searched for calls to others
     client_receivers: [client]
     client_modules: [generated/billing]
     client:                           # a generated client of another service
