@@ -5,6 +5,7 @@
 //! With `--no-daemon`, `LEMMA_NO_DAEMON=1`, on platforms without Unix
 //! sockets, or if no daemon can be started, the command runs in-process.
 
+mod check;
 mod cli;
 #[cfg(unix)]
 mod config;
@@ -34,6 +35,9 @@ fn main() -> ExitCode {
     }
     if let Command::Verify(args) = &cli.command {
         return verify::run(args, cli.json);
+    }
+    if let Command::Check(args) = &cli.command {
+        return check::run(args, cli.json);
     }
     if matches!(cli.command, Command::Mcp) {
         return run_mcp(!cli.no_daemon && !daemon_disabled_by_environment());

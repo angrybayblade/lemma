@@ -84,11 +84,41 @@ pub(crate) enum Command {
     ///
     /// Exits with 4 if any finding is an error.
     Verify(VerifyArgs),
+    /// Check the links between operations declared in composable
+    /// lemma.yaml files: that each link persists, and that both sides'
+    /// request and response schemas agree.
+    ///
+    /// Exits with 4 if any finding is an error (level `check`).
+    Check(CheckArgs),
     /// Run, inspect, stop, or install the background daemon.
     ///
     /// Every other command starts the daemon automatically; run this to keep
     /// it in the foreground, check on it, stop it, or start it at login.
     Daemon(DaemonArgs),
+}
+
+#[derive(Args)]
+pub(crate) struct CheckArgs {
+    /// The parent lemma.yaml, which composes the repositories to check.
+    #[arg(default_value = "lemma.yaml")]
+    pub manifest: PathBuf,
+    /// The repository that changed: an external service's name (`#billing`),
+    /// or `self` for the parent's own repository. Needs `--base` and `--head`.
+    #[arg(long, requires_all = ["base", "head"])]
+    pub change: Option<String>,
+    /// The commit before the change.
+    #[arg(long, requires = "change")]
+    pub base: Option<String>,
+    /// The commit with the change.
+    #[arg(long, requires = "change")]
+    pub head: Option<String>,
+    /// `audit` reports differences as warnings; `check` fails on them.
+    /// Overrides the graph's level.
+    #[arg(long, value_parser = ["audit", "check"])]
+    pub level: Option<String>,
+    /// Also list informational findings, not just their count.
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Args)]
