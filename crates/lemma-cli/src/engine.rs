@@ -14,10 +14,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use lemma_index::LiveIndex;
+use lemma_index::retention::Retention;
 use lemma_model::{Language, Outcome, Position};
 use lemma_providers::ProviderRegistry;
 use lemma_query::{
@@ -174,7 +175,13 @@ impl Engine {
             format,
         };
         match cli.command {
-            Command::Index { path } => self.index(&request, &invocation.resolve(&path), out),
+            Command::Index { path, keep, ttl } => {
+                let retention = lemma_index::retention::Retention {
+                    keep,
+                    ttl: crate::duration::parse_duration(&ttl)?,
+                };
+                self.index(&request, &invocation.resolve(&path), retention, out)
+            }
             Command::Symbols(args) => self.symbols(&request, args, out),
             Command::Outline { path } => self.outline(&request, &path, out),
             Command::Refs(args) => self.references(&request, args, out),
@@ -194,18 +201,20 @@ impl Engine {
         &mut self,
         request: &Request<'_>,
         path: &Path,
+        retention: Retention,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
         let (root, lemma_path) = selection::locate(path)?;
         let source = selection::read_lemma_file(&lemma_path)?;
         if selection::is_workspace(&source.file) {
-            return self.index_workspace(request, &root, &lemma_path, out);
+            return self.index_workspace(request, &lemma_path, retention, out);
         }
         let db_path = match &request.db {
             Some(db) => db.clone(),
             None => default_index_path(&root)?,
         };
         let indexed = self.index_repository(&db_path, &root, &source)?;
+        self.apply_retention(&db_path, &root, retention)?;
         output::index_summary(
             out,
             &indexed.summary,
@@ -266,15 +275,19 @@ impl Engine {
     fn index_workspace(
         &mut self,
         request: &Request<'_>,
-        root: &Path,
         lemma_path: &Path,
+        retention: Retention,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
+        let root = lemma_path.parent().unwrap_or(Path::new("."));
         let cache = lemma_graph::repos::cache_directory();
         let members = lemma_graph::compose::members(lemma_path, &cache)?;
         let mut workspace = WorkspaceIndex::default();
         for member in &members {
             let result = self.index_member(member, &cache);
+            if result.is_ok() {
+                self.apply_retention(&default_index_path(&member.root)?, &member.root, retention)?;
+            }
             workspace.record(member, result)?;
         }
         let db_path = match &request.db {
@@ -285,6 +298,45 @@ impl Engine {
         store.replace_workspace(&workspace.members, &workspace.exports, &workspace.links)?;
         output::workspace_summary(out, &workspace.lines, &db_path, request.format)?;
         Ok(0)
+    }
+
+    /// Drops the commit snapshots `retention` no longer keeps from the index
+    /// at `db_path`, whose own directory is `own_root`, and their worktrees.
+    fn apply_retention(
+        &mut self,
+        db_path: &Path,
+        own_root: &Path,
+        retention: Retention,
+    ) -> anyhow::Result<()> {
+        let store = store_for_writing(&mut self.stores, db_path)?;
+        let snapshots = store.snapshots()?;
+        let kept: Vec<lemma_index::retention::Kept> = snapshots
+            .iter()
+            .map(|stored| lemma_index::retention::Kept {
+                id: stored.id,
+                root: stored.snapshot.root.clone(),
+                indexed_at_ns: stored.indexed_at_ns,
+            })
+            .collect();
+        let own = own_root
+            .canonicalize()
+            .unwrap_or_else(|_| own_root.to_path_buf());
+        let dropped =
+            lemma_index::retention::to_drop(&kept, &own.display().to_string(), retention, now_ns());
+        let worktrees = lemma_graph::repos::cache_directory().join("worktrees");
+        for id in dropped {
+            let Some(root) = snapshots.iter().find(|stored| stored.id == id) else {
+                continue;
+            };
+            let root = PathBuf::from(&root.snapshot.root);
+            store.delete_snapshot(id)?;
+            self.live_indexes
+                .remove(&(db_path.to_path_buf(), root.clone()));
+            if root.starts_with(&worktrees) && root.exists() {
+                lemma_graph::repos::remove_worktree(&own, &root)?;
+            }
+        }
+        Ok(())
     }
 
     /// Indexes one member into the index in its clone: at its pin through a
@@ -708,6 +760,16 @@ impl Engine {
     fn store(&mut self, db_path: &Path) -> anyhow::Result<&mut Store> {
         open_store(&mut self.stores, db_path)
     }
+}
+
+/// Nanoseconds since the Unix epoch, for deciding which snapshots are old
+/// enough to drop; it never affects what an index holds.
+fn now_ns() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX)
+        })
 }
 
 /// A symbol a command is about, where it is indexed, and the symbols

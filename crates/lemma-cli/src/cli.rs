@@ -40,9 +40,18 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Index source files and symbols under a directory.
     Index {
-        /// Directory to index.
+        /// A directory with a lemma.yaml, or a lemma.yaml.
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Snapshots of pinned commits (worktrees a workspace indexes) to
+        /// keep in each repository's index, most recently indexed first.
+        #[arg(long, default_value_t = 5)]
+        keep: usize,
+        /// How long a pinned commit's snapshot is kept after it was last
+        /// indexed: `14d`, `12h`, or `never` to keep it until `--keep`
+        /// pushes it out.
+        #[arg(long, default_value = "14d")]
+        ttl: String,
     },
     /// Search indexed symbols by name.
     Symbols(SymbolsArgs),
