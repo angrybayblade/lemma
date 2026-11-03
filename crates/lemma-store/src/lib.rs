@@ -62,6 +62,21 @@ pub struct StoredSymbol {
     pub symbol: Symbol,
 }
 
+/// A repository a workspace index composes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredMember {
+    /// Its name in the workspace, such as `#billing`.
+    pub name: String,
+    /// Its local clone.
+    pub root: String,
+    /// The commit it is pinned to, if it is.
+    pub revision: Option<String>,
+    /// The directory indexed: the clone, or a worktree at the pin.
+    pub indexed_root: String,
+    /// The database holding its index.
+    pub database: String,
+}
+
 /// File system metadata recorded when a file was read.
 ///
 /// If a file's stamp is unchanged, its contents almost certainly are too, so
@@ -561,6 +576,114 @@ impl Store {
              ORDER BY caller, provider",
         )?;
         let rows = statement.query_map([snapshot_id], |row| {
+            Ok(ExportLink {
+                caller: row.get(0)?,
+                provider: row.get(1)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Replaces the workspace this database indexes: its members, and their
+    /// exports and links (addresses absolute), each with its member's name.
+    pub fn replace_workspace(
+        &mut self,
+        members: &[StoredMember],
+        exports: &[(String, Export)],
+        links: &[ExportLink],
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction()?;
+        for table in ["workspace_members", "workspace_exports", "workspace_links"] {
+            transaction.execute(&format!("DELETE FROM {table}"), [])?;
+        }
+        {
+            let mut insert = transaction.prepare_cached(
+                "INSERT INTO workspace_members (name, root, revision, indexed_root, database)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for member in members {
+                insert.execute(params![
+                    member.name,
+                    member.root,
+                    member.revision,
+                    member.indexed_root,
+                    member.database
+                ])?;
+            }
+            let mut insert = transaction.prepare_cached(
+                "INSERT OR REPLACE INTO workspace_exports
+                     (member, service, name, kind, path, symbol, detail)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            for (member, export) in exports {
+                insert.execute(params![
+                    member,
+                    export.service,
+                    export.name,
+                    export.kind.as_str(),
+                    export.path,
+                    export.symbol,
+                    export.detail
+                ])?;
+            }
+            let mut insert = transaction.prepare_cached(
+                "INSERT OR IGNORE INTO workspace_links (member, caller, provider) VALUES (?1, ?2, ?3)",
+            )?;
+            for link in links {
+                let member = link.caller.split(':').next().unwrap_or_default();
+                insert.execute(params![member, link.caller, link.provider])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// The workspace's members, by name; empty for a repository's index.
+    pub fn workspace_members(&self) -> Result<Vec<StoredMember>, StoreError> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT name, root, revision, indexed_root, database FROM workspace_members ORDER BY name",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(StoredMember {
+                name: row.get(0)?,
+                root: row.get(1)?,
+                revision: row.get(2)?,
+                indexed_root: row.get(3)?,
+                database: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Every member's exports, each with its member's name.
+    pub fn workspace_exports(&self) -> Result<Vec<(String, Export)>, StoreError> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT member, service, name, kind, path, symbol, detail FROM workspace_exports
+             ORDER BY member, service, name, kind",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let kind: String = row.get(3)?;
+            Ok((
+                row.get(0)?,
+                Export {
+                    service: row.get(1)?,
+                    name: row.get(2)?,
+                    kind: kind.parse().unwrap_or(ExportKind::Symbol),
+                    path: row.get(4)?,
+                    symbol: row.get(5)?,
+                    detail: row.get(6)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Every member's links, with absolute addresses, sorted.
+    pub fn workspace_links(&self) -> Result<Vec<ExportLink>, StoreError> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT caller, provider FROM workspace_links ORDER BY caller, provider",
+        )?;
+        let rows = statement.query_map([], |row| {
             Ok(ExportLink {
                 caller: row.get(0)?,
                 provider: row.get(1)?,

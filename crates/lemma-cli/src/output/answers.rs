@@ -15,7 +15,7 @@ use lemma_store::StoredSymbol;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use super::{Format, SymbolView, display_position, print_json, symbol_line};
+use super::{Format, Linked, SymbolView, display_position, print_json, symbol_line};
 
 /// Where an answer came from, and what it was.
 #[derive(Serialize)]
@@ -108,21 +108,46 @@ pub(crate) fn outline(
 pub(crate) fn reference_report(
     out: &mut dyn Write,
     report: &ReferenceReport,
+    linked: &[Linked],
     root: &str,
     format: Format,
 ) -> io::Result<()> {
     let answer = &report.answer;
     if format == Format::Json {
         let found = |references: &Vec<Reference>| json_value(references);
-        return print_json(
-            out,
-            &SymbolAnswerView {
-                symbol: SymbolView::new(&report.symbol),
-                answer: AnsweredView::new(answer, "references", found),
-            },
-        );
+        let view = SymbolAnswerView {
+            symbol: SymbolView::new(&report.symbol),
+            answer: AnsweredView::new(answer, "references", found),
+        };
+        let mut value = serde_json::to_value(&view).map_err(io::Error::other)?;
+        if !linked.is_empty() {
+            value["linked"] = serde_json::to_value(linked).map_err(io::Error::other)?;
+        }
+        return print_json(out, &value);
     }
+    references_text(out, report, root)?;
+    linked_text(out, linked)
+}
 
+/// The symbols `lemma.yaml` links to or from a symbol, beside what the
+/// language server found.
+fn linked_text(out: &mut dyn Write, linked: &[Linked]) -> io::Result<()> {
+    if linked.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "linked by lemma.yaml")?;
+    for link in linked {
+        let implemented = match (&link.symbol, &link.path) {
+            (Some(symbol), Some(path)) => format!("  {symbol}  ({path})"),
+            _ => "  (resolved in a workspace index)".to_owned(),
+        };
+        writeln!(out, "  {} {}{implemented}", link.direction, link.address)?;
+    }
+    Ok(())
+}
+
+fn references_text(out: &mut dyn Write, report: &ReferenceReport, root: &str) -> io::Result<()> {
+    let answer = &report.answer;
     writeln!(out, "{}", symbol_line(&report.symbol))?;
     write_provenance(out, answer)?;
     let Outcome::Found(references) = &answer.outcome else {
