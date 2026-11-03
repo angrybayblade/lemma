@@ -5,6 +5,7 @@
 //! With `--no-daemon`, `LEMMA_NO_DAEMON=1`, on platforms without Unix
 //! sockets, or if no daemon can be started, the command runs in-process.
 
+mod addresses;
 mod check;
 mod cli;
 #[cfg(unix)]

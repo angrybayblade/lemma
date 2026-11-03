@@ -61,7 +61,8 @@ Finds references to one symbol by asking a language server for its language.
 
 - a name, such as `delete`;
 - a qualified name, such as `Router.delete`;
-- an id from `lemma symbols`, such as `'#415'`. Quote it, because `#` starts a comment in most shells.
+- an id from `lemma symbols`, such as `'#415'`. Quote it, because `#` starts a comment in most shells;
+- an export's address from `lemma.yaml`, such as `services.worker.submit_task` (a declared operation) or `services.gateway.listProducts` (an `operationId`): the symbol implementing it. An address in another repository (`'#functions:services.serverless.submit_task'`) needs a workspace index.
 
 Names must match exactly. The same filters as `lemma symbols` narrow a name: `--kind`, `--language`, `--path`.
 
@@ -137,7 +138,7 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | `--workspace <lemma.yaml>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations, and on up. See below. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
 
-References from a file's top-level code appear as the file; imports are left out. Questions the server could not answer, such as a stale file or a missing server, are listed as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
+References from a file's top-level code appear as the file; imports are left out. A symbol implementing an export that `graph.links` links to another operation uses that operation, which appears by address (`linked operation`). Questions the server could not answer, such as a stale file or a missing server, are listed as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
 
 ### Across repositories
 

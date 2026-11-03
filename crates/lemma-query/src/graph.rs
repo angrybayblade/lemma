@@ -584,6 +584,7 @@ impl Neighbours for NameNeighbours {
             .iter()
             .filter(|(symbol, mentions)| {
                 symbol.id != of.id
+                    && same_language(symbol, of)
                     && mentions.uses(&name, needs_call)
                     && container
                         .as_ref()
@@ -618,7 +619,10 @@ impl Neighbours for NameNeighbours {
                 continue;
             };
             let used = defined.iter().filter(|symbol| {
-                symbol.id != of.id && !contains(of, symbol) && (*called || !is_callable(symbol))
+                symbol.id != of.id
+                    && same_language(symbol, of)
+                    && !contains(of, symbol)
+                    && (*called || !is_callable(symbol))
             });
             neighbours.extend(used.cloned().map(Neighbour::Symbol));
         }
@@ -654,6 +658,16 @@ impl Mentions {
     fn uses(&self, name: &str, as_call: bool) -> bool {
         self.0.get(name).is_some_and(|called| *called || !as_call)
     }
+}
+
+/// Whether two symbols are in one language, as far as a use by name goes:
+/// TypeScript with and without JSX count as one.
+fn same_language(left: &StoredSymbol, right: &StoredSymbol) -> bool {
+    let family = |language: Language| match language {
+        Language::Tsx => Language::TypeScript,
+        other => other,
+    };
+    family(left.language) == family(right.language)
 }
 
 /// Whether a symbol is used by calling it, so only a call counts as a use.
