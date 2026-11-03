@@ -4,6 +4,7 @@
 //! Syntax-only operations read the store. Semantic ones go through
 //! [`lookup`]: stored answers first, then the language's providers.
 
+mod graph;
 mod lookup;
 mod navigation;
 mod references;
@@ -12,6 +13,7 @@ mod search;
 mod sessions;
 mod signature;
 
+pub use graph::{Direction, GraphOptions, GraphSource, symbol_graph};
 pub use lookup::{Answered, LookupContext, LookupOptions};
 pub use navigation::{
     DefinitionReport, ImplementationReport, Target, find_definitions, find_implementations,
