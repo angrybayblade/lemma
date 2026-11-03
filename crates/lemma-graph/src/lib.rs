@@ -19,12 +19,14 @@ mod infer;
 pub mod openapi;
 pub mod repos;
 pub mod schema;
+mod trace;
 
 use std::path::PathBuf;
 
 pub use check::{
     Change, CheckOptions, Finding, Impact, Report, ResolvedRepository, Severity, check,
 };
+pub use trace::{Reached, SystemTrace, trace_through_system};
 
 /// Why a check could not run.
 #[derive(Debug, thiserror::Error)]
