@@ -36,13 +36,15 @@ fn write(path: &Path, text: &str) {
 const PROVIDER_LEMMA: &str = r#"
 services:
   api:
-    operations:
-      create_charge:
-        path: charges.py:create_charge
-        schema:
-          resolver: { command: "cat spec.json" }
-          request:  { path: "$.create_charge.request" }
-          response: { path: "$.create_charge.response" }
+    index: { include: [charges.py] }
+    exports:
+      operations:
+        create_charge:
+          path: charges.py:create_charge
+          schema:
+            resolver: { command: "cat spec.json" }
+            request:  { path: "$.create_charge.request" }
+            response: { path: "$.create_charge.response" }
 "#;
 
 const SPEC_BASE: &str = r#"{ "create_charge": {
@@ -60,12 +62,14 @@ const SPEC_HEAD: &str = r#"{ "create_charge": {
 const CALLER_LEMMA: &str = r##"
 services:
   web:
-    operations:
-      create_charge:
-        path: client/charges.go:Charges.Create
-        schema:
-          request:  client/charges.go#CreateChargeRequest
-          response: client/charges.go#CreateChargeResponse
+    index: { include: [client] }
+    exports:
+      operations:
+        create_charge:
+          path: client/charges.go:Charges.Create
+          schema:
+            request:  client/charges.go#CreateChargeRequest
+            response: client/charges.go#CreateChargeResponse
 graph:
   links:
     - services.web.create_charge -> "#provider:services.api.create_charge"

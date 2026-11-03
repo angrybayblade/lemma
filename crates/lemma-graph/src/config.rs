@@ -4,11 +4,15 @@
 //! ```yaml
 //! services:
 //!   web:
-//!     operations:
-//!       create_charge:
-//!         path: client/charges.go:Charges.Create
-//!         schema:
-//!           request: client/charges.go#CreateChargeRequest
+//!     index:                        # what Lemma reads for this service
+//!       include: [client, src]
+//!       exclude: ["**/generated/**"]
+//!     exports:                      # what it offers: the entry points
+//!       operations:
+//!         create_charge:
+//!           path: client/charges.go:Charges.Create
+//!           schema:
+//!             request: client/charges.go#CreateChargeRequest
 //!   "#billing":                     # a leading # names an external service
 //!     path: ../billing              # or git: <url>, with ref: <commit or branch>
 //! graph:
@@ -56,20 +60,16 @@ pub struct Service {
     /// names another `lemma.yaml` in this repository, as in a monorepo.
     #[serde(default)]
     pub manifest: Option<String>,
-    /// Defined here: its operations, by name.
+    /// Defined here: what Lemma reads for it: the code it is made of.
     #[serde(default)]
-    pub operations: BTreeMap<String, Operation>,
+    pub index: IndexSettings,
+    /// Defined here: what it offers other code: the entry points queries
+    /// start from and links join.
+    #[serde(default)]
+    pub exports: Exports,
     /// Defined here: interpreters and toolchains its schema resolvers use.
     #[serde(default)]
     pub runtime: Runtime,
-    /// Defined here: `OpenAPI` documents it serves. Each operation with an
-    /// `operationId` becomes an operation of this service, and calls to any
-    /// of them from code elsewhere are found and checked (inferred links).
-    #[serde(default)]
-    pub openapi: Vec<String>,
-    /// Defined here: directories with its route code.
-    #[serde(default)]
-    pub routes: Vec<String>,
     /// Defined here: whether it rejects request fields it does not know,
     /// even where its documents do not say so.
     #[serde(default)]
@@ -83,16 +83,6 @@ pub struct Service {
     /// `/v1/` routes also published as `/v2/`.
     #[serde(default)]
     pub route_aliases: BTreeMap<String, String>,
-    /// Defined here: further directories with schemas its routes import,
-    /// read to tell which reject unknown fields.
-    #[serde(default)]
-    pub shared_schemas: Vec<String>,
-    /// Defined here: directories whose code is searched for calls to other
-    /// services' operations. If empty, the whole repository for a service
-    /// that is alone in it and declares no documents, client or operations;
-    /// nothing otherwise.
-    #[serde(default)]
-    pub code: Vec<String>,
     /// Defined here: names its code calls generated clients through, such
     /// as `client`.
     #[serde(default)]
@@ -105,6 +95,49 @@ pub struct Service {
     /// documents.
     #[serde(default)]
     pub client: Option<GeneratedClient>,
+}
+
+/// The code a service is made of, which Lemma indexes and searches.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct IndexSettings {
+    /// Directories (or files) relative to the repository root.
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// Glob patterns, relative to the repository root, never read, such as
+    /// `**/generated/**`.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Only files in these languages (`typescript`, `tsx`, `python`, `go`,
+    /// `rust`); all of them if empty.
+    #[serde(default)]
+    pub languages: Vec<String>,
+}
+
+/// What a service offers: its entry points.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Exports {
+    /// `OpenAPI` documents it serves. Each operation with an `operationId`
+    /// becomes one of its operations, and calls to any of them from code
+    /// elsewhere are found and checked (inferred links).
+    #[serde(default)]
+    pub openapi: Vec<String>,
+    /// Operations it provides or calls, by name, declared where its
+    /// documents do not describe them.
+    #[serde(default)]
+    pub operations: BTreeMap<String, Operation>,
+    /// Files whose definitions are its public interface, as a library's
+    /// entry modules.
+    #[serde(default)]
+    pub symbols: Vec<String>,
+}
+
+impl Exports {
+    /// Whether it exports nothing.
+    pub fn is_empty(&self) -> bool {
+        self.openapi.is_empty() && self.operations.is_empty() && self.symbols.is_empty()
+    }
 }
 
 /// A client generated from `OpenAPI` documents.
@@ -128,18 +161,15 @@ pub struct GeneratedClient {
 }
 
 impl Service {
-    /// Whether it defines anything: operations, documents, code or a client.
+    /// Whether it defines anything: code, exports, settings or a client.
     fn defines_anything(&self) -> bool {
         let lists = [
-            &self.openapi,
-            &self.routes,
             &self.path_prefixes,
-            &self.shared_schemas,
-            &self.code,
             &self.client_receivers,
             &self.client_modules,
         ];
-        !self.operations.is_empty()
+        self.index != IndexSettings::default()
+            || !self.exports.is_empty()
             || self.runtime != Runtime::default()
             || lists.iter().any(|list| !list.is_empty())
             || self.rejects_unknown_fields
@@ -335,11 +365,16 @@ mod tests {
 services:
   web:
     runtime: { go: go }
-    operations:
-      create_charge:
-        path: client/charges.go:Charges.Create
-        schema:
-          request: client/charges.go#CreateChargeRequest
+    index:
+      include: [client]
+      exclude: ["**/generated/**"]
+      languages: [go]
+    exports:
+      operations:
+        create_charge:
+          path: client/charges.go:Charges.Create
+          schema:
+            request: client/charges.go#CreateChargeRequest
   "#billing":
     path: ../billing
     ref: HEAD
@@ -352,7 +387,12 @@ graph:
         let file = parse(text).unwrap();
 
         let web = &file.services["web"];
-        let schema = web.operations["create_charge"].schema.as_ref().unwrap();
+        assert_eq!(web.index.include, ["client"]);
+        assert_eq!(web.index.languages, ["go"]);
+        let schema = web.exports.operations["create_charge"]
+            .schema
+            .as_ref()
+            .unwrap();
         assert_eq!(
             schema.request,
             Some(SchemaSource::Code(
@@ -372,7 +412,7 @@ graph:
         let local_with_source = parse("services:\n  api: { path: ../api }\n").unwrap();
         let external_without_source = parse("services:\n  \"#api\": {}\n").unwrap();
         let external_with_operations = parse(
-            "services:\n  \"#api\":\n    path: ../api\n    operations: { o: { path: a.py } }\n",
+            "services:\n  \"#api\":\n    path: ../api\n    exports: { operations: { o: { path: a.py } } }\n",
         )
         .unwrap();
         let monorepo = parse("services:\n  \"#api\": { manifest: api/lemma.yaml }\n").unwrap();
@@ -385,11 +425,14 @@ graph:
 
     #[test]
     fn document_locations_default_to_json_schema() {
-        let text = "services:\n  s:\n    operations:\n      o:\n        path: a.py:o\n        schema:\n          resolver: { command: make spec, output: spec.json }\n          response: { path: \"$.o.response\" }\n";
+        let text = "services:\n  s:\n    exports:\n      operations:\n        o:\n          path: a.py:o\n          schema:\n            resolver: { command: make spec, output: spec.json }\n            response: { path: \"$.o.response\" }\n";
 
         let file = parse(text).unwrap();
 
-        let schema = file.services["s"].operations["o"].schema.clone().unwrap();
+        let schema = file.services["s"].exports.operations["o"]
+            .schema
+            .clone()
+            .unwrap();
         assert_eq!(
             schema.resolver.unwrap().output.as_deref(),
             Some("spec.json")

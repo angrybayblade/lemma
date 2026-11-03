@@ -140,6 +140,7 @@ pub fn declared_seed(link: &Link, repos: &BTreeMap<String, Repo>) -> Option<Seed
     let operation = repos.get(&repository)?.files[HEAD]
         .services
         .get(&caller.service)?
+        .exports
         .operations
         .get(&caller.operation)?;
     let symbol = operation.path.rsplit_once(':')?.1.replace("()", "");
@@ -375,18 +376,16 @@ fn code_directories(repo: &Repo) -> Option<Vec<String>> {
         .map(|(_, service)| service)
         .collect();
     let whole = local.len() == 1
-        && local[0].code.is_empty()
-        && local[0].openapi.is_empty()
-        && local[0].client.is_none()
-        && local[0].operations.is_empty();
+        && local[0].index.include.is_empty()
+        && local[0].exports.is_empty()
+        && local[0].client.is_none();
     if whole {
         return Some(Vec::new());
     }
     let mut directories = BTreeSet::new();
     for service in local {
-        directories.extend(service.code.iter().cloned());
-        directories.extend(service.routes.iter().cloned());
-        for operation in service.operations.values() {
+        directories.extend(service.index.include.iter().cloned());
+        for operation in service.exports.operations.values() {
             let file = operation.path.split(':').next().unwrap_or(&operation.path);
             if let Some((directory, _)) = file.rsplit_once('/') {
                 directories.insert(directory.to_owned());

@@ -91,7 +91,7 @@ fn entries(source: &Source<'_>, commit: Option<&str>) -> Vec<(String, Repository
     let mut found = Vec::new();
     for (service_name, service) in local {
         let name = entry_name(source.name, service_name);
-        let reads_code = !service.code.is_empty() || (only_service && is_plain(service));
+        let reads_code = !service.index.include.is_empty() || (only_service && is_plain(service));
         let parts = parts(&name, service, reads_code, |role| {
             entry(source.root, commit, role)
         });
@@ -118,7 +118,7 @@ fn parts(
     entry: impl Fn(Role) -> Repository,
 ) -> Vec<(Option<&'static str>, Repository)> {
     let mut parts = Vec::new();
-    let serves = !service.openapi.is_empty();
+    let serves = !service.exports.openapi.is_empty();
     if serves {
         parts.push((None, served(entry(Role::Service), service)));
     }
@@ -131,7 +131,7 @@ fn parts(
     }
     if reads_code {
         let mut repository = entry(Role::Consumer);
-        repository.include.clone_from(&service.code);
+        repository.include.clone_from(&service.index.include);
         repository
             .client_receivers
             .clone_from(&service.client_receivers);
@@ -150,16 +150,18 @@ fn parts(
 /// repository read as its code by default; a service or generated client's
 /// own code is not a caller unless `code` says so.
 fn is_plain(service: &Service) -> bool {
-    service.openapi.is_empty() && service.client.is_none() && service.operations.is_empty()
+    service.exports.is_empty() && service.client.is_none()
 }
 
 fn served(mut repository: Repository, service: &Service) -> Repository {
-    repository.specs.clone_from(&service.openapi);
-    repository.routes.clone_from(&service.routes);
+    repository.specs.clone_from(&service.exports.openapi);
+    // Route code and the schemas routes import are somewhere in what the
+    // service is made of.
+    repository.routes.clone_from(&service.index.include);
     repository.rejects_unknown_fields = service.rejects_unknown_fields;
     repository.path_prefixes.clone_from(&service.path_prefixes);
     repository.route_aliases.clone_from(&service.route_aliases);
-    repository.schemas.clone_from(&service.shared_schemas);
+    repository.schemas.clone_from(&service.index.include);
     repository
 }
 
@@ -200,7 +202,7 @@ mod tests {
     #[test]
     fn services_become_entries_by_the_parts_they_play() {
         let provider = parse(
-            "services:\n  api:\n    openapi: [openapi.json]\n    code: [src]\n  worker:\n    operations: {}\n",
+            "services:\n  api:\n    exports: { openapi: [openapi.json] }\n    index: { include: [src] }\n  worker:\n    exports: { operations: {} }\n",
         )
         .unwrap();
         let consumer = parse("services:\n  web: {}\n").unwrap();
