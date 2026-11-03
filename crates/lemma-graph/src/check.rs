@@ -290,7 +290,7 @@ fn infer_links<E: Engine>(
 /// today; those missing at both of the repository's checkouts are dropped
 /// rather than failing the check. A `lemma.yaml` from the commit itself is
 /// taken as written, so a misspelt document is still an error.
-fn inference_file(repo: &Repo) -> Result<LemmaFile, GraphError> {
+pub(crate) fn inference_file(repo: &Repo) -> Result<LemmaFile, GraphError> {
     let mut file = repo.files[HEAD].clone();
     if !repo.manifest_from_working_directory {
         return Ok(file);
@@ -359,7 +359,10 @@ fn resolved(repos: &BTreeMap<String, Repo>) -> Vec<ResolvedRepository> {
 }
 
 /// The parent and every repository reachable through `#name` services.
-fn load(root_file: &Path, options: &CheckOptions) -> Result<BTreeMap<String, Repo>, GraphError> {
+pub(crate) fn load(
+    root_file: &Path,
+    options: &CheckOptions,
+) -> Result<BTreeMap<String, Repo>, GraphError> {
     let directory = absolute(root_file.parent().unwrap_or(Path::new(".")));
     let manifest = root_file.file_name().map_or_else(
         || LEMMA_FILE.to_owned(),
