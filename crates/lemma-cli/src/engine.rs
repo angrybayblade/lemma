@@ -28,6 +28,7 @@ use lemma_store::{
     FactStore, NameMatch, Store, StoreError, StoredSnapshot, StoredSymbol, SymbolFilter,
 };
 
+use crate::addresses;
 use crate::cli::{
     Cli, Command, DefinitionArgs, GraphArgs, GraphDirection, GraphDrawing, GraphSourceArg,
     LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget, SymbolsArgs,
@@ -412,6 +413,11 @@ impl Engine {
         let graph_options = graph_options(args.direction, args.depth, args.source, args.max_nodes);
         let mut graph =
             lemma_query::symbol_graph(store, &context, &target, &graph_options, &mut self.pool)?;
+        if graph_options.direction != lemma_query::Direction::Callers {
+            let exports = store.exports(snapshot.id)?;
+            let links = store.export_links(snapshot.id)?;
+            addresses::add_links(&mut graph, &exports, &links);
+        }
         if let Some(workspace) = &args.workspace {
             let workspace = request.invocation.resolve(workspace);
             let root = PathBuf::from(&snapshot.snapshot.root);
@@ -777,13 +783,17 @@ fn choose_symbol(
     }
 }
 
-/// A `#<id>` selects one symbol directly; anything else is resolved by name.
+/// An export's address selects the symbol implementing it, a `#<id>` one
+/// symbol directly; anything else is resolved by name.
 fn select_symbol(
     store: &Store,
     snapshot: &StoredSnapshot,
     symbol: &str,
     filters: crate::cli::Filters,
 ) -> anyhow::Result<SymbolResolution> {
+    if let Some(address) = addresses::as_address(symbol) {
+        return addresses::resolve_export(store, snapshot, &address);
+    }
     if let Some(id) = symbol.strip_prefix('#') {
         let id: i64 = id
             .parse()
