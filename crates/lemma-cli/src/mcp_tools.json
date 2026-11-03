@@ -1,7 +1,7 @@
 [
   {
     "name": "index",
-    "description": "Index the code a directory's lemma.yaml says its services are made of, with their exports and links; on a workspace lemma.yaml, every repository it composes. Requires a lemma.yaml. Rarely needed: every other tool refreshes the index of the current directory first.",
+    "description": "Index the code a directory's lemma.yaml says its services are made of, with their exports and links; on a workspace lemma.yaml, every repository it composes. Without a lemma.yaml, every supported file, with a warning. Rarely needed: every other tool refreshes the index of the current directory first.",
     "inputSchema": {
       "type": "object",
       "properties": {
