@@ -7,5 +7,6 @@ Skills that teach coding agents to use Lemma. Each directory is one skill in the
 | [`lemma-usage`](lemma-usage/SKILL.md) | Navigating code, finding references or impact, and reading `lemma verify` findings |
 | [`lemma-onboarding`](lemma-onboarding/SKILL.md) | Setting Lemma up for a set of repositories: install, index, manifest, CI |
 | [`lemma-grammar`](lemma-grammar/SKILL.md) | Writing or changing a grammar: relations, rules, requirements |
+| [`lemma-audit`](lemma-audit/SKILL.md) | Auditing composable `lemma.yaml` files against the code and closing the gaps |
 
 Install with the binary (`LEMMA_SKILLS=1`, see [Onboarding](../docs/onboarding.md#agent-skills)), or copy the directories into `~/.claude/skills/` or a repository's `.claude/skills/`.
