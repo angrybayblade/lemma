@@ -15,6 +15,8 @@ mod cache;
 pub mod overlay;
 mod registry;
 
+pub(crate) use cache::{commit_state, working_state};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -157,7 +159,7 @@ impl<'a> Adapter<'a> {
         if build == Build::KeptOnly {
             return Ok(None);
         }
-        let worktree = BuildWorktree::check_out(root, commit, cache)?;
+        let worktree = repos::SharedWorktree::check_out(root, commit, cache)?;
         self.set_up(worktree.path())?;
         self.run(root, worktree.path(), &output)?;
         read_generated(&output).map(Some)
@@ -278,56 +280,6 @@ fn directory(from: &OperationsFrom, code: &Path) -> Result<PathBuf, GraphError> 
         });
     }
     Ok(code.join(relative))
-}
-
-/// The one worktree per repository commits are built in, held for the
-/// length of a build so two Lemmas do not build in it at once.
-struct BuildWorktree {
-    path: PathBuf,
-    lock: PathBuf,
-}
-
-impl BuildWorktree {
-    /// The build worktree of the clone at `root`, checked out at `commit`.
-    /// What earlier builds installed, ignored by Git, stays.
-    fn check_out(root: &Path, commit: &str, cache: &Path) -> Result<Self, GraphError> {
-        let builds = cache.join("builds");
-        create_directory(&builds)?;
-        let path = builds.join(repos::directory_name(root));
-        let lock = path.with_extension("lock");
-        if std::fs::File::create_new(&lock).is_err() {
-            return Err(GraphError::BuildInProgress { directory: path });
-        }
-        let held = Self { path, lock };
-        let target = held.path.to_string_lossy().into_owned();
-        if held.path.join(".git").exists() {
-            repos::git(
-                &held.path,
-                &["checkout", "--detach", "--force", "--quiet", commit],
-            )?;
-            repos::git(&held.path, &["clean", "-fd", "--quiet"])?;
-        } else {
-            // A worktree Git lost track of is pruned before adding it again.
-            repos::git(root, &["worktree", "prune"])?;
-            repos::git(
-                root,
-                &["worktree", "add", "--detach", "--quiet", &target, commit],
-            )?;
-        }
-        Ok(held)
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for BuildWorktree {
-    fn drop(&mut self) {
-        // A lock left behind only makes the next build report that it is
-        // busy, which names the file to remove.
-        let _ = std::fs::remove_file(&self.lock);
-    }
 }
 
 fn create_directory(path: &Path) -> Result<(), GraphError> {
