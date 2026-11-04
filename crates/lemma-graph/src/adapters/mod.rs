@@ -13,6 +13,7 @@
 
 mod cache;
 pub mod overlay;
+mod registry;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -23,22 +24,8 @@ use serde_json::Value;
 use crate::GraphError;
 use crate::config::{LemmaFile, OperationsFrom, Runtime};
 use crate::repos::{self, Checkout};
-use crate::schema::absolute_interpreter;
 use overlay::{Coverage, Reading};
-
-/// The built-in adapters: a name, its script's file name, and the script.
-const BUILT_IN: [(&str, &str, &str); 2] = [
-    (
-        "hono-zod-openapi",
-        "hono-zod-openapi.ts",
-        include_str!("../../adapters/hono-zod-openapi.ts"),
-    ),
-    (
-        "fastapi",
-        "fastapi_openapi.py",
-        include_str!("../../adapters/fastapi_openapi.py"),
-    ),
-];
+use registry::Script;
 
 /// How long an adapter may run before it is stopped, unless configured.
 const ADAPTER_TIMEOUT_MS: u64 = 300_000;
@@ -106,7 +93,7 @@ struct Adapter<'a> {
     from: &'a OperationsFrom,
     runtime: &'a Runtime,
     store: &'a Path,
-    script: Option<PathBuf>,
+    script: Script<'a>,
     key: String,
 }
 
@@ -116,16 +103,17 @@ impl<'a> Adapter<'a> {
         runtime: &'a Runtime,
         store: &'a Path,
     ) -> Result<Self, GraphError> {
-        let (script, text) = match built_in(from)? {
-            Some((file, text)) => (Some(write_script(store, file, text)?), text),
-            None => (None, ""),
-        };
+        let script = registry::script(from)?;
+        if let Script::BuiltIn(built_in) = &script {
+            write_script(store, built_in.file, built_in.text)?;
+        }
+        let key = cache::adapter_key(from, runtime, script.key_text());
         Ok(Self {
             from,
             runtime,
             store,
             script,
-            key: cache::adapter_key(from, runtime, text),
+            key,
         })
     }
 
@@ -195,7 +183,7 @@ impl<'a> Adapter<'a> {
         let directory = directory(self.from, code)?;
         let written = output.with_extension(format!("{}.partial", std::process::id()));
         let env = self.env(repository, code, &written);
-        let command = self.command(repository)?;
+        let command = self.command(repository, code);
         let timeout_ms = self.from.timeout_ms.unwrap_or(ADAPTER_TIMEOUT_MS);
         let result = repos::run_within(&directory, &command, &env, Some(timeout_ms))
             .and_then(|_| read_generated(&written).map(|_| ()))
@@ -242,52 +230,22 @@ impl<'a> Adapter<'a> {
         env
     }
 
-    /// The command to run: a built-in adapter's script with the runtime it
-    /// needs, or the configured command. Interpreters are the clone's own,
-    /// at `repository`.
-    fn command(&self, repository: &Path) -> Result<String, GraphError> {
-        let Some(script) = &self.script else {
-            return self
-                .from
-                .command
-                .clone()
-                .ok_or_else(|| GraphError::Adapter {
-                    message: "needs an `adapter` or a `command`".to_owned(),
-                });
-        };
-        let is_python = script
-            .extension()
-            .is_some_and(|extension| extension == "py");
-        let script = script.display();
-        if is_python {
-            let python = self.runtime.python.as_deref().unwrap_or("python3");
-            return Ok(format!(
-                "{} {script}",
-                absolute_interpreter(python, repository)
-            ));
+    /// The command to run on the code at `code`: a built-in adapter's
+    /// script, a script in that code, or the configured command.
+    /// Interpreters are the clone's own, at `repository`.
+    fn command(&self, repository: &Path, code: &Path) -> String {
+        match &self.script {
+            Script::BuiltIn(built_in) => registry::invocation(
+                built_in.interpreter,
+                &self.store.join(built_in.file),
+                self.runtime,
+                repository,
+            ),
+            Script::InRepository { path, interpreter } => {
+                registry::invocation(*interpreter, &code.join(path), self.runtime, repository)
+            }
+            Script::Command(command) => (*command).to_owned(),
         }
-        let bun = self.runtime.bun.as_deref().unwrap_or("bun");
-        Ok(format!("{bun} run {script}"))
-    }
-}
-
-/// The built-in adapter `from` names, as its script's file name and text;
-/// `None` for a configured command.
-fn built_in(from: &OperationsFrom) -> Result<Option<(&'static str, &'static str)>, GraphError> {
-    match (&from.adapter, &from.command) {
-        (None, Some(_)) => Ok(None),
-        (Some(name), None) => BUILT_IN
-            .iter()
-            .find(|(known, _, _)| known == name)
-            .map(|(_, file, text)| Some((*file, *text)))
-            .ok_or_else(|| GraphError::Adapter {
-                message: format!(
-                    "no built-in adapter `{name}`; use `hono-zod-openapi` or `fastapi`, or a `command`"
-                ),
-            }),
-        _ => Err(GraphError::Adapter {
-            message: "needs one of `adapter` and `command`".to_owned(),
-        }),
     }
 }
 
@@ -404,6 +362,7 @@ fn read_generated(path: &Path) -> Result<Generated, GraphError> {
 /// a plain string) or a route (`{"method", "path", "reason"}`), and
 /// `x-lemma-complete: true` claims every route was read. A module that
 /// could not be read makes the reading incomplete, whatever the claim.
+/// `x-lemma-schemas: false` says the document describes routes only.
 fn reading_of(document: &Value) -> (Vec<String>, Reading) {
     let entries = document
         .get("x-lemma-unread")
@@ -437,6 +396,7 @@ fn reading_of(document: &Value) -> (Vec<String>, Reading) {
     let reading = Reading {
         unread_routes,
         is_complete: claims_complete && !has_unread_module,
+        is_routes_only: document.get("x-lemma-schemas") == Some(&Value::Bool(false)),
     };
     (shown, reading)
 }

@@ -63,6 +63,11 @@ pub struct Reading {
     /// Whether it read every route the code registers, so an operation it
     /// does not describe is gone.
     pub is_complete: bool,
+    /// Whether it describes routes only, without their schemas, as an
+    /// adapter for a framework that knows its routes but not their bodies
+    /// does: the committed definitions are then kept, and the code says
+    /// only which routes there are and where each is handled.
+    pub is_routes_only: bool,
 }
 
 /// An operation in a document: its method key and path as written.
@@ -115,6 +120,7 @@ pub fn overlay(
             matches: &matches[index],
             added: homes.get(&index).map(Vec::as_slice).unwrap_or_default(),
             may_remove: is_trusted && reading.is_complete,
+            is_routes_only: reading.is_routes_only,
             unread_routes: &reading.unread_routes,
             taken_ids: &mut taken_ids,
         };
@@ -272,6 +278,7 @@ struct DocumentPlan<'p> {
     matches: &'p BTreeMap<(String, String), (String, String)>,
     added: &'p [&'p (String, String)],
     may_remove: bool,
+    is_routes_only: bool,
     unread_routes: &'p BTreeSet<(String, String)>,
     /// The names operations already have: an added operation whose code
     /// reuses one (a definition registered at a second path) goes unnamed
@@ -306,6 +313,12 @@ fn lay_over(
             continue;
         };
         let from_code = &code[code_key];
+        if plan.is_routes_only {
+            let mut operation = located.operation.clone();
+            copy_handler(from_code.operation, &mut operation);
+            set_operation(&mut paths, located.template, located.method, operation);
+            continue;
+        }
         let is_same_path = key == code_key;
         let mut operation = named_like(from_code, located, is_same_path);
         rename_path_parameters(&mut operation, from_code.template, located.template);
@@ -432,6 +445,14 @@ fn own_document(
         document.insert("components".to_owned(), components.clone());
     }
     Value::Object(document)
+}
+
+/// Gives `operation` the code's `x-lemma-handler`, if it has one.
+fn copy_handler(from_code: &Value, operation: &mut Value) {
+    let handler = from_code.get("x-lemma-handler").cloned();
+    if let (Some(handler), Some(object)) = (handler, operation.as_object_mut()) {
+        object.insert("x-lemma-handler".to_owned(), handler);
+    }
 }
 
 fn has_operation(item: &Map<String, Value>) -> bool {
@@ -663,6 +684,7 @@ mod tests {
         Reading {
             unread_routes: BTreeSet::new(),
             is_complete: true,
+            ..Reading::default()
         }
     }
 
@@ -716,6 +738,31 @@ mod tests {
     }
 
     #[test]
+    fn a_routes_only_reading_keeps_committed_schemas() {
+        let committed = json!({"paths": {
+            "/a": {"post": {"operationId": "postA", "requestBody": {"required": true}}},
+            "/gone": {"get": {}}
+        }});
+        let generated = json!({"paths": {
+            "/a": {"post": {"x-lemma-handler": "app.js:3"}},
+            "/new": {"get": {}}
+        }});
+        let reading = Reading {
+            is_complete: true,
+            is_routes_only: true,
+            ..Reading::default()
+        };
+
+        let laid = overlay(&named(vec![committed]), &generated, &reading, "code");
+
+        let operation = &laid.documents[0].1["paths"]["/a"]["post"];
+        assert_eq!(operation["requestBody"]["required"], true);
+        assert_eq!(operation["x-lemma-handler"], "app.js:3");
+        assert_eq!(laid.coverage.changed, Vec::<String>::new());
+        assert_eq!(laid.coverage.removed, ["GET /gone"]);
+    }
+
+    #[test]
     fn unrelated_documents_do_not_borrow_each_others_operations() {
         let admin = json!({"paths": {"/admin/users": {"get": {"summary": "admin"}}}});
         let public = json!({"paths": {"/public/users": {"get": {"summary": "old"}}}});
@@ -755,6 +802,7 @@ mod tests {
         let reading = Reading {
             unread_routes: BTreeSet::from([("POST".to_owned(), "/lazy".to_owned())]),
             is_complete: true,
+            ..Reading::default()
         };
 
         let laid = overlay(&named(vec![committed]), &generated, &reading, "code");

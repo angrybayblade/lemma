@@ -21,13 +21,15 @@ services:
 | `hono-zod-openapi` | Hono apps whose routes use `@hono/zod-openapi`. Runs with Bun (`runtime.bun`). | The module exporting the app the server serves, `src/index.ts#app` (`#default` for a default export): its document has every route at the path it is served at, through `app.route(...)` mounts and `basePath(...)`. Add the route directories (`src/routes`) to place routes registered through a shared helper at the route module that calls it. Route directories alone are imported module by module and see each route only as its own router registers it. |
 | `fastapi` | FastAPI apps. Runs with the service's Python (`runtime.python`). | `module:attribute`, the attribute an app or a function making one (`app.main:create_app`), or a module whose top-level apps are all read. Apps mounted inside the app are read under their mount path. |
 
-Any other framework can be read by a `command` that follows the protocol below, such as a script calling NestJS's `SwaggerModule.createDocument`, drf-spectacular, or a binary printing utoipa's document.
+Any other framework can be read by a script in the repository that follows the protocol below, named by its path: `adapter: tools/lemma-adapter.ts`. Its extension decides what runs it: `.ts` Bun, `.js` Node, `.py` the service's Python, `.go` `go run`. A `command` runs anything else, such as a binary printing utoipa's document.
+
+A framework that knows its routes but not their schemas (Express, Flask, `gorilla/mux`) can still be read: its adapter says so with `x-lemma-schemas: false`, the committed documents keep the schemas, and the code says which routes exist and where each is handled.
 
 ## Fields
 
 | Field | Meaning |
 | --- | --- |
-| `adapter` or `command` | A built-in adapter, or a command run with `sh -c`. |
+| `adapter` or `command` | A built-in adapter's name, a script in the repository by its path, or a command run with `sh -c`. |
 | `entry` | What the adapter reads, relative to `directory`; given as `$LEMMA_ENTRY`, one per line. |
 | `exclude` | Glob patterns of files under `entry` not to import, such as scripts that do work when imported; `$LEMMA_EXCLUDE`, one per line. |
 | `directory` | Where the adapter runs, relative to the repository root and inside it; the root if absent. |
@@ -81,8 +83,13 @@ The document may carry three extensions:
 | `x-lemma-handler` | each operation | `file:line`, relative to `LEMMA_ROOT`: where the route is registered, or its handler's definition. A decorator line means the definition it decorates. |
 | `x-lemma-unread` | the document | What could not be read: `{"module": "src/x.ts", "reason": "..."}` for code that could not be imported, `{"method": "POST", "path": "/x", "reason": "..."}` for a route that could not be described. A route listed keeps its committed definition. |
 | `x-lemma-complete` | the document | `true` when the adapter read every route the code registers, so an operation it does not describe is gone. Any unread module makes a reading incomplete. |
+| `x-lemma-schemas` | the document | `false` when the adapter describes routes only, without parameters, bodies or responses: matched operations keep their committed definitions. |
 
 The document is cached by the adapter's configuration, its script, the runtime it runs with and Lemma's version, so changing any of them reads the code again.
+
+## Adding a built-in adapter
+
+A built-in adapter is a script under `crates/lemma-graph/adapters/` and a row in `crates/lemma-graph/src/adapters/registry.rs` naming it and the interpreter it runs with. Until it is built in, the same script works from a repository by its path.
 
 ## Limits
 
