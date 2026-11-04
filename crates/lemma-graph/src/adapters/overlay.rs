@@ -60,6 +60,10 @@ pub struct Reading {
     /// Routes it could not describe, by method and canonical path: their
     /// committed operations stay as they are.
     pub unread_routes: BTreeSet<(String, String)>,
+    /// Paths under which it could not describe every route, by method and
+    /// canonical prefix, as a wildcard route serves (`/files/*`): no
+    /// committed operation under one counts as removed.
+    pub unread_prefixes: BTreeSet<(String, String)>,
     /// Whether it read every route the code registers, so an operation it
     /// does not describe is gone.
     pub is_complete: bool,
@@ -122,6 +126,7 @@ pub fn overlay(
             may_remove: is_trusted && reading.is_complete,
             is_routes_only: reading.is_routes_only,
             unread_routes: &reading.unread_routes,
+            unread_prefixes: &reading.unread_prefixes,
             taken_ids: &mut taken_ids,
         };
         let laid = lay_over(document, generated, &code, &mut plan, &mut coverage);
@@ -280,10 +285,23 @@ struct DocumentPlan<'p> {
     may_remove: bool,
     is_routes_only: bool,
     unread_routes: &'p BTreeSet<(String, String)>,
+    unread_prefixes: &'p BTreeSet<(String, String)>,
     /// The names operations already have: an added operation whose code
     /// reuses one (a definition registered at a second path) goes unnamed
     /// rather than be confused with it.
     taken_ids: &'p mut BTreeSet<String>,
+}
+
+impl DocumentPlan<'_> {
+    /// Whether the adapter said it could not read the route at `key`, or
+    /// every route under a prefix of it.
+    fn is_unread(&self, key: &(String, String)) -> bool {
+        self.unread_routes.contains(key)
+            || self
+                .unread_prefixes
+                .iter()
+                .any(|(method, prefix)| *method == key.0 && is_under(&key.1, prefix))
+    }
 }
 
 /// One committed document with its matched operations replaced, removed
@@ -303,8 +321,7 @@ fn lay_over(
         .unwrap_or_default();
     for (key, located) in plan.committed {
         let Some(code_key) = plan.matches.get(key) else {
-            let is_unread = plan.unread_routes.contains(key);
-            if plan.may_remove && !is_unread {
+            if plan.may_remove && !plan.is_unread(key) {
                 remove_operation(&mut paths, located);
                 coverage
                     .removed
@@ -815,6 +832,23 @@ mod tests {
         assert!(laid.documents[1].1["paths"].get("/new").is_some());
         assert_eq!(laid.coverage.removed, ["DELETE /gone"]);
         assert_eq!(laid.coverage.added, ["PUT /new"]);
+    }
+
+    #[test]
+    fn nothing_under_an_unread_prefix_counts_as_removed() {
+        let committed = json!({"paths": {
+            "/a": {"get": {}}, "/b": {"get": {}}, "/files/{}/raw": {"get": {}}, "/gone": {"get": {}}
+        }});
+        let generated = json!({"paths": {"/a": {"get": {}}, "/b": {"get": {}}}});
+        let reading = Reading {
+            unread_prefixes: BTreeSet::from([("GET".to_owned(), "/files".to_owned())]),
+            is_complete: true,
+            ..Reading::default()
+        };
+
+        let laid = overlay(&named(vec![committed]), &generated, &reading, "code");
+
+        assert_eq!(laid.coverage.removed, ["GET /gone"]);
     }
 
     #[test]
