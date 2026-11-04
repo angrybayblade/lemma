@@ -42,7 +42,6 @@ services:
           call_names: ["{camel}"]
           receivers: [client]         # client.createInvoice(...)
           modules: [generated/billing]  # import { createInvoice } from '../generated/billing'
-    path_prefixes: [/v1/billing/]
     route_aliases: { /v1/: /v2/ }
     rejects_unknown_fields: false
   "#<name>":                          # an external service: another repository

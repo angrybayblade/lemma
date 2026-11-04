@@ -74,11 +74,6 @@ pub struct Service {
     /// even where its documents do not say so.
     #[serde(default)]
     pub rejects_unknown_fields: bool,
-    /// Defined here: path prefixes it owns, such as `/v1/billing/`; a new call
-    /// under one to a path it does not serve is reported. The longest prefix
-    /// its operations share if empty.
-    #[serde(default)]
-    pub path_prefixes: Vec<String>,
     /// Defined here: prefixes its routes are also served under, such as
     /// `/v1/` routes also published as `/v2/`.
     #[serde(default)]
@@ -218,7 +213,6 @@ impl Service {
             || !self.exports.is_empty()
             || self.calls != Calls::default()
             || self.runtime != Runtime::default()
-            || !self.path_prefixes.is_empty()
             || self.rejects_unknown_fields
             || !self.route_aliases.is_empty()
     }
