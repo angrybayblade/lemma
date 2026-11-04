@@ -132,29 +132,9 @@ fn parts(
         repository.include.clone_from(&service.index.include);
         parts.push((Some("client".to_owned()), repository));
     }
-    let used = &service.calls.clients;
-    for (position, client) in used.iter().enumerate() {
-        let mut repository = entry(Role::Client);
-        repository.generated_from.clone_from(&client.generated_from);
-        repository.call_names.clone_from(&client.call_names);
-        let part = if used.len() == 1 {
-            "uses client".to_owned()
-        } else {
-            format!("uses client {}", position + 1)
-        };
-        parts.push((Some(part), repository));
-    }
     if reads_code {
         let mut repository = entry(Role::Consumer);
         repository.include.clone_from(&service.index.include);
-        for client in used {
-            repository
-                .client_receivers
-                .extend(client.receivers.iter().cloned());
-            repository
-                .client_modules
-                .extend(client.modules.iter().cloned());
-        }
         // Its own routes, if it serves any, are not calls.
         repository.service = serves.then(|| name.to_owned());
         parts.push((Some("code".to_owned()), repository));
@@ -166,7 +146,7 @@ fn parts(
 /// Only such a service, alone in its repository, has the whole repository
 /// read as its code by default.
 fn is_plain(service: &Service) -> bool {
-    service.exports.is_empty() && service.calls.clients.is_empty()
+    service.exports.is_empty()
 }
 
 fn served(mut repository: Repository, service: &Service) -> Repository {
@@ -285,32 +265,25 @@ mod tests {
     }
 
     #[test]
-    fn code_calling_through_a_client_is_searched_with_its_receivers() {
+    fn a_client_is_read_from_its_code() {
         let file = parse(
-            "services:\n  api:\n    index: { include: [src] }\n    calls:\n      clients:\n        - generated_from: [billing.json]\n          call_names: [\"{camel}\"]\n          receivers: [billing]\n",
+            "services:\n  sdk:\n    index: { include: [src] }\n    exports:\n      client: { specs: [openapi.json] }\n",
         )
         .unwrap();
         let sources = [Source {
-            name: "#api",
-            root: Path::new("/api"),
+            name: "#sdk",
+            root: Path::new("/sdk"),
             commit: None,
             file: &file,
         }];
         let changed = Changed {
-            name: "#api",
+            name: "#sdk",
             base: "b",
             head: "h",
         };
 
         let manifest = manifest(&sources, &changed).unwrap().manifest;
 
-        let names: Vec<&String> = manifest.repositories.keys().collect();
-        assert_eq!(names, ["#api:api (code)", "#api:api (uses client)"]);
-        let code = &manifest.repositories["#api:api (code)"];
-        assert_eq!(code.client_receivers, ["billing"]);
-        assert_eq!(
-            manifest.repositories["#api:api (uses client)"].generated_from,
-            ["billing.json"]
-        );
+        assert_eq!(manifest.repositories["#sdk:sdk"].include, ["src"]);
     }
 }

@@ -297,9 +297,6 @@ pub(crate) fn inference_file(repo: &Repo) -> Result<LemmaFile, GraphError> {
     }
     for service in file.services.values_mut() {
         retain_existing(&mut service.exports.openapi, &repo.checkouts)?;
-        for used in &mut service.calls.clients {
-            retain_existing(&mut used.generated_from, &repo.checkouts)?;
-        }
         if let Some(client) = &mut service.exports.client {
             retain_existing(&mut client.generated_from, &repo.checkouts)?;
             retain_existing(&mut client.specs, &repo.checkouts)?;

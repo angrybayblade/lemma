@@ -119,6 +119,8 @@ Types that cannot be followed, such as a type from another package, are left ope
 
 A service that exports its OpenAPI documents (`exports.openapi`) needs no links: calls to its operations from any repository's code are found and checked, as `lemma verify` does. A service's code (`index.include`) is read for its route code and searched for calls to others, unless the service is itself a generated client (`exports.client`); a service alone in its repository that declares nothing else has the whole repository searched.
 
+Calls through clients need no declaration. A call through a client library (`client.authConfigs.list()`) reaches the client method its names spell, where the code imports the client's package or its repository depends on it; the client's own code says what that method requests. A client generated at build time is recognised by its imports, a module inside the repository that no file holds (or a module re-exporting it), and its functions by the `operationId`s they are named after.
+
 | Field | Meaning |
 | --- | --- |
 | `index.include` | Directories or files the service is made of, relative to the repository root. |
@@ -129,8 +131,7 @@ A service that exports its OpenAPI documents (`exports.openapi`) needs no links:
 | `exports.symbols` | Files whose definitions are the service's public interface, as a library's entry modules. |
 | `exports.routes` | The calls the service's code writes routes with, so each documented operation's handler is found by what is declared rather than guessed from the code: `register` (calls that take a route and its handler, such as `Handle` for `r.Handle("/x", NewHandler(db))` or `openapi` for `router.openapi(DEF, handler)`) and `define` (calls that only describe a route, whose value a `register` call passes, such as `createRoute`). Routes written another way are still found by reading the code; each stored endpoint records which way (`found_by`: `directive` or `code`). |
 | `rejects_unknown_fields` | As in `lemma verify`'s manifest (see [Verifying changes](verify.md#the-manifest)). |
-| `exports.client` | Set when the service is itself a generated client of another: `generated_from` (documents it makes one function per operation from), `call_names`, and `specs` (its copy of the documents, whose declared parameters are checked). Its code is indexed but not searched for calls: it is the client, not a caller. |
-| `calls.clients` | Clients the service's code calls other services through, generated elsewhere or at build time: each with `generated_from`, `call_names`, and the `receivers` (`client.createInvoice(...)`) and `modules` (`import { createInvoice } from '../generated/billing'`) the code uses. |
+| `exports.client` | Set when the service is itself a client of another: `generated_from` (documents it makes one function per operation from), `call_names`, and `specs` (its copy of the documents, whose declared parameters are checked). Its code is read for what each of its methods requests, and not searched for calls: it is the client, not a caller. |
 
 ## Checks
 
