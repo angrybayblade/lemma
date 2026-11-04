@@ -481,6 +481,42 @@ impl FromStr for ExportKind {
     }
 }
 
+/// How the code implementing an export was found, so a reader can tell a
+/// declaration from a reading of the code and see where a directive would
+/// help.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FoundBy {
+    /// `lemma.yaml` names the code: an operation's anchor or a public module.
+    Declared,
+    /// A `routes` directive in `lemma.yaml` led to the handler.
+    Directive,
+    /// Read from how the code registers its routes, without a directive.
+    Code,
+}
+
+impl FoundBy {
+    /// The `snake_case` name used in storage and output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Declared => "declared",
+            Self::Directive => "directive",
+            Self::Code => "code",
+        }
+    }
+}
+
+impl FromStr for FoundBy {
+    type Err = UnknownName;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        [Self::Declared, Self::Directive, Self::Code]
+            .into_iter()
+            .find(|found_by| found_by.as_str() == name)
+            .ok_or_else(|| UnknownName(name.to_owned()))
+    }
+}
+
 /// An entry point a service offers, and the code that implements it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Export {
@@ -497,6 +533,8 @@ pub struct Export {
     pub symbol: Option<String>,
     /// More about it, such as `POST /v1/charges` for an endpoint.
     pub detail: Option<String>,
+    /// How its code was found; `None` when it was not.
+    pub found_by: Option<FoundBy>,
 }
 
 impl Export {

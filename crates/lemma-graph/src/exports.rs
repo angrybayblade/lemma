@@ -10,14 +10,16 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use lemma_model::{Export, ExportKind, ExportLink};
+use lemma_model::{Export, ExportKind, ExportLink, FoundBy};
 use lemma_syntax::Extractor;
 
 use crate::GraphError;
 use crate::address::parse_link;
 use crate::affects::CODE_EXTENSIONS;
 use crate::config::{LemmaFile, Service};
-use crate::handlers::{Lookup, RouteSite, passed_to_helper, resolve};
+use crate::handlers::{
+    Conventions, Lookup, RouteSite, passed_to_helper, resolve, resolve_declared,
+};
 
 /// Bumped whenever how exports are found changes, so stored ones built the
 /// old way are rebuilt.
@@ -58,6 +60,7 @@ pub fn exports(
                         path: Some(path.clone()),
                         symbol: Some(qualified),
                         detail: None,
+                        found_by: Some(FoundBy::Declared),
                     }),
             );
         }
@@ -99,6 +102,7 @@ fn operations(name: &str, service: &Service) -> Vec<Export> {
                 path: Some(path),
                 symbol,
                 detail: None,
+                found_by: Some(FoundBy::Declared),
             }
         })
         .collect()
@@ -142,7 +146,7 @@ fn endpoints(
                 continue;
             };
             let route = routes.get(&(operation.method.clone(), operation.path.clone()));
-            let (path, symbol) = handler_of(route, &operation, service, &texts, symbols);
+            let (path, symbol, found_by) = handler_of(route, &operation, service, &texts, symbols);
             found.push(Export {
                 service: name.to_owned(),
                 name: id,
@@ -150,6 +154,7 @@ fn endpoints(
                 path,
                 symbol,
                 detail: Some(format!("{} {}", operation.method, operation.path)),
+                found_by,
             });
         }
     }
@@ -208,20 +213,26 @@ fn routes(service: &Service, root: &Path, extractor: &mut Extractor) -> Result<R
     Ok((found, texts))
 }
 
-/// A documented operation's handler: at its route, or, when no route
-/// writes its path beside a method, the helper its path is passed to.
+/// What was found for a documented operation: its handler's file and
+/// qualified name, and how they were found.
+type Handler = (Option<String>, Option<String>, Option<FoundBy>);
+
+/// A documented operation's handler: at its route, by the service's
+/// `routes` directives if they decide, else by reading the registration;
+/// or, when no route writes its path beside a method, the helper its path
+/// is passed to.
 fn handler_of(
     route: Option<&Route>,
     operation: &lemma_http::Operation,
     service: &Service,
     texts: &BTreeMap<String, String>,
     symbols: &IndexedSymbols<'_>,
-) -> (Option<String>, Option<String>) {
+) -> Handler {
     let Some(route) = route else {
         let templates = unaliased(&operation.template, &service.route_aliases);
         return passed_to_helper(texts, &operation.method, &templates, &symbols.lookup)
-            .map_or((None, None), |found| {
-                (Some(found.path), Some(found.qualified))
+            .map_or((None, None, None), |found| {
+                (Some(found.path), Some(found.qualified), Some(FoundBy::Code))
             });
     };
     let site = RouteSite {
@@ -230,7 +241,16 @@ fn handler_of(
         line: route.line,
         template: &route.template,
     };
-    resolve(&site, &symbols.lookup)
+    let conventions = Conventions {
+        register: &service.exports.routes.register,
+        define: &service.exports.routes.define,
+    };
+    if let Some((path, symbol)) = resolve_declared(&site, conventions, &symbols.lookup) {
+        return (path, symbol, Some(FoundBy::Directive));
+    }
+    let (path, symbol) = resolve(&site, &symbols.lookup);
+    let found_by = path.is_some().then_some(FoundBy::Code);
+    (path, symbol, found_by)
 }
 
 /// A documented path as written, then as each alias's source prefix would
@@ -289,6 +309,7 @@ mod tests {
                 path: Some("src/pay.go".to_owned()),
                 symbol: Some("Charges.Create".to_owned()),
                 detail: None,
+                found_by: Some(FoundBy::Declared),
             }]
         );
         assert_eq!(

@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS exports (
     path        TEXT,
     symbol      TEXT,
     detail      TEXT,
+    -- declared, directive, or code; NULL when the code was not found.
+    found_by    TEXT,
     PRIMARY KEY (snapshot_id, service, name, kind)
 );
 
@@ -150,6 +152,7 @@ CREATE TABLE IF NOT EXISTS workspace_exports (
     path    TEXT,
     symbol  TEXT,
     detail  TEXT,
+    found_by TEXT,
     PRIMARY KEY (member, service, name, kind)
 );
 

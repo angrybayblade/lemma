@@ -29,6 +29,9 @@ services:
             response: { path: "$.op.response" }                # in the resolver's output
             # or: { file: spec.json, path: "$...", format: openapi }
       symbols: [src/index.ts]         # a library's public modules
+      routes:                         # optional: the calls routes are written with
+        register: [openapi]           # take a route and its handler: router.openapi(DEF, handler)
+        define: [createRoute]         # only describe a route, passed to a register call later
       client:                         # only if this service IS a generated client of another;
         generated_from: [openapi.json]  # its code is then not searched for calls
         call_names: ["{camel}"]
