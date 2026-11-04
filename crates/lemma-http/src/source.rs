@@ -90,6 +90,21 @@ pub fn read_files_where(
     Ok(files)
 }
 
+/// Every file's path in the repository at `commit`, or in the working
+/// directory, without reading them. Sorted.
+pub fn list_files(repository: &Path, commit: Option<&str>) -> Result<Vec<String>, SourceError> {
+    let mut paths = match commit {
+        Some(commit) => git_paths(repository, commit, &[])?,
+        None => directory_paths(repository, &[])?
+            .into_iter()
+            .map(|(_, relative)| relative)
+            .collect(),
+    };
+    paths.retain(|path| !path.contains("node_modules/"));
+    paths.sort();
+    Ok(paths)
+}
+
 /// One file's text, from `commit` or the working directory, or `None` if
 /// the file does not exist there. A file that appears or disappears between
 /// two commits is normal, such as a spec added by the change.
@@ -190,6 +205,29 @@ fn directory_files(
     prefixes: &[String],
     wanted: &dyn Fn(&str) -> bool,
 ) -> Result<Vec<SourceFile>, SourceError> {
+    let mut files = Vec::new();
+    for (path, relative) in directory_paths(repository, prefixes)? {
+        if !wanted(&relative) {
+            continue;
+        }
+        let bytes = fs::read(&path).map_err(|source| SourceError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        files.push(SourceFile {
+            path: relative,
+            contents: String::from_utf8_lossy(&bytes).into_owned(),
+        });
+    }
+    Ok(files)
+}
+
+/// Every file under `prefixes` (the whole repository if empty) in the
+/// working directory, with its path relative to the repository.
+fn directory_paths(
+    repository: &Path,
+    prefixes: &[String],
+) -> Result<Vec<(PathBuf, String)>, SourceError> {
     let roots: Vec<PathBuf> = if prefixes.is_empty() {
         vec![repository.to_owned()]
     } else {
@@ -198,7 +236,7 @@ fn directory_files(
             .map(|prefix| repository.join(prefix))
             .collect()
     };
-    let mut files = Vec::new();
+    let mut found = Vec::new();
     let mut pending = roots;
     while let Some(path) = pending.pop() {
         let metadata = fs::metadata(&path).map_err(|source| SourceError::Io {
@@ -223,18 +261,9 @@ fn directory_files(
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        if wanted(&relative) {
-            let bytes = fs::read(&path).map_err(|source| SourceError::Io {
-                path: path.clone(),
-                source,
-            })?;
-            files.push(SourceFile {
-                path: relative,
-                contents: String::from_utf8_lossy(&bytes).into_owned(),
-            });
-        }
+        found.push((path, relative));
     }
-    Ok(files)
+    Ok(found)
 }
 
 fn git(repository: &Path, args: &[&str]) -> Result<Vec<u8>, SourceError> {
