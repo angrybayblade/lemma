@@ -131,7 +131,7 @@ Severity decides what a finding does: `lemma verify` exits with 4 when any findi
 | `warning` | Behaviour changes, but nothing fails | reading a removed response field; sending a field now ignored |
 | `info` | Worth a look | a changed operation the consumer never names the field of; a route missing from the spec |
 
-A requirement that rests on a name being absent (`!names_anywhere(f, leaf)`) should search broadly; one that rests on a name being present (`uses(c, leaf)`) should look near the call. The built-in grammar does both; see its comments.
+A requirement that rests on a name being present (`uses(c, leaf)`) should look near the call. One that rests on a name being absent (`!sends(c, leaf)`) should look as far as the request can be built, and no further: the caller's function, declarations its file sees, and the functions of its file it calls. Searching the whole file lets an unrelated function naming the field hide a real break. The built-in grammar's comments say what each relation covers.
 
 `--explain` attaches each finding's derivation: the requirement's fact, then the facts and rules supporting it, indented, down to input facts and `not` lines for negations.
 

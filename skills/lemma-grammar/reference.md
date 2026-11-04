@@ -36,9 +36,8 @@ These come from the rules in `grammars/http-contracts.yaml`; any can be printed 
 | Relation | Columns | Holds when |
 | --- | --- | --- |
 | `calls` | consumer, operation, file, line | A consumer calls an operation of the base snapshot, by path (with or without a method) or through a client function, and the operation is not its own service's |
-| `file_mentions` | file, name | A file mentions a name anywhere |
 | `uses` | consumer, name | The name appears in the consumer's function, or outside functions in its file or a file it imports |
-| `names_anywhere` | file, name | The name appears anywhere in the file or a file it imports |
+| `sends` | consumer, name | The consumer uses the name, or a function of its file that it calls names it |
 | `removed_operation` | operation | In the base snapshot, not the head |
 | `kept_operation` | operation | In both snapshots |
 | `removed_parameter` | operation, name, location | A kept operation lost a parameter |
