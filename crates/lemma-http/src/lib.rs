@@ -4,12 +4,14 @@
 //! Extractors report what the sources say; mapping those reports to a
 //! grammar's relations, by each repository's role, is the caller's job.
 
+mod aliases;
 mod code;
 mod openapi;
 mod paths;
 mod source;
 mod tsconfig;
 
+pub use aliases::implied_aliases;
 pub use code::{
     ClientCall, CodeError, CodeFacts, CodeOptions, Location, Mention, MethodPath, PathReference,
     SchemaUnion, SchemaUse, extract,
