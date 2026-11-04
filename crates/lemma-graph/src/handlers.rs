@@ -65,13 +65,55 @@ pub fn resolve(site: &RouteSite<'_>, lookup: &Lookup<'_>) -> (Option<String>, Op
     )
 }
 
+/// The names a route's line gives its handler, most likely first: the calls
+/// after its path literal that are not chained onto another
+/// (`NewHandler(db)`, not `).Methods(`), then the bare names after it. Every
+/// name on the line if it writes no path literal.
+pub fn handler_names(line: &str) -> Vec<String> {
+    let masked = mask_strings(line);
+    let mut after = 0;
+    for quote in ['"', '\'', '`'] {
+        let mut rest = 0;
+        while let Some(open) = line[rest..].find(quote).map(|at| rest + at) {
+            let Some(close) = line[open + 1..].find(quote).map(|at| open + 1 + at) else {
+                break;
+            };
+            let literal = &line[open + 1..close];
+            if literal.is_empty() || literal.starts_with('/') {
+                after = after.max(close + 1);
+            }
+            rest = close + 1;
+        }
+    }
+    let found = words(&masked[after..]);
+    let calls = found.iter().filter(|word| word.is_call && !word.is_chained);
+    let names = found.iter().filter(|word| !word.is_call);
+    let mut ordered: Vec<String> = Vec::new();
+    for word in calls.chain(names) {
+        if !ordered.contains(&word.name) {
+            ordered.push(word.name.clone());
+        }
+    }
+    ordered
+}
+
 /// A handler named after the path on its line: the first call that is not
 /// chained onto another (`).Methods(`), else the first name that is a
 /// definition or a local variable built by one.
 fn registered_beside(site: &RouteSite<'_>, lookup: &Lookup<'_>) -> Option<Definition> {
-    let line = site.text.lines().nth(site.line.checked_sub(1)? as usize)?;
-    let after = after_literal(line, site.template)?;
-    let words = words(&mask_strings(after));
+    let index = site.line.checked_sub(1)? as usize;
+    let line = site.text.lines().nth(index)?;
+    let mut after = after_literal(line, site.template)?.to_owned();
+    // `r.Handle(\n  "/x",\n  NewHandler(db),\n)`: the handler is on the next line.
+    if after.trim().trim_end_matches(',').is_empty() {
+        let next = site
+            .text
+            .lines()
+            .skip(index + 1)
+            .find(|next| !next.trim().is_empty());
+        after.push_str(next.unwrap_or_default());
+    }
+    let words = words(&mask_strings(&after));
     let calls = words.iter().filter(|word| word.is_call && !word.is_chained);
     for word in calls {
         if let Some(found) = (lookup.unique)(&word.name, site.file) {
@@ -255,6 +297,24 @@ fn helpers_passed(
         }
     }
     found
+}
+
+/// The function a route's path literal is passed to on its line
+/// (`registerExecute(router, '/v1/execute')`), if one function in the
+/// language has that name: the handler of a route a helper registers.
+pub fn helper_called_at(site: &RouteSite<'_>, lookup: &Lookup<'_>) -> Option<Definition> {
+    let index = site.line.checked_sub(1)? as usize;
+    let line_start: usize = site
+        .text
+        .split_inclusive('\n')
+        .take(index)
+        .map(str::len)
+        .sum();
+    let line = site.text[line_start..].lines().next()?;
+    let at = literal_positions(line, site.template).into_iter().next()?;
+    let callee = callee_before(&site.text[..line_start + at])?;
+    (lookup.unique)(&callee, site.file)
+        .filter(|found| matches!(found.kind.as_str(), "function" | "method"))
 }
 
 /// Where `template` is written as a quoted literal in `text`.
@@ -567,5 +627,40 @@ mod tests {
 
         assert_eq!(masked.len(), text.len());
         assert_eq!(masked.lines().nth(1), Some("r.Handle(    , h)      "));
+    }
+
+    #[test]
+    fn a_route_lines_handler_is_the_call_after_its_path() {
+        let line =
+            r#"	api.Handle("/{slug}/execute", NewExecuteHandler(db, functions)).Methods("POST")"#;
+
+        let names = handler_names(line);
+
+        assert_eq!(names.first().map(String::as_str), Some("NewExecuteHandler"));
+        assert!(!names.contains(&"Handle".to_owned()));
+        assert!(!names.contains(&"Methods".to_owned()));
+    }
+
+    #[test]
+    fn a_handler_on_the_line_after_its_path_is_found() {
+        let text = "func Routes(r *mux.Router) {\n\tr.Handle(\n\t\t\"/health/deep\",\n\t\thandlers.NewDeepHealth(db),\n\t).Methods(\"GET\")\n}\n";
+        let unique = |name: &str, _: &str| {
+            (name == "NewDeepHealth").then(|| definition("health.go", "NewDeepHealth", "function"))
+        };
+        let enclosing = |_: &str, _: u32| Some(definition("router.go", "Routes", "function"));
+        let lookup = Lookup {
+            unique: &unique,
+            enclosing: &enclosing,
+        };
+        let site = RouteSite {
+            file: "router.go",
+            text,
+            line: 3,
+            template: "/health/deep",
+        };
+
+        let found = resolve(&site, &lookup);
+
+        assert_eq!(found.1.as_deref(), Some("NewDeepHealth"));
     }
 }

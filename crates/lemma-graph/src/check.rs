@@ -264,7 +264,7 @@ fn infer_links<E: Engine>(
     };
     let options = lemma_verify::Options {
         explain: false,
-        relations: vec!["calls".to_owned(), "route".to_owned()],
+        relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
     };
     let report = lemma_verify::verify(&inferred.manifest, engine, &options)
         .map_err(|source| GraphError::Inference { source })?;
