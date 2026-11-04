@@ -317,7 +317,7 @@ pub(crate) struct LookupArgs {
 }
 
 /// Narrows which symbols a name refers to.
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub(crate) struct Filters {
     /// Only symbols of this kind, such as `function` or `method`.
     #[arg(long)]
