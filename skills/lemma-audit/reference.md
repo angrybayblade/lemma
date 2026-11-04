@@ -36,12 +36,6 @@ services:
         generated_from: [openapi.json]  # its code is then not searched for calls
         call_names: ["{camel}"]
         specs: [openapi.json]
-    calls:                            # how its code calls others (it is searched for calls)
-      clients:                        # clients it calls through, generated elsewhere or at build time
-        - generated_from: [billing.json]
-          call_names: ["{camel}"]
-          receivers: [client]         # client.createInvoice(...)
-          modules: [generated/billing]  # import { createInvoice } from '../generated/billing'
     rejects_unknown_fields: false
   "#<name>":                          # an external service: another repository
     path: ../other                    # or git: <url>
