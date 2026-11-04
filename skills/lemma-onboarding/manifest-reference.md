@@ -23,7 +23,7 @@
 | `rejects_unknown_fields` | service | `true` if requests with unknown fields fail even where spec and zod do not say so (Go `DisallowUnknownFields`, serde `deny_unknown_fields`). |
 | `generated_from` | client | Specs a client is generated from; one function per operation. |
 | `call_names` | client | How the client names an operation's function from its `operationId`: templates with `{operationId}`, `{camel}`, `{pascal}`, `{snake}`, such as `["{camel}"]` or `["{pascal}.Invoke"]`. The `operationId` as written if absent. |
-| `path_prefixes` | service | Path prefixes the service owns; a changed consumer's new call to an unserved path under one is reported. The prefix all its operations share if absent. |
+| `path_prefixes` | service | Path prefixes the service owns; a changed consumer's new call to an unserved path under one is reported. Derived from each spec if absent (the prefix its paths share, narrowed where another service shares it); rarely needed. |
 | `include` | consumer | Directories with the consumer's code; the whole repository if absent. |
 | `client_receivers` | consumer | Variable names the code calls its client through: `client`, `_client`, `billing`. |
 | `client_modules` | consumer | Module specifiers (suffixes) of generated clients; functions imported from them are client calls. |

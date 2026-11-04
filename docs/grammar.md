@@ -160,7 +160,7 @@ A requirement that rests on a name being absent (`!names_anywhere(f, leaf)`) sho
 | `mentions` | scope, name | names used as fields: object keys, members, keyword arguments, dictionary keys, struct fields, JSON tags |
 | `in_file` | scope, file | which file a consumer or function is in |
 | `imports` | file, imported file | relative and alias imports; for Go, files of one package |
-| `addressed_to` | path, service | a path called in code that is under a service's `path_prefixes` (or the prefix its operations share) |
+| `addressed_to` | path, service | a path called in code that is under a prefix the service owns: derived from its specs, or its `path_prefixes` |
 | `part_of_service` | file, service | files of a consumer entry that names its `service` |
 | `rejects_unknown_fields` | service | manifest `rejects_unknown_fields: true` |
 
