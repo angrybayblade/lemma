@@ -181,6 +181,7 @@ pub fn check<E: Engine>(
         cache: &options.cache,
         extractor: Extractor::new().map_err(|source| GraphError::Syntax { source })?,
         outputs: BTreeMap::new(),
+        reads: schema::Reads::default(),
         findings: Vec::new(),
         has_change: options.change.is_some(),
     };
@@ -982,6 +983,7 @@ struct Checker<'a> {
     cache: &'a Path,
     extractor: Extractor,
     outputs: BTreeMap<(String, String, String), serde_json::Value>,
+    reads: schema::Reads,
     findings: Vec<Finding>,
     /// Whether a change is being checked: then only what it introduces is a
     /// problem, and what was already there is context.
@@ -1044,7 +1046,7 @@ impl Checker<'_> {
         };
         let anchor = found.operation.path.clone();
         let checkout = found.repo.checkouts[HEAD].clone();
-        if anchor_resolves(&checkout, &anchor, &mut self.extractor)? {
+        if anchor_resolves(&checkout, &anchor, &mut self.extractor, &mut self.reads)? {
             return Ok(true);
         }
         // Introduced only if the anchor resolved before the change.
@@ -1052,7 +1054,7 @@ impl Checker<'_> {
             Some(before) => {
                 let anchor = before.operation.path.clone();
                 let checkout = before.repo.checkouts[BASE].clone();
-                anchor_resolves(&checkout, &anchor, &mut self.extractor)?
+                anchor_resolves(&checkout, &anchor, &mut self.extractor, &mut self.reads)?
             }
             None => false,
         };
@@ -1168,6 +1170,7 @@ impl Checker<'_> {
             runtime: &runtime,
             cache: self.cache,
             outputs: &mut self.outputs,
+            reads: &mut self.reads,
         };
         match schema::resolve(&source, &mut context) {
             Ok(resolved_schema) => {
@@ -1239,9 +1242,10 @@ fn anchor_resolves(
     checkout: &Checkout,
     anchor: &str,
     extractor: &mut Extractor,
+    reads: &mut schema::Reads,
 ) -> Result<bool, GraphError> {
     let (file, symbol) = anchor.rsplit_once(':').unwrap_or((anchor, ""));
-    let Some(source) = checkout.read(file)? else {
+    let Some(source) = reads.text(checkout, file)? else {
         return Ok(false);
     };
     let extension = file.rsplit_once('.').map_or("", |(_, extension)| extension);

@@ -29,7 +29,7 @@ pub(super) fn key(adapter: &str, state: &str) -> String {
 }
 
 /// The state of a commit's code: its tree.
-pub(super) fn commit_state(root: &Path, commit: &str) -> Result<String, GraphError> {
+pub(crate) fn commit_state(root: &Path, commit: &str) -> Result<String, GraphError> {
     let tree = repos::git(root, &["rev-parse", &format!("{commit}^{{tree}}")])?;
     Ok(format!("tree {}", tree.trim()))
 }
@@ -38,7 +38,7 @@ pub(super) fn commit_state(root: &Path, commit: &str) -> Result<String, GraphErr
 /// digest of every file that differs from it, untracked ones included;
 /// `None` outside a Git repository or before its first commit, where
 /// nothing can be cached.
-pub(super) fn working_state(root: &Path) -> Result<Option<String>, GraphError> {
+pub(crate) fn working_state(root: &Path) -> Result<Option<String>, GraphError> {
     let Ok(tree) = repos::git(root, &["rev-parse", "HEAD^{tree}"]) else {
         return Ok(None);
     };

@@ -369,20 +369,18 @@ pub(crate) fn read_routes(
     sites: &[RouteSite],
     repos: &BTreeMap<String, Repo>,
 ) -> Result<Vec<Route>, GraphError> {
-    let mut sources: BTreeMap<(&str, &str), Arc<str>> = BTreeMap::new();
+    let sources = route_sources(sites, repos)?;
     let mut routes = Vec::new();
     for site in sites {
-        let key = (site.repository.as_str(), site.file.as_str());
-        if let std::collections::btree_map::Entry::Vacant(entry) = sources.entry(key) {
-            let text = match repos.get(&site.repository) {
-                Some(repo) => repo.checkouts[HEAD].read(&site.file)?,
-                None => None,
-            };
-            entry.insert(Arc::from(text.unwrap_or_default()));
-        }
-        let source = Arc::clone(&sources[&key]);
+        let key = (site.repository.clone(), site.file.clone());
+        let Some((source, lines)) = sources.get(&key) else {
+            continue;
+        };
+        let source = Arc::clone(source);
         let index = site.line.saturating_sub(1) as usize;
-        let line_text = source.lines().nth(index).unwrap_or_default();
+        let line_text = lines
+            .get(index)
+            .map_or("", |&(start, end)| &source[start..end]);
         routes.push(Route {
             repository: site.repository.clone(),
             operation: site.operation.clone(),
@@ -391,12 +389,61 @@ pub(crate) fn read_routes(
             line: site.line,
             handler_names: crate::handlers::handler_names(line_text),
             template: path_literal(line_text),
-            inline_mentions: inline_handler(&source, index),
+            inline_mentions: inline_handler(&source, lines, index),
             passed_to_helper: site.passed_to_helper,
             source,
         });
     }
     Ok(routes)
+}
+
+/// Each file routes are declared in, by repository and path, with the byte
+/// spans of its lines: read in one batch per repository, and split into
+/// lines once rather than once per route.
+type RouteSources = BTreeMap<(String, String), (Arc<str>, Vec<(usize, usize)>)>;
+
+fn route_sources(
+    sites: &[RouteSite],
+    repos: &BTreeMap<String, Repo>,
+) -> Result<RouteSources, GraphError> {
+    let mut wanted: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    for site in sites {
+        wanted
+            .entry(site.repository.as_str())
+            .or_default()
+            .insert(site.file.clone());
+    }
+    let mut sources = BTreeMap::new();
+    for (repository, files) in wanted {
+        let Some(repo) = repos.get(repository) else {
+            continue;
+        };
+        let checkout = &repo.checkouts[HEAD];
+        let paths: Vec<String> = files.into_iter().collect();
+        let read = match &checkout.commit {
+            Some(commit) => lemma_http::read_paths(&checkout.root, commit, &paths),
+            None => lemma_http::read_from_disk(&checkout.root, &paths),
+        }
+        .map_err(|source| GraphError::Source { source })?;
+        for file in read {
+            let lines = line_spans(&file.contents);
+            let key = (repository.to_owned(), file.path);
+            sources.insert(key, (Arc::from(file.contents), lines));
+        }
+    }
+    Ok(sources)
+}
+
+/// The byte span of each line of `text`, without its line ending.
+fn line_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start = 0;
+    for line in text.split_inclusive('\n') {
+        let content = line.trim_end_matches('\n').trim_end_matches('\r');
+        spans.push((start, start + content.len()));
+        start += line.len();
+    }
+    spans
 }
 
 /// The path literal a route's line writes: the longest string starting
@@ -425,9 +472,19 @@ fn path_literal(line: &str) -> Option<String> {
 /// after its path (`func(w, r) {`, `(c) => {`, `function (req) {`,
 /// `lambda`). Its code runs from that line to where the registration's
 /// parentheses close.
-fn inline_handler(source: &str, index: usize) -> Option<BTreeSet<String>> {
-    let lines: Vec<&str> = source.lines().collect();
-    let line = lines.get(index)?;
+fn inline_handler(
+    source: &str,
+    spans: &[(usize, usize)],
+    index: usize,
+) -> Option<BTreeSet<String>> {
+    // The registration's statement: its line and up to 400 after it.
+    let statement_lines: Vec<&str> = spans
+        .get(index..)?
+        .iter()
+        .take(400)
+        .map(|&(start, end)| &source[start..end])
+        .collect();
+    let line = statement_lines.first()?;
     let path_end = ['"', '\'', '`']
         .iter()
         .filter_map(|quote| line.rfind(*quote))
@@ -442,8 +499,8 @@ fn inline_handler(source: &str, index: usize) -> Option<BTreeSet<String>> {
     }
     let mut depth = 0i64;
     let mut statement = Vec::new();
-    for text in lines.iter().skip(index).take(400) {
-        statement.push(*text);
+    for text in statement_lines {
+        statement.push(text);
         depth += bracket_change(text);
         if depth <= 0 {
             break;
