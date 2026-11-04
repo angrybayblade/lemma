@@ -170,7 +170,7 @@ fn current_inference<E: Engine>(
         let changed = infer::Changed {
             name,
             base: &commit,
-            head: &commit,
+            head: Some(&commit),
         };
         let Some(inferred) = infer::manifest(&sources, &changed) else {
             continue;

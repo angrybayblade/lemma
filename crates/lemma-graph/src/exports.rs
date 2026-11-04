@@ -19,7 +19,8 @@ use crate::address::parse_link;
 use crate::affects::CODE_EXTENSIONS;
 use crate::config::{LemmaFile, Service};
 use crate::handlers::{
-    Conventions, Lookup, RouteSite, passed_to_helper, resolve, resolve_declared,
+    Conventions, Lookup, RouteSite, decorated, passed_to_helper, registered_call, resolve,
+    resolve_declared,
 };
 
 /// Bumped whenever how exports are found changes, so stored ones built the
@@ -42,7 +43,7 @@ pub fn exports(
     file: &LemmaFile,
     root: &Path,
     symbols: &IndexedSymbols<'_>,
-    from_code: &BTreeMap<String, serde_json::Value>,
+    from_code: &BTreeMap<String, adapters::Generated>,
 ) -> Result<(Vec<Export>, Vec<ExportLink>), GraphError> {
     let mut found = Vec::new();
     let mut extractor = Extractor::new().map_err(|source| GraphError::Syntax { source })?;
@@ -130,7 +131,7 @@ struct Route {
 struct ServiceInput<'a> {
     name: &'a str,
     service: &'a Service,
-    from_code: Option<&'a serde_json::Value>,
+    from_code: Option<&'a adapters::Generated>,
 }
 
 /// The operations a service's documents describe, each at its route's
@@ -148,11 +149,7 @@ fn endpoints(
         return Ok(Vec::new());
     }
     let (written, mut texts) = routes(service, root, extractor)?;
-    let committed = read_documents(service, root)?;
-    let documents = match input.from_code {
-        Some(generated) => adapters::overlay(&committed, generated),
-        None => committed,
-    };
+    let documents = service_documents(input, root)?;
     let registered: BTreeMap<(String, String), (String, u32)> =
         documents.iter().flat_map(adapters::handler_sites).collect();
     read_missing(&mut texts, registered.values().map(|(file, _)| file), root)?;
@@ -170,9 +167,10 @@ fn endpoints(
     };
     let mut found = Vec::new();
     for operation in documents.iter().flatten() {
-        let Some(id) = operation.operation_id.clone() else {
-            continue;
-        };
+        let id = operation
+            .operation_id
+            .clone()
+            .unwrap_or_else(|| unnamed_operation_name(&operation.method, &operation.template));
         let key = (operation.method.clone(), operation.path.clone());
         let at_registration = registered
             .get(&key)
@@ -218,8 +216,38 @@ fn read_missing<'a>(
     Ok(())
 }
 
-/// The committed `OpenAPI` documents of a service.
-fn read_documents(service: &Service, root: &Path) -> Result<Vec<serde_json::Value>, GraphError> {
+/// The documents a service's endpoints come from: its committed ones, with
+/// the operations its adapter read from the code laid over them.
+fn service_documents(
+    input: &ServiceInput<'_>,
+    root: &Path,
+) -> Result<Vec<serde_json::Value>, GraphError> {
+    let committed = read_documents(input.service, root)?;
+    let Some(generated) = input.from_code else {
+        return Ok(committed
+            .into_iter()
+            .map(|(_, document)| document)
+            .collect());
+    };
+    let from_code_name = format!("{} (from code)", input.name);
+    let laid = adapters::overlay::overlay(
+        &committed,
+        &generated.document,
+        &generated.reading,
+        &from_code_name,
+    );
+    Ok(laid
+        .documents
+        .into_iter()
+        .map(|(_, document)| document)
+        .collect())
+}
+
+/// The committed `OpenAPI` documents of a service, by name.
+fn read_documents(
+    service: &Service,
+    root: &Path,
+) -> Result<Vec<(String, serde_json::Value)>, GraphError> {
     let mut documents = Vec::new();
     for document in &service.exports.openapi {
         let Some(text) = lemma_http::read_file(root, None, document)
@@ -227,14 +255,25 @@ fn read_documents(service: &Service, root: &Path) -> Result<Vec<serde_json::Valu
         else {
             continue;
         };
-        let json: serde_json::Value =
-            serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
-                command: format!("reading {document}"),
-                source,
-            })?;
-        documents.push(json);
+        documents.push((document.clone(), adapters::parse_document(document, &text)?));
     }
     Ok(documents)
+}
+
+/// A name for an operation its document gives no `operationId`, from its
+/// method and path: `get_items_id` for `GET /items/{id}`. Frameworks that
+/// leave names to the author (`createRoute` without one) would otherwise
+/// leave the operation out.
+fn unnamed_operation_name(method: &str, template: &str) -> String {
+    let mut name = method.to_lowercase();
+    for word in template.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if word.is_empty() {
+            continue;
+        }
+        name.push('_');
+        name.push_str(word);
+    }
+    name
 }
 
 /// A service's route aliases, as its documents and routes imply them (see
@@ -384,6 +423,13 @@ fn handler_registered_at(
     };
     if let Some((path, symbol)) = resolve_declared(&site, code.conventions, lookup) {
         return Some((path, symbol, Some(FoundBy::Adapter)));
+    }
+    if let Some(found) = decorated(&site, lookup).or_else(|| registered_call(&site, lookup)) {
+        return Some((
+            Some(found.path),
+            Some(found.qualified),
+            Some(FoundBy::Adapter),
+        ));
     }
     let (path, symbol) = resolve(&site, lookup);
     path.is_some()

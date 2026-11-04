@@ -67,7 +67,7 @@ pub struct Repository {
     /// `specs` where a snapshot is read: by `base`, `head`, or `both` for a
     /// repository read once. Set by Lemma, never by a manifest.
     #[serde(skip)]
-    pub generated: BTreeMap<String, Vec<PathBuf>>,
+    pub generated: BTreeMap<String, Vec<GeneratedDocument>>,
     /// Whether a service rejects requests with fields it does not know, as
     /// a strict schema does, even where its spec does not say so.
     #[serde(default)]
@@ -119,8 +119,29 @@ pub struct Change {
     pub repository: String,
     /// The commit before the change.
     pub base: String,
-    /// The commit with the change.
-    pub head: String,
+    /// The commit with the change; the working directory, uncommitted
+    /// changes included, when absent.
+    #[serde(default)]
+    pub head: Option<String>,
+}
+
+impl Change {
+    /// The head commit, or the working directory's name for it, for
+    /// showing to a person.
+    pub fn head_label(&self) -> &str {
+        self.head.as_deref().unwrap_or("working directory")
+    }
+}
+
+/// A document built from a service's code, standing in for one of its
+/// committed documents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedDocument {
+    /// The committed document it stands for, so both snapshots of a change
+    /// name the same document whichever file each was written to.
+    pub name: String,
+    /// Where it was written.
+    pub path: PathBuf,
 }
 
 /// A manifest as written.

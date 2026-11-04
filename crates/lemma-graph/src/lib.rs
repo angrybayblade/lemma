@@ -88,6 +88,19 @@ pub enum GraphError {
         /// What was asked for.
         reference: String,
     },
+    /// Another Lemma is building an adapter's document in the same
+    /// worktree.
+    #[error("another Lemma is building in {}; try again when it finishes", directory.display())]
+    BuildInProgress {
+        /// The worktree.
+        directory: PathBuf,
+    },
+    /// An adapter's configuration cannot be used.
+    #[error("operations_from: {message}")]
+    Adapter {
+        /// What is wrong.
+        message: String,
+    },
     /// A schema resolver command failed.
     #[error("resolver `{command}` failed in {}: {message}", directory.display())]
     Resolver {
