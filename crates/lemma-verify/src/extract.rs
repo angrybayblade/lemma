@@ -13,6 +13,7 @@ use lemma_logic::Value;
 use lemma_syntax::Extractor;
 
 use crate::VerifyError;
+use crate::clients::{ClientMethod, Clients, NamedOperation, starts_locally};
 use crate::manifest::{Manifest, Repository, Role};
 use crate::system::System;
 
@@ -66,8 +67,9 @@ pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(
     let mut extractor = Extractor::new().map_err(|source| VerifyError::Syntax { source })?;
     check_files(manifest)?;
     let system = read_system(manifest)?;
+    let clients = read_clients(manifest, &system, &mut extractor)?;
     for (name, repository) in &manifest.repositories {
-        for snapshot in snapshots(manifest, repository, &system) {
+        for snapshot in snapshots(manifest, repository, &system, &clients) {
             match repository.role {
                 Role::Service => service(name, repository, &snapshot, writer, &mut extractor)?,
                 Role::Client => client(name, repository, &snapshot, writer)?,
@@ -83,6 +85,7 @@ pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(
 /// prefixes each service owns.
 fn read_system(manifest: &Manifest) -> Result<System, VerifyError> {
     let unknown = System::default();
+    let no_clients = Clients::default();
     let mut paths: BTreeMap<String, crate::system::DocumentPaths> = BTreeMap::new();
     let mut declared = BTreeMap::new();
     let services = manifest
@@ -92,7 +95,7 @@ fn read_system(manifest: &Manifest) -> Result<System, VerifyError> {
     for (name, repository) in services {
         let service = repository.service.clone().unwrap_or_else(|| name.clone());
         let served = paths.entry(service.clone()).or_default();
-        for snapshot in snapshots(manifest, repository, &unknown) {
+        for snapshot in snapshots(manifest, repository, &unknown, &no_clients) {
             for spec in &repository.specs {
                 served.entry(spec.clone()).or_default().extend(
                     spec_operations(repository, &snapshot, spec)?
@@ -104,6 +107,203 @@ fn read_system(manifest: &Manifest) -> Result<System, VerifyError> {
         declared.insert(service, repository.path_prefixes.clone());
     }
     Ok(System::new(&paths, &declared))
+}
+
+/// What the system's clients offer, from the code of each client that has
+/// some: the methods that issue requests, and the packages the client is
+/// published as. A changed client is read at the change's head.
+fn read_clients(
+    manifest: &Manifest,
+    system: &System,
+    extractor: &mut Extractor,
+) -> Result<Clients, VerifyError> {
+    let options = CodeOptions {
+        path_markers: system.markers.clone(),
+        ..CodeOptions::default()
+    };
+    let mut methods = Vec::new();
+    let mut packages = BTreeSet::new();
+    let with_code = manifest.repositories.iter().filter(|(_, repository)| {
+        repository.role == Role::Client && !repository.include.is_empty()
+    });
+    for (name, repository) in with_code {
+        let commit = if is_changed(manifest, repository) {
+            Some(manifest.change.head.as_str())
+        } else {
+            repository.commit.as_deref()
+        };
+        let files = lemma_http::read_files(
+            &repository.path,
+            commit,
+            &repository.include,
+            &CODE_EXTENSIONS,
+        )?;
+        let mut found = Vec::new();
+        for file in files
+            .iter()
+            .filter(|file| !lemma_http::is_test_file(&file.path))
+        {
+            found.extend(client_methods(
+                name,
+                &code_facts(file, &options, extractor)?,
+            ));
+        }
+        packages.extend(package_names(repository, commit, &found)?);
+        methods.extend(found);
+    }
+    Ok(Clients::new(methods, packages, generated_names(manifest)?))
+}
+
+/// Adds a document's operations under each name a generated client may
+/// give their functions.
+fn add_generated_names(
+    by_name: &mut BTreeMap<String, BTreeSet<NamedOperation>>,
+    service: &str,
+    document: &str,
+    operations: &[Operation],
+) {
+    for operation in operations {
+        let Some(operation_id) = operation.operation_id.as_deref() else {
+            continue;
+        };
+        let named = NamedOperation {
+            service: service.to_owned(),
+            method: operation.method.clone(),
+            path: operation.path.clone(),
+            document: document.to_owned(),
+        };
+        for casing in GENERATED_CASINGS {
+            by_name
+                .entry(call_name(casing, operation_id))
+                .or_default()
+                .insert(named.clone());
+        }
+    }
+}
+
+/// The casings a client generator may give an operation's function.
+const GENERATED_CASINGS: [&str; 4] = ["{operationId}", "{camel}", "{pascal}", "{snake}"];
+
+/// Every service's operations by the names a generated client may give
+/// their functions: each `operationId` as written and recased.
+fn generated_names(
+    manifest: &Manifest,
+) -> Result<BTreeMap<String, BTreeSet<NamedOperation>>, VerifyError> {
+    let unknown = System::default();
+    let no_clients = Clients::default();
+    let mut names = BTreeMap::new();
+    let services = manifest
+        .repositories
+        .iter()
+        .filter(|(_, repository)| repository.role == Role::Service);
+    for (name, repository) in services {
+        let service = repository.service.as_deref().unwrap_or(name);
+        for snapshot in snapshots(manifest, repository, &unknown, &no_clients) {
+            for document in &repository.specs {
+                let operations = spec_operations(repository, &snapshot, document)?;
+                add_generated_names(&mut names, service, document, &operations);
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// The requests a client's file issues from inside a function or method,
+/// with their method known. A table describing operations (`{ method, path
+/// }` objects, `Operation("get", "/v1/x")` rows of a constant) issues none.
+fn client_methods(client: &str, facts: &CodeFacts) -> Vec<ClientMethod> {
+    facts
+        .path_references
+        .iter()
+        .filter(|reference| reference.method != "*")
+        .filter_map(|reference| {
+            Some(ClientMethod {
+                client: client.to_owned(),
+                symbol: reference.location.function.clone()?,
+                method: reference.method.clone(),
+                path: reference.path.clone(),
+                file: reference.location.file.clone(),
+                line: reference.location.line,
+            })
+        })
+        .collect()
+}
+
+/// The package names a client is published as: the `name` of each
+/// `package.json` and `pyproject.toml` whose directory holds some of its
+/// methods, and a Python distribution's import name (`acme-client` is
+/// imported as `acme_client`).
+fn package_names(
+    repository: &Repository,
+    commit: Option<&str>,
+    methods: &[ClientMethod],
+) -> Result<BTreeSet<String>, VerifyError> {
+    let is_package_file = |path: &str| {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        name == "package.json" || name == "pyproject.toml"
+    };
+    let mut names = BTreeSet::new();
+    for file in lemma_http::read_files_where(&repository.path, commit, &is_package_file)? {
+        let directory = file
+            .path
+            .rsplit_once('/')
+            .map_or("", |(directory, _)| directory);
+        let holds_methods = methods.iter().any(|method| {
+            directory.is_empty() || method.file.starts_with(&format!("{directory}/"))
+        });
+        if !holds_methods {
+            continue;
+        }
+        let Some(name) = declared_package_name(&file.path, &file.contents) else {
+            continue;
+        };
+        if file.path.ends_with("pyproject.toml") {
+            names.insert(name.replace('-', "_"));
+        }
+        names.insert(name);
+    }
+    Ok(names)
+}
+
+/// The `name` a `package.json` or `pyproject.toml` declares.
+fn declared_package_name(path: &str, contents: &str) -> Option<String> {
+    if path.ends_with("package.json") {
+        let json: serde_json::Value = serde_json::from_str(contents).ok()?;
+        return json.get("name")?.as_str().map(str::to_owned);
+    }
+    contents.lines().find_map(|line| {
+        let value = line
+            .trim()
+            .strip_prefix("name")?
+            .trim_start()
+            .strip_prefix('=')?;
+        let name = value.trim().trim_matches(['"', '\'']);
+        (!name.is_empty()).then(|| name.to_owned())
+    })
+}
+
+/// Whether a repository's dependency manifests (`package.json`,
+/// `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements*.txt`) name
+/// one of the system's clients.
+fn depends_on_a_client(
+    repository: &Repository,
+    commit: Option<&str>,
+    clients: &Clients,
+) -> Result<bool, VerifyError> {
+    if clients.is_empty() {
+        return Ok(false);
+    }
+    let is_dependency_file = |path: &str| {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        matches!(
+            name,
+            "package.json" | "pyproject.toml" | "setup.py" | "setup.cfg"
+        ) || (name.starts_with("requirements") && has_extension(name, "txt"))
+    };
+    let files = lemma_http::read_files_where(&repository.path, commit, &is_dependency_file)?;
+    Ok(files
+        .iter()
+        .any(|file| clients.is_depended_on_in(&file.contents)))
 }
 
 /// Fails if a spec is missing at every commit its repository is
@@ -155,6 +355,7 @@ fn snapshots<'m>(
     manifest: &'m Manifest,
     repository: &'m Repository,
     system: &'m System,
+    clients: &'m Clients,
 ) -> Vec<Snapshot<'m>> {
     if !is_changed(manifest, repository) {
         return vec![Snapshot {
@@ -162,6 +363,7 @@ fn snapshots<'m>(
             names: &BOTH,
             other: None,
             system,
+            clients,
         }];
     }
     vec![
@@ -170,12 +372,14 @@ fn snapshots<'m>(
             names: &["base"],
             other: Some(&manifest.change.head),
             system,
+            clients,
         },
         Snapshot {
             commit: Some(&manifest.change.head),
             names: &["head"],
             other: Some(&manifest.change.base),
             system,
+            clients,
         },
     ]
 }
@@ -205,6 +409,8 @@ struct Snapshot<'a> {
     other: Option<&'a str>,
     /// What the system's services serve.
     system: &'a System,
+    /// What the system's clients offer.
+    clients: &'a Clients,
 }
 
 fn service(
@@ -475,6 +681,18 @@ fn client(
     writer: &mut FactWriter<'_>,
 ) -> Result<(), VerifyError> {
     let both = snapshot.names;
+    for method in snapshot.clients.methods_of(name) {
+        let key = method.key();
+        let args = [
+            Arg::Text(name),
+            Arg::Text(&key),
+            Arg::Text(&method.method),
+            Arg::Text(&method.path),
+            Arg::Text(&method.file),
+            Arg::Number(i64::from(method.line)),
+        ];
+        writer.add("client_operation", both, &args);
+    }
     let default_names = [DEFAULT_CALL_NAME.to_owned()];
     let templates = if repository.call_names.is_empty() {
         &default_names[..]
@@ -529,6 +747,16 @@ struct ConsumerScope<'a> {
     options: CodeOptions,
     /// What the system's services serve.
     system: &'a System,
+    /// What the system's clients offer.
+    clients: &'a Clients,
+    /// Whether the repository depends on one of the system's clients.
+    depends_on_a_client: bool,
+    /// Every file in the repository, to tell a module generated at build
+    /// time (imported, but in no file) from one that exists.
+    every_file: BTreeSet<String>,
+    /// Files re-exporting a generated module whole, with the names they
+    /// export it as and the module.
+    reexports: BTreeMap<String, Vec<(String, String)>>,
     /// Path aliases from the repository's `tsconfig` files.
     imports: PathAliases,
 }
@@ -559,7 +787,17 @@ fn consumer(
             path_markers: snapshot.system.markers.clone(),
         },
         system: snapshot.system,
+        clients: snapshot.clients,
+        depends_on_a_client: depends_on_a_client(repository, snapshot.commit, snapshot.clients)?,
+        every_file: lemma_http::list_files(&repository.path, snapshot.commit)?
+            .into_iter()
+            .collect(),
+        reexports: BTreeMap::new(),
         imports: read_import_aliases(repository, snapshot.commit)?,
+    };
+    let scope = ConsumerScope {
+        reexports: generated_reexports(&scope, &files, extractor)?,
+        ..scope
     };
     for file in files
         .iter()
@@ -654,6 +892,168 @@ fn write_calls(
         let args = [
             Arg::Text(&consumer),
             Arg::Text(&call.chain),
+            Arg::Text(file_id),
+            Arg::Number(i64::from(call.location.line)),
+        ];
+        writer.add("calls_client", scope.snapshots, &args);
+        scopes.insert(consumer);
+    }
+    write_client_method_calls(scope, file_id, facts, writer, scopes);
+    write_generated_calls(scope, file_id, facts, writer, scopes);
+}
+
+/// Files re-exporting a generated module whole (`export * as api from
+/// '../generated/api'`), with each name and module.
+fn generated_reexports(
+    scope: &ConsumerScope<'_>,
+    files: &[SourceFile],
+    extractor: &mut Extractor,
+) -> Result<BTreeMap<String, Vec<(String, String)>>, VerifyError> {
+    let mut found = BTreeMap::new();
+    for file in files
+        .iter()
+        .filter(|file| file.contents.contains("export * as"))
+    {
+        let facts = code_facts(file, &scope.options, extractor)?;
+        let generated: Vec<(String, String)> = facts
+            .reexports
+            .into_iter()
+            .filter(|reexport| is_generated_module(scope, &file.path, &reexport.module))
+            .map(|reexport| (reexport.name, reexport.module))
+            .collect();
+        if !generated.is_empty() {
+            found.insert(file.path.clone(), generated);
+        }
+    }
+    Ok(found)
+}
+
+/// Whether an import names a module inside the repository that no file
+/// holds: a client generated at build time. Packages and existing modules
+/// are not.
+fn is_generated_module(scope: &ConsumerScope<'_>, file: &str, specifier: &str) -> bool {
+    if has_extension(file, "rs") {
+        return false;
+    }
+    let bases = if specifier.starts_with('.') {
+        let directory = Path::new(file).parent().unwrap_or(Path::new(""));
+        let base = if has_extension(file, "py") {
+            python_module(directory, specifier)
+        } else {
+            join(directory, specifier.trim_end_matches(".js"))
+        };
+        base.into_iter().collect()
+    } else {
+        scope.imports.candidates(file, specifier)
+    };
+    !bases.is_empty()
+        && bases
+            .iter()
+            .all(|base| module_file(base, &scope.every_file).is_none())
+}
+
+/// Calls of functions a generated client exports, through a name imported
+/// from it or from a module re-exporting it, as calls of the operations
+/// they are named after.
+fn write_generated_calls(
+    scope: &ConsumerScope<'_>,
+    file_id: &str,
+    facts: &CodeFacts,
+    writer: &mut FactWriter<'_>,
+    scopes: &mut BTreeSet<String>,
+) {
+    let path = file_id.split_once(':').map_or(file_id, |(_, path)| path);
+    for call in &facts.member_calls {
+        let Some((function, module)) = generated_function(scope, path, facts, &call.parts) else {
+            continue;
+        };
+        let Some(operation) = scope.clients.named_operation(function, module) else {
+            continue;
+        };
+        let client = format!("{} (generated)", operation.service);
+        let key = format!("{}:{function}", operation.service);
+        let declared = [
+            Arg::Text(&client),
+            Arg::Text(&key),
+            Arg::Text(&operation.method),
+            Arg::Text(&operation.path),
+            Arg::Text(&operation.document),
+            Arg::Number(0),
+        ];
+        writer.add("client_operation", scope.snapshots, &declared);
+        let consumer = consumer_id(file_id, call.location.symbol.as_ref());
+        let called = [
+            Arg::Text(&consumer),
+            Arg::Text(&key),
+            Arg::Text(file_id),
+            Arg::Number(i64::from(call.location.line)),
+        ];
+        writer.add("calls_client", scope.snapshots, &called);
+        scopes.insert(consumer);
+    }
+}
+
+/// The generated function a call names, and the generated module it is
+/// from: `listTools` in `listTools()` imported from it, or in
+/// `api.listTools()` where `api` is the module or a re-export of it.
+fn generated_function<'f>(
+    scope: &'f ConsumerScope<'_>,
+    path: &str,
+    facts: &'f CodeFacts,
+    parts: &'f [String],
+) -> Option<(&'f str, &'f str)> {
+    let root = parts.first()?;
+    let binding = facts
+        .import_bindings
+        .iter()
+        .find(|binding| &binding.local == root)?;
+    let is_generated = is_generated_module(scope, path, &binding.module);
+    match (&binding.imported, parts) {
+        (None, [_, function]) if is_generated => Some((function, &binding.module)),
+        (Some(function), [_]) if is_generated => Some((function, &binding.module)),
+        (Some(name), [_, function]) => {
+            let target = resolve_import(path, &binding.module, &scope.known, &scope.imports)?;
+            let (_, module) = scope
+                .reexports
+                .get(&target)?
+                .iter()
+                .find(|(exported, _)| exported == name)?;
+            Some((function, module))
+        }
+        _ => None,
+    }
+}
+
+/// Calls through chains that reach a client's method (see `clients`), as
+/// calls of that method.
+fn write_client_method_calls(
+    scope: &ConsumerScope<'_>,
+    file_id: &str,
+    facts: &CodeFacts,
+    writer: &mut FactWriter<'_>,
+    scopes: &mut BTreeSet<String>,
+) {
+    if scope.clients.is_empty() {
+        return;
+    }
+    let imports_a_client = facts
+        .imported_modules
+        .iter()
+        .any(|module| scope.clients.is_client_module(module));
+    for call in &facts.member_calls {
+        let uses_a_client = imports_a_client
+            || (scope.depends_on_a_client && starts_locally(call, &facts.imported_names));
+        if !uses_a_client {
+            continue;
+        }
+        let Some(method) = scope.clients.resolve(call) else {
+            continue;
+        };
+        let consumer = consumer_id(file_id, call.location.symbol.as_ref());
+        let key = method.key();
+        let args = [
+            Arg::Text(&consumer),
+            Arg::Text(&key),
             Arg::Text(file_id),
             Arg::Number(i64::from(call.location.line)),
         ];

@@ -128,6 +128,8 @@ fn parts(
         repository.generated_from.clone_from(&client.generated_from);
         repository.specs.clone_from(&client.specs);
         repository.call_names.clone_from(&client.call_names);
+        // Its code says what each of its methods requests.
+        repository.include.clone_from(&service.index.include);
         parts.push((Some("client".to_owned()), repository));
     }
     let used = &service.calls.clients;
