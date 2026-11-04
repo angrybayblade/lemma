@@ -16,6 +16,7 @@ pub mod compare;
 pub mod compose;
 pub mod config;
 pub mod exports;
+pub mod handlers;
 mod impact;
 mod infer;
 pub mod openapi;
