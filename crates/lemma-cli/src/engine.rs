@@ -892,10 +892,15 @@ fn update_exports(
     );
     if store.exports_fingerprint(snapshot_id)?.as_deref() != Some(fingerprint.as_str()) {
         let (exports, links) = {
-            let unique = |name: &str| unique_definition(store, snapshot_id, name);
+            let unique = |name: &str, from: &str| unique_definition(store, snapshot_id, name, from);
+            let enclosing =
+                |path: &str, line: u32| enclosing_definition(store, snapshot_id, path, line);
             let top_level = |path: &str| top_level_definitions(store, snapshot_id, path);
             let symbols = lemma_graph::exports::IndexedSymbols {
-                unique: &unique,
+                lookup: lemma_graph::handlers::Lookup {
+                    unique: &unique,
+                    enclosing: &enclosing,
+                },
                 top_level: &top_level,
             };
             lemma_graph::exports::exports(&source.file, root, &symbols)?
@@ -919,16 +924,30 @@ fn update_exports(
     })
 }
 
-/// The function, method or type named `name`, if exactly one is.
-fn unique_definition(store: &Store, snapshot_id: i64, name: &str) -> Option<(String, String)> {
+/// The function, method or type named `name`, if exactly one is, in the
+/// language of `from` and outside tests.
+fn unique_definition(
+    store: &Store,
+    snapshot_id: i64,
+    name: &str,
+    from: &str,
+) -> Option<lemma_graph::handlers::Definition> {
     let filter = SymbolFilter {
         text: name.to_owned(),
         name_match: NameMatch::Exact,
         kind: None,
         language: None,
         path_contains: None,
-        limit: 3,
+        limit: 50,
     };
+    let family = |path: &str| {
+        let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
+        Language::from_extension(extension).map(|language| match language {
+            Language::Tsx => Language::TypeScript,
+            other => other,
+        })
+    };
+    let wanted = family(from);
     let found = store.find_symbols(snapshot_id, &filter).ok()?;
     let mut matching = found.into_iter().filter(|symbol| {
         symbol.symbol.name == name
@@ -936,12 +955,41 @@ fn unique_definition(store: &Store, snapshot_id: i64, name: &str) -> Option<(Str
                 symbol.symbol.kind,
                 lemma_model::SymbolKind::Variable | lemma_model::SymbolKind::Constant
             )
+            && !lemma_http::is_test_file(&symbol.path)
+            && family(&symbol.path) == wanted
     });
     let only = matching.next()?;
     if matching.next().is_some() {
         return None;
     }
-    Some((only.path, only.symbol.qualified_name))
+    Some(lemma_graph::handlers::Definition {
+        path: only.path,
+        qualified: only.symbol.qualified_name,
+        kind: only.symbol.kind.as_str().to_owned(),
+    })
+}
+
+/// The innermost definition around a line (counting from 1) of a file.
+fn enclosing_definition(
+    store: &Store,
+    snapshot_id: i64,
+    path: &str,
+    line: u32,
+) -> Option<lemma_graph::handlers::Definition> {
+    let zero_based = line.checked_sub(1)?;
+    store
+        .symbols_in_file(snapshot_id, path)
+        .ok()?
+        .into_iter()
+        .filter(|symbol| {
+            symbol.symbol.span.start.line <= zero_based && zero_based <= symbol.symbol.span.end.line
+        })
+        .max_by_key(|symbol| symbol.symbol.span.start)
+        .map(|symbol| lemma_graph::handlers::Definition {
+            path: symbol.path,
+            qualified: symbol.symbol.qualified_name,
+            kind: symbol.symbol.kind.as_str().to_owned(),
+        })
 }
 
 /// The qualified names of a file's top-level definitions.
