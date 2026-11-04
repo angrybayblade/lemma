@@ -253,6 +253,7 @@ impl Walk<'_> {
             "variable_declarator" => self.zod_definition(node),
             "call_expression" | "call" => self.call(node),
             "import_statement" | "import_from_statement" => self.import(node),
+            "export_statement" => self.consume_source(node),
             "short_var_declaration" | "assignment_statement" => self.go_router_prefix(node),
             "attribute_item" if self.dialect == Dialect::Rust => self.rust_route_attribute(node),
             "use_declaration" => self.rust_use(node),
@@ -309,6 +310,9 @@ impl Walk<'_> {
             return;
         };
         let parts = self.chain_parts(function);
+        if self.loads_module(function, arguments) {
+            return;
+        }
         self.client_call(&parts, node);
         if self.dialect == Dialect::Go && self.go_call(&parts, function, arguments) {
             return;
@@ -356,6 +360,21 @@ impl Walk<'_> {
                 .map_or_else(|| "*".to_owned(), |method| canonical_method(&method))
         };
         self.add_reference(&method, &template, path_node);
+    }
+
+    /// Whether a call is `import('./x')` or `require('./x')`, which loads a
+    /// module rather than requesting a path; its arguments are consumed.
+    fn loads_module(&mut self, function: Node<'_>, arguments: Node<'_>) -> bool {
+        if !matches!(self.text(function), "import" | "require") {
+            return false;
+        }
+        let mut cursor = arguments.walk();
+        let loaded: Vec<usize> = arguments
+            .named_children(&mut cursor)
+            .map(|argument| argument.id())
+            .collect();
+        self.consumed.extend(loaded);
+        true
     }
 
     fn client_call(&mut self, parts: &[String], node: Node<'_>) {
@@ -463,6 +482,7 @@ impl Walk<'_> {
     /// imported from a generated client's module are remembered as client
     /// functions.
     fn import(&mut self, node: Node<'_>) {
+        self.consume_source(node);
         let specifier = if self.dialect == Dialect::Python {
             node.child_by_field_name("module_name")
                 .map(|module| self.text(module).to_owned())
@@ -484,6 +504,13 @@ impl Walk<'_> {
         // or dropped when the repository's files are known.
         if specifier.starts_with('.') || self.dialect != Dialect::Python {
             self.facts.imports.push(specifier);
+        }
+    }
+
+    /// Marks a module specifier (`from './internal/x'`) as no request.
+    fn consume_source(&mut self, node: Node<'_>) {
+        if let Some(source) = node.child_by_field_name("source") {
+            self.consumed.push(source.id());
         }
     }
 
@@ -1006,5 +1033,19 @@ const Route = router.createRoute({
         let found = facts("a.ts", source);
 
         assert_eq!(found.path_references[0].method, "*");
+    }
+
+    #[test]
+    fn module_specifiers_are_not_requests() {
+        let source = "import { a } from './v1/a'\nexport { b } from './v1/b'\nconst c = await import('./v1/c')\nconst d = require('/v1/d')\nfetch('/v1/users')\n";
+
+        let found = facts("a.ts", source);
+
+        let paths: Vec<&str> = found
+            .path_references
+            .iter()
+            .map(|reference| reference.path.as_str())
+            .collect();
+        assert_eq!(paths, ["/v1/users"]);
     }
 }
