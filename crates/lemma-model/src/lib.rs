@@ -493,6 +493,8 @@ pub enum FoundBy {
     Directive,
     /// Read from how the code registers its routes, without a directive.
     Code,
+    /// At the registration an adapter saw when it imported the code.
+    Adapter,
 }
 
 impl FoundBy {
@@ -502,6 +504,7 @@ impl FoundBy {
             Self::Declared => "declared",
             Self::Directive => "directive",
             Self::Code => "code",
+            Self::Adapter => "adapter",
         }
     }
 }
@@ -510,7 +513,7 @@ impl FromStr for FoundBy {
     type Err = UnknownName;
 
     fn from_str(name: &str) -> Result<Self, Self::Err> {
-        [Self::Declared, Self::Directive, Self::Code]
+        [Self::Declared, Self::Directive, Self::Code, Self::Adapter]
             .into_iter()
             .find(|found_by| found_by.as_str() == name)
             .ok_or_else(|| UnknownName(name.to_owned()))

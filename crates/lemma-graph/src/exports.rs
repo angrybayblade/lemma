@@ -14,6 +14,7 @@ use lemma_model::{Export, ExportKind, ExportLink, FoundBy};
 use lemma_syntax::Extractor;
 
 use crate::GraphError;
+use crate::adapters;
 use crate::address::parse_link;
 use crate::affects::CODE_EXTENSIONS;
 use crate::config::{LemmaFile, Service};
@@ -23,7 +24,7 @@ use crate::handlers::{
 
 /// Bumped whenever how exports are found changes, so stored ones built the
 /// old way are rebuilt.
-pub const VERSION: &str = "10";
+pub const VERSION: &str = "11";
 
 /// What exports need to know about the indexed code.
 pub struct IndexedSymbols<'a> {
@@ -34,11 +35,14 @@ pub struct IndexedSymbols<'a> {
 }
 
 /// Every local service's exports in `file`, read from the repository at
-/// `root` as it is on disk, and the links `file` declares.
+/// `root` as it is on disk, and the links `file` declares. `from_code`
+/// holds, by service, the documents adapters generated from the code (see
+/// [`crate::adapters`]).
 pub fn exports(
     file: &LemmaFile,
     root: &Path,
     symbols: &IndexedSymbols<'_>,
+    from_code: &BTreeMap<String, serde_json::Value>,
 ) -> Result<(Vec<Export>, Vec<ExportLink>), GraphError> {
     let mut found = Vec::new();
     let mut extractor = Extractor::new().map_err(|source| GraphError::Syntax { source })?;
@@ -48,7 +52,12 @@ pub fn exports(
         .filter(|(name, _)| !name.starts_with('#'))
     {
         found.extend(operations(name, service));
-        found.extend(endpoints(name, service, root, symbols, &mut extractor)?);
+        let service_code = ServiceInput {
+            name,
+            service,
+            from_code: from_code.get(name),
+        };
+        found.extend(endpoints(&service_code, root, symbols, &mut extractor)?);
         for path in &service.exports.symbols {
             found.extend(
                 (symbols.top_level)(path)
@@ -116,20 +125,39 @@ struct Route {
     template: String,
 }
 
+/// A local service, and the document its adapter generated from its code,
+/// if it has one.
+struct ServiceInput<'a> {
+    name: &'a str,
+    service: &'a Service,
+    from_code: Option<&'a serde_json::Value>,
+}
+
 /// The operations a service's documents describe, each at its route's
-/// handler when one is found.
+/// handler when one is found. With an adapter, the code's operations are
+/// laid over the committed documents, and each sits at the handler its
+/// registration names.
 fn endpoints(
-    name: &str,
-    service: &Service,
+    input: &ServiceInput<'_>,
     root: &Path,
     symbols: &IndexedSymbols<'_>,
     extractor: &mut Extractor,
 ) -> Result<Vec<Export>, GraphError> {
-    if service.exports.openapi.is_empty() {
+    let service = input.service;
+    if service.exports.openapi.is_empty() && input.from_code.is_none() {
         return Ok(Vec::new());
     }
-    let (written, texts) = routes(service, root, extractor)?;
-    let documents = read_documents(service, root)?;
+    let (written, mut texts) = routes(service, root, extractor)?;
+    let committed = read_documents(service, root)?;
+    let documents = match input.from_code {
+        Some(generated) => adapters::overlay(&committed, generated),
+        None => committed,
+    };
+    let registered: BTreeMap<(String, String), (String, u32)> =
+        documents.iter().flat_map(adapters::handler_sites).collect();
+    read_missing(&mut texts, registered.values().map(|(file, _)| file), root)?;
+    let documents: Vec<Vec<lemma_http::Operation>> =
+        documents.iter().map(lemma_http::operations).collect();
     let aliases = route_aliases(&documents, &written);
     let routes = served_routes(written, &aliases);
     let code = ServiceCode {
@@ -145,14 +173,20 @@ fn endpoints(
         let Some(id) = operation.operation_id.clone() else {
             continue;
         };
-        let templates = unaliased(&operation.template, &aliases);
-        let route = templates.iter().find_map(|template| {
-            let path = lemma_http::canonical_route(template)?;
-            routes.get(&(operation.method.clone(), path))
+        let key = (operation.method.clone(), operation.path.clone());
+        let at_registration = registered
+            .get(&key)
+            .and_then(|(file, line)| handler_registered_at(file, *line, operation, &code));
+        let (path, symbol, found_by) = at_registration.unwrap_or_else(|| {
+            let templates = unaliased(&operation.template, &aliases);
+            let route = templates.iter().find_map(|template| {
+                let path = lemma_http::canonical_route(template)?;
+                routes.get(&(operation.method.clone(), path))
+            });
+            handler_of(route, &operation.method, &templates, &code)
         });
-        let (path, symbol, found_by) = handler_of(route, &operation.method, &templates, &code);
         found.push(Export {
-            service: name.to_owned(),
+            service: input.name.to_owned(),
             name: id,
             kind: ExportKind::Endpoint,
             path,
@@ -164,11 +198,28 @@ fn endpoints(
     Ok(found)
 }
 
-/// The operations of each of a service's `OpenAPI` documents.
-fn read_documents(
-    service: &Service,
+/// Adds to `texts` each of `files` it lacks, as on disk under `root`: the
+/// files registrations are in, which need not write a path themselves.
+fn read_missing<'a>(
+    texts: &mut BTreeMap<String, String>,
+    files: impl Iterator<Item = &'a String>,
     root: &Path,
-) -> Result<Vec<Vec<lemma_http::Operation>>, GraphError> {
+) -> Result<(), GraphError> {
+    for file in files {
+        if texts.contains_key(file) {
+            continue;
+        }
+        if let Some(text) = lemma_http::read_file(root, None, file)
+            .map_err(|source| GraphError::Source { source })?
+        {
+            texts.insert(file.clone(), text);
+        }
+    }
+    Ok(())
+}
+
+/// The committed `OpenAPI` documents of a service.
+fn read_documents(service: &Service, root: &Path) -> Result<Vec<serde_json::Value>, GraphError> {
     let mut documents = Vec::new();
     for document in &service.exports.openapi {
         let Some(text) = lemma_http::read_file(root, None, document)
@@ -181,7 +232,7 @@ fn read_documents(
                 command: format!("reading {document}"),
                 source,
             })?;
-        documents.push(lemma_http::operations(&json));
+        documents.push(json);
     }
     Ok(documents)
 }
@@ -315,6 +366,30 @@ fn handler_of(
     (path, symbol, found_by)
 }
 
+/// The handler of an operation an adapter saw registered at `file:line`,
+/// read from that registration as a route's would be; `None` when the
+/// registration names nothing found.
+fn handler_registered_at(
+    file: &str,
+    line: u32,
+    operation: &lemma_http::Operation,
+    code: &ServiceCode<'_>,
+) -> Option<Handler> {
+    let lookup = &code.symbols.lookup;
+    let site = RouteSite {
+        file,
+        text: code.texts.get(file).map_or("", String::as_str),
+        line,
+        template: &operation.template,
+    };
+    if let Some((path, symbol)) = resolve_declared(&site, code.conventions, lookup) {
+        return Some((path, symbol, Some(FoundBy::Adapter)));
+    }
+    let (path, symbol) = resolve(&site, lookup);
+    path.is_some()
+        .then_some((path, symbol, Some(FoundBy::Adapter)))
+}
+
 /// A documented path as written, then as each alias's source prefix would
 /// have it written (`/v3.1/x` documented, `/v3/x` written and aliased).
 fn unaliased(template: &str, aliases: &BTreeMap<String, String>) -> Vec<String> {
@@ -360,7 +435,8 @@ mod tests {
             top_level: &top_level,
         };
 
-        let (exports, links) = exports(&file, Path::new("/nowhere"), &symbols).unwrap();
+        let (exports, links) =
+            exports(&file, Path::new("/nowhere"), &symbols, &BTreeMap::new()).unwrap();
 
         assert_eq!(
             exports,

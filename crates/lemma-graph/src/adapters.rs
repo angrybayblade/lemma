@@ -10,7 +10,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use crate::GraphError;
-use crate::config::{OperationsFrom, Runtime};
+use crate::config::{LemmaFile, OperationsFrom, Runtime};
 use crate::repos::{self, Checkout};
 use crate::schema::absolute_interpreter;
 
@@ -145,6 +145,78 @@ fn fingerprint(value: &impl Hash) -> u64 {
     hasher.finish()
 }
 
+/// The document each local service with `operations_from` in `file`
+/// generates from the code at `root` as it is on disk, by service name.
+/// A service whose adapter fails keeps its error, so the caller can fall
+/// back to the committed documents and say why.
+pub fn from_working_directory(
+    file: &LemmaFile,
+    root: &Path,
+    cache: &Path,
+) -> BTreeMap<String, Result<serde_json::Value, GraphError>> {
+    let checkout = Checkout {
+        root: root.to_owned(),
+        commit: None,
+    };
+    let mut documents = BTreeMap::new();
+    for (name, service) in &file.services {
+        let Some(from) = &service.exports.operations_from else {
+            continue;
+        };
+        if name.starts_with('#') {
+            continue;
+        }
+        let document = generate(from, &service.runtime, &checkout, cache)
+            .and_then(|generated| read_document(&generated));
+        documents.insert(name.clone(), document);
+    }
+    documents
+}
+
+fn read_document(path: &Path) -> Result<serde_json::Value, GraphError> {
+    let text = std::fs::read_to_string(path).map_err(|source| GraphError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
+        command: format!("reading {}", path.display()),
+        source,
+    })
+}
+
+/// Where the code registers each operation of `document`, as an adapter
+/// marked it with `x-lemma-handler` (`file:line`), by method and canonical
+/// path.
+pub fn handler_sites(document: &serde_json::Value) -> BTreeMap<(String, String), (String, u32)> {
+    let mut sites = BTreeMap::new();
+    let Some(paths) = document.get("paths").and_then(serde_json::Value::as_object) else {
+        return sites;
+    };
+    for (template, item) in paths {
+        let (Some(path), Some(methods)) = (lemma_http::canonical_route(template), item.as_object())
+        else {
+            continue;
+        };
+        for (method, operation) in methods {
+            let Some(tag) = operation
+                .get("x-lemma-handler")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Some((file, line)) = tag.rsplit_once(':') else {
+                continue;
+            };
+            let Ok(line) = line.parse() else {
+                continue;
+            };
+            let key = (method.to_uppercase(), path.clone());
+            sites.insert(key, (file.to_owned(), line));
+        }
+    }
+    sites
+}
+
 /// A service's contract as read from its code at one checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Contract {
@@ -178,9 +250,15 @@ pub fn unread(generated: &Path) -> Vec<String> {
         return Vec::new();
     };
     serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|document| document.get("x-lemma-unread").cloned())
-        .and_then(|unread| serde_json::from_value(unread).ok())
+        .map(|document| unread_in(&document))
+        .unwrap_or_default()
+}
+
+/// What a generated `document` lists in `x-lemma-unread`.
+pub fn unread_in(document: &serde_json::Value) -> Vec<String> {
+    document
+        .get("x-lemma-unread")
+        .and_then(|unread| serde_json::from_value(unread.clone()).ok())
         .unwrap_or_default()
 }
 
