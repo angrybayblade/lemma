@@ -83,7 +83,7 @@ pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(
 /// prefixes each service owns.
 fn read_system(manifest: &Manifest) -> Result<System, VerifyError> {
     let unknown = System::default();
-    let mut paths: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut paths: BTreeMap<String, crate::system::DocumentPaths> = BTreeMap::new();
     let mut declared = BTreeMap::new();
     let services = manifest
         .repositories
@@ -94,7 +94,7 @@ fn read_system(manifest: &Manifest) -> Result<System, VerifyError> {
         let served = paths.entry(service.clone()).or_default();
         for snapshot in snapshots(manifest, repository, &unknown) {
             for spec in &repository.specs {
-                served.extend(
+                served.entry(spec.clone()).or_default().extend(
                     spec_operations(repository, &snapshot, spec)?
                         .into_iter()
                         .map(|operation| operation.path),
