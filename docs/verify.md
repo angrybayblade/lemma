@@ -72,7 +72,7 @@ repositories:
 | `service` | On a service: the name used in findings. On a consumer: the service its code belongs to; its references to that service's own operations (route declarations) are not calls. |
 | `routes` | For a service: directories with its route code, for checking the spec against the code and telling which request schemas reject unknown fields. |
 | `schemas` | For a service: further directories with schemas its routes import. |
-| `route_aliases` | For a service: path prefixes it also serves routes under, such as `{ /v1/: /v2/ }`; each route counts at both paths. |
+| `route_aliases` | For a service: path prefixes it also serves routes under, such as `{ /v1/: /v2/ }`; each route counts at both paths. Rarely needed: when most of a spec's operations have no route of their own but one under another spec's prefix, Lemma infers the alias. |
 | `path_prefixes` | For a service: the path prefixes it owns, such as `/v1/billing/`. A changed consumer's new call to an unserved path under one is reported. If absent, derived from each spec: the prefix its paths share, or, where another service's paths start with that too, the prefixes that tell them apart. Rarely needed. |
 | `rejects_unknown_fields` | For a service: requests with fields it does not know fail, as with strict validation, even where its spec and schemas do not say so. |
 | `generated_from` | For a client: OpenAPI documents it is generated from, one function per operation. |

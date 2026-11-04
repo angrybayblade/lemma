@@ -74,10 +74,6 @@ pub struct Service {
     /// even where its documents do not say so.
     #[serde(default)]
     pub rejects_unknown_fields: bool,
-    /// Defined here: prefixes its routes are also served under, such as
-    /// `/v1/` routes also published as `/v2/`.
-    #[serde(default)]
-    pub route_aliases: BTreeMap<String, String>,
     /// Defined here: how its code calls other services.
     #[serde(default)]
     pub calls: Calls,
@@ -214,7 +210,6 @@ impl Service {
             || self.calls != Calls::default()
             || self.runtime != Runtime::default()
             || self.rejects_unknown_fields
-            || !self.route_aliases.is_empty()
     }
 
     /// Whether its code is searched for calls to other services: unless it
