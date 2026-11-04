@@ -3,3 +3,4 @@
 .lemma/
 .experiments/
 .test/
+__pycache__/
