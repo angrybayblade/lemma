@@ -19,7 +19,7 @@
 | `specs` | service, client | OpenAPI JSON documents: a service's contract, or a client's copy of it. |
 | `routes` | service | Directories with route code. Checks the spec against the code and reads which request schemas are zod `.strict()`. |
 | `schemas` | service | Further directories with schemas the routes import. |
-| `route_aliases` | service | Map of path prefixes to the prefixes routes are also served under, such as `{ /v1/: /v2/ }`. |
+| `route_aliases` | service | Map of path prefixes to the prefixes routes are also served under, such as `{ /v1/: /v2/ }`. Rarely needed: inferred when one spec's operations are routed under another spec's prefix. |
 | `rejects_unknown_fields` | service | `true` if requests with unknown fields fail even where spec and zod do not say so (Go `DisallowUnknownFields`, serde `deny_unknown_fields`). |
 | `generated_from` | client | Specs a client is generated from; one function per operation. |
 | `call_names` | client | How the client names an operation's function from its `operationId`: templates with `{operationId}`, `{camel}`, `{pascal}`, `{snake}`, such as `["{camel}"]` or `["{pascal}.Invoke"]`. The `operationId` as written if absent. |
@@ -46,7 +46,7 @@ A string counts as a path only if it contains a leading segment some service in 
 | `has no file X at A or B` | A spec or table path is wrong at every commit read | Fix the path; check `git -C <repo> ls-tree -r <commit> --name-only` |
 | A whole spec's operations look removed | The spec moved | List the new file too |
 | Consumers' calls are missing | `include` too narrow, receiver not named, URLs built at run time | Widen `include`, add `client_receivers` or `client_modules` |
-| Many `route_not_in_spec` notes | Internal routes, or routes published under another prefix | Informational; add `route_aliases` if the prefix differs |
+| Many `route_not_in_spec` notes | Internal routes, or routes published under another prefix | Informational; add `route_aliases` if routes are published under another prefix Lemma could not infer |
 | Removed fields only ever warn | The service's strictness is not visible | `rejects_unknown_fields: true` if it rejects unknown fields |
 
 ## CI

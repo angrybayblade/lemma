@@ -16,7 +16,7 @@ repositories:
     specs: [openapi.json]              # committed OpenAPI JSON files
     routes: [src/routes]               # route code: checks the spec against the code, reads zod .strict()
     # schemas: [src/lib/schemas]       # shared schemas the routes import
-    # route_aliases: { /v1/: /v2/ }   # routes also served under another prefix
+    # route_aliases: { /v1/: /v2/ }   # rarely needed: inferred from the specs
     # path_prefixes: [/v1/billing/]    # rarely needed: derived from each spec
     # rejects_unknown_fields: true     # the service rejects unknown fields though nothing says so
 

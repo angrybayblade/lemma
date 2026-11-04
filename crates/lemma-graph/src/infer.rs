@@ -173,7 +173,6 @@ fn served(mut repository: Repository, service: &Service) -> Repository {
     // service is made of.
     repository.routes.clone_from(&service.index.include);
     repository.rejects_unknown_fields = service.rejects_unknown_fields;
-    repository.route_aliases.clone_from(&service.route_aliases);
     repository.schemas.clone_from(&service.index.include);
     repository
 }
