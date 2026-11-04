@@ -862,6 +862,17 @@ fn consumer_file(
             scope.snapshots,
             &[Arg::Text(function_scope), Arg::Text(&file_id)],
         );
+        let simple_name = function_scope
+            .strip_prefix(&file_id)
+            .and_then(|symbol| symbol.strip_prefix("::"))
+            .and_then(|symbol| symbol.rsplit('.').next());
+        if let Some(simple_name) = simple_name {
+            writer.add(
+                "named",
+                scope.snapshots,
+                &[Arg::Text(function_scope), Arg::Text(simple_name)],
+            );
+        }
     }
     write_imports(scope, path, &file_id, facts, writer);
     if let Some(service) = scope.service {
@@ -1662,7 +1673,6 @@ mod tests {
         }
 
         let uses = derive(&grammar, "uses");
-        let anywhere = derive(&grammar, "names_anywhere");
 
         let caller_uses: Vec<&str> = uses
             .iter()
@@ -1670,8 +1680,39 @@ mod tests {
             .map(|row| row[1].as_str())
             .collect();
         assert_eq!(caller_uses, ["own", "shape"]);
-        let in_file = anywhere.iter().filter(|row| row[0] == "d:f").count();
-        assert_eq!(in_file, 3);
+    }
+
+    #[test]
+    fn a_caller_sends_what_the_functions_it_calls_in_its_file_name() {
+        let mut grammar = http_contracts();
+        let mut writer = FactWriter::new(&mut grammar);
+        for (scope, name) in [
+            ("d:f::Api.update", "build_body"),
+            ("d:f::Api.build_body", "connection_id"),
+            ("d:f::unrelated", "region"),
+        ] {
+            writer.add("mentions", &BOTH, &[Arg::Text(scope), Arg::Text(name)]);
+            writer.add("in_file", &BOTH, &[Arg::Text(scope), Arg::Text("d:f")]);
+        }
+        writer.add(
+            "named",
+            &BOTH,
+            &[Arg::Text("d:f::Api.build_body"), Arg::Text("build_body")],
+        );
+        writer.add(
+            "named",
+            &BOTH,
+            &[Arg::Text("d:f::unrelated"), Arg::Text("unrelated")],
+        );
+
+        let sends = derive(&grammar, "sends");
+
+        let sent: Vec<&str> = sends
+            .iter()
+            .filter(|row| row[0] == "d:f::Api.update")
+            .map(|row| row[1].as_str())
+            .collect();
+        assert_eq!(sent, ["build_body", "connection_id"]);
     }
 
     #[test]

@@ -62,7 +62,7 @@ Every one fails with a message naming the rule:
 | `warning` | Behaviour changes without failing |
 | `info` | Worth a look, not a problem by itself |
 
-Findings that rest on a name being **present** should use near evidence (`uses(c, name)`); findings that rest on a name being **absent** should search broadly (`!names_anywhere(f, name)`). Mixing them up produces false findings.
+Findings that rest on a name being **present** should use near evidence (`uses(c, name)`); findings that rest on a name being **absent** should look as far as the request can be built and no further (`!sends(c, name)`: the caller, declarations its file sees, and functions of its file it calls). Searching the whole file lets an unrelated function hide a real break.
 
 ## Recipes
 
