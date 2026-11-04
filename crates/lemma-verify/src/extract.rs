@@ -4,7 +4,9 @@
 //! a subset. A service's facts go to the base and head snapshots; other
 //! repositories are read at one commit, so their facts are the same in both.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use lemma_grammar::CompiledGrammar;
@@ -14,7 +16,7 @@ use lemma_syntax::Extractor;
 
 use crate::VerifyError;
 use crate::clients::{ClientMethod, Clients, NamedOperation, starts_locally};
-use crate::manifest::{Manifest, Repository, Role};
+use crate::manifest::{GeneratedDocument, Manifest, Repository, Role};
 use crate::system::System;
 
 const CODE_EXTENSIONS: [&str; 11] = [
@@ -64,12 +66,13 @@ impl<'g> FactWriter<'g> {
 
 /// Extracts every repository's facts.
 pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(), VerifyError> {
-    let mut extractor = Extractor::new().map_err(|source| VerifyError::Syntax { source })?;
+    let mut extractor = FactReader::new()?;
     check_files(manifest)?;
-    let system = read_system(manifest)?;
-    let clients = read_clients(manifest, &system, &mut extractor)?;
+    let specs = SpecCache::default();
+    let system = read_system(manifest, &specs)?;
+    let clients = read_clients(manifest, &system, &specs, &mut extractor)?;
     for (name, repository) in &manifest.repositories {
-        for snapshot in snapshots(manifest, repository, &system, &clients) {
+        for snapshot in snapshots(manifest, repository, &system, &clients, &specs) {
             match repository.role {
                 Role::Service => service(name, repository, &snapshot, writer, &mut extractor)?,
                 Role::Client => client(name, repository, &snapshot, writer)?,
@@ -83,7 +86,7 @@ pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(
 /// What the system's services serve, from their specs at every commit they
 /// are read at: the markers that make a string in code a path, and the path
 /// prefixes each service owns.
-fn read_system(manifest: &Manifest) -> Result<System, VerifyError> {
+fn read_system(manifest: &Manifest, specs: &SpecCache) -> Result<System, VerifyError> {
     let unknown = System::default();
     let no_clients = Clients::default();
     let mut paths: BTreeMap<String, crate::system::DocumentPaths> = BTreeMap::new();
@@ -95,7 +98,7 @@ fn read_system(manifest: &Manifest) -> Result<System, VerifyError> {
     for (name, repository) in services {
         let service = repository.service.clone().unwrap_or_else(|| name.clone());
         let served = paths.entry(service.clone()).or_default();
-        for snapshot in snapshots(manifest, repository, &unknown, &no_clients) {
+        for snapshot in snapshots(manifest, repository, &unknown, &no_clients, specs) {
             for spec in &snapshot_documents(repository, &snapshot) {
                 served.entry(spec.clone()).or_default().extend(
                     spec_operations(repository, &snapshot, spec)?
@@ -115,7 +118,8 @@ fn read_system(manifest: &Manifest) -> Result<System, VerifyError> {
 fn read_clients(
     manifest: &Manifest,
     system: &System,
-    extractor: &mut Extractor,
+    specs: &SpecCache,
+    extractor: &mut FactReader,
 ) -> Result<Clients, VerifyError> {
     let options = CodeOptions {
         path_markers: system.markers.clone(),
@@ -128,7 +132,7 @@ fn read_clients(
     });
     for (name, repository) in with_code {
         let commit = if is_changed(manifest, repository) {
-            Some(manifest.change.head.as_str())
+            manifest.change.head.as_deref()
         } else {
             repository.commit.as_deref()
         };
@@ -151,7 +155,11 @@ fn read_clients(
         packages.extend(package_names(repository, commit, &found)?);
         methods.extend(found);
     }
-    Ok(Clients::new(methods, packages, generated_names(manifest)?))
+    Ok(Clients::new(
+        methods,
+        packages,
+        generated_names(manifest, specs)?,
+    ))
 }
 
 /// Adds a document's operations under each name a generated client may
@@ -188,6 +196,7 @@ const GENERATED_CASINGS: [&str; 4] = ["{operationId}", "{camel}", "{pascal}", "{
 /// their functions: each `operationId` as written and recased.
 fn generated_names(
     manifest: &Manifest,
+    specs: &SpecCache,
 ) -> Result<BTreeMap<String, BTreeSet<NamedOperation>>, VerifyError> {
     let unknown = System::default();
     let no_clients = Clients::default();
@@ -198,7 +207,7 @@ fn generated_names(
         .filter(|(_, repository)| repository.role == Role::Service);
     for (name, repository) in services {
         let service = repository.service.as_deref().unwrap_or(name);
-        for snapshot in snapshots(manifest, repository, &unknown, &no_clients) {
+        for snapshot in snapshots(manifest, repository, &unknown, &no_clients, specs) {
             for document in &snapshot_documents(repository, &snapshot) {
                 let operations = spec_operations(repository, &snapshot, document)?;
                 add_generated_names(&mut names, service, document, &operations);
@@ -313,7 +322,7 @@ fn depends_on_a_client(
 fn check_files(manifest: &Manifest) -> Result<(), VerifyError> {
     for (name, repository) in &manifest.repositories {
         let commits: Vec<Option<&str>> = if is_changed(manifest, repository) {
-            vec![Some(&manifest.change.base), Some(&manifest.change.head)]
+            vec![Some(&manifest.change.base), manifest.change.head.as_deref()]
         } else {
             vec![repository.commit.as_deref()]
         };
@@ -356,6 +365,7 @@ fn snapshots<'m>(
     repository: &'m Repository,
     system: &'m System,
     clients: &'m Clients,
+    specs: &'m SpecCache,
 ) -> Vec<Snapshot<'m>> {
     if !is_changed(manifest, repository) {
         return vec![Snapshot {
@@ -364,22 +374,25 @@ fn snapshots<'m>(
             other: None,
             system,
             clients,
+            specs,
         }];
     }
     vec![
         Snapshot {
             commit: Some(&manifest.change.base),
             names: &["base"],
-            other: Some(&manifest.change.head),
+            other: Some(manifest.change.head.as_deref()),
             system,
             clients,
+            specs,
         },
         Snapshot {
-            commit: Some(&manifest.change.head),
+            commit: manifest.change.head.as_deref(),
             names: &["head"],
-            other: Some(&manifest.change.base),
+            other: Some(Some(&manifest.change.base)),
             system,
             clients,
+            specs,
         },
     ]
 }
@@ -398,19 +411,35 @@ fn is_changed(manifest: &Manifest, repository: &Repository) -> bool {
 }
 
 /// A commit to read and the snapshots its facts belong to.
+/// A commit, or `None` for the working directory.
+type Commit<'a> = Option<&'a str>;
+
 struct Snapshot<'a> {
-    commit: Option<&'a str>,
+    commit: Commit<'a>,
     names: &'a [&'a str],
     /// The change's other commit, when reading the changed repository. A
     /// spec or table that exists at only one of the two commits is read
     /// from that one for both: a file added or deleted by the change, such
     /// as a spec moved elsewhere, does not mean its operations appeared or
     /// disappeared.
-    other: Option<&'a str>,
+    other: Option<Commit<'a>>,
     /// What the system's services serve.
     system: &'a System,
     /// What the system's clients offer.
     clients: &'a Clients,
+    /// Specs already read in this run.
+    specs: &'a SpecCache,
+}
+
+/// A spec as read at one snapshot: the repository, the snapshot's commit
+/// and the commit it falls back to, and the file read.
+type SpecKey = (PathBuf, Option<String>, Option<Option<String>>, String);
+
+/// The operations of each spec read in one run, so a spec several passes
+/// read is parsed once.
+#[derive(Default)]
+struct SpecCache {
+    read: RefCell<BTreeMap<SpecKey, Vec<Operation>>>,
 }
 
 fn service(
@@ -418,7 +447,7 @@ fn service(
     repository: &Repository,
     snapshot: &Snapshot<'_>,
     writer: &mut FactWriter<'_>,
-    extractor: &mut Extractor,
+    extractor: &mut FactReader,
 ) -> Result<(), VerifyError> {
     let (commit, snapshots) = (snapshot.commit, snapshot.names);
     let service_name = repository.service.as_deref().unwrap_or(name);
@@ -768,7 +797,7 @@ fn consumer(
     repository: &Repository,
     snapshot: &Snapshot<'_>,
     writer: &mut FactWriter<'_>,
-    extractor: &mut Extractor,
+    extractor: &mut FactReader,
 ) -> Result<(), VerifyError> {
     let files = lemma_http::read_files(
         &repository.path,
@@ -907,7 +936,7 @@ fn write_calls(
 fn generated_reexports(
     scope: &ConsumerScope<'_>,
     files: &[SourceFile],
-    extractor: &mut Extractor,
+    extractor: &mut FactReader,
 ) -> Result<BTreeMap<String, Vec<(String, String)>>, VerifyError> {
     let mut found = BTreeMap::new();
     for file in files
@@ -1103,16 +1132,16 @@ fn write_imports(
     }
 }
 
-/// The documents a service is read from at a snapshot: those built from
-/// its code for that snapshot (by their absolute paths), if Lemma ran an
-/// adapter, otherwise its committed specs.
+/// The documents a service is read from at a snapshot, by name: those
+/// built from its code for that snapshot, if Lemma ran an adapter,
+/// otherwise its committed specs.
 fn snapshot_documents(repository: &Repository, snapshot: &Snapshot<'_>) -> Vec<String> {
     generated_at(repository, snapshot).map_or_else(
         || repository.specs.clone(),
-        |paths| {
-            paths
+        |documents| {
+            documents
                 .iter()
-                .map(|path| path.display().to_string())
+                .map(|document| document.name.clone())
                 .collect()
         },
     )
@@ -1123,7 +1152,7 @@ fn snapshot_documents(repository: &Repository, snapshot: &Snapshot<'_>) -> Vec<S
 fn generated_at<'r>(
     repository: &'r Repository,
     snapshot: &Snapshot<'_>,
-) -> Option<&'r Vec<PathBuf>> {
+) -> Option<&'r Vec<GeneratedDocument>> {
     let role = match snapshot.names {
         ["base"] => "base",
         ["head"] => "head",
@@ -1135,17 +1164,44 @@ fn generated_at<'r>(
         .or_else(|| repository.generated.get("both"))
 }
 
+/// A spec's operations at a snapshot, parsed once per run.
 fn spec_operations(
     repository: &Repository,
     snapshot: &Snapshot<'_>,
     spec: &str,
 ) -> Result<Vec<Operation>, VerifyError> {
-    let is_generated = generated_at(repository, snapshot)
-        .is_some_and(|paths| paths.iter().any(|path| path == Path::new(spec)));
-    let text = if is_generated {
+    let generated = generated_at(repository, snapshot)
+        .and_then(|documents| documents.iter().find(|document| document.name == spec));
+    let file = generated.map_or_else(|| spec.to_owned(), |found| found.path.display().to_string());
+    let key = (
+        repository.path.clone(),
+        snapshot.commit.map(str::to_owned),
+        snapshot.other.map(|other| other.map(str::to_owned)),
+        file,
+    );
+    if let Some(found) = snapshot.specs.read.borrow().get(&key) {
+        return Ok(found.clone());
+    }
+    let operations = read_spec_operations(repository, snapshot, spec)?;
+    snapshot
+        .specs
+        .read
+        .borrow_mut()
+        .insert(key, operations.clone());
+    Ok(operations)
+}
+
+fn read_spec_operations(
+    repository: &Repository,
+    snapshot: &Snapshot<'_>,
+    spec: &str,
+) -> Result<Vec<Operation>, VerifyError> {
+    let generated = generated_at(repository, snapshot)
+        .and_then(|documents| documents.iter().find(|document| document.name == spec));
+    let text = if let Some(generated) = generated {
         Some(
-            std::fs::read_to_string(spec).map_err(|source| VerifyError::Generated {
-                file: spec.to_owned(),
+            std::fs::read_to_string(&generated.path).map_err(|source| VerifyError::Generated {
+                file: generated.path.display().to_string(),
                 source,
             })?,
         )
@@ -1155,11 +1211,18 @@ fn spec_operations(
     let Some(text) = text else {
         return Ok(Vec::new());
     };
-    let document: serde_json::Value =
+    let is_yaml = generated.is_none() && lemma_http::is_yaml_document(spec);
+    let document: serde_json::Value = if is_yaml {
+        yaml_serde::from_str(&text).map_err(|source| VerifyError::YamlSpec {
+            file: spec.to_owned(),
+            source,
+        })?
+    } else {
         serde_json::from_str(&text).map_err(|source| VerifyError::Spec {
             file: spec.to_owned(),
             source,
-        })?;
+        })?
+    };
     Ok(lemma_http::operations(&document))
 }
 
@@ -1176,20 +1239,47 @@ fn read_at_snapshot(
     let Some(other) = snapshot.other else {
         return Ok(None);
     };
-    Ok(lemma_http::read_file(&repository.path, Some(other), file)?)
+    Ok(lemma_http::read_file(&repository.path, other, file)?)
 }
 
 fn code_facts(
     file: &SourceFile,
     options: &CodeOptions,
-    extractor: &mut Extractor,
+    extractor: &mut FactReader,
 ) -> Result<CodeFacts, VerifyError> {
-    Ok(lemma_http::extract(
-        &file.path,
-        &file.contents,
-        options,
-        extractor,
-    )?)
+    extractor.facts(file, options)
+}
+
+/// Reads files' code facts, each file once per run for the same contents
+/// and options: a file a change leaves alone is read at both its commits.
+struct FactReader {
+    extractor: Extractor,
+    read: BTreeMap<(String, u64, String), CodeFacts>,
+}
+
+impl FactReader {
+    fn new() -> Result<Self, VerifyError> {
+        Ok(Self {
+            extractor: Extractor::new().map_err(|source| VerifyError::Syntax { source })?,
+            read: BTreeMap::new(),
+        })
+    }
+
+    fn facts(
+        &mut self,
+        file: &SourceFile,
+        options: &CodeOptions,
+    ) -> Result<CodeFacts, VerifyError> {
+        let mut hasher = DefaultHasher::new();
+        file.contents.hash(&mut hasher);
+        let key = (file.path.clone(), hasher.finish(), format!("{options:?}"));
+        if let Some(found) = self.read.get(&key) {
+            return Ok(found.clone());
+        }
+        let facts = lemma_http::extract(&file.path, &file.contents, options, &mut self.extractor)?;
+        self.read.insert(key, facts.clone());
+        Ok(facts)
+    }
 }
 
 /// `GET /v1/users/{}`: how rules name an operation.

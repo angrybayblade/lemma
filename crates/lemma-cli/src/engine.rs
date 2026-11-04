@@ -1021,18 +1021,26 @@ fn update_exports(
     root: &Path,
 ) -> anyhow::Result<output::ExportCounts> {
     let snapshot_id = summary.snapshot_id;
+    let mut adapter_warnings = Vec::new();
+    // Read every time: a document kept for the code as it is costs a file
+    // read, and its warnings are shown on every index, not only the one
+    // that rebuilt the exports.
+    let from_code = documents_from_code(&source.file, root, &mut adapter_warnings);
+    let from_code_digests: Vec<String> = from_code
+        .iter()
+        .map(|(service, generated)| format!("{service} {}", generated.digest))
+        .collect();
     let fingerprint = lemma_model::content_hash(
         format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
             lemma_graph::exports::VERSION,
             source.text,
-            summary.snapshot.fingerprint
+            summary.snapshot.fingerprint,
+            from_code_digests.join("\n")
         )
         .as_bytes(),
     );
-    let mut adapter_warnings = Vec::new();
     if store.exports_fingerprint(snapshot_id)?.as_deref() != Some(fingerprint.as_str()) {
-        let from_code = documents_from_code(&source.file, root, &mut adapter_warnings);
         let (exports, links) = {
             let unique = |name: &str, from: &str| unique_definition(store, snapshot_id, name, from);
             let enclosing =
@@ -1046,13 +1054,6 @@ fn update_exports(
                 top_level: &top_level,
             };
             lemma_graph::exports::exports(&source.file, root, &symbols, &from_code)?
-        };
-        // Exports built without an adapter's document are rebuilt next
-        // time, rather than kept as if complete.
-        let fingerprint = if from_code.len() < adapter_count(&source.file) {
-            format!("{fingerprint} without adapters")
-        } else {
-            fingerprint
         };
         store.replace_exports(snapshot_id, &fingerprint, &exports, &links)?;
     }
@@ -1080,14 +1081,14 @@ fn documents_from_code(
     file: &lemma_graph::config::LemmaFile,
     root: &Path,
     warnings: &mut Vec<String>,
-) -> BTreeMap<String, serde_json::Value> {
+) -> BTreeMap<String, lemma_graph::adapters::Generated> {
     let cache = lemma_graph::repos::cache_directory();
     let mut from_code = BTreeMap::new();
-    for (service, document) in lemma_graph::adapters::from_working_directory(file, root, &cache) {
-        match document {
-            Ok(document) => {
-                warnings.extend(unread_warnings(&service, &document));
-                from_code.insert(service, document);
+    for (service, generated) in lemma_graph::adapters::from_working_directory(file, root, &cache) {
+        match generated {
+            Ok(generated) => {
+                warnings.extend(unread_warning(&service, &generated.unread));
+                from_code.insert(service, generated);
             }
             Err(error) => warnings.push(format!(
                 "{service}: could not read its operations from its code, so its committed documents were used: {:#}",
@@ -1098,19 +1099,8 @@ fn documents_from_code(
     from_code
 }
 
-/// How many local services in `file` read their operations from code.
-fn adapter_count(file: &lemma_graph::config::LemmaFile) -> usize {
-    file.services
-        .iter()
-        .filter(|(name, service)| {
-            !name.starts_with('#') && service.exports.operations_from.is_some()
-        })
-        .count()
-}
-
 /// What `service`'s adapter said it could not read, as one warning.
-fn unread_warnings(service: &str, document: &serde_json::Value) -> Option<String> {
-    let unread = lemma_graph::adapters::unread_in(document);
+fn unread_warning(service: &str, unread: &[String]) -> Option<String> {
     let first = unread.first()?;
     Some(format!(
         "{service}: its adapter could not read {} part(s) of the code, such as {first}; operations it missed keep their committed definitions",

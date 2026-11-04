@@ -118,13 +118,14 @@ pub(crate) struct CheckArgs {
     #[arg(default_value = "lemma.yaml")]
     pub manifest: PathBuf,
     /// The repository that changed: an external service's name (`#billing`),
-    /// or `self` for the parent's own repository. Needs `--base` and `--head`.
-    #[arg(long, requires_all = ["base", "head"])]
+    /// or `self` for the parent's own repository. Needs `--base`.
+    #[arg(long, requires = "base")]
     pub change: Option<String>,
     /// The commit before the change.
     #[arg(long, requires = "change")]
     pub base: Option<String>,
-    /// The commit with the change.
+    /// The commit with the change; the working directory, uncommitted
+    /// changes included, if absent.
     #[arg(long, requires = "change")]
     pub head: Option<String>,
     /// `audit` reports differences as warnings; `check` fails on them.

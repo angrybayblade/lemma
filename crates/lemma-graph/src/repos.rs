@@ -6,8 +6,10 @@
 //! worktree is created only when a resolver has to run code at a commit.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::GraphError;
 
@@ -100,33 +102,102 @@ pub fn run(
     command: &str,
     env: &BTreeMap<String, String>,
 ) -> Result<String, GraphError> {
-    let output = Command::new("sh")
+    run_within(directory, command, env, None)
+}
+
+/// [`run`], killing the command and everything it started if it takes
+/// longer than `timeout_ms`: code that waits on a database at import would
+/// otherwise hang a check for good.
+pub fn run_within(
+    directory: &Path,
+    command: &str,
+    env: &BTreeMap<String, String>,
+    timeout_ms: Option<u64>,
+) -> Result<String, GraphError> {
+    let io_error = |source| GraphError::Io {
+        path: directory.to_owned(),
+        source,
+    };
+    let mut process = Command::new("sh");
+    process
         .arg("-c")
         .arg(command)
         .current_dir(directory)
         .envs(env)
-        .output()
-        .map_err(|source| GraphError::Io {
-            path: directory.to_owned(),
-            source,
-        })?;
-    if !output.status.success() {
-        // Some tools (pnpm) report failures on standard output.
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        let message = if stderr.is_empty() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let lines: Vec<&str> = stdout.trim().lines().collect();
-            lines[lines.len().saturating_sub(20)..].join("\n")
-        } else {
-            stderr
-        };
-        return Err(GraphError::Resolver {
-            command: command.to_owned(),
-            directory: directory.to_owned(),
-            message,
-        });
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut process, 0);
+    let mut child = process.spawn().map_err(io_error)?;
+    let stdout = read_in_background(child.stdout.take());
+    let stderr = read_in_background(child.stderr.take());
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(io_error)? {
+            break Some(status);
+        }
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if timeout_ms.is_some_and(|limit| elapsed_ms > limit) {
+            kill_group(&mut child);
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    let failure = |message: String| GraphError::Resolver {
+        command: command.to_owned(),
+        directory: directory.to_owned(),
+        message,
+    };
+    let Some(status) = status else {
+        return Err(failure(format!(
+            "stopped after {} ms without finishing",
+            timeout_ms.unwrap_or_default()
+        )));
+    };
+    if !status.success() {
+        return Err(failure(failure_message(&stdout, &stderr)));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
+}
+
+/// What a failed command said: its standard error, or the end of its
+/// standard output, where some tools (pnpm) report failures.
+fn failure_message(stdout: &[u8], stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr).trim().to_owned();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    lines[lines.len().saturating_sub(20)..].join("\n")
+}
+
+fn read_in_background(
+    pipe: Option<impl Read + Send + 'static>,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut read = Vec::new();
+        if let Some(mut pipe) = pipe {
+            // A pipe that fails part way leaves what was read, which is
+            // only shown in a failure message.
+            let _ = pipe.read_to_end(&mut read);
+        }
+        read
+    })
+}
+
+/// Kills a command started in its own process group, and what it started.
+fn kill_group(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let group = format!("-{}", child.id());
+        let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Lemma's cache directory: `$XDG_CACHE_HOME/lemma` or `~/.cache/lemma`.
@@ -138,7 +209,7 @@ pub fn cache_directory() -> PathBuf {
     home.join(".cache").join("lemma")
 }
 
-fn git(directory: &Path, args: &[&str]) -> Result<String, GraphError> {
+pub(crate) fn git(directory: &Path, args: &[&str]) -> Result<String, GraphError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(directory)
@@ -157,7 +228,7 @@ fn git(directory: &Path, args: &[&str]) -> Result<String, GraphError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn directory_name(path: &Path) -> String {
+pub(crate) fn directory_name(path: &Path) -> String {
     sanitize(&path.to_string_lossy())
 }
 

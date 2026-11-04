@@ -18,7 +18,7 @@ use lemma_grammar::{CompiledGrammar, Severity};
 use lemma_logic::{Derivation, Engine, EvaluationError, Fact, Request, Symbols};
 
 pub use extract::operation_key;
-pub use manifest::{Change, Manifest, Repository, Role};
+pub use manifest::{Change, GeneratedDocument, Manifest, Repository, Role};
 
 /// The grammar used when a manifest names none.
 pub const HTTP_CONTRACTS: &str = include_str!("../../../grammars/http-contracts.yaml");
@@ -85,6 +85,15 @@ pub enum VerifyError {
         /// Why.
         #[source]
         source: serde_json::Error,
+    },
+    /// A YAML spec is not valid YAML.
+    #[error("{file} is not valid YAML")]
+    YamlSpec {
+        /// The spec.
+        file: String,
+        /// Why.
+        #[source]
+        source: yaml_serde::Error,
     },
     /// A document an adapter generated could not be read.
     #[error("could not read the document generated at {file}")]
@@ -178,7 +187,12 @@ pub fn verify<E: Engine>(
     }
     let change = &manifest.change;
     Ok(Report {
-        change: format!("{} {}..{}", change.repository, change.base, change.head),
+        change: format!(
+            "{} {}..{}",
+            change.repository,
+            change.base,
+            change.head_label()
+        ),
         engine: engine.name().to_owned(),
         facts,
         findings: findings.into_iter().map(|(finding, _)| finding).collect(),

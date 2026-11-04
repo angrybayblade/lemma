@@ -118,7 +118,7 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
         change: Some(Change {
             repository: "#provider".to_owned(),
             base: "HEAD~1".to_owned(),
-            head: "HEAD".to_owned(),
+            head: Some("HEAD".to_owned()),
         }),
         level: Some(Level::Check),
         cache: workspace.path().join("cache"),

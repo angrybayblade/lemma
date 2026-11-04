@@ -17,7 +17,7 @@ pub(crate) fn run(args: &CheckArgs, json: bool) -> ExitCode {
     let change = args.change.as_ref().map(|repository| Change {
         repository: repository.clone(),
         base: args.base.clone().unwrap_or_default(),
-        head: args.head.clone().unwrap_or_default(),
+        head: args.head.clone(),
     });
     let options = CheckOptions {
         change,
