@@ -74,41 +74,6 @@ pub struct Service {
     /// even where its documents do not say so.
     #[serde(default)]
     pub rejects_unknown_fields: bool,
-    /// Defined here: how its code calls other services.
-    #[serde(default)]
-    pub calls: Calls,
-}
-
-/// How a service's code calls other services. Its code is searched for
-/// calls unless the service is itself a client (`exports.client`).
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Calls {
-    /// Clients it calls through, generated from other services' documents
-    /// (at build time, say) rather than written here.
-    #[serde(default)]
-    pub clients: Vec<UsedClient>,
-}
-
-/// A client a service's code calls other services through.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct UsedClient {
-    /// Documents it is generated from, one function per operation.
-    #[serde(default)]
-    pub generated_from: Vec<String>,
-    /// How it names an operation's function from its `operationId`:
-    /// templates with `{operationId}`, `{camel}`, `{pascal}` or `{snake}`.
-    /// The `operationId` as written if empty.
-    #[serde(default)]
-    pub call_names: Vec<String>,
-    /// Names the code calls it through, such as `client`.
-    #[serde(default)]
-    pub receivers: Vec<String>,
-    /// Modules of it the code imports functions from, such as
-    /// `generated/billing`.
-    #[serde(default)]
-    pub modules: Vec<String>,
 }
 
 /// The code a service is made of, which Lemma indexes and searches.
@@ -203,11 +168,10 @@ pub struct GeneratedClient {
 }
 
 impl Service {
-    /// Whether it defines anything: code, exports, calls or settings.
+    /// Whether it defines anything: code, exports or settings.
     fn defines_anything(&self) -> bool {
         self.index != IndexSettings::default()
             || !self.exports.is_empty()
-            || self.calls != Calls::default()
             || self.runtime != Runtime::default()
             || self.rejects_unknown_fields
     }
