@@ -53,6 +53,7 @@ Lemma keeps "no answer" separate from "no references". "No references found" mea
 - [Pre-release checklist](docs/pre-release.md): what this release candidate is ready for, and its known limitations.
 - [Verifying changes](docs/verify.md): `lemma verify`, the manifest, findings, and how well it works.
 - [Checking links](docs/check.md): `lemma check`, composable `lemma.yaml` files, schema comparison, inferred links and tracing.
+- [Reading operations from code](docs/adapters.md): adapters that read a service's contract from its code, and the protocol for writing one.
 - [Grammars](docs/grammar.md): writing the relations, rules and requirements `lemma verify` checks.
 - [Agent skills](skills/README.md): skills that teach coding agents to use Lemma.
 - [Getting started](docs/getting-started.md): install, set up language servers, first lookup.
