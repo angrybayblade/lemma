@@ -243,7 +243,7 @@ pub(crate) fn add_links(graph: &mut UseGraph, exports: &[Export], links: &[Expor
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lemma_model::ExportKind;
+    use lemma_model::{ExportKind, FoundBy};
 
     #[test]
     fn addresses_are_told_apart_from_names_and_ids() {
@@ -272,6 +272,7 @@ mod tests {
             path: Some("gen/submit_task.go".to_owned()),
             symbol: Some("SubmitTask.Invoke".to_owned()),
             detail: None,
+            found_by: Some(FoundBy::Declared),
         }];
         let links = [ExportLink {
             caller: "services.worker.submit_task".to_owned(),

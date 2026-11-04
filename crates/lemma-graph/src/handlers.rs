@@ -13,6 +13,10 @@
 
 use regex::Regex;
 
+mod declared;
+
+pub use declared::{Conventions, resolve_declared};
+
 /// A definition in the index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Definition {

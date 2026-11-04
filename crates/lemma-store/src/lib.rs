@@ -8,14 +8,14 @@ use std::path::Path;
 use std::str::FromStr;
 
 use lemma_model::{
-    Export, ExportKind, ExportLink, IndexedFile, Language, Location, LocationQuery, Position,
-    ProviderAnswer, Snapshot, Span, Symbol, SymbolKind,
+    Export, ExportKind, ExportLink, FoundBy, IndexedFile, Language, Location, LocationQuery,
+    Position, ProviderAnswer, Snapshot, Span, Symbol, SymbolKind,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 /// Version of `schema.sql`. Databases written with another version are
 /// rejected rather than migrated, since an index can always be rebuilt.
-pub const SCHEMA_VERSION: &str = "4";
+pub const SCHEMA_VERSION: &str = "5";
 
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -507,8 +507,9 @@ impl Store {
         )?;
         {
             let mut insert = transaction.prepare_cached(
-                "INSERT OR REPLACE INTO exports (snapshot_id, service, name, kind, path, symbol, detail)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT OR REPLACE INTO exports
+                     (snapshot_id, service, name, kind, path, symbol, detail, found_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             for export in exports {
                 insert.execute(params![
@@ -518,7 +519,8 @@ impl Store {
                     export.kind.as_str(),
                     export.path,
                     export.symbol,
-                    export.detail
+                    export.detail,
+                    export.found_by.map(FoundBy::as_str)
                 ])?;
             }
             let mut insert = transaction.prepare_cached(
@@ -552,7 +554,7 @@ impl Store {
     /// A snapshot's exports, by service, name and kind.
     pub fn exports(&self, snapshot_id: i64) -> Result<Vec<Export>, StoreError> {
         let mut statement = self.connection.prepare_cached(
-            "SELECT service, name, kind, path, symbol, detail FROM exports
+            "SELECT service, name, kind, path, symbol, detail, found_by FROM exports
              WHERE snapshot_id = ?1 ORDER BY service, name, kind",
         )?;
         let rows = statement.query_map([snapshot_id], |row| {
@@ -564,6 +566,7 @@ impl Store {
                 path: row.get(3)?,
                 symbol: row.get(4)?,
                 detail: row.get(5)?,
+                found_by: found_by(row.get(6)?),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -612,8 +615,8 @@ impl Store {
             }
             let mut insert = transaction.prepare_cached(
                 "INSERT OR REPLACE INTO workspace_exports
-                     (member, service, name, kind, path, symbol, detail)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     (member, service, name, kind, path, symbol, detail, found_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             for (member, export) in exports {
                 insert.execute(params![
@@ -623,7 +626,8 @@ impl Store {
                     export.kind.as_str(),
                     export.path,
                     export.symbol,
-                    export.detail
+                    export.detail,
+                    export.found_by.map(FoundBy::as_str)
                 ])?;
             }
             let mut insert = transaction.prepare_cached(
@@ -658,7 +662,7 @@ impl Store {
     /// Every member's exports, each with its member's name.
     pub fn workspace_exports(&self) -> Result<Vec<(String, Export)>, StoreError> {
         let mut statement = self.connection.prepare_cached(
-            "SELECT member, service, name, kind, path, symbol, detail FROM workspace_exports
+            "SELECT member, service, name, kind, path, symbol, detail, found_by FROM workspace_exports
              ORDER BY member, service, name, kind",
         )?;
         let rows = statement.query_map([], |row| {
@@ -672,6 +676,7 @@ impl Store {
                     path: row.get(4)?,
                     symbol: row.get(5)?,
                     detail: row.get(6)?,
+                    found_by: found_by(row.get(7)?),
                 },
             ))
         })?;
@@ -1191,6 +1196,12 @@ fn insert_answer_locations(
 }
 
 /// Wraps search text for `LIKE`, escaping its wildcards so they match literally.
+/// How an export's code was found, as stored; unknown names read as not
+/// found.
+fn found_by(stored: Option<String>) -> Option<FoundBy> {
+    stored.and_then(|name| name.parse().ok())
+}
+
 fn like_pattern(text: &str) -> String {
     let escaped = text
         .replace('\\', r"\\")
@@ -1632,6 +1643,7 @@ mod tests {
             path: Some("src/router.py".to_owned()),
             symbol: Some("Router.delete".to_owned()),
             detail: Some("POST /v1/charges".to_owned()),
+            found_by: Some(FoundBy::Code),
         };
         let link = ExportLink {
             caller: "services.api.createCharge".to_owned(),
