@@ -23,7 +23,7 @@ use crate::paths::{
 };
 
 /// Where in the code a fact was found.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Location {
     /// File path, relative to the repository root.
     pub file: String,
@@ -37,7 +37,7 @@ pub struct Location {
 }
 
 /// An object or call naming an HTTP method and path together.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct MethodPath {
     /// Upper-case method, or `*` if not given.
     pub method: String,
@@ -50,7 +50,7 @@ pub struct MethodPath {
 }
 
 /// A string naming an API path outside a method-and-path object.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct PathReference {
     /// Upper-case method if the surrounding call shows it, else `*`.
     pub method: String,
@@ -61,7 +61,7 @@ pub struct PathReference {
 }
 
 /// A call through a client object, such as `this.client.invoices.list()`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct ClientCall {
     /// The chain after the client receiver: `invoices.list`.
     pub chain: String,
@@ -73,7 +73,7 @@ pub struct ClientCall {
 /// `this.client.authConfigs.list()`, or through a name an import binds
 /// (`api.listTools()`, `listTools()`): what a call through a client looks
 /// like when the client is not known in advance.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct MemberCall {
     /// The names, root first: `["this", "client", "authConfigs", "list"]`.
     /// A chain starting from a call's result has `()` as its root.
@@ -83,7 +83,7 @@ pub struct MemberCall {
 }
 
 /// A name an import binds, and where from.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct ImportBinding {
     /// The name the file uses: `c` in `import { b as c } from 'x'`.
     pub local: String,
@@ -95,7 +95,7 @@ pub struct ImportBinding {
 }
 
 /// A module re-exported whole under a name: `export * as api from './gen'`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Reexport {
     /// The name it is exported as.
     pub name: String,
@@ -104,7 +104,7 @@ pub struct Reexport {
 }
 
 /// A name the code uses as a field.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Mention {
     /// The name.
     pub name: String,
@@ -114,7 +114,7 @@ pub struct Mention {
 }
 
 /// Everything found in one file.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CodeFacts {
     /// Method-and-path objects and calls.
     pub method_paths: Vec<MethodPath>,

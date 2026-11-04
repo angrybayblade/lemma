@@ -10,7 +10,7 @@ use super::{Dialect, Walk};
 use crate::paths::{canonical_method, canonical_route};
 
 /// The schema a route uses for one part of its request.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct SchemaUse {
     /// Upper-case method of the route.
     pub method: String,
@@ -25,7 +25,7 @@ pub struct SchemaUse {
 }
 
 /// A union of schemas, strict only if every member is.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct SchemaUnion {
     /// The union's name.
     pub name: String,
