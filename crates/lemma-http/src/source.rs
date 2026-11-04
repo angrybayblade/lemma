@@ -98,23 +98,45 @@ pub fn read_files_where(
 pub fn list_files(repository: &Path, commit: Option<&str>) -> Result<Vec<String>, SourceError> {
     let mut paths = match commit {
         Some(commit) => git_paths(repository, commit, &[])?,
-        None => match git(
-            repository,
-            &["ls-files", "--cached", "--others", "--exclude-standard"],
-        ) {
-            Ok(output) => String::from_utf8_lossy(&output)
-                .lines()
-                .map(str::to_owned)
-                .collect(),
-            Err(_) => directory_paths(repository, &[])?
-                .into_iter()
-                .map(|(_, relative)| relative)
-                .collect(),
-        },
+        None => working_paths(repository)?,
     };
     paths.retain(|path| !path.contains("node_modules/"));
     paths.sort();
     Ok(paths)
+}
+
+/// The working directory's files as Git lists them, tracked and untracked
+/// but not ignored, less those deleted from the disk; every file when Git
+/// lists none, as for a directory a parent repository ignores.
+fn working_paths(repository: &Path) -> Result<Vec<String>, SourceError> {
+    let listed = git(
+        repository,
+        &[
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
+    )
+    .map(|output| {
+        String::from_utf8_lossy(&output)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
+    if listed.is_empty() {
+        return Ok(directory_paths(repository, &[])?
+            .into_iter()
+            .map(|(_, relative)| relative)
+            .collect());
+    }
+    Ok(listed
+        .into_iter()
+        .filter(|path| repository.join(path).is_file())
+        .collect())
 }
 
 /// One file's text, from `commit` or the working directory, or `None` if
