@@ -5,7 +5,7 @@
 //! repositories are read at one commit, so their facts are the same in both.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use lemma_grammar::CompiledGrammar;
 use lemma_http::{CodeFacts, CodeOptions, Operation, PathAliases, SourceFile};
@@ -96,7 +96,7 @@ fn read_system(manifest: &Manifest) -> Result<System, VerifyError> {
         let service = repository.service.clone().unwrap_or_else(|| name.clone());
         let served = paths.entry(service.clone()).or_default();
         for snapshot in snapshots(manifest, repository, &unknown, &no_clients) {
-            for spec in &repository.specs {
+            for spec in &snapshot_documents(repository, &snapshot) {
                 served.entry(spec.clone()).or_default().extend(
                     spec_operations(repository, &snapshot, spec)?
                         .into_iter()
@@ -199,7 +199,7 @@ fn generated_names(
     for (name, repository) in services {
         let service = repository.service.as_deref().unwrap_or(name);
         for snapshot in snapshots(manifest, repository, &unknown, &no_clients) {
-            for document in &repository.specs {
+            for document in &snapshot_documents(repository, &snapshot) {
                 let operations = spec_operations(repository, &snapshot, document)?;
                 add_generated_names(&mut names, service, document, &operations);
             }
@@ -490,7 +490,7 @@ fn write_operations(
     writer: &mut FactWriter<'_>,
 ) -> Result<Vec<Vec<(String, String)>>, VerifyError> {
     let mut documents = Vec::new();
-    for spec in &repository.specs {
+    for spec in &snapshot_documents(repository, snapshot) {
         let operations = spec_operations(repository, snapshot, spec)?;
         for operation in &operations {
             operation_facts(service_name, operation, snapshot.names, writer);
@@ -1103,12 +1103,56 @@ fn write_imports(
     }
 }
 
+/// The documents a service is read from at a snapshot: those built from
+/// its code for that snapshot (by their absolute paths), if Lemma ran an
+/// adapter, otherwise its committed specs.
+fn snapshot_documents(repository: &Repository, snapshot: &Snapshot<'_>) -> Vec<String> {
+    generated_at(repository, snapshot).map_or_else(
+        || repository.specs.clone(),
+        |paths| {
+            paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect()
+        },
+    )
+}
+
+/// The documents built from a service's code for a snapshot of this
+/// repository.
+fn generated_at<'r>(
+    repository: &'r Repository,
+    snapshot: &Snapshot<'_>,
+) -> Option<&'r Vec<PathBuf>> {
+    let role = match snapshot.names {
+        ["base"] => "base",
+        ["head"] => "head",
+        _ => "both",
+    };
+    repository
+        .generated
+        .get(role)
+        .or_else(|| repository.generated.get("both"))
+}
+
 fn spec_operations(
     repository: &Repository,
     snapshot: &Snapshot<'_>,
     spec: &str,
 ) -> Result<Vec<Operation>, VerifyError> {
-    let Some(text) = read_at_snapshot(repository, snapshot, spec)? else {
+    let is_generated = generated_at(repository, snapshot)
+        .is_some_and(|paths| paths.iter().any(|path| path == Path::new(spec)));
+    let text = if is_generated {
+        Some(
+            std::fs::read_to_string(spec).map_err(|source| VerifyError::Generated {
+                file: spec.to_owned(),
+                source,
+            })?,
+        )
+    } else {
+        read_at_snapshot(repository, snapshot, spec)?
+    };
+    let Some(text) = text else {
         return Ok(Vec::new());
     };
     let document: serde_json::Value =

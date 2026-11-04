@@ -175,6 +175,7 @@ fn entry(root: &Path, commit: Option<&str>, role: Role) -> Repository {
         role,
         service: None,
         specs: Vec::new(),
+        generated: BTreeMap::new(),
         rejects_unknown_fields: false,
         routes: Vec::new(),
         path_prefixes: Vec::new(),

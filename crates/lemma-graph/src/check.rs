@@ -15,6 +15,7 @@ use lemma_model::Language;
 use lemma_syntax::Extractor;
 
 use crate::GraphError;
+use crate::adapters;
 use crate::address::{Address, Link, parse_link};
 use crate::affects::{self, Walkable};
 use crate::compare::{Difference, compare};
@@ -185,8 +186,8 @@ pub fn check<E: Engine>(
     let mut findings = checker.findings;
     let mut seeds = declared_seeds(&findings, &links, &repos);
     let inference = match &options.change {
-        Some(change) => infer_links(&repos, change, level, engine, &mut findings)?,
-        None => None,
+        Some(change) => infer_change(&repos, change, options, engine, &mut findings)?,
+        None => infer_drift(&repos, level, engine, &mut findings, &options.cache)?,
     };
     let (inferred_links, walkable) = match inference {
         Some((count, walkable)) => (Some(count), walkable),
@@ -232,23 +233,92 @@ fn declared_seeds(
         .collect()
 }
 
+/// One inference run: the repository read at two commits, and whether it
+/// compares a service's committed documents with what its code describes
+/// (both commits are then `HEAD`, the code read from the working
+/// directory).
+struct Inference<'a> {
+    changed: &'a str,
+    base: &'a str,
+    head: &'a str,
+    is_drift: bool,
+    cache: &'a Path,
+}
+
+/// What a change to one repository breaks, read at its two commits.
+fn infer_change<E: Engine>(
+    repos: &BTreeMap<String, Repo>,
+    change: &Change,
+    options: &CheckOptions,
+    engine: &E,
+    findings: &mut Vec<Finding>,
+) -> Result<Option<(usize, Walkable)>, GraphError> {
+    let level = options
+        .level
+        .or(repos[SELF].files[HEAD].graph.level)
+        .unwrap_or_default();
+    let changed = &repos[&change.repository];
+    let (Some(base), Some(head)) = (
+        changed.checkouts[BASE].commit.as_deref(),
+        changed.checkouts[HEAD].commit.as_deref(),
+    ) else {
+        return Ok(None);
+    };
+    let run = Inference {
+        changed: &change.repository,
+        base,
+        head,
+        is_drift: false,
+        cache: &options.cache,
+    };
+    infer_links(repos, &run, level, engine, findings)
+}
+
+/// Without a change: for each repository with a service whose operations
+/// come from its code, what the difference between its committed documents
+/// and its code breaks. Only one such repository's calls and routes are
+/// kept for tracing.
+fn infer_drift<E: Engine>(
+    repos: &BTreeMap<String, Repo>,
+    level: Level,
+    engine: &E,
+    findings: &mut Vec<Finding>,
+    cache: &Path,
+) -> Result<Option<(usize, Walkable)>, GraphError> {
+    let mut inferred = None;
+    for (name, repo) in repos {
+        let has_adapter = repo.files[HEAD]
+            .services
+            .values()
+            .any(|service| service.exports.operations_from.is_some());
+        if !has_adapter {
+            continue;
+        }
+        let run = Inference {
+            changed: name,
+            base: "HEAD",
+            head: "HEAD",
+            is_drift: true,
+            cache,
+        };
+        if let Some(found) = infer_links(repos, &run, level, engine, findings)? {
+            inferred = Some(found);
+        }
+    }
+    Ok(inferred)
+}
+
 /// Finds and checks calls from code to documented operations, adding their
 /// findings; the number of distinct calls found, and the calls and routes a
 /// trace can walk.
 fn infer_links<E: Engine>(
     repos: &BTreeMap<String, Repo>,
-    change: &Change,
+    run: &Inference<'_>,
     level: Level,
     engine: &E,
     findings: &mut Vec<Finding>,
 ) -> Result<Option<(usize, Walkable)>, GraphError> {
-    let changed_repo = &repos[&change.repository];
-    let (Some(base), Some(head)) = (
-        changed_repo.checkouts[BASE].commit.as_deref(),
-        changed_repo.checkouts[HEAD].commit.as_deref(),
-    ) else {
-        return Ok(None);
-    };
+    let (base, head) = (run.base, run.head);
     let files = repos
         .values()
         .map(inference_file)
@@ -264,13 +334,14 @@ fn infer_links<E: Engine>(
         })
         .collect();
     let changed = infer::Changed {
-        name: &change.repository,
+        name: run.changed,
         base,
         head,
     };
-    let Some(inferred) = infer::manifest(&sources, &changed) else {
+    let Some(mut inferred) = infer::manifest(&sources, &changed) else {
         return Ok(None);
     };
+    apply_adapters(&mut inferred, repos, run, findings);
     let options = lemma_verify::Options {
         explain: false,
         relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
@@ -282,7 +353,13 @@ fn infer_links<E: Engine>(
         if let Some(seed) = affects::inferred_seed(&found.values, &inferred.repositories) {
             walkable.seeds.push((findings.len(), seed));
         }
-        findings.push(inferred_finding(found, level));
+        let mut finding = inferred_finding(found, level);
+        if run.is_drift {
+            finding
+                .message
+                .push_str(" (in the code, not yet in its committed document)");
+        }
+        findings.push(finding);
     }
     let calls: BTreeSet<(&String, &String)> = report
         .relations
@@ -292,6 +369,115 @@ fn infer_links<E: Engine>(
         .filter_map(|row| Some((row.first()?, row.get(1)?)))
         .collect();
     Ok(Some((calls.len(), walkable)))
+}
+
+/// Gives each service whose operations come from its code the documents its
+/// adapter generates: at the change's two commits for the changed
+/// repository (only the code's, from the working directory, when comparing
+/// against committed documents), at its one checkout for any other. An
+/// adapter that fails leaves the committed documents in place and adds a
+/// warning, so a check never passes for want of a contract.
+fn apply_adapters(
+    inferred: &mut infer::Inferred,
+    repos: &BTreeMap<String, Repo>,
+    run: &Inference<'_>,
+    findings: &mut Vec<Finding>,
+) {
+    for (entry, repository) in &mut inferred.manifest.repositories {
+        if repository.role != lemma_verify::Role::Service {
+            continue;
+        }
+        let Some(repo_name) = inferred.repositories.get(entry) else {
+            continue;
+        };
+        let service_name = entry
+            .rsplit_once(':')
+            .map_or(entry.as_str(), |(_, service)| service);
+        let repo = &repos[repo_name];
+        let Some(service) = repo.files[HEAD].services.get(service_name) else {
+            continue;
+        };
+        let Some(from) = &service.exports.operations_from else {
+            continue;
+        };
+        let snapshots = adapter_snapshots(repo, repo_name, run);
+        for (role, checkout) in snapshots {
+            let at = checkout.commit.as_deref().unwrap_or("working directory");
+            let contract = adapters::contract(
+                from,
+                &service.runtime,
+                checkout,
+                run.cache,
+                &repository.specs,
+            );
+            if let Some(first) = contract
+                .as_ref()
+                .ok()
+                .and_then(|found| found.unread.first())
+            {
+                let count = contract.as_ref().map_or(0, |found| found.unread.len());
+                let warning = adapter_warning(
+                    entry,
+                    format!(
+                        "{service_name}'s code was not read whole: {count} modules or routes could not be, so their operations were checked as committed; first: {first}"
+                    ),
+                );
+                // The same gap at both commits is one warning.
+                push_once(findings, warning);
+            }
+            match contract {
+                Ok(found) => {
+                    repository.generated.insert(role.to_owned(), found.documents);
+                }
+                Err(error) => findings.push(adapter_warning(
+                    entry,
+                    format!(
+                        "could not read {service_name}'s operations from its code ({at}), so its committed documents were checked: {error}"
+                    ),
+                )),
+            }
+        }
+    }
+}
+
+/// The checkouts an adapter reads a repository's code at, by the snapshots
+/// they stand for: the change's two commits for the changed repository
+/// (only the head, the working directory, when comparing against committed
+/// documents), its one checkout for any other.
+fn adapter_snapshots<'r>(
+    repo: &'r Repo,
+    repo_name: &str,
+    run: &Inference<'_>,
+) -> Vec<(&'static str, &'r Checkout)> {
+    if repo_name != run.changed {
+        return vec![("both", &repo.checkouts[HEAD])];
+    }
+    if run.is_drift {
+        return vec![("head", &repo.checkouts[HEAD])];
+    }
+    vec![
+        ("base", &repo.checkouts[BASE]),
+        ("head", &repo.checkouts[HEAD]),
+    ]
+}
+
+/// Adds `finding` unless an identical one is there.
+fn push_once(findings: &mut Vec<Finding>, finding: Finding) {
+    if !findings.contains(&finding) {
+        findings.push(finding);
+    }
+}
+
+/// A warning that a service's contract was not fully read from its code.
+fn adapter_warning(entry: &str, message: String) -> Finding {
+    Finding {
+        severity: Severity::Warning,
+        link: entry.to_owned(),
+        check: "adapter".to_owned(),
+        message,
+        introduced: false,
+        affects: Vec::new(),
+    }
 }
 
 /// A repository's `lemma.yaml` as inference reads it. One borrowed from the
