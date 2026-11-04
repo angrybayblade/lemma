@@ -99,6 +99,15 @@ pub struct Impact {
     /// For calling code, the operation it calls.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub calls: Option<String>,
+    /// For an operation, what reaches it: its handler (`file:Function`) or
+    /// the calling code one hop nearer the problem.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// For an operation whose handler reaches the problem itself, the
+    /// calls from the handler down to the code with the problem, each
+    /// `file:Function`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<String>,
 }
 
 /// A repository as it was read.

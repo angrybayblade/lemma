@@ -165,7 +165,8 @@ pub struct Link {
 /// Everything reachable from `seed`: affected operations and callers, each
 /// with how many operations away from the break it is, nearest first.
 /// `functions` gives a repository's functions, read on demand.
-pub fn trace(
+#[cfg(test)]
+fn trace(
     seed: &Seed,
     functions: &mut dyn FnMut(&str) -> Vec<Function>,
     routes: &[Route],
