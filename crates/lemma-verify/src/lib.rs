@@ -159,6 +159,20 @@ pub struct Options {
     /// (read from code), for inspecting or measuring what the rules saw and
     /// concluded.
     pub relations: Vec<String>,
+    /// Where the facts read from code are kept between runs; `None` keeps
+    /// nothing.
+    pub facts_cache: Option<FactsCache>,
+}
+
+/// Facts read from code, kept between runs by what they were read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactsCache {
+    /// The directory they are kept in.
+    pub directory: PathBuf,
+    /// The build of Lemma that reads them, such as a digest of its
+    /// executable: facts one build read are never given to another, whose
+    /// extraction may differ.
+    pub build: String,
 }
 
 /// Verifies a manifest's change with `engine`.
@@ -177,9 +191,9 @@ pub fn verify<E: Engine>(
     let mut grammar = lemma_grammar::compile(&lemma_grammar::parse_grammar(&grammar_text)?)?;
     check_relations(&grammar, &options.relations)?;
     let mut writer = extract::FactWriter::new(&mut grammar);
-    extract::extract_all(manifest, &mut writer)?;
+    extract::extract_all(manifest, &mut writer, options.facts_cache.as_ref())?;
     let facts = writer.counts;
-    let derived = evaluate(&grammar, engine, &Request::default())?;
+    let derived = evaluate(&grammar, engine, &wanted(&grammar, &options.relations))?;
     let mut findings = findings(&grammar, &derived);
     let relations = relation_rows(&grammar, &derived, &options.relations);
     if options.explain {
@@ -207,6 +221,22 @@ fn check_relations(grammar: &CompiledGrammar, names: &[String]) -> Result<(), Ve
         }
     }
     Ok(())
+}
+
+/// What a run reads of the derived relations: its requirements' findings
+/// and the relations asked for. Asking for nothing else keeps an engine
+/// from writing out every intermediate relation, some of millions of rows.
+fn wanted(grammar: &CompiledGrammar, relations: &[String]) -> Request {
+    let outputs = grammar
+        .requirements
+        .iter()
+        .map(|requirement| requirement.relation.clone())
+        .chain(relations.iter().cloned())
+        .collect();
+    Request {
+        outputs,
+        ..Request::default()
+    }
 }
 
 fn relation_rows(

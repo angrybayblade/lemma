@@ -60,6 +60,7 @@ pub fn trace_through_system<E: Engine>(
         change: None,
         level: None,
         cache: cache.to_path_buf(),
+        facts_cache: None,
     };
     let repos = check::load(workspace, &options)?;
     let Some((repository, offset)) = owning_repository(&repos, index_root) else {
@@ -178,6 +179,7 @@ fn current_inference<E: Engine>(
         let options = lemma_verify::Options {
             explain: false,
             relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
+            facts_cache: None,
         };
         let report = lemma_verify::verify(&inferred.manifest, engine, &options)
             .map_err(|source| GraphError::Inference { source })?;
