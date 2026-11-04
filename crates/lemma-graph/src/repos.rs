@@ -111,10 +111,19 @@ pub fn run(
             source,
         })?;
     if !output.status.success() {
+        // Some tools (pnpm) report failures on standard output.
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let message = if stderr.is_empty() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let lines: Vec<&str> = stdout.trim().lines().collect();
+            lines[lines.len().saturating_sub(20)..].join("\n")
+        } else {
+            stderr
+        };
         return Err(GraphError::Resolver {
             command: command.to_owned(),
             directory: directory.to_owned(),
-            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            message,
         });
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
