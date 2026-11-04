@@ -86,6 +86,15 @@ pub enum VerifyError {
         #[source]
         source: serde_json::Error,
     },
+    /// A document an adapter generated could not be read.
+    #[error("could not read the document generated at {file}")]
+    Generated {
+        /// The document.
+        file: String,
+        /// Why.
+        #[source]
+        source: std::io::Error,
+    },
     /// A relation was asked for that the grammar does not declare or derive.
     #[error("the grammar has no relation `{name}`")]
     UnknownRelation {

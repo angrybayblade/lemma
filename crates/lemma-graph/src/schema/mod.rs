@@ -277,7 +277,7 @@ fn expand_runtime(command: &str, runtime: &Runtime, repository: &Path) -> String
 
 /// An interpreter given relative to the repository (`.venv/bin/python`)
 /// made absolute, so a worktree elsewhere still finds the environment.
-fn absolute_interpreter(interpreter: &str, repository: &Path) -> String {
+pub(crate) fn absolute_interpreter(interpreter: &str, repository: &Path) -> String {
     if interpreter.contains('/') && !interpreter.starts_with('/') {
         return repository.join(interpreter).to_string_lossy().into_owned();
     }

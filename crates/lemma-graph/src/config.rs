@@ -119,6 +119,44 @@ pub struct Exports {
     /// what is declared instead of by reading conventions from the code.
     #[serde(default)]
     pub routes: Routes,
+    /// An adapter that reads its operations from its code, which then is
+    /// its contract wherever Lemma reads it: `openapi` documents are only
+    /// compared against it.
+    #[serde(default)]
+    pub operations_from: Option<OperationsFrom>,
+}
+
+/// How a service's operations are read from its code: an adapter imports
+/// the code in a separate process and writes the `OpenAPI` document the
+/// framework describes for it.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct OperationsFrom {
+    /// A built-in adapter: `hono-zod-openapi` or `fastapi`.
+    #[serde(default)]
+    pub adapter: Option<String>,
+    /// Instead of a built-in adapter, a command that writes an `OpenAPI`
+    /// document to the file named by `$LEMMA_OUTPUT`.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// What the adapter imports, relative to `directory`: the directories
+    /// routes are registered in (`hono-zod-openapi`), or a module with its
+    /// app (`app.main:app`, `fastapi`). Given to the adapter as
+    /// `$LEMMA_ENTRY`, joined with `:`.
+    #[serde(default)]
+    pub entry: Vec<String>,
+    /// Where the adapter runs, relative to the repository root, such as the
+    /// app's package directory; the root if absent.
+    #[serde(default)]
+    pub directory: Option<String>,
+    /// Run once in a fresh checkout of a commit, before the adapter, to
+    /// install and build what importing the code needs. Not run in the
+    /// working directory, which is taken as ready.
+    #[serde(default)]
+    pub setup: Option<String>,
+    /// Environment variables for the adapter and `setup`.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// The calls a service writes its routes with, by name (`exports.routes`).
@@ -319,6 +357,9 @@ pub struct Runtime {
     /// A Node.js executable.
     #[serde(default)]
     pub node: Option<String>,
+    /// A Bun executable, for TypeScript run directly.
+    #[serde(default)]
+    pub bun: Option<String>,
     /// The Go toolchain.
     #[serde(default)]
     pub go: Option<String>,
@@ -446,5 +487,23 @@ graph:
             panic!("expected a document location");
         };
         assert_eq!(location.format, "json-schema");
+    }
+
+    #[test]
+    fn a_service_can_read_its_operations_from_its_code() {
+        let file = parse(
+            "services:\n  api:\n    index: { include: [src] }\n    exports:\n      openapi: [openapi.json]\n      operations_from:\n        adapter: hono-zod-openapi\n        directory: apps/api\n        entry: [src/routes]\n        setup: pnpm install\n",
+        )
+        .unwrap();
+
+        let from = file.services["api"]
+            .exports
+            .operations_from
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(from.adapter.as_deref(), Some("hono-zod-openapi"));
+        assert_eq!(from.entry, ["src/routes"]);
+        assert_eq!(from.setup.as_deref(), Some("pnpm install"));
     }
 }
