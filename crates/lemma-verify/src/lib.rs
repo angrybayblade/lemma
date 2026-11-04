@@ -5,6 +5,7 @@
 //! Engines are a type parameter, so callers pick one at compile time (see
 //! `lemma_logic::Engine`).
 
+mod clients;
 mod extract;
 mod manifest;
 mod system;
