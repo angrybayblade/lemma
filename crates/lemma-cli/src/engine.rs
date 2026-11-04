@@ -312,6 +312,12 @@ impl Engine {
         };
         let store = store_for_writing(&mut self.stores, &db_path)?;
         store.replace_workspace(&workspace.members, &workspace.exports, &workspace.links)?;
+        // A workspace's index holds its members, not code of its own: drop
+        // any snapshot left from indexing the directory before it composed
+        // repositories.
+        for stale in store.snapshots()? {
+            store.delete_snapshot(stale.id)?;
+        }
         output::workspace_summary(out, &workspace.lines, &db_path, request.format)?;
         Ok(0)
     }
@@ -393,7 +399,7 @@ impl Engine {
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
         let db_path = request.find_index()?;
-        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
+        let members = open_store(&mut self.stores, &db_path)?.workspace_members()?;
         let filter = SymbolFilter {
             text: args.query,
             name_match: if args.exact {
@@ -406,6 +412,12 @@ impl Engine {
             path_contains: args.filters.path,
             limit: args.limit,
         };
+        if !members.is_empty() {
+            let found = self.workspace_symbols(&members, &filter)?;
+            output::symbols(out, &found, request.format)?;
+            return Ok(0);
+        }
+        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
         let in_memory = match filter.name_match {
             NameMatch::Contains if self.warms_up_after_index => {
                 let slot = self.searches.entry(db_path.clone()).or_default();
@@ -449,6 +461,7 @@ impl Engine {
             snapshot,
             symbol: target,
             linked,
+            workspace: _,
         } = located;
         let store = open_store(&mut self.stores, &db_path)?;
         let root = snapshot.snapshot.root.clone();
@@ -507,6 +520,7 @@ impl Engine {
             snapshot,
             symbol: target,
             linked: _,
+            workspace: _,
         } = located;
         let store = open_store(&mut self.stores, &db_path)?;
         let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
@@ -535,6 +549,7 @@ impl Engine {
             snapshot,
             symbol: target,
             linked: _,
+            workspace: _,
         } = located;
         let store = open_store(&mut self.stores, &db_path)?;
         let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
@@ -548,6 +563,43 @@ impl Engine {
         output::signature_report(out, &report, request.format)?;
         let is_described = report.declaration.is_some() || report.hover.outcome.is_answered();
         Ok(if is_described { 0 } else { EXIT_NO_ANSWER })
+    }
+
+    /// Symbols matching `filter` in every member of a workspace, each path
+    /// prefixed with its repository (`#billing:src/charges.go`), up to the
+    /// filter's limit.
+    fn workspace_symbols(
+        &mut self,
+        members: &[StoredMember],
+        filter: &SymbolFilter,
+    ) -> anyhow::Result<Vec<StoredSymbol>> {
+        let mut found = Vec::new();
+        for member in members {
+            let Some((store, snapshot)) = self.member_index(member)? else {
+                continue;
+            };
+            for mut symbol in store.find_symbols(snapshot.id, filter)? {
+                symbol.path = format!("{}:{}", member.name, symbol.path);
+                found.push(symbol);
+            }
+        }
+        found.truncate(usize::try_from(filter.limit).unwrap_or(usize::MAX));
+        Ok(found)
+    }
+
+    /// A member's index and its snapshot of the member, if it has been
+    /// indexed.
+    fn member_index(
+        &mut self,
+        member: &StoredMember,
+    ) -> anyhow::Result<Option<(&Store, StoredSnapshot)>> {
+        let db_path = PathBuf::from(&member.database);
+        if !db_path.exists() {
+            return Ok(None);
+        }
+        let store = open_store(&mut self.stores, &db_path)?;
+        let snapshot = store.snapshot_for_root(&member.indexed_root)?;
+        Ok(snapshot.map(|snapshot| (&*store, snapshot)))
     }
 
     fn graph(
@@ -564,6 +616,7 @@ impl Engine {
             snapshot,
             symbol: target,
             linked,
+            workspace,
         } = located;
         let store = open_store(&mut self.stores, &db_path)?;
         let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
@@ -582,10 +635,15 @@ impl Engine {
             let links = store.export_links(snapshot.id)?;
             addresses::add_links(&mut graph, &exports, &links);
         }
-        if let Some(workspace) = &args.workspace {
-            let workspace = request.invocation.resolve(workspace);
+        // Run from a workspace, a graph follows callers across it unasked.
+        let workspace = args
+            .workspace
+            .as_ref()
+            .map(|workspace| request.invocation.resolve(workspace))
+            .or(workspace);
+        if let Some(workspace) = &workspace {
             let root = PathBuf::from(&snapshot.snapshot.root);
-            add_system_trace(&mut graph, &workspace, &root, graph_options.direction)?;
+            add_system_trace(&mut graph, workspace, &root, graph_options.direction)?;
         }
         let drawing = match args.format {
             GraphDrawing::Tree => output::Drawing::Tree,
@@ -610,9 +668,7 @@ impl Engine {
         let db_path = request.find_index()?;
         let members = open_store(&mut self.stores, &db_path)?.workspace_members()?;
         if !members.is_empty() {
-            return self
-                .locate_in_workspace(&db_path, &members, &target.symbol)
-                .map(Some);
+            return self.locate_in_workspace(request, &members, &target, out);
         }
         let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
         let Some(symbol) = choose_symbol(store, &snapshot, target, request.format, out)? else {
@@ -624,29 +680,40 @@ impl Engine {
             snapshot,
             symbol,
             linked,
+            workspace: None,
         }))
     }
 
+    /// In a workspace's index: an export's address is found in its
+    /// member's index, and a name in whichever member defines it. A name
+    /// several members define is printed with each one's repository.
     fn locate_in_workspace(
         &mut self,
-        workspace_db: &Path,
+        request: &Request<'_>,
         members: &[StoredMember],
-        text: &str,
-    ) -> anyhow::Result<Located> {
+        target: &SymbolTarget,
+        out: &mut dyn Write,
+    ) -> anyhow::Result<Option<Located>> {
+        let workspace_db = request.find_index()?;
+        let workspace = workspace_file(&workspace_db);
+        let text = target.symbol.clone();
         let Some(address) =
-            addresses::as_address(text).filter(|address| address.repository.is_some())
+            addresses::as_address(&text).filter(|address| address.repository.is_some())
         else {
-            bail!(
-                "this is a workspace's index: name an export by its address, such as \
-                 '#repo:services.api.op', or run the command inside one of its repositories"
-            );
+            return match self.locate_name_in_workspace(members, target, workspace)? {
+                InWorkspace::Found(located) => Ok(Some(*located)),
+                InWorkspace::Several(candidates) => {
+                    output::ambiguous(out, &text, &candidates, request.format)?;
+                    Ok(None)
+                }
+            };
         };
         let repository = address.repository.clone().unwrap_or_default();
         let Some(member) = members.iter().find(|member| member.name == repository) else {
             bail!("the workspace composes no repository `{repository}`");
         };
         let (exports, links) = {
-            let store = open_store(&mut self.stores, workspace_db)?;
+            let store = open_store(&mut self.stores, &workspace_db)?;
             (store.workspace_exports()?, store.workspace_links()?)
         };
         let db_path = PathBuf::from(&member.database);
@@ -667,12 +734,66 @@ impl Engine {
             bail!("`{address}` resolves to no indexed symbol");
         };
         let linked = addresses::workspace_links(&address.to_string(), &exports, &links);
-        Ok(Located {
+        Ok(Some(Located {
             db_path,
             snapshot,
             symbol,
             linked,
-        })
+            workspace,
+        }))
+    }
+
+    /// A name, found in the one member of a workspace that defines it.
+    fn locate_name_in_workspace(
+        &mut self,
+        members: &[StoredMember],
+        target: &SymbolTarget,
+        workspace: Option<PathBuf>,
+    ) -> anyhow::Result<InWorkspace> {
+        let mut resolved = Vec::new();
+        let mut candidates = Vec::new();
+        for member in members {
+            let Some((store, snapshot)) = self.member_index(member)? else {
+                continue;
+            };
+            let found = select_symbol(store, &snapshot, &target.symbol, target.filters.clone())?;
+            let labelled = |mut symbol: StoredSymbol| {
+                symbol.path = format!("{}:{}", member.name, symbol.path);
+                symbol
+            };
+            match found {
+                SymbolResolution::Resolved(symbol) => {
+                    candidates.push(labelled(symbol.clone()));
+                    resolved.push((member, snapshot, symbol));
+                }
+                SymbolResolution::Ambiguous(several) => {
+                    candidates.extend(several.into_iter().map(labelled));
+                }
+                SymbolResolution::Unresolved => {}
+            }
+        }
+        if candidates.is_empty() {
+            bail!(
+                "no repository in the workspace has an indexed symbol matching `{}`",
+                target.symbol
+            );
+        }
+        let [(member, snapshot, symbol)] = &resolved[..] else {
+            return Ok(InWorkspace::Several(candidates));
+        };
+        if candidates.len() > 1 {
+            return Ok(InWorkspace::Several(candidates));
+        }
+        let db_path = PathBuf::from(&member.database);
+        let store = open_store(&mut self.stores, &db_path)?;
+        let linked = addresses::repository_links(store, snapshot, symbol)?;
+        Ok(InWorkspace::Found(Box::new(Located {
+            db_path,
+            snapshot: snapshot.clone(),
+            symbol: symbol.clone(),
+            linked,
+            workspace,
+        })))
     }
 
     fn providers(&mut self, request: &Request<'_>, out: &mut dyn Write) -> anyhow::Result<u8> {
@@ -795,6 +916,24 @@ struct Located {
     snapshot: StoredSnapshot,
     symbol: StoredSymbol,
     linked: Vec<output::Linked>,
+    /// The workspace lemma.yaml, when the symbol was found through a
+    /// workspace's index.
+    workspace: Option<PathBuf>,
+}
+
+/// What a name means across a workspace: one symbol, or several, each
+/// labelled with its repository.
+enum InWorkspace {
+    Found(Box<Located>),
+    Several(Vec<StoredSymbol>),
+}
+
+/// The lemma.yaml a workspace's index at `db_path` (`<root>/.lemma/index.db`)
+/// was built from, if it is there.
+fn workspace_file(db_path: &Path) -> Option<PathBuf> {
+    let root = db_path.parent()?.parent()?;
+    let file = root.join(lemma_graph::config::LEMMA_FILE);
+    file.exists().then_some(file)
 }
 
 /// What indexing one repository produced.
