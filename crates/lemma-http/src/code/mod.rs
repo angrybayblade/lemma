@@ -31,6 +31,9 @@ pub struct Location {
     pub line: u32,
     /// The innermost definition containing it, by qualified name.
     pub symbol: Option<String>,
+    /// The innermost function or method containing it, by qualified name;
+    /// `None` outside functions, as in a table of constants.
+    pub function: Option<String>,
 }
 
 /// An object or call naming an HTTP method and path together.
@@ -66,6 +69,40 @@ pub struct ClientCall {
     pub location: Location,
 }
 
+/// A call through a chain of at least three names, such as
+/// `this.client.apiKeys.list()`, or through a name an import binds
+/// (`api.listTools()`, `listTools()`): what a call through a client looks
+/// like when the client is not known in advance.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MemberCall {
+    /// The names, root first: `["this", "client", "apiKeys", "list"]`.
+    /// A chain starting from a call's result has `()` as its root.
+    pub parts: Vec<String>,
+    /// Where.
+    pub location: Location,
+}
+
+/// A name an import binds, and where from.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ImportBinding {
+    /// The name the file uses: `c` in `import { b as c } from 'x'`.
+    pub local: String,
+    /// The name the module exports it as (`b`); `None` for a namespace or
+    /// default import, which binds the module itself.
+    pub imported: Option<String>,
+    /// The module, as written.
+    pub module: String,
+}
+
+/// A module re-exported whole under a name: `export * as api from './gen'`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Reexport {
+    /// The name it is exported as.
+    pub name: String,
+    /// The module, as written.
+    pub module: String,
+}
+
 /// A name the code uses as a field.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Mention {
@@ -85,6 +122,18 @@ pub struct CodeFacts {
     pub path_references: Vec<PathReference>,
     /// Calls through client objects.
     pub client_calls: Vec<ClientCall>,
+    /// Calls through chains of at least three names, or starting from an
+    /// imported name.
+    pub member_calls: Vec<MemberCall>,
+    /// The names imports bind in the file. Sorted, unique.
+    pub imported_names: Vec<String>,
+    /// The names imports bind, with their modules. Sorted, unique.
+    pub import_bindings: Vec<ImportBinding>,
+    /// Modules re-exported whole under a name. Sorted, unique.
+    pub reexports: Vec<Reexport>,
+    /// Every module imported, as written, packages included
+    /// (`@acme/client`, `acme_client.types`). Sorted, unique.
+    pub imported_modules: Vec<String>,
     /// Names the file uses as object keys, member names, keyword arguments
     /// or dictionary keys: the fields it may send or read. Sorted, unique.
     pub mentions: Vec<Mention>,
@@ -180,6 +229,19 @@ pub fn extract(
     facts.mentions.dedup();
     facts.imports.sort();
     facts.imports.dedup();
+    facts.imported_names = facts
+        .import_bindings
+        .iter()
+        .map(|binding| binding.local.clone())
+        .collect();
+    facts.imported_names.sort();
+    facts.imported_names.dedup();
+    facts.import_bindings.sort();
+    facts.import_bindings.dedup();
+    facts.reexports.sort();
+    facts.reexports.dedup();
+    facts.imported_modules.sort();
+    facts.imported_modules.dedup();
     facts.schema_uses.sort();
     facts.strict_schemas.sort();
     facts.strict_schemas.dedup();
@@ -253,7 +315,7 @@ impl Walk<'_> {
             "variable_declarator" => self.zod_definition(node),
             "call_expression" | "call" => self.call(node),
             "import_statement" | "import_from_statement" => self.import(node),
-            "export_statement" => self.consume_source(node),
+            "export_statement" => self.export(node),
             "short_var_declaration" | "assignment_statement" => self.go_router_prefix(node),
             "attribute_item" if self.dialect == Dialect::Rust => self.rust_route_attribute(node),
             "use_declaration" => self.rust_use(node),
@@ -313,6 +375,7 @@ impl Walk<'_> {
         if self.loads_module(function, arguments) {
             return;
         }
+        self.member_call(function, &parts, node);
         self.client_call(&parts, node);
         if self.dialect == Dialect::Go && self.go_call(&parts, function, arguments) {
             return;
@@ -360,6 +423,43 @@ impl Walk<'_> {
                 .map_or_else(|| "*".to_owned(), |method| canonical_method(&method))
         };
         self.add_reference(&method, &template, path_node);
+    }
+
+    /// Records a call through a chain of at least three names.
+    fn member_call(&mut self, function: Node<'_>, parts: &[String], node: Node<'_>) {
+        let mut chain = Vec::with_capacity(parts.len() + 1);
+        if Self::starts_from_call(function) {
+            chain.push("()".to_owned());
+        }
+        chain.extend_from_slice(parts);
+        let starts_from_import = chain.first().is_some_and(|root| {
+            self.facts
+                .import_bindings
+                .iter()
+                .any(|binding| &binding.local == root)
+        });
+        if chain.len() < 3 && !starts_from_import {
+            return;
+        }
+        let location = self.location(node);
+        self.facts.member_calls.push(MemberCall {
+            parts: chain,
+            location,
+        });
+    }
+
+    /// Whether the leftmost object of a member chain is a call's result.
+    fn starts_from_call(node: Node<'_>) -> bool {
+        let mut current = node;
+        loop {
+            let inner = ["object", "operand", "value"]
+                .iter()
+                .find_map(|field| current.child_by_field_name(field));
+            let Some(inner) = inner else {
+                return matches!(current.kind(), "call_expression" | "call");
+            };
+            current = inner;
+        }
     }
 
     /// Whether a call is `import('./x')` or `require('./x')`, which loads a
@@ -490,7 +590,10 @@ impl Walk<'_> {
             node.child_by_field_name("source")
                 .and_then(|source| self.string_value(source))
         };
+        // `import m.n as o` names its modules in its bindings.
+        self.import_bindings(node, specifier.as_deref().unwrap_or_default());
         let Some(specifier) = specifier else { return };
+        self.facts.imported_modules.push(specifier.clone());
         let is_client_module = self
             .options
             .client_modules
@@ -504,6 +607,107 @@ impl Walk<'_> {
         // or dropped when the repository's files are known.
         if specifier.starts_with('.') || self.dialect != Dialect::Python {
             self.facts.imports.push(specifier);
+        }
+    }
+
+    /// `export * as api from './gen'` re-exports a module; any export with a
+    /// source names a module, not a request.
+    fn export(&mut self, node: Node<'_>) {
+        self.consume_source(node);
+        let Some(module) = node
+            .child_by_field_name("source")
+            .and_then(|source| self.string_value(source))
+        else {
+            return;
+        };
+        let mut cursor = node.walk();
+        let namespace = node
+            .named_children(&mut cursor)
+            .find(|child| child.kind() == "namespace_export")
+            .and_then(|namespace| namespace.named_child(0));
+        if let Some(name) = namespace {
+            let name = self.text(name).trim_matches(['"', '\'']).to_owned();
+            self.facts.reexports.push(Reexport { name, module });
+        }
+    }
+
+    /// The names an import binds, with what each is in `module`: `a`
+    /// (default), `c` (`b`) and `ns` (the module) in `import a, { b as c }
+    /// from 'x'` and `import * as ns from 'y'`; `p` and `q` (`r`) in
+    /// `from z import p, r as q`.
+    fn import_bindings(&mut self, node: Node<'_>, module: &str) {
+        let mut stack = vec![node];
+        while let Some(current) = stack.pop() {
+            if let Some(binding) = self.binding(current, node, module) {
+                self.facts.import_bindings.push(binding);
+            }
+            let mut cursor = current.walk();
+            stack.extend(current.named_children(&mut cursor));
+        }
+    }
+
+    /// The binding a node of an import statement makes. An import without a
+    /// `from` (`import m.n as o`) binds the module its node names.
+    fn binding(
+        &self,
+        current: Node<'_>,
+        statement: Node<'_>,
+        module: &str,
+    ) -> Option<ImportBinding> {
+        let (local, imported) = self.bound_name(current, statement)?;
+        if module.is_empty() {
+            return Some(ImportBinding {
+                local,
+                module: imported.unwrap_or_default(),
+                imported: None,
+            });
+        }
+        Some(ImportBinding {
+            local,
+            imported,
+            module: module.to_owned(),
+        })
+    }
+
+    /// The name a node of an import statement binds, and what it is in the
+    /// module (`None` for the module itself).
+    fn bound_name(
+        &self,
+        current: Node<'_>,
+        statement: Node<'_>,
+    ) -> Option<(String, Option<String>)> {
+        let named = |node: Node<'_>| self.text(node).to_owned();
+        match current.kind() {
+            "import_specifier" | "aliased_import" => {
+                let name = current.child_by_field_name("name")?;
+                let local = current.child_by_field_name("alias").unwrap_or(name);
+                Some((last_segment(&named(local)), Some(named(name))))
+            }
+            "namespace_import" => Some((named(current.named_child(0)?), None)),
+            "import_clause" => {
+                let mut cursor = current.walk();
+                let default = current
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() == "identifier")?;
+                Some((named(default), None))
+            }
+            "dotted_name"
+                if current
+                    .parent()
+                    .is_some_and(|parent| parent.id() == statement.id()) =>
+            {
+                let is_module = statement
+                    .child_by_field_name("module_name")
+                    .is_some_and(|module| module.id() == current.id());
+                if is_module {
+                    return None;
+                }
+                let local = last_segment(&named(current));
+                // `from z import p` binds `p` as exported; `import m.n` the module.
+                let imported = (statement.kind() == "import_from_statement").then(|| local.clone());
+                Some((local, imported))
+            }
+            _ => None,
         }
     }
 
@@ -660,6 +864,7 @@ impl Walk<'_> {
             file: self.file.to_owned(),
             line: line + 1,
             symbol,
+            function: self.enclosing_function(node),
         }
     }
 
@@ -695,6 +900,11 @@ fn is_string_kind(kind: &str) -> bool {
             | "raw_string_literal"
             | "string_literal"
     )
+}
+
+/// The last dot-separated part of a name: `n` in `m.n`.
+fn last_segment(name: &str) -> String {
+    name.rsplit('.').next().unwrap_or(name).to_owned()
 }
 
 fn is_identifier(name: &str) -> bool {
@@ -1061,5 +1271,55 @@ const Route = router.createRoute({
         assert_eq!(typed.path_references[0].method, "GET");
         assert_eq!(typed.path_references[0].path, "/v1/users/{}");
         assert_eq!(python.path_references[0].method, "PATCH");
+    }
+
+    #[test]
+    fn calls_through_long_chains_and_imported_names_are_recorded() {
+        let typescript = "import a, { b as c } from 'x'\nimport * as ns from 'y'\nthis.client.apiKeys.list()\nthis.client.withOptions({}).mcp.generate.url()\nconsole.log(1)\n";
+        let python = "from z import p, r as q\nimport m.n as o\nself._client.api_keys.list()\n";
+
+        let typed = facts("a.ts", typescript);
+        let python = facts("a.py", python);
+
+        let chains: Vec<String> = typed
+            .member_calls
+            .iter()
+            .map(|call| call.parts.join("."))
+            .collect();
+        assert_eq!(
+            chains,
+            [
+                "this.client.apiKeys.list",
+                "().mcp.generate.url",
+                "this.client.withOptions"
+            ]
+        );
+        assert_eq!(typed.imported_names, ["a", "c", "ns"]);
+        assert_eq!(python.imported_names, ["o", "p", "q"]);
+        assert_eq!(
+            python.member_calls[0].parts,
+            ["self", "_client", "api_keys", "list"]
+        );
+    }
+
+    #[test]
+    fn bindings_reexports_and_calls_through_imports_are_recorded() {
+        let source = "import * as api from '../generated/api'\nimport { listTools as list } from '../generated/api'\nexport * as client from '../generated/api'\napi.listTools()\nlist()\nlocal()\n";
+
+        let found = facts("a.ts", source);
+
+        let bindings: Vec<(&str, Option<&str>)> = found
+            .import_bindings
+            .iter()
+            .map(|binding| (binding.local.as_str(), binding.imported.as_deref()))
+            .collect();
+        assert_eq!(bindings, [("api", None), ("list", Some("listTools"))]);
+        assert_eq!(found.reexports[0].name, "client");
+        let chains: Vec<String> = found
+            .member_calls
+            .iter()
+            .map(|call| call.parts.join("."))
+            .collect();
+        assert_eq!(chains, ["api.listTools", "list"]);
     }
 }

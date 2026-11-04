@@ -162,8 +162,8 @@ impl Walk<'_> {
 
     /// A string naming an API path inside an argument, such as the format
     /// of `fmt.Sprintf("%s/v1/x", base)` or Rust's `&format!("{base}/v1/x")`,
-    /// one side of `base + "/v1/x"`, or a path built by a helper:
-    /// `client.get(path\`/v1/x/${id}\`)`, `request("patch", build_path("/v1/x"))`.
+    /// one side of `base + "/v1/x"`, or a path a helper builds: a tagged
+    /// template passed to `client.get`, or `request("patch", build_path("/v1/x"))`.
     pub(super) fn nested_path_argument<'tree>(
         &self,
         arguments: Node<'tree>,
