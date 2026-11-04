@@ -117,12 +117,11 @@ lemma verify manifest.yaml --all
 
 With only a service, findings are empty, but the run proves the specs parse. `--relation removed_operation` shows what the change removed.
 
-**Add the route code.** `routes` points at the directories declaring routes; Lemma then reports routes the spec leaves out (`route_not_in_spec`, informational) and reads which request schemas are zod `.strict()`. If routes import shared schemas from elsewhere, add those directories as `schemas`. If the service also serves its routes under a second prefix, add `route_aliases`. Lemma derives which paths a service owns from its specs; `path_prefixes` overrides that if a spec misleads it.
+**Add the route code.** `routes` points at the directories declaring routes; Lemma then reports routes the spec leaves out (`route_not_in_spec`, informational) and reads which request schemas are zod `.strict()`. If routes import shared schemas from elsewhere, add those directories as `schemas`. Lemma derives which paths a service owns, and which routes a newer spec's version reuses, from its specs; `path_prefixes` and `route_aliases` override that if a spec misleads it.
 
 ```yaml
     routes: [src/routes]
     schemas: [src/schemas]
-    route_aliases: { /v1/: /v2/ }
 ```
 
 **Add the generated clients.** A client generated from a spec names it in `generated_from`. Generators name functions differently, so say how with `call_names`: `{operationId}` as written, or recased as `{camel}`, `{pascal}` or `{snake}`, with any fixed text around it.

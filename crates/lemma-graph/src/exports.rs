@@ -130,7 +130,7 @@ fn endpoints(
     }
     let (written, texts) = routes(service, root, extractor)?;
     let documents = read_documents(service, root)?;
-    let aliases = route_aliases(service, &documents, &written);
+    let aliases = route_aliases(&documents, &written);
     let routes = served_routes(written, &aliases);
     let code = ServiceCode {
         texts: &texts,
@@ -186,11 +186,9 @@ fn read_documents(
     Ok(documents)
 }
 
-/// A service's route aliases: those it declares, and those its documents
-/// and routes imply (see [`lemma_http::implied_aliases`]), the declared
-/// winning where both name a prefix.
+/// A service's route aliases, as its documents and routes imply them (see
+/// [`lemma_http::implied_aliases`]).
 fn route_aliases(
-    service: &Service,
     documents: &[Vec<lemma_http::Operation>],
     written: &[(String, String, Route)],
 ) -> BTreeMap<String, String> {
@@ -207,9 +205,7 @@ fn route_aliases(
         .iter()
         .map(|(method, path, _)| (method.clone(), path.clone()))
         .collect();
-    let mut aliases = lemma_http::implied_aliases(&operations, &routes);
-    aliases.extend(service.route_aliases.clone());
-    aliases
+    lemma_http::implied_aliases(&operations, &routes)
 }
 
 /// Routes by method and path, including the paths aliases also serve them
