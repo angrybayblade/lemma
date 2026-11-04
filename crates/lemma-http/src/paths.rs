@@ -29,12 +29,29 @@ pub fn path_markers<'a>(operation_paths: impl IntoIterator<Item = &'a str>) -> V
 /// at the start of a URL's path: what comes before it is nothing, a scheme
 /// and host, or a substitution such as `${BASE}` or `%s`. A marker inside
 /// another path (`@/src/lib/internal/logger`, `kb/internal/`) is not one.
+///
+/// A marker's segment may also end the path (`https://shop.example/orders`
+/// for `/orders/`), or be followed by a query or fragment.
 fn marker_start(raw: &str, markers: &[String]) -> Option<usize> {
     markers
         .iter()
-        .flat_map(|marker| raw.match_indices(marker.as_str()).map(|(at, _)| at))
+        .flat_map(|marker| {
+            let segment = marker.trim_end_matches('/');
+            raw.match_indices(segment)
+                .filter(move |(at, _)| ends_segment(&raw[at + segment.len()..]))
+                .map(|(at, _)| at)
+        })
         .filter(|at| starts_url_path(&raw[..*at]))
         .min()
+}
+
+/// Whether `after` begins where a path segment ends: a slash, a query, a
+/// fragment, the end of the path, or a character a path cannot hold.
+fn ends_segment(after: &str) -> bool {
+    after.chars().next().is_none_or(|next| {
+        let is_path_character = next.is_alphanumeric() || matches!(next, '.' | '_' | '-' | '~');
+        !is_path_character
+    })
 }
 
 /// Whether `before` can precede a URL's path: it ends in something that
