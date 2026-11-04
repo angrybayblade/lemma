@@ -86,6 +86,9 @@ pub(crate) struct ExportCounts {
     pub symbols: usize,
     /// Declared links.
     pub links: usize,
+    /// What adapters could not read, when the exports were rebuilt.
+    #[serde(skip)]
+    pub adapter_warnings: Vec<String>,
 }
 
 /// A symbol `lemma.yaml` links to (`to`) or from (`from`) the one asked
