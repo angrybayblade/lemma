@@ -32,9 +32,9 @@ services:
       operations_from:                # optional: read operations from the code, not committed documents
         adapter: hono-zod-openapi     # or fastapi, or command: "<writes OpenAPI to $LEMMA_OUTPUT>"
         directory: apps/api           # where it runs
-        entry: [src/routes]           # route directories (hono), or module:app (fastapi)
-        setup: pnpm install --frozen-lockfile   # prepares a fresh checkout of a commit
-      routes:                         # optional: the calls routes are written with
+        entry: [src/index.ts#app, src/routes]   # the served app and its route directories (hono), or module:app (fastapi)
+        setup: npm ci                 # prepares Lemma's worktree of a commit no one has read clean
+      routes:                         # optional, rarely needed with operations_from: the calls routes are written with
         register: [openapi]           # take a route and its handler: router.openapi(DEF, handler)
         define: [createRoute]         # only describe a route, passed to a register call later
       client:                         # only if this service IS a generated client of another;
