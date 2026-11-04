@@ -23,7 +23,7 @@ use crate::handlers::{
 
 /// Bumped whenever how exports are found changes, so stored ones built the
 /// old way are rebuilt.
-pub const VERSION: &str = "8";
+pub const VERSION: &str = "10";
 
 /// What exports need to know about the indexed code.
 pub struct IndexedSymbols<'a> {
@@ -128,8 +128,48 @@ fn endpoints(
     if service.exports.openapi.is_empty() {
         return Ok(Vec::new());
     }
-    let (routes, texts) = routes(service, root, extractor)?;
+    let (written, texts) = routes(service, root, extractor)?;
+    let documents = read_documents(service, root)?;
+    let aliases = route_aliases(service, &documents, &written);
+    let routes = served_routes(written, &aliases);
+    let code = ServiceCode {
+        texts: &texts,
+        symbols,
+        conventions: Conventions {
+            register: &service.exports.routes.register,
+            define: &service.exports.routes.define,
+        },
+    };
     let mut found = Vec::new();
+    for operation in documents.iter().flatten() {
+        let Some(id) = operation.operation_id.clone() else {
+            continue;
+        };
+        let templates = unaliased(&operation.template, &aliases);
+        let route = templates.iter().find_map(|template| {
+            let path = lemma_http::canonical_route(template)?;
+            routes.get(&(operation.method.clone(), path))
+        });
+        let (path, symbol, found_by) = handler_of(route, &operation.method, &templates, &code);
+        found.push(Export {
+            service: name.to_owned(),
+            name: id,
+            kind: ExportKind::Endpoint,
+            path,
+            symbol,
+            detail: Some(format!("{} {}", operation.method, operation.path)),
+            found_by,
+        });
+    }
+    Ok(found)
+}
+
+/// The operations of each of a service's `OpenAPI` documents.
+fn read_documents(
+    service: &Service,
+    root: &Path,
+) -> Result<Vec<Vec<lemma_http::Operation>>, GraphError> {
+    let mut documents = Vec::new();
     for document in &service.exports.openapi {
         let Some(text) = lemma_http::read_file(root, None, document)
             .map_err(|source| GraphError::Source { source })?
@@ -141,35 +181,62 @@ fn endpoints(
                 command: format!("reading {document}"),
                 source,
             })?;
-        for operation in lemma_http::operations(&json) {
-            let Some(id) = operation.operation_id.clone() else {
-                continue;
-            };
-            let route = routes.get(&(operation.method.clone(), operation.path.clone()));
-            let (path, symbol, found_by) = handler_of(route, &operation, service, &texts, symbols);
-            found.push(Export {
-                service: name.to_owned(),
-                name: id,
-                kind: ExportKind::Endpoint,
-                path,
-                symbol,
-                detail: Some(format!("{} {}", operation.method, operation.path)),
-                found_by,
-            });
-        }
+        documents.push(lemma_http::operations(&json));
     }
-    Ok(found)
+    Ok(documents)
 }
 
-/// The routes in a service's code, by method and path, including the paths
-/// its route aliases also serve them at.
-/// Routes and the texts of the files they are in.
-type Routes = (BTreeMap<(String, String), Route>, BTreeMap<String, String>);
+/// A service's route aliases: those it declares, and those its documents
+/// and routes imply (see [`lemma_http::implied_aliases`]), the declared
+/// winning where both name a prefix.
+fn route_aliases(
+    service: &Service,
+    documents: &[Vec<lemma_http::Operation>],
+    written: &[(String, String, Route)],
+) -> BTreeMap<String, String> {
+    let operations: Vec<Vec<(String, String)>> = documents
+        .iter()
+        .map(|operations| {
+            operations
+                .iter()
+                .map(|operation| (operation.method.clone(), operation.path.clone()))
+                .collect()
+        })
+        .collect();
+    let routes = written
+        .iter()
+        .map(|(method, path, _)| (method.clone(), path.clone()))
+        .collect();
+    let mut aliases = lemma_http::implied_aliases(&operations, &routes);
+    aliases.extend(service.route_aliases.clone());
+    aliases
+}
+
+/// Routes by method and path, including the paths aliases also serve them
+/// at; the first route written for a path wins.
+fn served_routes(
+    written: Vec<(String, String, Route)>,
+    aliases: &BTreeMap<String, String>,
+) -> BTreeMap<(String, String), Route> {
+    let mut served = BTreeMap::new();
+    for (method, path, route) in written {
+        for path in aliased(&path, aliases) {
+            served
+                .entry((method.clone(), path))
+                .or_insert_with(|| route.clone());
+        }
+    }
+    served
+}
+
+/// The routes a service's code writes, as method, canonical path and where,
+/// and the texts of the files kept for finding handlers.
+type Routes = (Vec<(String, String, Route)>, BTreeMap<String, String>);
 
 fn routes(service: &Service, root: &Path, extractor: &mut Extractor) -> Result<Routes, GraphError> {
     let files = lemma_http::read_files(root, None, &service.index.include, &CODE_EXTENSIONS)
         .map_err(|source| GraphError::Source { source })?;
-    let mut found = BTreeMap::new();
+    let mut found = Vec::new();
     let mut texts = BTreeMap::new();
     for file in files
         .iter()
@@ -203,11 +270,7 @@ fn routes(service: &Service, root: &Path, extractor: &mut Extractor) -> Result<R
                 line: declared.location.line,
                 template: declared.template.clone(),
             };
-            for path in aliased(&declared.path, &service.route_aliases) {
-                found
-                    .entry((declared.method.clone(), path))
-                    .or_insert_with(|| route.clone());
-            }
+            found.push((declared.method.clone(), declared.path.clone(), route));
         }
     }
     Ok((found, texts))
@@ -217,38 +280,41 @@ fn routes(service: &Service, root: &Path, extractor: &mut Extractor) -> Result<R
 /// qualified name, and how they were found.
 type Handler = (Option<String>, Option<String>, Option<FoundBy>);
 
+/// What finding a service's handlers reads: the texts of its code, the
+/// indexed definitions, and the calls its `routes` directives name.
+struct ServiceCode<'a> {
+    texts: &'a BTreeMap<String, String>,
+    symbols: &'a IndexedSymbols<'a>,
+    conventions: Conventions<'a>,
+}
+
 /// A documented operation's handler: at its route, by the service's
 /// `routes` directives if they decide, else by reading the registration;
 /// or, when no route writes its path beside a method, the helper its path
 /// is passed to.
 fn handler_of(
     route: Option<&Route>,
-    operation: &lemma_http::Operation,
-    service: &Service,
-    texts: &BTreeMap<String, String>,
-    symbols: &IndexedSymbols<'_>,
+    method: &str,
+    templates: &[String],
+    code: &ServiceCode<'_>,
 ) -> Handler {
+    let lookup = &code.symbols.lookup;
     let Some(route) = route else {
-        let templates = unaliased(&operation.template, &service.route_aliases);
-        return passed_to_helper(texts, &operation.method, &templates, &symbols.lookup)
+        return passed_to_helper(code.texts, method, templates, lookup)
             .map_or((None, None, None), |found| {
                 (Some(found.path), Some(found.qualified), Some(FoundBy::Code))
             });
     };
     let site = RouteSite {
         file: &route.file,
-        text: texts.get(&route.file).map_or("", String::as_str),
+        text: code.texts.get(&route.file).map_or("", String::as_str),
         line: route.line,
         template: &route.template,
     };
-    let conventions = Conventions {
-        register: &service.exports.routes.register,
-        define: &service.exports.routes.define,
-    };
-    if let Some((path, symbol)) = resolve_declared(&site, conventions, &symbols.lookup) {
+    if let Some((path, symbol)) = resolve_declared(&site, code.conventions, lookup) {
         return (path, symbol, Some(FoundBy::Directive));
     }
-    let (path, symbol) = resolve(&site, &symbols.lookup);
+    let (path, symbol) = resolve(&site, lookup);
     let found_by = path.is_some().then_some(FoundBy::Code);
     (path, symbol, found_by)
 }

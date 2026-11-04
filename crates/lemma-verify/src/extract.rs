@@ -223,11 +223,7 @@ fn service(
             &[Arg::Text(service_name)],
         );
     }
-    for spec in &repository.specs {
-        for operation in spec_operations(repository, snapshot, spec)? {
-            operation_facts(service_name, &operation, snapshots, writer);
-        }
-    }
+    let documents = write_operations(service_name, repository, snapshot, writer)?;
     // Without route directories there is no route code to read; an empty
     // list would otherwise mean the whole repository.
     if !snapshots.contains(&"head") || repository.routes.is_empty() {
@@ -240,24 +236,36 @@ fn service(
         .cloned()
         .collect();
     let files = lemma_http::read_files(&repository.path, commit, &directories, &CODE_EXTENSIONS)?;
-    let scope = ServiceScope {
-        name,
-        service: service_name,
-        known: files.iter().map(|file| file.path.clone()).collect(),
-        route_aliases: &repository.route_aliases,
-        imports: read_import_aliases(repository, commit)?,
-    };
+    let mut read = Vec::new();
     for file in files
         .iter()
         .filter(|file| !lemma_http::is_test_file(&file.path))
     {
-        let facts = code_facts(file, &CodeOptions::default(), extractor)?;
-        schema_facts(&scope, &file.path, &facts, writer);
-        let is_route_file = repository
+        read.push((file, code_facts(file, &CodeOptions::default(), extractor)?));
+    }
+    let is_route_file = |path: &str| {
+        repository
             .routes
             .iter()
-            .any(|directory| file.path.starts_with(directory.as_str()));
-        if !is_route_file {
+            .any(|directory| path.starts_with(directory.as_str()))
+    };
+    let written = read
+        .iter()
+        .filter(|(file, _)| is_route_file(&file.path))
+        .flat_map(|(_, facts)| written_routes(facts))
+        .collect();
+    let mut route_aliases = lemma_http::implied_aliases(&documents, &written);
+    route_aliases.extend(repository.route_aliases.clone());
+    let scope = ServiceScope {
+        name,
+        service: service_name,
+        known: files.iter().map(|file| file.path.clone()).collect(),
+        route_aliases: &route_aliases,
+        imports: read_import_aliases(repository, commit)?,
+    };
+    for (file, facts) in &read {
+        schema_facts(&scope, &file.path, facts, writer);
+        if !is_route_file(&file.path) {
             continue;
         }
         for route in facts.method_paths.iter().filter(|item| item.method != "*") {
@@ -265,6 +273,39 @@ fn service(
         }
     }
     Ok(())
+}
+
+/// Writes the operations of each of a service's specs, and returns them by
+/// spec as method and canonical path.
+fn write_operations(
+    service_name: &str,
+    repository: &Repository,
+    snapshot: &Snapshot<'_>,
+    writer: &mut FactWriter<'_>,
+) -> Result<Vec<Vec<(String, String)>>, VerifyError> {
+    let mut documents = Vec::new();
+    for spec in &repository.specs {
+        let operations = spec_operations(repository, snapshot, spec)?;
+        for operation in &operations {
+            operation_facts(service_name, operation, snapshot.names, writer);
+        }
+        documents.push(
+            operations
+                .into_iter()
+                .map(|operation| (operation.method, operation.path))
+                .collect(),
+        );
+    }
+    Ok(documents)
+}
+
+/// The routes a file's code writes, as method and canonical path.
+fn written_routes(facts: &CodeFacts) -> impl Iterator<Item = (String, String)> + '_ {
+    facts
+        .method_paths
+        .iter()
+        .filter(|item| item.method != "*")
+        .map(|item| (item.method.clone(), item.path.clone()))
 }
 
 /// What every route file of one service shares.
