@@ -159,6 +159,26 @@ pub struct Exports {
     /// calls.
     #[serde(default)]
     pub client: Option<GeneratedClient>,
+    /// The calls its code writes routes with, so handlers are found by
+    /// what is declared instead of by reading conventions from the code.
+    #[serde(default)]
+    pub routes: Routes,
+}
+
+/// The calls a service writes its routes with, by name (`exports.routes`).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Routes {
+    /// Calls that register a route with its handler, passed after the route:
+    /// `Handle` for `r.Handle("/x", NewHandler(db))`, `openapi` for
+    /// `router.openapi(DEF, handler)`.
+    #[serde(default)]
+    pub register: Vec<String>,
+    /// Calls that describe a route without its handler, whose value a
+    /// `register` call passes: `createRoute` for `const DEF =
+    /// router.createRoute({ method, path })`.
+    #[serde(default)]
+    pub define: Vec<String>,
 }
 
 impl Exports {
