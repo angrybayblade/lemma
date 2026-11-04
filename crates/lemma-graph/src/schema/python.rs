@@ -13,7 +13,7 @@ use crate::repos;
 
 /// Imports `symbol` (dotted: `module_class.Request`) from `file` and prints
 /// its schema.
-const SCRIPT: &str = r#"
+pub(crate) const SCRIPT: &str = r#"
 import importlib, json, sys
 sys.path.insert(0, ".")
 module = importlib.import_module(sys.argv[1])

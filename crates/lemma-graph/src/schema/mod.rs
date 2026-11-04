@@ -11,11 +11,13 @@ mod shape;
 mod typescript;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use serde_json::Value;
 
 use crate::GraphError;
+use crate::adapters;
 use crate::config::{Resolver, Runtime, SchemaSource};
 use crate::repos::{self, Checkout};
 
@@ -58,6 +60,98 @@ pub struct Context<'a> {
     pub cache: &'a Path,
     /// Resolver outputs already produced, by repository, commit and command.
     pub outputs: &'a mut BTreeMap<(String, String, String), Value>,
+    /// What this run has read from repositories already.
+    pub reads: &'a mut Reads,
+}
+
+/// A directory read at a checkout: repository, commit, directory and
+/// extension.
+type DirectoryKey = (PathBuf, Option<String>, String, String);
+
+/// What one run has read from repositories, so the operations and links
+/// that share a type's package, an anchor's file, or a repository's state
+/// read it once.
+#[derive(Debug, Default)]
+pub struct Reads {
+    /// A directory's files with an extension, by repository, commit,
+    /// directory and extension.
+    directories: BTreeMap<DirectoryKey, Rc<Vec<(String, String)>>>,
+    /// A file's text, by repository, commit and path.
+    texts: BTreeMap<(PathBuf, Option<String>, String), Option<Rc<str>>>,
+    /// A working directory's state (see [`adapters::working_state`]).
+    states: BTreeMap<PathBuf, Option<String>>,
+}
+
+impl Reads {
+    /// A file's text at the checkout, read once per run.
+    pub fn text(&mut self, checkout: &Checkout, file: &str) -> Result<Option<Rc<str>>, GraphError> {
+        let key = (
+            checkout.root.clone(),
+            checkout.commit.clone(),
+            file.to_owned(),
+        );
+        if let Some(found) = self.texts.get(&key) {
+            return Ok(found.clone());
+        }
+        let found: Option<Rc<str>> = checkout.read(file)?.map(Rc::from);
+        self.texts.insert(key, found.clone());
+        Ok(found)
+    }
+
+    fn working_state(&mut self, root: &Path) -> Result<Option<String>, GraphError> {
+        if let Some(found) = self.states.get(root) {
+            return Ok(found.clone());
+        }
+        let found = adapters::working_state(root)?;
+        self.states.insert(root.to_owned(), found.clone());
+        Ok(found)
+    }
+
+    /// The files with `extension` directly in `directory` at the checkout,
+    /// read once per run.
+    fn directory(
+        &mut self,
+        checkout: &Checkout,
+        directory: &str,
+        extension: &str,
+    ) -> Result<Rc<Vec<(String, String)>>, GraphError> {
+        let key = (
+            checkout.root.clone(),
+            checkout.commit.clone(),
+            directory.to_owned(),
+            extension.to_owned(),
+        );
+        if let Some(found) = self.directories.get(&key) {
+            return Ok(Rc::clone(found));
+        }
+        let prefixes = if directory.is_empty() {
+            Vec::new()
+        } else {
+            vec![directory.to_owned()]
+        };
+        let files = lemma_http::read_files(
+            &checkout.root,
+            checkout.commit.as_deref(),
+            &prefixes,
+            &[extension],
+        )
+        .map_err(|source| GraphError::Source { source })?;
+        let found: Rc<Vec<(String, String)>> = Rc::new(
+            files
+                .into_iter()
+                .filter(|candidate| {
+                    let parent = candidate
+                        .path
+                        .rsplit_once('/')
+                        .map_or("", |(parent, _)| parent);
+                    parent == directory
+                })
+                .map(|candidate| (candidate.path, candidate.contents))
+                .collect(),
+        );
+        self.directories.insert(key, Rc::clone(&found));
+        Ok(found)
+    }
 }
 
 /// Resolves a schema source to JSON Schema.
@@ -121,13 +215,13 @@ fn code_schema(anchor: &str, context: &mut Context<'_>) -> Result<Resolved, Grap
     let checkout = context.checkout;
     match extension {
         "go" => {
-            let package = directory_files(checkout, file, "go", "_test.go")?;
+            let package = directory_files(context.reads, checkout, file, "go", "_test.go")?;
             let found =
                 go::struct_schema(&package, symbol, view(context.role)).ok_or_else(missing)?;
             Ok(syntax(found.schema, found.unresolved))
         }
         "rs" => {
-            let module = directory_files(checkout, file, "rs", "")?;
+            let module = directory_files(context.reads, checkout, file, "rs", "")?;
             let found =
                 rust::type_schema(&module, symbol, view(context.role)).ok_or_else(missing)?;
             Ok(syntax(found.schema, found.unresolved))
@@ -155,11 +249,21 @@ fn syntax(schema: Value, unresolved: std::collections::BTreeSet<String>) -> Reso
 
 /// A Python type by Pydantic in the repository's environment, or by
 /// Tree-sitter when that cannot import it.
-fn python_schema(file: &str, symbol: &str, context: &Context<'_>) -> Result<Resolved, GraphError> {
-    let root = context.checkout.worktree(context.cache)?;
+fn python_schema(
+    file: &str,
+    symbol: &str,
+    context: &mut Context<'_>,
+) -> Result<Resolved, GraphError> {
     let python = context.runtime.python.as_deref().unwrap_or("python3");
     let python = absolute_interpreter(python, &context.checkout.root);
-    let imported = python::type_schema(&root, &python, file, symbol, &context.runtime.env);
+    let described = format!(
+        "pydantic\n{}\n{python}\n{file}\n{symbol}\n{:?}",
+        python::SCRIPT,
+        context.runtime.env
+    );
+    let imported = kept_or_run(context, &described, |root| {
+        python::type_schema(root, &python, file, symbol, &context.runtime.env)
+    });
     let error = match imported {
         Ok(schema) => {
             return Ok(Resolved {
@@ -170,7 +274,7 @@ fn python_schema(file: &str, symbol: &str, context: &Context<'_>) -> Result<Reso
         }
         Err(error) => error,
     };
-    let package = directory_files(context.checkout, file, "py", "")?;
+    let package = directory_files(context.reads, context.checkout, file, "py", "")?;
     match python_syntax::type_schema(&package, symbol) {
         Some(found) => Ok(syntax(found.schema, found.unresolved)),
         None => Err(error),
@@ -180,34 +284,18 @@ fn python_schema(file: &str, symbol: &str, context: &Context<'_>) -> Result<Reso
 /// The files with `extension` in `file`'s directory at the checkout, but
 /// not those ending in `excluded` (when it is not empty), `file` first.
 fn directory_files(
+    reads: &mut Reads,
     checkout: &Checkout,
     file: &str,
     extension: &str,
     excluded: &str,
 ) -> Result<Vec<(String, String)>, GraphError> {
     let directory = file.rsplit_once('/').map_or("", |(directory, _)| directory);
-    let prefixes = if directory.is_empty() {
-        Vec::new()
-    } else {
-        vec![directory.to_owned()]
-    };
-    let files = lemma_http::read_files(
-        &checkout.root,
-        checkout.commit.as_deref(),
-        &prefixes,
-        &[extension],
-    )
-    .map_err(|source| GraphError::Source { source })?;
-    let mut found: Vec<(String, String)> = files
-        .into_iter()
-        .filter(|candidate| {
-            let parent = candidate
-                .path
-                .rsplit_once('/')
-                .map_or("", |(parent, _)| parent);
-            parent == directory && (excluded.is_empty() || !candidate.path.ends_with(excluded))
-        })
-        .map(|candidate| (candidate.path, candidate.contents))
+    let mut found: Vec<(String, String)> = reads
+        .directory(checkout, directory, extension)?
+        .iter()
+        .filter(|(path, _)| excluded.is_empty() || !path.ends_with(excluded))
+        .cloned()
         .collect();
     // The anchored file's definitions win over its neighbours'.
     found.sort_by_key(|(path, _)| path != file);
@@ -241,27 +329,81 @@ fn run_resolver(resolver: &Resolver, context: &mut Context<'_>) -> Result<Value,
     if let Some(output) = context.outputs.get(&key) {
         return Ok(output.clone());
     }
-    let root = context.checkout.worktree(context.cache)?;
     let command = expand_runtime(&resolver.command, context.runtime, &context.checkout.root);
     let mut env = context.runtime.env.clone();
     env.extend(resolver.env.clone());
-    let stdout = repos::run(&root, &command, &env)?;
-    let text = match &resolver.output {
-        Some(output) => {
-            std::fs::read_to_string(root.join(output)).map_err(|source| GraphError::Io {
-                path: root.join(output),
-                source,
-            })?
-        }
-        None => stdout,
-    };
-    let document: Value =
+    let described = format!("command\n{command}\n{env:?}\n{:?}", resolver.output);
+    let document = kept_or_run(context, &described, |root| {
+        let stdout = repos::run(root, &command, &env)?;
+        let text = match &resolver.output {
+            Some(output) => {
+                std::fs::read_to_string(root.join(output)).map_err(|source| GraphError::Io {
+                    path: root.join(output),
+                    source,
+                })?
+            }
+            None => stdout,
+        };
         serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
             command: resolver.command.clone(),
             source,
-        })?;
+        })
+    })?;
     context.outputs.insert(key, document.clone());
     Ok(document)
+}
+
+/// What `run` produces from the code at the checkout, `described` naming
+/// how: kept in Lemma's cache by the code's Git tree, so a commit's output
+/// is produced once. The working directory, when it is the commit
+/// unchanged, is run in place; any other commit in the repository's one
+/// shared worktree, never a worktree of its own. Only successes are kept.
+fn kept_or_run(
+    context: &mut Context<'_>,
+    described: &str,
+    run: impl FnOnce(&Path) -> Result<Value, GraphError>,
+) -> Result<Value, GraphError> {
+    let checkout = context.checkout;
+    let working = context.reads.working_state(&checkout.root)?;
+    let state = match &checkout.commit {
+        Some(commit) => Some(adapters::commit_state(&checkout.root, commit)?),
+        None => working.clone(),
+    };
+    let is_checked_out = checkout.commit.is_none() || (working.is_some() && working == state);
+    let kept = state.map(|state| {
+        let key = lemma_model::content_hash(format!("{described}\n{state}").as_bytes());
+        context.cache.join("resolvers").join(format!("{key}.json"))
+    });
+    if let Some(found) = kept.as_deref().and_then(read_kept) {
+        return Ok(found);
+    }
+    let output = if is_checked_out {
+        run(&checkout.root)?
+    } else {
+        let commit = checkout.commit.as_deref().unwrap_or("HEAD");
+        let worktree = repos::SharedWorktree::check_out(&checkout.root, commit, context.cache)?;
+        run(worktree.path())?
+    };
+    if let Some(kept) = &kept {
+        keep(kept, &output);
+    }
+    Ok(output)
+}
+
+fn read_kept(path: &Path) -> Option<Value> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+/// Keeps a produced output. A cache that cannot be written only costs the
+/// next run another run, so failures are not errors.
+fn keep(path: &Path, output: &Value) {
+    let (Some(directory), Ok(text)) = (path.parent(), serde_json::to_string(output)) else {
+        return;
+    };
+    let partial = path.with_extension(format!("{}.partial", std::process::id()));
+    let _ = std::fs::create_dir_all(directory)
+        .and_then(|()| std::fs::write(&partial, text))
+        .and_then(|()| std::fs::rename(&partial, path));
 }
 
 /// `{python}` and the like in a command, replaced by the service's runtime.

@@ -54,6 +54,60 @@ impl Checkout {
     }
 }
 
+/// The one worktree per repository that code at a commit is run in (an
+/// adapter's build, a schema resolver), reused from commit to commit and
+/// held for the length of a run so two Lemmas do not use it at once.
+pub(crate) struct SharedWorktree {
+    path: PathBuf,
+    lock: PathBuf,
+}
+
+impl SharedWorktree {
+    /// The build worktree of the clone at `root`, checked out at `commit`.
+    /// What earlier builds installed, ignored by Git, stays.
+    pub(crate) fn check_out(root: &Path, commit: &str, cache: &Path) -> Result<Self, GraphError> {
+        let builds = cache.join("builds");
+        std::fs::create_dir_all(&builds).map_err(|source| GraphError::Io {
+            path: builds.clone(),
+            source,
+        })?;
+        let path = builds.join(directory_name(root));
+        let lock = path.with_extension("lock");
+        if std::fs::File::create_new(&lock).is_err() {
+            return Err(GraphError::BuildInProgress { directory: path });
+        }
+        let held = Self { path, lock };
+        let target = held.path.to_string_lossy().into_owned();
+        if held.path.join(".git").exists() {
+            git(
+                &held.path,
+                &["checkout", "--detach", "--force", "--quiet", commit],
+            )?;
+            git(&held.path, &["clean", "-fd", "--quiet"])?;
+        } else {
+            // A worktree Git lost track of is pruned before adding it again.
+            git(root, &["worktree", "prune"])?;
+            git(
+                root,
+                &["worktree", "add", "--detach", "--quiet", &target, commit],
+            )?;
+        }
+        Ok(held)
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for SharedWorktree {
+    fn drop(&mut self) {
+        // A lock left behind only makes the next build report that it is
+        // busy, which names the file to remove.
+        let _ = std::fs::remove_file(&self.lock);
+    }
+}
+
 /// Removes a worktree of the clone at `root`, made by [`Checkout::worktree`].
 pub fn remove_worktree(root: &Path, worktree: &Path) -> Result<(), GraphError> {
     let target = worktree.to_string_lossy().into_owned();
