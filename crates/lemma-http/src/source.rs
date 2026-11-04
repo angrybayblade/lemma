@@ -91,14 +91,26 @@ pub fn read_files_where(
 }
 
 /// Every file's path in the repository at `commit`, or in the working
-/// directory, without reading them. Sorted.
+/// directory, without reading them. Sorted. The working directory is listed
+/// as Git sees it, tracked and untracked files but not ignored ones, so a
+/// build's output (a client generated into an ignored directory) does not
+/// count as part of the repository; outside Git, every file is.
 pub fn list_files(repository: &Path, commit: Option<&str>) -> Result<Vec<String>, SourceError> {
     let mut paths = match commit {
         Some(commit) => git_paths(repository, commit, &[])?,
-        None => directory_paths(repository, &[])?
-            .into_iter()
-            .map(|(_, relative)| relative)
-            .collect(),
+        None => match git(
+            repository,
+            &["ls-files", "--cached", "--others", "--exclude-standard"],
+        ) {
+            Ok(output) => String::from_utf8_lossy(&output)
+                .lines()
+                .map(str::to_owned)
+                .collect(),
+            Err(_) => directory_paths(repository, &[])?
+                .into_iter()
+                .map(|(_, relative)| relative)
+                .collect(),
+        },
     };
     paths.retain(|path| !path.contains("node_modules/"));
     paths.sort();
