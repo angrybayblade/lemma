@@ -162,14 +162,12 @@ impl Walk<'_> {
 
     /// A string naming an API path inside an argument, such as the format
     /// of `fmt.Sprintf("%s/v1/x", base)` or Rust's `&format!("{base}/v1/x")`,
-    /// or one side of `base + "/v1/x"`.
+    /// one side of `base + "/v1/x"`, or a path built by a helper:
+    /// `client.get(path\`/v1/x/${id}\`)`, `request("patch", build_path("/v1/x"))`.
     pub(super) fn nested_path_argument<'tree>(
         &self,
         arguments: Node<'tree>,
     ) -> Option<Node<'tree>> {
-        if !matches!(self.dialect, Dialect::Go | Dialect::Rust) {
-            return None;
-        }
         let mut stack = Self::children(arguments);
         while let Some(node) = stack.pop() {
             if self.names_path(node) {
@@ -178,6 +176,7 @@ impl Walk<'_> {
             let is_wrapper = matches!(
                 node.kind(),
                 "call_expression"
+                    | "call"
                     | "argument_list"
                     | "arguments"
                     | "binary_expression"

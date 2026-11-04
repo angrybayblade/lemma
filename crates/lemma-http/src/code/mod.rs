@@ -1048,4 +1048,18 @@ const Route = router.createRoute({
             .collect();
         assert_eq!(paths, ["/v1/users"]);
     }
+
+    #[test]
+    fn a_path_built_inside_a_call_takes_the_calls_method() {
+        let typescript = "client.get(path`/v1/users/${id}`, options)\n";
+        let python =
+            "self._client._request(\"patch\", build_path(\"/v1/users/{id}\", {\"id\": id}))\n";
+
+        let typed = facts("a.ts", typescript);
+        let python = facts("a.py", python);
+
+        assert_eq!(typed.path_references[0].method, "GET");
+        assert_eq!(typed.path_references[0].path, "/v1/users/{}");
+        assert_eq!(python.path_references[0].method, "PATCH");
+    }
 }
