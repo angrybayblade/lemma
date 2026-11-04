@@ -53,6 +53,9 @@ pub struct CheckOptions {
     pub level: Option<Level>,
     /// Lemma's cache directory.
     pub cache: PathBuf,
+    /// Where facts read from code are kept between runs; `None` keeps
+    /// nothing.
+    pub facts_cache: Option<lemma_verify::FactsCache>,
 }
 
 /// How serious a finding is.
@@ -189,7 +192,7 @@ pub fn check<E: Engine>(
     let mut seeds = declared_seeds(&findings, &links, &repos);
     let inference = match &options.change {
         Some(change) => infer_change(&repos, change, options, engine, &mut findings)?,
-        None => infer_drift(&repos, level, engine, &mut findings, &options.cache)?,
+        None => infer_drift(&repos, level, engine, &mut findings, options)?,
     };
     let (inferred_links, walkable) = match inference {
         Some((count, walkable)) => (Some(count), walkable),
@@ -246,6 +249,7 @@ struct Inference<'a> {
     head: Option<&'a str>,
     is_drift: bool,
     cache: &'a Path,
+    facts_cache: Option<&'a lemma_verify::FactsCache>,
 }
 
 /// What a change to one repository breaks, read at its two commits.
@@ -271,6 +275,7 @@ fn infer_change<E: Engine>(
         head,
         is_drift: false,
         cache: &options.cache,
+        facts_cache: options.facts_cache.as_ref(),
     };
     infer_links(repos, &run, level, engine, findings)
 }
@@ -284,7 +289,7 @@ fn infer_drift<E: Engine>(
     level: Level,
     engine: &E,
     findings: &mut Vec<Finding>,
-    cache: &Path,
+    options: &CheckOptions,
 ) -> Result<Option<(usize, Walkable)>, GraphError> {
     let mut inferred = None;
     for (name, repo) in repos {
@@ -300,7 +305,8 @@ fn infer_drift<E: Engine>(
             base: "HEAD",
             head: Some("HEAD"),
             is_drift: true,
-            cache,
+            cache: &options.cache,
+            facts_cache: options.facts_cache.as_ref(),
         };
         if let Some(found) = infer_links(repos, &run, level, engine, findings)? {
             inferred = Some(found);
@@ -354,6 +360,7 @@ fn infer_links<E: Engine>(
     let options = lemma_verify::Options {
         explain: false,
         relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
+        facts_cache: run.facts_cache.cloned(),
     };
     let report = lemma_verify::verify(&inferred.manifest, engine, &options)
         .map_err(|source| GraphError::Inference { source })?;

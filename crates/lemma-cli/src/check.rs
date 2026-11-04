@@ -26,6 +26,7 @@ pub(crate) fn run(args: &CheckArgs, json: bool) -> ExitCode {
             _ => Level::Audit,
         }),
         cache: lemma_graph::repos::cache_directory(),
+        facts_cache: crate::verify::facts_cache(),
     };
     let report = match check(args, &options) {
         Ok(report) => report,
