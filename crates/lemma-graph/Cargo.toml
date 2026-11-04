@@ -16,6 +16,7 @@ lemma-logic.workspace = true
 lemma-model.workspace = true
 lemma-syntax.workspace = true
 lemma-verify.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

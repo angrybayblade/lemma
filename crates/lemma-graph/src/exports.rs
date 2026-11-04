@@ -17,16 +17,16 @@ use crate::GraphError;
 use crate::address::parse_link;
 use crate::affects::CODE_EXTENSIONS;
 use crate::config::{LemmaFile, Service};
+use crate::handlers::{Lookup, RouteSite, passed_to_helper, resolve};
 
 /// Bumped whenever how exports are found changes, so stored ones built the
 /// old way are rebuilt.
-pub const VERSION: &str = "1";
+pub const VERSION: &str = "8";
 
 /// What exports need to know about the indexed code.
 pub struct IndexedSymbols<'a> {
-    /// The function, method or type a simple name means, as its file and
-    /// qualified name, if exactly one definition has that name.
-    pub unique: &'a dyn Fn(&str) -> Option<(String, String)>,
+    /// Definitions by name and by place, to find route handlers.
+    pub lookup: Lookup<'a>,
     /// The qualified names of a file's top-level definitions.
     pub top_level: &'a dyn Fn(&str) -> Vec<String>,
 }
@@ -104,18 +104,12 @@ fn operations(name: &str, service: &Service) -> Vec<Export> {
         .collect()
 }
 
-/// A route declared in a service's code.
+/// A route declared in a service's code: where its path is written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Route {
-    method: String,
-    path: String,
     file: String,
-    /// The definition around the route, by qualified name.
-    enclosing: Option<String>,
-    /// The names on the route's line that could be its handler, in order:
-    /// identifiers other than method calls on an object (`router.Handle(`),
-    /// which are the routing library's.
-    line_names: Vec<String>,
+    line: u32,
+    template: String,
 }
 
 /// The operations a service's documents describe, each at its route's
@@ -130,7 +124,7 @@ fn endpoints(
     if service.exports.openapi.is_empty() {
         return Ok(Vec::new());
     }
-    let routes = routes(service, root, extractor)?;
+    let (routes, texts) = routes(service, root, extractor)?;
     let mut found = Vec::new();
     for document in &service.exports.openapi {
         let Some(text) = lemma_http::read_file(root, None, document)
@@ -144,11 +138,11 @@ fn endpoints(
                 source,
             })?;
         for operation in lemma_http::operations(&json) {
-            let Some(id) = operation.operation_id else {
+            let Some(id) = operation.operation_id.clone() else {
                 continue;
             };
             let route = routes.get(&(operation.method.clone(), operation.path.clone()));
-            let (path, symbol) = route.map_or((None, None), |route| handler(route, symbols));
+            let (path, symbol) = handler_of(route, &operation, service, &texts, symbols);
             found.push(Export {
                 service: name.to_owned(),
                 name: id,
@@ -164,14 +158,14 @@ fn endpoints(
 
 /// The routes in a service's code, by method and path, including the paths
 /// its route aliases also serve them at.
-fn routes(
-    service: &Service,
-    root: &Path,
-    extractor: &mut Extractor,
-) -> Result<BTreeMap<(String, String), Route>, GraphError> {
+/// Routes and the texts of the files they are in.
+type Routes = (BTreeMap<(String, String), Route>, BTreeMap<String, String>);
+
+fn routes(service: &Service, root: &Path, extractor: &mut Extractor) -> Result<Routes, GraphError> {
     let files = lemma_http::read_files(root, None, &service.index.include, &CODE_EXTENSIONS)
         .map_err(|source| GraphError::Source { source })?;
     let mut found = BTreeMap::new();
+    let mut texts = BTreeMap::new();
     for file in files
         .iter()
         .filter(|file| !lemma_http::is_test_file(&file.path))
@@ -185,18 +179,24 @@ fn routes(
         .map_err(|source| GraphError::Schema {
             message: format!("could not read routes in {}: {source}", file.path),
         })?;
-        let lines: Vec<&str> = file.contents.lines().collect();
-        for declared in facts.method_paths.iter().filter(|item| item.method != "*") {
-            let line = lines
-                .get(declared.location.line.saturating_sub(1) as usize)
-                .copied()
-                .unwrap_or_default();
+        let declared_here: Vec<_> = facts
+            .method_paths
+            .iter()
+            .filter(|item| item.method != "*")
+            .collect();
+        // Kept for finding handlers: files that declare routes, and files
+        // that write paths a helper may register.
+        if !declared_here.is_empty()
+            || file.contents.contains("'/")
+            || file.contents.contains("\"/")
+        {
+            texts.insert(file.path.clone(), file.contents.clone());
+        }
+        for declared in declared_here {
             let route = Route {
-                method: declared.method.clone(),
-                path: declared.path.clone(),
                 file: file.path.clone(),
-                enclosing: declared.location.symbol.clone(),
-                line_names: handler_candidates(line),
+                line: declared.location.line,
+                template: declared.template.clone(),
             };
             for path in aliased(&declared.path, &service.route_aliases) {
                 found
@@ -205,7 +205,44 @@ fn routes(
             }
         }
     }
-    Ok(found)
+    Ok((found, texts))
+}
+
+/// A documented operation's handler: at its route, or, when no route
+/// writes its path beside a method, the helper its path is passed to.
+fn handler_of(
+    route: Option<&Route>,
+    operation: &lemma_http::Operation,
+    service: &Service,
+    texts: &BTreeMap<String, String>,
+    symbols: &IndexedSymbols<'_>,
+) -> (Option<String>, Option<String>) {
+    let Some(route) = route else {
+        let templates = unaliased(&operation.template, &service.route_aliases);
+        return passed_to_helper(texts, &operation.method, &templates, &symbols.lookup)
+            .map_or((None, None), |found| {
+                (Some(found.path), Some(found.qualified))
+            });
+    };
+    let site = RouteSite {
+        file: &route.file,
+        text: texts.get(&route.file).map_or("", String::as_str),
+        line: route.line,
+        template: &route.template,
+    };
+    resolve(&site, &symbols.lookup)
+}
+
+/// A documented path as written, then as each alias's source prefix would
+/// have it written (`/v3.1/x` documented, `/v3/x` written and aliased).
+fn unaliased(template: &str, aliases: &BTreeMap<String, String>) -> Vec<String> {
+    let mut templates = vec![template.to_owned()];
+    for (from, to) in aliases {
+        if let Some(rest) = template.strip_prefix(to.as_str()) {
+            templates.push(format!("{from}{rest}"));
+        }
+    }
+    templates
 }
 
 /// A route's path and the paths its prefixes are aliased to.
@@ -219,54 +256,6 @@ fn aliased(path: &str, aliases: &BTreeMap<String, String>) -> Vec<String> {
     paths
 }
 
-/// The function handling a route: the last name on its line that only one
-/// definition has, other than the function around it (handlers come after
-/// paths and middleware); otherwise the function around it.
-fn handler(route: &Route, symbols: &IndexedSymbols<'_>) -> (Option<String>, Option<String>) {
-    let enclosing_name = route
-        .enclosing
-        .as_deref()
-        .map(|qualified| qualified.rsplit('.').next().unwrap_or(qualified));
-    let named = route
-        .line_names
-        .iter()
-        .rev()
-        .filter(|name| Some(name.as_str()) != enclosing_name)
-        .find_map(|name| (symbols.unique)(name));
-    if let Some((path, qualified)) = named {
-        return (Some(path), Some(qualified));
-    }
-    (Some(route.file.clone()), route.enclosing.clone())
-}
-
-/// The identifiers on a line that could name a handler, in order: all but
-/// method calls on an object (`.Handle(`), which belong to the routing
-/// library. A method value (`h.execute`) or a call (`NewHandler(`) stays.
-fn handler_candidates(line: &str) -> Vec<String> {
-    let mut found = Vec::new();
-    let mut start = None;
-    for (index, character) in line.char_indices().chain([(line.len(), ' ')]) {
-        let is_part = character.is_alphanumeric() || character == '_';
-        match (start, is_part) {
-            (None, true) => start = Some(index),
-            (Some(begin), false) => {
-                start = None;
-                let word = &line[begin..index];
-                if word.chars().next().is_none_or(char::is_numeric) {
-                    continue;
-                }
-                let is_member = line[..begin].ends_with('.');
-                let is_called = line[index..].trim_start().starts_with('(');
-                if !(is_member && is_called) {
-                    found.push(word.to_owned());
-                }
-            }
-            _ => {}
-        }
-    }
-    found
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,10 +267,14 @@ mod tests {
             "services:\n  web:\n    exports:\n      operations:\n        pay: { path: \"src/pay.go:Charges.Create\" }\ngraph:\n  links:\n    - services.web.pay -> \"#billing:services.api.charge\"\n",
         )
         .unwrap();
-        let unique = |_: &str| None;
+        let unique = |_: &str, _: &str| None;
+        let enclosing = |_: &str, _: u32| None;
         let top_level = |_: &str| Vec::new();
         let symbols = IndexedSymbols {
-            unique: &unique,
+            lookup: Lookup {
+                unique: &unique,
+                enclosing: &enclosing,
+            },
             top_level: &top_level,
         };
 
@@ -304,43 +297,6 @@ mod tests {
                 caller: "services.web.pay".to_owned(),
                 provider: "#billing:services.api.charge".to_owned(),
             }]
-        );
-    }
-
-    #[test]
-    fn a_route_line_naming_a_unique_function_points_at_it() {
-        let route = Route {
-            method: "POST".to_owned(),
-            path: "/x".to_owned(),
-            file: "routes.go".to_owned(),
-            enclosing: Some("SetupRoutes".to_owned()),
-            line_names: handler_candidates(
-                r#"router.Handle("/{slug}/execute", NewExecuteHandler(client)).Methods("POST")"#,
-            ),
-        };
-        // `Handle` is defined once too, by an unrelated type.
-        let unique = |name: &str| match name {
-            "NewExecuteHandler" => Some((
-                "handlers/execute.go".to_owned(),
-                "NewExecuteHandler".to_owned(),
-            )),
-            "Handle" => Some(("lib/notify.go".to_owned(), "Notifier.Handle".to_owned())),
-            _ => None,
-        };
-        let top_level = |_: &str| Vec::new();
-        let symbols = IndexedSymbols {
-            unique: &unique,
-            top_level: &top_level,
-        };
-
-        let found = handler(&route, &symbols);
-
-        assert_eq!(
-            found,
-            (
-                Some("handlers/execute.go".to_owned()),
-                Some("NewExecuteHandler".to_owned())
-            )
         );
     }
 }
