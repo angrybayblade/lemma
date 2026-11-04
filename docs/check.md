@@ -146,7 +146,7 @@ Inferred links are checked by `lemma verify`'s grammar. Its errors are problems;
 
 ### What a problem affects
 
-Each problem lists what it affects further up, nearest first: the operations whose handlers reach the failing call, the code in other repositories that calls those operations, and so on. The call graph is read by name: a function calls another if its body mentions the other's name, and a method is reached through its type. Names that several functions share are not followed. A trace is an approximation, so it is shown with a problem and never raises one.
+Each problem lists what it affects further up, nearest first: the operations whose handlers reach the failing call, the code in other repositories that calls those operations, and so on. The call graph is read by name: a function calls another if its body mentions the other's name, and a method is reached through its type. Names that several functions share, and names so many functions mention that reaching one through them is no evidence (an error helper every handler uses), are not followed. A route's handler is found as exports find it: the call its registration names, the constant holding the registration, a helper its path is passed to, or an inline function, which counts only if its own code reaches the failing call. A trace is an approximation, so it is shown with a problem and never raises one.
 
 ## Command
 
