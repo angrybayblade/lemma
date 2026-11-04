@@ -2,6 +2,7 @@
 //! where each trace starts, and reading the code and routes it walks.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use lemma_model::{Language, SymbolKind};
 use lemma_syntax::Extractor;
@@ -29,7 +30,19 @@ pub struct RouteSite {
     pub file: String,
     /// The declaring line, counting from 1.
     pub line: u32,
+    /// Whether the line passes the path to a helper that registers it,
+    /// rather than declaring the route.
+    pub passed_to_helper: bool,
 }
+
+/// The inference relations tracing reads.
+pub const TRACED_RELATIONS: [&str; 5] = [
+    "calls",
+    "route",
+    "references_operation",
+    "operation",
+    "part_of_service",
+];
 
 /// What inference found that tracing walks: calls and routes, and where
 /// its own findings' traces start.
@@ -53,9 +66,10 @@ pub fn walkable(
     let calls = rows("calls")
         .filter_map(|row| call(row, owners))
         .collect::<BTreeSet<_>>();
-    let routes = rows("route")
+    let mut routes: Vec<RouteSite> = rows("route")
         .filter_map(|row| route_site(row, owners))
         .collect();
+    routes.extend(helper_sites(relations, &routes, owners));
     Walkable {
         calls: calls
             .into_iter()
@@ -88,6 +102,68 @@ fn call(
     Some((repository, file, function, operation.clone()))
 }
 
+/// Where documented operations without a declared route are registered by
+/// a helper: their service's own code writes their path, passed to the
+/// helper (`references_operation` rows in files `part_of_service`).
+fn helper_sites(
+    relations: &BTreeMap<String, Vec<Vec<String>>>,
+    routes: &[RouteSite],
+    owners: &BTreeMap<String, String>,
+) -> Vec<RouteSite> {
+    let rows = |name: &str| relations.get(name).into_iter().flatten();
+    let declared: BTreeSet<(&str, &str)> = routes
+        .iter()
+        .map(|route| (route.service.as_str(), route.operation.as_str()))
+        .collect();
+    let mut own_files: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for row in rows("part_of_service") {
+        if let [file_id, service] = &row[..] {
+            own_files.entry(service).or_default().insert(file_id);
+        }
+    }
+    let mut sites = BTreeSet::new();
+    for row in rows("operation") {
+        let [service, operation, ..] = &row[..] else {
+            continue;
+        };
+        if declared.contains(&(service.as_str(), operation.as_str())) {
+            continue;
+        }
+        let Some(files) = own_files.get(service.as_str()) else {
+            continue;
+        };
+        let referencing = rows("references_operation").filter(|reference| {
+            reference.get(1) == Some(operation)
+                && reference
+                    .get(2)
+                    .is_some_and(|file| files.contains(file.as_str()))
+        });
+        for reference in referencing {
+            let (Some(file_id), Some(line)) = (reference.get(2), reference.get(3)) else {
+                continue;
+            };
+            let Some((repository, file)) = split_file_id(file_id, owners) else {
+                continue;
+            };
+            let Ok(line) = line.parse() else {
+                continue;
+            };
+            sites.insert((repository, service.clone(), operation.clone(), file, line));
+        }
+    }
+    sites
+        .into_iter()
+        .map(|(repository, service, operation, file, line)| RouteSite {
+            repository,
+            service,
+            operation,
+            file,
+            line,
+            passed_to_helper: true,
+        })
+        .collect()
+}
+
 /// A `route(s, m, p, f, l)` row.
 fn route_site(row: &[String], owners: &BTreeMap<String, String>) -> Option<RouteSite> {
     let [service, method, path, file, line] = row else {
@@ -99,6 +175,7 @@ fn route_site(row: &[String], owners: &BTreeMap<String, String>) -> Option<Route
         operation: lemma_verify::operation_key(method, path),
         file: file.clone(),
         line: line.parse().ok()?,
+        passed_to_helper: false,
     })
 }
 
@@ -253,7 +330,7 @@ pub(crate) fn read_routes(
     sites: &[RouteSite],
     repos: &BTreeMap<String, Repo>,
 ) -> Result<Vec<Route>, GraphError> {
-    let mut sources: BTreeMap<(&str, &str), Option<String>> = BTreeMap::new();
+    let mut sources: BTreeMap<(&str, &str), Arc<str>> = BTreeMap::new();
     let mut routes = Vec::new();
     for site in sites {
         let key = (site.repository.as_str(), site.file.as_str());
@@ -262,22 +339,78 @@ pub(crate) fn read_routes(
                 Some(repo) => repo.checkouts[HEAD].read(&site.file)?,
                 None => None,
             };
-            entry.insert(text);
+            entry.insert(Arc::from(text.unwrap_or_default()));
         }
-        let line_text = sources[&key]
-            .as_deref()
-            .and_then(|text| text.lines().nth(site.line.saturating_sub(1) as usize))
-            .unwrap_or_default();
+        let source = Arc::clone(&sources[&key]);
+        let index = site.line.saturating_sub(1) as usize;
+        let line_text = source.lines().nth(index).unwrap_or_default();
         routes.push(Route {
             repository: site.repository.clone(),
             operation: site.operation.clone(),
             service: site.service.clone(),
             file: site.file.clone(),
             line: site.line,
-            line_mentions: impact::identifiers(line_text),
+            handler_names: crate::handlers::handler_names(line_text),
+            template: path_literal(line_text),
+            inline_mentions: inline_handler(&source, index),
+            passed_to_helper: site.passed_to_helper,
+            source,
         });
     }
     Ok(routes)
+}
+
+/// The path literal a route's line writes: the longest string starting
+/// with `/`, or an empty one (a router mounted at its prefix).
+fn path_literal(line: &str) -> Option<String> {
+    let mut best: Option<&str> = None;
+    for quote in ['"', '\'', '`'] {
+        let mut rest = 0;
+        while let Some(open) = line[rest..].find(quote).map(|at| rest + at) {
+            let Some(close) = line[open + 1..].find(quote).map(|at| open + 1 + at) else {
+                break;
+            };
+            let literal = &line[open + 1..close];
+            let is_path = literal.is_empty() || literal.starts_with('/');
+            if is_path && best.is_none_or(|found| literal.len() > found.len()) {
+                best = Some(literal);
+            }
+            rest = close + 1;
+        }
+    }
+    best.map(str::to_owned)
+}
+
+/// The identifiers an inline handler's code mentions, when the route on
+/// line `index` (from 0) is registered with one: an anonymous function
+/// after its path (`func(w, r) {`, `(c) => {`, `function (req) {`,
+/// `lambda`). Its code runs from that line to where the registration's
+/// parentheses close.
+fn inline_handler(source: &str, index: usize) -> Option<BTreeSet<String>> {
+    let lines: Vec<&str> = source.lines().collect();
+    let line = lines.get(index)?;
+    let path_end = ['"', '\'', '`']
+        .iter()
+        .filter_map(|quote| line.rfind(*quote))
+        .max()
+        .map_or(0, |at| at + 1);
+    let after = &line[path_end..];
+    let is_inline = ["func(", "func (", "=>", "function(", "function (", "lambda"]
+        .iter()
+        .any(|marker| after.contains(marker));
+    if !is_inline {
+        return None;
+    }
+    let mut depth = 0i64;
+    let mut statement = Vec::new();
+    for text in lines.iter().skip(index).take(400) {
+        statement.push(*text);
+        depth += bracket_change(text);
+        if depth <= 0 {
+            break;
+        }
+    }
+    Some(impact::identifiers(&statement.join("\n")))
 }
 
 /// A repository's functions and methods at head, from the directories its
@@ -312,57 +445,184 @@ pub(crate) fn functions_of(
         let extraction = extractor
             .extract(language, &file.contents)
             .map_err(|source| GraphError::Syntax { source })?;
-        let lines: Vec<&str> = file.contents.lines().collect();
-        let mut covered = vec![false; lines.len()];
-        for symbol in extraction.symbols {
-            if !matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method) {
-                continue;
-            }
-            let (first, last) = (
-                symbol.span.start.line as usize,
-                symbol.span.end.line as usize,
-            );
-            let last = last.min(lines.len().saturating_sub(1));
-            for line in covered.iter_mut().take(last + 1).skip(first) {
-                *line = true;
-            }
-            let body = lines
-                .get(first..=last)
-                .map(|body| body.join("\n"))
-                .unwrap_or_default();
-            functions.push(Function {
-                file: file.path.clone(),
-                name: symbol.name,
-                qualified_name: symbol.qualified_name,
-                lines: (
-                    u32::try_from(first).unwrap_or(u32::MAX) + 1,
-                    u32::try_from(last).unwrap_or(u32::MAX) + 1,
-                ),
-                mentions: impact::identifiers(&body),
-            });
-        }
-        functions.push(top_level(&file.path, &lines, &covered));
+        functions.extend(file_functions(
+            &file.path,
+            &file.contents,
+            extraction.symbols,
+        ));
     }
     Ok(functions)
 }
 
-/// A file's code outside its functions, as a function without a name: it
-/// can be reached (a route registered with an anonymous handler) but is
-/// never called by name.
-fn top_level(file: &str, lines: &[&str], covered: &[bool]) -> Function {
-    let text: Vec<&str> = lines
-        .iter()
-        .zip(covered)
-        .filter(|(_, covered)| !**covered)
-        .map(|(line, _)| *line)
-        .collect();
-    Function {
+/// One file's functions, methods and values, then its top-level code.
+fn file_functions(path: &str, contents: &str, symbols: Vec<lemma_model::Symbol>) -> Vec<Function> {
+    let lines: Vec<&str> = contents.lines().collect();
+    let mut covered = vec![false; lines.len()];
+    let mut functions = Vec::new();
+    for symbol in symbols {
+        let kind = match symbol.kind {
+            SymbolKind::Function => "function",
+            SymbolKind::Method => "method",
+            // A route's handler is often a constant holding its
+            // registration (`const route = router.openapi(...)`).
+            SymbolKind::Constant => "constant",
+            SymbolKind::Variable => "variable",
+            _ => continue,
+        };
+        let (first, last) = (
+            symbol.span.start.line as usize,
+            symbol.span.end.line as usize,
+        );
+        let last = last.min(lines.len().saturating_sub(1));
+        for line in covered.iter_mut().take(last + 1).skip(first) {
+            *line = true;
+        }
+        let body = lines
+            .get(first..=last)
+            .map(|body| body.join("\n"))
+            .unwrap_or_default();
+        functions.push(Function {
+            file: path.to_owned(),
+            name: symbol.name,
+            qualified_name: symbol.qualified_name,
+            kind: kind.to_owned(),
+            lines: (
+                u32::try_from(first).unwrap_or(u32::MAX) + 1,
+                u32::try_from(last).unwrap_or(u32::MAX) + 1,
+            ),
+            mentions: impact::identifiers(&body),
+            binds: Vec::new(),
+        });
+    }
+    functions.extend(top_level(path, &lines, &mut covered));
+    functions
+}
+
+/// A file's code outside its functions, as functions without a name: each
+/// top-level destructuring (`const { handler } = make({ ...rpc })`), reached
+/// when its own code mentions something reached and followed by the names
+/// it binds, then the rest, which can be reached (a route registered with
+/// an anonymous handler) but is never called. Imports are left out:
+/// importing a function does not call it.
+fn top_level(file: &str, lines: &[&str], covered: &mut [bool]) -> Vec<Function> {
+    let mut found = destructurings(file, lines, covered);
+    let mut text = Vec::new();
+    let mut in_import = false;
+    for (line, covered) in lines.iter().zip(covered.iter()) {
+        if *covered {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        let starts_import = trimmed.starts_with("import ")
+            || (trimmed.starts_with("from ") && trimmed.contains(" import "));
+        if starts_import || in_import {
+            let ends = trimmed.contains(" from ")
+                || trimmed.starts_with("from ")
+                || !trimmed.contains('{');
+            in_import = !(ends || trimmed.ends_with(';') || trimmed.contains('}'));
+            continue;
+        }
+        text.push(*line);
+    }
+    found.push(Function {
         file: file.to_owned(),
         name: String::new(),
         qualified_name: String::new(),
+        kind: String::new(),
         lines: (0, 0),
         mentions: impact::identifiers(&text.join("\n")),
+        binds: Vec::new(),
+    });
+    found
+}
+
+/// Each top-level destructuring statement outside `covered` lines, which it
+/// then covers.
+fn destructurings(file: &str, lines: &[&str], covered: &mut [bool]) -> Vec<Function> {
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let trimmed = lines[index].trim_start().trim_start_matches("export ");
+        let starts = ["const {", "let {", "var {"]
+            .iter()
+            .any(|start| trimmed.starts_with(start));
+        if covered[index] || !starts {
+            index += 1;
+            continue;
+        }
+        let first = index;
+        let mut depth = 0i64;
+        let mut statement = Vec::new();
+        while index < lines.len() && !covered[index] {
+            statement.push(lines[index]);
+            depth += bracket_change(lines[index]);
+            index += 1;
+            if depth <= 0 {
+                break;
+            }
+        }
+        for line in covered.iter_mut().take(index).skip(first) {
+            *line = true;
+        }
+        let text = statement.join("\n");
+        found.push(Function {
+            file: file.to_owned(),
+            name: String::new(),
+            qualified_name: String::new(),
+            kind: "destructuring".to_owned(),
+            lines: (
+                u32::try_from(first).unwrap_or(u32::MAX) + 1,
+                u32::try_from(index).unwrap_or(u32::MAX),
+            ),
+            mentions: impact::identifiers(&text),
+            binds: destructured_names(&text),
+        });
     }
+    found
+}
+
+/// How many brackets a line opens, less how many it closes.
+fn bracket_change(line: &str) -> i64 {
+    line.chars()
+        .map(|character| match character {
+            '(' | '{' | '[' => 1,
+            ')' | '}' | ']' => -1,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// The name one part of a destructuring pattern binds: `X` in `def: X`,
+/// `handler` in `handler` or `handler = fallback`.
+fn bound_name(part: &str) -> Option<String> {
+    let name = part.rsplit(':').next().unwrap_or(part);
+    let name = name.split('=').next().unwrap_or(name).trim();
+    let is_identifier = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$');
+    is_identifier.then(|| name.to_owned())
+}
+
+/// The names destructuring declarations bind: `handler` and `def` in
+/// `const { def: DEF, handler } = make()` bind `DEF` and `handler`.
+fn destructured_names(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("const {").or_else(|| rest.find("let {")) {
+        let after = &rest[at..];
+        let Some(open) = after.find('{') else { break };
+        let Some(close) = after.find('}') else { break };
+        let is_declaration = after[close..]
+            .trim_start_matches('}')
+            .trim_start()
+            .starts_with('=');
+        if close > open && is_declaration {
+            names.extend(after[open + 1..close].split(',').filter_map(bound_name));
+        }
+        rest = &after[close.max(open) + 1..];
+    }
+    names
 }
 
 /// The directories a repository's call graph is read from: `Some(vec![])`
@@ -461,6 +721,62 @@ mod tests {
                 repository: "#web".to_owned(),
                 names: vec!["pay".to_owned()],
             })
+        );
+    }
+
+    #[test]
+    fn a_top_level_destructuring_binds_names_and_imports_are_not_mentions() {
+        let text = "import { executeRPC } from './rpc'\nconst { def: RUN_DEF, handler: runWrapper } = makeRoute({\n  ...executeRPC,\n})\nexport default handler(router)\n";
+        let lines: Vec<&str> = text.lines().collect();
+        let mut covered = vec![false; lines.len()];
+
+        let found = top_level("run.ts", &lines, &mut covered);
+
+        assert_eq!(found[0].kind, "destructuring");
+        assert_eq!(found[0].binds, ["RUN_DEF", "runWrapper"]);
+        assert!(found[0].mentions.contains("executeRPC"));
+        let rest = &found[1];
+        assert_eq!(rest.kind, "");
+        assert!(!rest.mentions.contains("executeRPC"));
+        assert!(rest.mentions.contains("handler"));
+    }
+
+    #[test]
+    fn an_operation_without_a_route_is_registered_where_its_service_writes_its_path() {
+        let owners = BTreeMap::from([("#api:api".to_owned(), "#api".to_owned())]);
+        let row = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let relations = BTreeMap::from([
+            (
+                "operation".to_owned(),
+                vec![row(&["#api:api", "POST /v1/run", "POST", "/v1/run"])],
+            ),
+            (
+                "part_of_service".to_owned(),
+                vec![row(&["#api:api:src/run.ts", "#api:api"])],
+            ),
+            (
+                "references_operation".to_owned(),
+                vec![row(&[
+                    "#api:api:src/run.ts",
+                    "POST /v1/run",
+                    "#api:api:src/run.ts",
+                    "4",
+                ])],
+            ),
+        ]);
+
+        let found = walkable(&relations, &owners);
+
+        assert_eq!(found.routes.len(), 1);
+        assert!(found.routes[0].passed_to_helper);
+        assert_eq!(
+            (found.routes[0].file.as_str(), found.routes[0].line),
+            ("src/run.ts", 4)
         );
     }
 }
