@@ -1,7 +1,11 @@
 //! Go structs as JSON Schema, by `encoding/json`'s rules: the `json` tag
 //! names a field (`-` skips it, `omitempty` makes it optional), a field
-//! without a tag travels under its Go name, pointers, slices and maps can be
-//! `null`, and an embedded struct's fields are its own. Named types defined
+//! without a tag travels under its Go name, pointers can be `null`, and an
+//! embedded struct's fields are its own. A nil slice or map is encoded as
+//! `null` too, but Go code conventionally materializes them empty, so only a
+//! receiving struct accepts `null` for one; a sending struct's slices and
+//! maps are taken as never `null`, as reflectors such as
+//! `invopop/jsonschema` take them. Named types defined
 //! in the same package are followed; others are left open (`{}`) and
 //! reported.
 //!
@@ -118,11 +122,13 @@ impl Reader<'_, '_> {
             }
             _ => json!({ "type": "object", "additionalProperties": element(self, "value") }),
         };
-        // A nil pointer, slice or map is encoded as null; null decodes into one.
-        if node.kind() == "array_type" {
-            return schema;
+        // A nil pointer is encoded as null; null decodes into a pointer, slice
+        // or map. A sent slice or map is taken as materialized (see above).
+        let is_pointer = node.kind() == "pointer_type";
+        if is_pointer || (self.view == View::Decode && node.kind() != "array_type") {
+            return nullable(schema);
         }
-        nullable(schema)
+        schema
     }
 
     fn named(&mut self, name: &str) -> Value {
@@ -318,7 +324,7 @@ type Base struct {
 
         let properties = &found.schema["properties"];
         assert_eq!(properties["error"]["type"], json!(["string", "null"]));
-        assert_eq!(properties["data"]["type"], json!(["object", "null"]));
+        assert_eq!(properties["data"]["type"], "object");
         assert_eq!(
             properties["metadata"]["properties"]["amount_cents"]["type"],
             "string"
