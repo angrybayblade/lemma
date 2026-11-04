@@ -5,7 +5,7 @@
 //! table lookup. Symbols and numbers are both Soufflé `number`s: symbols
 //! are already interned, and integers compare faster than strings.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use lemma_logic::{Atom, Literal, Program, RelationRole, Rule, Term, Value};
@@ -79,6 +79,36 @@ pub fn translate(program: &Program) -> Translation {
         source,
         identifiers,
         rules_by_relation,
+    }
+}
+
+impl Translation {
+    /// The program for one request: every derived relation is written out
+    /// unless the request names the ones it reads, and asks for no
+    /// derivations (which may need any of them).
+    pub fn source_for(&self, request: &lemma_logic::Request) -> String {
+        if request.outputs.is_empty() || !request.explain.is_empty() {
+            return self.source.clone();
+        }
+        let wanted: BTreeSet<&str> = request
+            .outputs
+            .iter()
+            .filter_map(|name| self.identifiers.get(name))
+            .map(String::as_str)
+            .collect();
+        let mut source = String::with_capacity(self.source.len());
+        for line in self.source.lines() {
+            let unwanted = line
+                .strip_prefix(".output ")
+                .and_then(|rest| rest.split('(').next())
+                .is_some_and(|identifier| !wanted.contains(identifier));
+            if unwanted {
+                continue;
+            }
+            source.push_str(line);
+            source.push('\n');
+        }
+        source
     }
 }
 
