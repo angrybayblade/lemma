@@ -13,7 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 /// the routes the code writes, both as method and canonical path.
 ///
 /// A document is aliased to another's prefix when most of its operations
-/// have no route of their own but one at the same path under that prefix. Each document's prefix is the static prefix its paths share.
+/// that have no route of their own have one at the same path under that
+/// prefix, and at least two do. Measuring among the unrouted operations
+/// lets a document whose new paths have routes of their own keep the alias
+/// its old paths imply. Each document's prefix is the static prefix its
+/// paths share.
 pub fn implied_aliases(
     documents: &[Vec<(String, String)>],
     routes: &BTreeSet<(String, String)>,
@@ -47,7 +51,7 @@ pub fn implied_aliases(
                     routes.contains(&(method.clone(), format!("{written}{rest}")))
                 })
                 .count();
-            if routed_there * 2 > operations.len() {
+            if routed_there >= 2 && routed_there * 2 > unrouted.len() {
                 aliases.insert(format!("{written}/"), format!("{served}/"));
             }
         }
@@ -113,6 +117,37 @@ mod tests {
             ("GET", "/v1/users"),
             ("POST", "/v1/users/{}"),
             ("GET", "/v2/teams"),
+        ])
+        .into_iter()
+        .collect();
+
+        let aliases = implied_aliases(&documents, &routes);
+
+        assert_eq!(
+            aliases,
+            BTreeMap::from([("/v1/".to_owned(), "/v2/".to_owned())])
+        );
+    }
+
+    #[test]
+    fn routes_of_its_own_for_new_paths_keep_a_documents_alias() {
+        let documents = [
+            operations(&[("GET", "/v1/a"), ("GET", "/v1/b"), ("GET", "/v1/c")]),
+            operations(&[
+                ("GET", "/v2/a"),
+                ("GET", "/v2/b"),
+                ("GET", "/v2/new1"),
+                ("GET", "/v2/new2"),
+                ("GET", "/v2/new3"),
+            ]),
+        ];
+        let routes = operations(&[
+            ("GET", "/v1/a"),
+            ("GET", "/v1/b"),
+            ("GET", "/v1/c"),
+            ("GET", "/v2/new1"),
+            ("GET", "/v2/new2"),
+            ("GET", "/v2/new3"),
         ])
         .into_iter()
         .collect();
