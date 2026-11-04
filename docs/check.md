@@ -16,9 +16,15 @@ $ lemma check lemma.yaml --change '#billing' --base main --head HEAD
   self           working directory
 error   request: the receiver requires `currency` at the root; the sender may leave it out
         [request] #web:services.web.create_charge -> #billing:services.api.create_charge  (introduced)
-        affects (traced by name):
-          #web:web (1): POST /v1/checkout
-          #storefront (2): src/cart.ts::Cart.pay -> POST /v1/checkout; src/quick-buy.ts::buy -> POST /v1/checkout
+        affects 1 operation and 2 callers (traced by name):
+          reached directly:
+            #web:web: 1 operation
+              POST /v1/checkout
+                through src/checkout.go:Checkout -> src/charges.go:Charges.Create
+          one call away:
+            #storefront: 2 callers of 1 operation
+              src/cart.ts::Cart.pay -> POST /v1/checkout
+              src/quick-buy.ts::buy -> POST /v1/checkout
 error   response: the receiver expects `receipt_url` at the root; the sender does not send it
         [response] #web:services.web.create_charge -> #billing:services.api.create_charge  (introduced)
 2 errors, 0 warnings, 31 informational (--all lists them)

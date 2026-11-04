@@ -248,8 +248,10 @@ pub fn attach(
     for (index, seed) in problems {
         if !traces.contains_key(seed) {
             let mut functions = |repository: &str| code.functions(repository);
-            let affected = impact::trace(seed, &mut functions, &routes, &walkable.calls);
-            traces.insert(seed, describe(&affected));
+            let start = impact::Start::Names(seed.clone());
+            let (affected, links) =
+                impact::trace_links(&start, &mut functions, &routes, &walkable.calls);
+            traces.insert(seed, describe(&affected, &links));
         }
         findings[*index].affects.clone_from(&traces[seed]);
     }
@@ -301,16 +303,24 @@ impl<'a> Code<'a> {
     }
 }
 
-fn describe(affected: &[(usize, Affected)]) -> Vec<Impact> {
+fn describe(affected: &[(usize, Affected)], links: &[impact::Link]) -> Vec<Impact> {
     affected
         .iter()
         .map(|(distance, item)| match item {
-            Affected::Operation { service, operation } => Impact {
-                distance: *distance,
-                owner: service.clone(),
-                at: operation.clone(),
-                calls: None,
-            },
+            Affected::Operation { service, operation } => {
+                let reached_by = links
+                    .iter()
+                    .find(|link| link.user == impact::Node::Affected(item.clone()))
+                    .map(|link| &link.used);
+                Impact {
+                    distance: *distance,
+                    owner: service.clone(),
+                    at: operation.clone(),
+                    calls: None,
+                    via: reached_by.map(node_label),
+                    path: reached_by.map_or_else(Vec::new, |node| calls_below(node, links)),
+                }
+            }
             Affected::Caller {
                 repository,
                 location,
@@ -320,9 +330,38 @@ fn describe(affected: &[(usize, Affected)]) -> Vec<Impact> {
                 owner: repository.clone(),
                 at: location.clone(),
                 calls: Some(operation.clone()),
+                via: None,
+                path: Vec::new(),
             },
         })
         .collect()
+}
+
+/// A node as a reader names it: `file:Function`, or what was affected.
+fn node_label(node: &impact::Node) -> String {
+    match node {
+        impact::Node::Function { file, name, .. } => format!("{file}:{name}"),
+        impact::Node::Affected(Affected::Caller { location, .. }) => location.clone(),
+        impact::Node::Affected(Affected::Operation { operation, .. }) => operation.clone(),
+    }
+}
+
+/// The functions `node` calls on the way down to the problem, nearest
+/// first, while the links go from function to function.
+fn calls_below(node: &impact::Node, links: &[impact::Link]) -> Vec<String> {
+    let mut path = Vec::new();
+    let mut current = node;
+    while let Some(link) = links
+        .iter()
+        .find(|link| &link.user == current && matches!(link.used, impact::Node::Function { .. }))
+    {
+        if path.len() > 64 {
+            break;
+        }
+        path.push(node_label(&link.used));
+        current = &link.used;
+    }
+    path
 }
 
 /// Routes with the identifiers on their declaring lines, read at head.
