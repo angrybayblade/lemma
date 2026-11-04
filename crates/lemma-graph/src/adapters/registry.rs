@@ -50,6 +50,24 @@ pub(super) const BUILT_IN: &[BuiltIn] = &[
         text: include_str!("../../adapters/fastapi_openapi.py"),
         interpreter: Interpreter::Python,
     },
+    BuiltIn {
+        name: "express-routes",
+        file: "express-routes.ts",
+        text: include_str!("../../adapters/express-routes.ts"),
+        interpreter: Interpreter::Bun,
+    },
+    BuiltIn {
+        name: "flask-routes",
+        file: "flask_routes.py",
+        text: include_str!("../../adapters/flask_routes.py"),
+        interpreter: Interpreter::Python,
+    },
+    BuiltIn {
+        name: "go-http-routes",
+        file: "go-http-routes.go",
+        text: include_str!("../../adapters/go-http-routes.go"),
+        interpreter: Interpreter::Go,
+    },
 ];
 
 /// What an `operations_from` runs.
