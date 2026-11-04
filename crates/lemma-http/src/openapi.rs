@@ -63,6 +63,17 @@ pub struct Field {
     pub required: bool,
 }
 
+/// Whether a document's name says it is YAML (`.yaml` or `.yml`), not
+/// JSON.
+pub fn is_yaml_document(name: &str) -> bool {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("yaml") || extension.eq_ignore_ascii_case("yml")
+        })
+}
+
 /// Every operation in a document, sorted by method and path.
 pub fn operations(document: &Json) -> Vec<Operation> {
     let mut found = Vec::new();

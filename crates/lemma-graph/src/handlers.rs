@@ -97,6 +97,113 @@ pub fn handler_names(line: &str) -> Vec<String> {
     ordered
 }
 
+/// The handler a registration call passes, for a call seen registering a
+/// route at `site.line` (as an adapter reports it): its last argument that
+/// names a function, method or type, as `openapi(route, getUser)` or
+/// `get(path, auth, handler)` do, read until the call's brackets close.
+/// `None` when that argument is an inline function, whose definition is
+/// the code around the call.
+pub fn registered_call(site: &RouteSite<'_>, lookup: &Lookup<'_>) -> Option<Definition> {
+    let masked = mask_strings(site.text);
+    let start: usize = masked
+        .split_inclusive('\n')
+        .take(site.line.checked_sub(1)? as usize)
+        .map(str::len)
+        .sum();
+    let rest = masked.get(start..)?;
+    let line_end = rest.find('\n').unwrap_or(rest.len());
+    let open = rest[..line_end].find('(')?;
+    let arguments = &rest[open + 1..open + closing_bracket(&rest[open..])?];
+    for argument in top_level_arguments(arguments).into_iter().rev() {
+        let argument = argument.trim();
+        if argument.is_empty() {
+            continue;
+        }
+        let is_inline = argument.contains("=>")
+            || argument.starts_with("async")
+            || argument.starts_with("function");
+        if is_inline {
+            return None;
+        }
+        let named = words(argument)
+            .iter()
+            .rev()
+            .find_map(|word| (lookup.unique)(&word.name, site.file));
+        if named.is_some() {
+            return named;
+        }
+    }
+    None
+}
+
+/// The definition a decorator at `site.line` decorates (`@router.post("")`
+/// above `def place_order`, `@Get()` above a method), passing any further
+/// decorators, including ones whose arguments span lines; `None` when the
+/// line is not a decorator.
+pub fn decorated(site: &RouteSite<'_>, lookup: &Lookup<'_>) -> Option<Definition> {
+    let lines: Vec<&str> = site.text.lines().collect();
+    let mut index = site.line.checked_sub(1)? as usize;
+    if !lines.get(index)?.trim_start().starts_with('@') {
+        return None;
+    }
+    let mut depth = 0_i64;
+    while let Some(line) = lines.get(index) {
+        let masked = mask_strings(line);
+        let is_decorator_line = depth > 0 || masked.trim_start().starts_with('@');
+        if !is_decorator_line {
+            let line_number = u32::try_from(index + 1).ok()?;
+            return (lookup.enclosing)(site.file, line_number);
+        }
+        for character in masked.chars() {
+            match character {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Where the bracket opening `text` closes, as an offset into it.
+fn closing_bracket(text: &str) -> Option<usize> {
+    let mut depth = 0_usize;
+    for (at, character) in text.char_indices() {
+        match character {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A call's arguments, split at the commas outside any bracket.
+fn top_level_arguments(arguments: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut depth = 0_usize;
+    let mut start = 0;
+    for (at, character) in arguments.char_indices() {
+        match character {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                found.push(&arguments[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    found.push(&arguments[start..]);
+    found
+}
+
 /// A handler named after the path on its line: the first call that is not
 /// chained onto another (`).Methods(`), else the first name that is a
 /// definition or a local variable built by one.

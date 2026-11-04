@@ -142,21 +142,32 @@ pub struct OperationsFrom {
     /// What the adapter imports, relative to `directory`: the directories
     /// routes are registered in (`hono-zod-openapi`), or a module with its
     /// app (`app.main:app`, `fastapi`). Given to the adapter as
-    /// `$LEMMA_ENTRY`, joined with `:`.
+    /// `$LEMMA_ENTRY`, one per line.
     #[serde(default)]
     pub entry: Vec<String>,
     /// Where the adapter runs, relative to the repository root, such as the
     /// app's package directory; the root if absent.
     #[serde(default)]
     pub directory: Option<String>,
-    /// Run once in a fresh checkout of a commit, before the adapter, to
-    /// install and build what importing the code needs. Not run in the
-    /// working directory, which is taken as ready.
+    /// Run in Lemma's worktree of a commit before the adapter, to install
+    /// and build what importing the code needs. Only commits no one has
+    /// read from a clean working directory are built; the working
+    /// directory is taken as ready.
     #[serde(default)]
     pub setup: Option<String>,
     /// Environment variables for the adapter and `setup`.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Glob patterns of files under `entry` the adapter does not import,
+    /// such as scripts that do work when imported. Given to the adapter as
+    /// `$LEMMA_EXCLUDE`, one per line.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// How long the adapter may run, in milliseconds, before it is stopped
+    /// and its service checked against its committed documents; five
+    /// minutes if absent.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 /// The calls a service writes its routes with, by name (`exports.routes`).
@@ -179,6 +190,7 @@ impl Exports {
     /// Whether it exports nothing.
     pub fn is_empty(&self) -> bool {
         self.openapi.is_empty()
+            && self.operations_from.is_none()
             && self.operations.is_empty()
             && self.symbols.is_empty()
             && self.client.is_none()

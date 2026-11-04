@@ -101,7 +101,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
         change: Some(Change {
             repository: "#billing".to_owned(),
             base: "HEAD~1".to_owned(),
-            head: "HEAD".to_owned(),
+            head: Some("HEAD".to_owned()),
         }),
         level: Some(Level::Check),
         cache: workspace.path().join("cache"),

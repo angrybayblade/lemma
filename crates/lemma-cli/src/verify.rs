@@ -43,7 +43,7 @@ fn verify(args: &VerifyArgs) -> anyhow::Result<Report> {
         manifest.change.base.clone_from(base);
     }
     if let Some(head) = &args.head {
-        manifest.change.head.clone_from(head);
+        manifest.change.head = Some(head.clone());
     }
     let options = Options {
         explain: args.explain,

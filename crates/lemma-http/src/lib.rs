@@ -16,7 +16,7 @@ pub use code::{
     ClientCall, CodeError, CodeFacts, CodeOptions, ImportBinding, Location, MemberCall, Mention,
     MethodPath, PathReference, Reexport, SchemaUnion, SchemaUse, extract,
 };
-pub use openapi::{Field, Operation, Parameter, operations};
+pub use openapi::{Field, Operation, Parameter, is_yaml_document, operations};
 pub use paths::{
     canonical_method, canonical_path, canonical_route, has_marker, is_test_file, path_markers,
 };

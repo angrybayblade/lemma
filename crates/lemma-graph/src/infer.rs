@@ -33,8 +33,8 @@ pub struct Changed<'a> {
     pub name: &'a str,
     /// The commit before the change.
     pub base: &'a str,
-    /// The commit with the change.
-    pub head: &'a str,
+    /// The commit with the change; `None` for the working directory.
+    pub head: Option<&'a str>,
 }
 
 /// A verification manifest, and the repository each of its entries
@@ -68,7 +68,7 @@ pub fn manifest(sources: &[Source<'_>], changed: &Changed<'_>) -> Option<Inferre
         change: VerifyChange {
             repository: changed_entry?,
             base: changed.base.to_owned(),
-            head: changed.head.to_owned(),
+            head: changed.head.map(str::to_owned),
         },
         repositories: entries_found,
     };
@@ -119,7 +119,8 @@ fn parts(
     entry: impl Fn(Role) -> Repository,
 ) -> Vec<(Option<String>, Repository)> {
     let mut parts = Vec::new();
-    let serves = !service.exports.openapi.is_empty();
+    // A service whose operations come only from its code serves them too.
+    let serves = !service.exports.openapi.is_empty() || service.exports.operations_from.is_some();
     if serves {
         parts.push((None, served(entry(Role::Service), service)));
     }
@@ -218,7 +219,7 @@ mod tests {
         let changed = Changed {
             name: "#billing",
             base: "b",
-            head: "h",
+            head: Some("h"),
         };
 
         let inferred = manifest(&sources, &changed).unwrap();
@@ -256,7 +257,7 @@ mod tests {
         let changed = Changed {
             name: "#sdk",
             base: "b",
-            head: "h",
+            head: Some("h"),
         };
 
         let manifest = manifest(&sources, &changed).unwrap().manifest;
@@ -280,7 +281,7 @@ mod tests {
         let changed = Changed {
             name: "#sdk",
             base: "b",
-            head: "h",
+            head: Some("h"),
         };
 
         let manifest = manifest(&sources, &changed).unwrap().manifest;
