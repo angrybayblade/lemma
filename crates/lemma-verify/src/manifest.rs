@@ -63,6 +63,11 @@ pub struct Repository {
     /// `OpenAPI` documents: a service's contract, or a client's copy of it.
     #[serde(default)]
     pub specs: Vec<String>,
+    /// Documents built from a service's code by an adapter, replacing
+    /// `specs` where a snapshot is read: by `base`, `head`, or `both` for a
+    /// repository read once. Set by Lemma, never by a manifest.
+    #[serde(skip)]
+    pub generated: BTreeMap<String, Vec<PathBuf>>,
     /// Whether a service rejects requests with fields it does not know, as
     /// a strict schema does, even where its spec does not say so.
     #[serde(default)]

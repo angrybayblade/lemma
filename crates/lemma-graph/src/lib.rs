@@ -9,6 +9,7 @@
 //! the two sides' schemas, resolved to JSON Schema, agree in the direction
 //! each message travels.
 
+pub mod adapters;
 pub mod address;
 mod affects;
 mod check;
