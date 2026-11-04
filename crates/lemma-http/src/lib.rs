@@ -13,12 +13,12 @@ mod tsconfig;
 
 pub use aliases::implied_aliases;
 pub use code::{
-    ClientCall, CodeError, CodeFacts, CodeOptions, Location, Mention, MethodPath, PathReference,
-    SchemaUnion, SchemaUse, extract,
+    ClientCall, CodeError, CodeFacts, CodeOptions, ImportBinding, Location, MemberCall, Mention,
+    MethodPath, PathReference, Reexport, SchemaUnion, SchemaUse, extract,
 };
 pub use openapi::{Field, Operation, Parameter, operations};
 pub use paths::{
     canonical_method, canonical_path, canonical_route, has_marker, is_test_file, path_markers,
 };
-pub use source::{SourceError, SourceFile, read_file, read_files, read_files_where};
+pub use source::{SourceError, SourceFile, list_files, read_file, read_files, read_files_where};
 pub use tsconfig::PathAliases;
