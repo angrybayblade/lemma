@@ -359,7 +359,8 @@ fn read_generated(path: &Path) -> Result<Generated, GraphError> {
 
 /// What a generated document says about its reading: `x-lemma-unread`
 /// lists what could not be read, each a module (`{"module", "reason"}`, or
-/// a plain string) or a route (`{"method", "path", "reason"}`), and
+/// a plain string) or a route (`{"method", "path", "reason"}`, with
+/// `"prefix": true` for every route under the path), and
 /// `x-lemma-complete: true` claims every route was read. A module that
 /// could not be read makes the reading incomplete, whatever the claim.
 /// `x-lemma-schemas: false` says the document describes routes only.
@@ -371,6 +372,7 @@ fn reading_of(document: &Value) -> (Vec<String>, Reading) {
         .unwrap_or_default();
     let mut shown = Vec::new();
     let mut unread_routes = BTreeSet::new();
+    let mut unread_prefixes = BTreeSet::new();
     let mut has_unread_module = false;
     for entry in &entries {
         let text = |key: &str| entry.get(key).and_then(Value::as_str);
@@ -382,7 +384,12 @@ fn reading_of(document: &Value) -> (Vec<String>, Reading) {
                 method.to_uppercase(),
                 text("path").unwrap_or_default()
             ));
-            unread_routes.insert((method.to_uppercase(), path));
+            let is_prefix = entry.get("prefix") == Some(&Value::Bool(true));
+            if is_prefix {
+                unread_prefixes.insert((method.to_uppercase(), path));
+            } else {
+                unread_routes.insert((method.to_uppercase(), path));
+            }
             continue;
         }
         has_unread_module = true;
@@ -395,6 +402,7 @@ fn reading_of(document: &Value) -> (Vec<String>, Reading) {
     let claims_complete = document.get("x-lemma-complete") == Some(&Value::Bool(true));
     let reading = Reading {
         unread_routes,
+        unread_prefixes,
         is_complete: claims_complete && !has_unread_module,
         is_routes_only: document.get("x-lemma-schemas") == Some(&Value::Bool(false)),
     };

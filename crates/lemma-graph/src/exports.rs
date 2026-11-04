@@ -19,8 +19,8 @@ use crate::address::parse_link;
 use crate::affects::CODE_EXTENSIONS;
 use crate::config::{LemmaFile, Service};
 use crate::handlers::{
-    Conventions, Lookup, RouteSite, decorated, passed_to_helper, registered_call, resolve,
-    resolve_declared,
+    Conventions, Lookup, RouteSite, decorated, defined_at, passed_to_helper, registered_call,
+    resolve, resolve_declared,
 };
 
 /// Bumped whenever how exports are found changes, so stored ones built the
@@ -424,7 +424,10 @@ fn handler_registered_at(
     if let Some((path, symbol)) = resolve_declared(&site, code.conventions, lookup) {
         return Some((path, symbol, Some(FoundBy::Adapter)));
     }
-    if let Some(found) = decorated(&site, lookup).or_else(|| registered_call(&site, lookup)) {
+    let found = defined_at(&site, lookup)
+        .or_else(|| decorated(&site, lookup))
+        .or_else(|| registered_call(&site, lookup));
+    if let Some(found) = found {
         return Some((
             Some(found.path),
             Some(found.qualified),

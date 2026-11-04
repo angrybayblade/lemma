@@ -136,6 +136,36 @@ pub fn registered_call(site: &RouteSite<'_>, lookup: &Lookup<'_>) -> Option<Defi
     None
 }
 
+/// The definition whose own line `site.line` is (`func (s *Server)
+/// list(`, `def list(`, `function list(`), as an adapter reports a
+/// handler's definition: the definition itself, not a call on its line.
+pub fn defined_at(site: &RouteSite<'_>, lookup: &Lookup<'_>) -> Option<Definition> {
+    let index = site.line.checked_sub(1)? as usize;
+    let line = site.text.lines().nth(index)?.trim_start();
+    let starts_definition = DEFINITION_KEYWORDS
+        .iter()
+        .any(|keyword| line.starts_with(keyword));
+    if !starts_definition {
+        return None;
+    }
+    (lookup.enclosing)(site.file, site.line)
+}
+
+/// How a line defining a function or method starts, in the languages
+/// adapters read.
+const DEFINITION_KEYWORDS: [&str; 10] = [
+    "func ",
+    "def ",
+    "async def ",
+    "function ",
+    "async function ",
+    "export function ",
+    "export async function ",
+    "export default function ",
+    "fn ",
+    "pub fn ",
+];
+
 /// The definition a decorator at `site.line` decorates (`@router.post("")`
 /// above `def place_order`, `@Get()` above a method), passing any further
 /// decorators, including ones whose arguments span lines; `None` when the
