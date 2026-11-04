@@ -271,9 +271,13 @@ fn overlay_one(
         for (method, operation) in item.iter_mut() {
             let from_code = candidates
                 .iter()
-                .find_map(|candidate| generated.get("paths")?.get(candidate)?.get(method));
-            if let Some(from_code) = from_code {
-                *operation = from_code.clone();
+                .enumerate()
+                .find_map(|(index, candidate)| {
+                    let found = generated.get("paths")?.get(candidate)?.get(method)?;
+                    Some((index == 0, found))
+                });
+            if let Some((is_same_path, from_code)) = from_code {
+                *operation = with_committed_id(from_code, operation, is_same_path);
             }
         }
     }
@@ -299,6 +303,24 @@ fn overlay_one(
         }
     }
     result
+}
+
+/// The code's operation under the name the committed one has. The
+/// `operationId` is how links and generated clients name an operation, and
+/// code often leaves it to the step that writes the committed document; an
+/// operation borrowed from a sibling prefix keeps its own document's name.
+fn with_committed_id(
+    from_code: &serde_json::Value,
+    committed: &serde_json::Value,
+    is_same_path: bool,
+) -> serde_json::Value {
+    let mut operation = from_code.clone();
+    let has_own_id = is_same_path && from_code.get("operationId").is_some();
+    let committed_id = committed.get("operationId").filter(|_| !has_own_id);
+    if let (Some(id), Some(object)) = (committed_id, operation.as_object_mut()) {
+        object.insert("operationId".to_owned(), id.clone());
+    }
+    operation
 }
 
 /// `path`, then `path` with its document's prefix replaced by each other
@@ -353,8 +375,8 @@ mod tests {
 
     #[test]
     fn code_replaces_committed_operations_at_their_path_or_a_sibling_prefix() {
-        let v3 = json!({"paths": {"/api/v3/a": {"get": {"summary": "old a"}}, "/api/v3/b": {"get": {"summary": "old b"}}}});
-        let v31 = json!({"paths": {"/api/v3.1/a": {"get": {"summary": "old a"}}, "/api/v3.1/c": {"get": {"summary": "old c"}}}});
+        let v3 = json!({"paths": {"/api/v3/a": {"get": {"summary": "old a", "operationId": "getA"}}, "/api/v3/b": {"get": {"summary": "old b"}}}});
+        let v31 = json!({"paths": {"/api/v3.1/a": {"get": {"summary": "old a", "operationId": "getA31"}}, "/api/v3.1/c": {"get": {"summary": "old c"}}}});
         let generated = json!({
             "paths": {"/api/v3/a": {"get": {"summary": "new a"}}},
             "components": {"schemas": {"A": {"type": "object"}}}
@@ -379,5 +401,23 @@ mod tests {
             "old c"
         );
         assert_eq!(documents[1]["components"]["schemas"]["A"]["type"], "object");
+    }
+
+    #[test]
+    fn code_operations_keep_the_committed_operation_id() {
+        let v3 = json!({"paths": {"/api/v3/a": {"get": {"operationId": "getA"}}}});
+        let v31 = json!({"paths": {"/api/v3.1/a": {"get": {"operationId": "getA31"}}}});
+        let generated = json!({"paths": {"/api/v3/a": {"get": {"summary": "new a"}}}});
+
+        let documents = overlay(&[v3, v31], &generated);
+
+        assert_eq!(
+            documents[0]["paths"]["/api/v3/a"]["get"]["operationId"],
+            "getA"
+        );
+        assert_eq!(
+            documents[1]["paths"]["/api/v3.1/a"]["get"]["operationId"],
+            "getA31"
+        );
     }
 }

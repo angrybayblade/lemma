@@ -42,17 +42,23 @@ zodToOpenapi.OpenAPIRegistry.prototype.registerPath = function (route: Record<st
   return registerPath.call(this, route)
 }
 
-// The first frame outside node_modules and this adapter: where the app
-// registered the route.
+// Where the app registered the route: the first frame in a module under
+// the entries, so a shared helper the route modules call (a function that
+// registers a list of routes) is passed over for the route's own module;
+// else the first frame outside node_modules and this adapter.
+const entryPaths = entries.map((entry) => resolve(entry))
 function registeredAt(stack: string): { file?: string; line?: number } {
+  const frames: { file: string; line: number }[] = []
   for (const frame of stack.split('\n').slice(1)) {
     const match = frame.match(/\(?((?:file:\/\/)?\/[^():]+):(\d+):\d+\)?\s*$/)
     if (!match) continue
     const file = match[1].replace(/^file:\/\//, '')
     if (file.includes('/node_modules/') || file.endsWith('hono-zod-openapi.ts')) continue
-    return { file: relative(root, file), line: Number(match[2]) }
+    frames.push({ file, line: Number(match[2]) })
   }
-  return {}
+  const inEntry = frames.find(({ file }) => entryPaths.some((entry) => file === entry || file.startsWith(`${entry}/`)))
+  const chosen = inEntry ?? frames[0]
+  return chosen ? { file: relative(root, chosen.file), line: chosen.line } : {}
 }
 
 function modules(entry: string): string[] {
@@ -106,6 +112,9 @@ for (const { route, file, line } of recorded) {
   }
   for (const [path, item] of Object.entries(part.paths ?? {})) {
     for (const [method, operation] of Object.entries(item as Record<string, any>)) {
+      // A route registered again (by a module that collects every route's
+      // definition into a document) keeps its first, own registration.
+      if (document.paths[path]?.[method]) continue
       if (file) operation['x-lemma-handler'] = `${file}:${line}`
       document.paths[path] = { ...document.paths[path], [method]: operation }
     }
