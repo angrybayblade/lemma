@@ -962,7 +962,11 @@ fn write_generated_calls(
     writer: &mut FactWriter<'_>,
     scopes: &mut BTreeSet<String>,
 ) {
-    let path = file_id.split_once(':').map_or(file_id, |(_, path)| path);
+    // The consumer's name may hold a colon itself (`#platform:api (code)`).
+    let path = file_id
+        .strip_prefix(scope.name)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or(file_id);
     for call in &facts.member_calls {
         let Some((function, module)) = generated_function(scope, path, facts, &call.parts) else {
             continue;
