@@ -133,9 +133,21 @@ fn working_paths(repository: &Path) -> Result<Vec<String>, SourceError> {
             .map(|(_, relative)| relative)
             .collect());
     }
+    // Files deleted but not staged are still in the index; Git names them
+    // in one command, cheaper than checking every listed file on disk.
+    let deleted: std::collections::BTreeSet<String> =
+        git(repository, &["ls-files", "-z", "--deleted"])
+            .map(|output| {
+                String::from_utf8_lossy(&output)
+                    .split('\0')
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
     Ok(listed
         .into_iter()
-        .filter(|path| repository.join(path).is_file())
+        .filter(|path| !deleted.contains(path))
         .collect())
 }
 
@@ -177,6 +189,41 @@ fn git_paths(
         .lines()
         .map(str::to_owned)
         .collect())
+}
+
+/// Every file under the working directory at `repository`, relative to
+/// it with `/`, except dependencies and Git's own files: what reading the
+/// working directory reads from. Unsorted.
+pub fn walk_files(repository: &Path) -> Result<Vec<String>, SourceError> {
+    Ok(directory_paths(repository, &[])?
+        .into_iter()
+        .map(|(_, relative)| relative)
+        .collect())
+}
+
+/// The files at `paths` under the working directory at `repository`.
+pub fn read_from_disk(repository: &Path, paths: &[String]) -> Result<Vec<SourceFile>, SourceError> {
+    paths
+        .iter()
+        .map(|path| {
+            let full = repository.join(path);
+            let bytes = fs::read(&full).map_err(|source| SourceError::Io { path: full, source })?;
+            Ok(SourceFile {
+                path: path.clone(),
+                contents: String::from_utf8_lossy(&bytes).into_owned(),
+            })
+        })
+        .collect()
+}
+
+/// The files at `paths` in `commit`, read with one `git cat-file --batch`;
+/// paths the commit lacks are left out. In `paths`' order.
+pub fn read_paths(
+    repository: &Path,
+    commit: &str,
+    paths: &[String],
+) -> Result<Vec<SourceFile>, SourceError> {
+    git_contents(repository, commit, paths)
 }
 
 /// Reads many blobs with one `git cat-file --batch`.
@@ -258,6 +305,38 @@ fn directory_files(
 
 /// Every file under `prefixes` (the whole repository if empty) in the
 /// working directory, with its path relative to the repository.
+/// What a directory walk does with an entry.
+enum Walked {
+    /// Lists it.
+    Directory(PathBuf),
+    /// Keeps it.
+    File(PathBuf),
+}
+
+/// What to do with a directory entry; `None` to skip it. Dependencies and
+/// Git's own files are never source; a link to a directory is not followed.
+fn walked(entry: &fs::DirEntry) -> Option<Walked> {
+    let kind = entry.file_type().ok()?;
+    let path = entry.path();
+    if kind.is_dir() {
+        let name = entry.file_name();
+        let is_source = name != "node_modules" && name != ".git";
+        return is_source.then_some(Walked::Directory(path));
+    }
+    let is_file = kind.is_file() || (kind.is_symlink() && path.is_file());
+    is_file.then_some(Walked::File(path))
+}
+
+/// A file's path, and its path relative to `repository` with `/`.
+fn relative_entry(repository: &Path, path: PathBuf) -> (PathBuf, String) {
+    let relative = path
+        .strip_prefix(repository)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    (path, relative)
+}
+
 fn directory_paths(
     repository: &Path,
     prefixes: &[String],
@@ -271,31 +350,32 @@ fn directory_paths(
             .collect()
     };
     let mut found = Vec::new();
-    let mut pending = roots;
-    while let Some(path) = pending.pop() {
-        let metadata = fs::metadata(&path).map_err(|source| SourceError::Io {
-            path: path.clone(),
+    let mut pending = Vec::new();
+    for root in roots {
+        let metadata = fs::metadata(&root).map_err(|source| SourceError::Io {
+            path: root.clone(),
             source,
         })?;
         if metadata.is_dir() {
-            // Dependencies and Git's own files are never source.
-            let name = path.file_name().and_then(|name| name.to_str());
-            if matches!(name, Some("node_modules" | ".git")) {
-                continue;
-            }
-            let entries = fs::read_dir(&path).map_err(|source| SourceError::Io {
-                path: path.clone(),
-                source,
-            })?;
-            pending.extend(entries.filter_map(Result::ok).map(|entry| entry.path()));
-            continue;
+            pending.push(root);
+        } else {
+            found.push(relative_entry(repository, root));
         }
-        let relative = path
-            .strip_prefix(repository)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        found.push((path, relative));
+    }
+    // Each entry's type comes with its directory's listing, so the walk
+    // needs no `stat` per file.
+    while let Some(directory) = pending.pop() {
+        let entries = fs::read_dir(&directory).map_err(|source| SourceError::Io {
+            path: directory.clone(),
+            source,
+        })?;
+        for entry in entries.filter_map(Result::ok) {
+            match walked(&entry) {
+                Some(Walked::Directory(path)) => pending.push(path),
+                Some(Walked::File(path)) => found.push(relative_entry(repository, path)),
+                None => {}
+            }
+        }
     }
     Ok(found)
 }
