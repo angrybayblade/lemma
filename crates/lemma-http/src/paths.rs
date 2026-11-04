@@ -25,12 +25,44 @@ pub fn path_markers<'a>(operation_paths: impl IntoIterator<Item = &'a str>) -> V
     markers
 }
 
-/// Where the first marker starts in `raw`, if any.
+/// Where the first marker starts in `raw`, if any, counting only a marker
+/// at the start of a URL's path: what comes before it is nothing, a scheme
+/// and host, or a substitution such as `${BASE}` or `%s`. A marker inside
+/// another path (`@/src/lib/internal/logger`, `kb/internal/`) is not one.
 fn marker_start(raw: &str, markers: &[String]) -> Option<usize> {
     markers
         .iter()
-        .filter_map(|marker| raw.find(marker.as_str()))
+        .flat_map(|marker| raw.match_indices(marker.as_str()).map(|(at, _)| at))
+        .filter(|at| starts_url_path(&raw[..*at]))
         .min()
+}
+
+/// Whether `before` can precede a URL's path: it ends in something that
+/// cannot be part of a path (a space, a quote), a substitution, or is a
+/// scheme and host.
+fn starts_url_path(before: &str) -> bool {
+    let Some(last) = before.chars().next_back() else {
+        return true;
+    };
+    if last == '}' || last == '$' || before.ends_with("%s") {
+        return true;
+    }
+    let is_path_character =
+        last.is_alphanumeric() || matches!(last, '.' | '_' | '-' | '/' | '@' | '~');
+    if !is_path_character {
+        return true;
+    }
+    let url_start = before
+        .rfind(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '(' | '='))
+        .map_or(before, |at| &before[at + 1..]);
+    let Some((scheme, host)) = url_start.split_once("://") else {
+        return false;
+    };
+    let is_scheme = !scheme.is_empty()
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+');
+    is_scheme && !host.is_empty() && !host.contains('/')
 }
 
 /// Whether `raw` contains one of the markers.
@@ -132,6 +164,25 @@ mod tests {
     #[test]
     fn markers_are_the_leading_segments_services_serve() {
         assert_eq!(markers(), ["/health/", "/v1/"]);
+    }
+
+    #[test]
+    fn a_marker_inside_another_path_is_not_a_request() {
+        let markers = vec!["/internal/".to_owned(), "/v1/".to_owned()];
+
+        assert_eq!(
+            canonical_path("@/src/common/lib/internal/logger", &markers),
+            None
+        );
+        assert_eq!(canonical_path("kb/internal/", &markers), None);
+        assert_eq!(
+            canonical_path("https://api.example.com/v1/users", &markers).as_deref(),
+            Some("/v1/users")
+        );
+        assert_eq!(
+            canonical_path("{WORKER_BASE_URL}/internal/x", &markers).as_deref(),
+            Some("/internal/x")
+        );
     }
 
     #[test]
