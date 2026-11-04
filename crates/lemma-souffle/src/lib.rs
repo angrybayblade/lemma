@@ -141,7 +141,7 @@ impl Engine for SouffleEngine {
         let directory = tempfile::tempdir()?;
         fs::write(
             directory.path().join("program.dl"),
-            &prepared.translation.source,
+            prepared.translation.source_for(request),
         )?;
         write_facts(directory.path(), prepared, facts)?;
         fs::create_dir(directory.path().join("out"))?;
