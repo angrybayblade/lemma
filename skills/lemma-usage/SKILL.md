@@ -56,9 +56,15 @@ To see what Lemma concluded, print a relation: `--relation calls` (which consume
 ```text
 error   request: the receiver requires `currency` at the root; the sender may leave it out
         [request] #web:services.web.create_charge -> #billing:services.api.create_charge  (introduced)
-        affects (traced by name):
-          #web:web (1): POST /v1/checkout
-          #storefront (2): src/cart.ts::Cart.pay -> POST /v1/checkout; src/quick-buy.ts::buy -> POST /v1/checkout
+        affects 1 operation and 2 callers (traced by name):
+          reached directly:
+            #web:web: 1 operation
+              POST /v1/checkout
+                through src/checkout.go:Checkout -> src/charges.go:Charges.Create
+          one call away:
+            #storefront: 2 callers of 1 operation
+              src/cart.ts::Cart.pay -> POST /v1/checkout
+              src/quick-buy.ts::buy -> POST /v1/checkout
 ```
 
 - `[link]`: an operation was removed or renamed, or its code anchor no longer resolves.
@@ -67,7 +73,7 @@ error   request: the receiver requires `currency` at the root; the sender may le
 - `[schema]`: a side's schema could not be produced; read the message (a resolver failed, a type moved).
 - A bracketed requirement name, such as `[consumer_sends_rejected_field]`, is an inferred link, read as in `lemma verify`.
 - `(introduced)` means the change caused it; `(already there)` findings are informational when a change is given.
-- `affects` lists, nearest first, the operations whose handlers reach the problem and the code elsewhere that calls them. It is traced by name, so treat it as where to look, not as proof.
+- `affects` lists, by distance, the operations whose handlers reach the problem (with the calls from each handler down to it), the code elsewhere that calls them, the operations reached through that code, and so on; each group shows three, and `--all` lists them all. It is traced by name, so treat it as where to look, not as proof.
 
 `--head` must be a commit: commit the change on a branch before checking it.
 
