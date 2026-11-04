@@ -44,6 +44,7 @@ pub fn members(workspace: &Path, cache: &Path) -> Result<Vec<Member>, GraphError
         change: None,
         level: None,
         cache: cache.to_path_buf(),
+        facts_cache: None,
     };
     let repos = check::load(workspace, &options)?;
     Ok(repos

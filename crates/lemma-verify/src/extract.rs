@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use lemma_grammar::CompiledGrammar;
 use lemma_http::{CodeFacts, CodeOptions, Operation, PathAliases, SourceFile};
@@ -65,8 +66,12 @@ impl<'g> FactWriter<'g> {
 }
 
 /// Extracts every repository's facts.
-pub fn extract_all(manifest: &Manifest, writer: &mut FactWriter<'_>) -> Result<(), VerifyError> {
-    let mut extractor = FactReader::new()?;
+pub fn extract_all(
+    manifest: &Manifest,
+    writer: &mut FactWriter<'_>,
+    cache: Option<&crate::FactsCache>,
+) -> Result<(), VerifyError> {
+    let mut extractor = FactReader::new(cache.cloned())?;
     check_files(manifest)?;
     let specs = SpecCache::default();
     let system = read_system(manifest, &specs)?;
@@ -136,12 +141,13 @@ fn read_clients(
         } else {
             repository.commit.as_deref()
         };
-        let files = lemma_http::read_files(
+        let files = specs.read_files(
             &repository.path,
             commit,
             &repository.include,
             &CODE_EXTENSIONS,
         )?;
+        extractor.prefetch(&files, &options)?;
         let mut found = Vec::new();
         for file in files
             .iter()
@@ -149,10 +155,10 @@ fn read_clients(
         {
             found.extend(client_methods(
                 name,
-                &code_facts(file, &options, extractor)?,
+                code_facts(file, &options, extractor)?.as_ref(),
             ));
         }
-        packages.extend(package_names(repository, commit, &found)?);
+        packages.extend(package_names(repository, commit, &found, specs)?);
         methods.extend(found);
     }
     Ok(Clients::new(
@@ -246,13 +252,14 @@ fn package_names(
     repository: &Repository,
     commit: Option<&str>,
     methods: &[ClientMethod],
+    specs: &SpecCache,
 ) -> Result<BTreeSet<String>, VerifyError> {
     let is_package_file = |path: &str| {
         let name = path.rsplit('/').next().unwrap_or(path);
         name == "package.json" || name == "pyproject.toml"
     };
     let mut names = BTreeSet::new();
-    for file in lemma_http::read_files_where(&repository.path, commit, &is_package_file)? {
+    for file in specs.read_files_where(&repository.path, commit, &is_package_file)? {
         let directory = file
             .path
             .rsplit_once('/')
@@ -297,8 +304,9 @@ fn declared_package_name(path: &str, contents: &str) -> Option<String> {
 fn depends_on_a_client(
     repository: &Repository,
     commit: Option<&str>,
-    clients: &Clients,
+    snapshot: &Snapshot<'_>,
 ) -> Result<bool, VerifyError> {
+    let clients = snapshot.clients;
     if clients.is_empty() {
         return Ok(false);
     }
@@ -309,7 +317,9 @@ fn depends_on_a_client(
             "package.json" | "pyproject.toml" | "setup.py" | "setup.cfg"
         ) || (name.starts_with("requirements") && has_extension(name, "txt"))
     };
-    let files = lemma_http::read_files_where(&repository.path, commit, &is_dependency_file)?;
+    let files = snapshot
+        .specs
+        .read_files_where(&repository.path, commit, &is_dependency_file)?;
     Ok(files
         .iter()
         .any(|file| clients.is_depended_on_in(&file.contents)))
@@ -435,11 +445,201 @@ struct Snapshot<'a> {
 /// and the commit it falls back to, and the file read.
 type SpecKey = (PathBuf, Option<String>, Option<Option<String>>, String);
 
+/// File listings by repository and commit.
+type Listings = BTreeMap<(PathBuf, String), Rc<Vec<String>>>;
+
+/// Working directories' files by repository.
+type Walks = BTreeMap<PathBuf, Rc<Vec<String>>>;
+
 /// The operations of each spec read in one run, so a spec several passes
 /// read is parsed once.
 #[derive(Default)]
 struct SpecCache {
     read: RefCell<BTreeMap<SpecKey, Vec<Operation>>>,
+    /// Each repository's file listing at a commit.
+    listings: RefCell<Listings>,
+    /// Files read at a commit, by repository, commit and path: the entries
+    /// and snapshots of one repository read many of the same files.
+    blobs: RefCell<BTreeMap<(PathBuf, String, String), Rc<SourceFile>>>,
+    /// Each working directory's files, walked once per run.
+    walks: RefCell<Walks>,
+    /// Files read from a working directory, by repository and path.
+    on_disk: RefCell<BTreeMap<(PathBuf, String), Rc<SourceFile>>>,
+}
+
+impl SpecCache {
+    /// Every file of the repository at `repository` in `commit`, listed
+    /// once per run.
+    fn listing(&self, repository: &Path, commit: &str) -> Result<Rc<Vec<String>>, VerifyError> {
+        let key = (repository.to_owned(), commit.to_owned());
+        if let Some(found) = self.listings.borrow().get(&key) {
+            return Ok(Rc::clone(found));
+        }
+        let listed = Rc::new(lemma_http::list_files(repository, Some(commit))?);
+        self.listings.borrow_mut().insert(key, Rc::clone(&listed));
+        Ok(listed)
+    }
+
+    /// The files `wanted` accepts at `commit`, each read from Git once per
+    /// run. Sorted by path.
+    fn commit_files(
+        &self,
+        repository: &Path,
+        commit: &str,
+        wanted: &dyn Fn(&str) -> bool,
+    ) -> Result<Vec<SourceFile>, VerifyError> {
+        let listing = self.listing(repository, commit)?;
+        let paths: Vec<&String> = listing.iter().filter(|path| wanted(path)).collect();
+        let key = |path: &str| (repository.to_owned(), commit.to_owned(), path.to_owned());
+        let missing: Vec<String> = {
+            let blobs = self.blobs.borrow();
+            paths
+                .iter()
+                .filter(|path| !blobs.contains_key(&key(path)))
+                .map(|path| (*path).clone())
+                .collect()
+        };
+        if !missing.is_empty() {
+            let read = lemma_http::read_paths(repository, commit, &missing)?;
+            let mut blobs = self.blobs.borrow_mut();
+            for file in read {
+                blobs.insert(key(&file.path), Rc::new(file));
+            }
+        }
+        let blobs = self.blobs.borrow();
+        Ok(paths
+            .iter()
+            .filter_map(|path| blobs.get(&key(path)))
+            .map(|file| (**file).clone())
+            .collect())
+    }
+
+    /// Every file of the working directory at `repository`, walked once per
+    /// run. Sorted.
+    fn walk(&self, repository: &Path) -> Result<Rc<Vec<String>>, VerifyError> {
+        if let Some(found) = self.walks.borrow().get(repository) {
+            return Ok(Rc::clone(found));
+        }
+        let mut walked = lemma_http::walk_files(repository)?;
+        walked.sort();
+        let walked = Rc::new(walked);
+        self.walks
+            .borrow_mut()
+            .insert(repository.to_owned(), Rc::clone(&walked));
+        Ok(walked)
+    }
+
+    /// The working directory's files `wanted` accepts, the directory walked
+    /// and each file read once per run. Sorted by path.
+    fn working_files(
+        &self,
+        repository: &Path,
+        wanted: &dyn Fn(&str) -> bool,
+    ) -> Result<Vec<SourceFile>, VerifyError> {
+        let walk = self.walk(repository)?;
+        let paths: Vec<&String> = walk.iter().filter(|path| wanted(path)).collect();
+        let key = |path: &str| (repository.to_owned(), path.to_owned());
+        let missing: Vec<String> = {
+            let on_disk = self.on_disk.borrow();
+            paths
+                .iter()
+                .filter(|path| !on_disk.contains_key(&key(path)))
+                .map(|path| (*path).clone())
+                .collect()
+        };
+        if !missing.is_empty() {
+            let read = lemma_http::read_from_disk(repository, &missing)?;
+            let mut on_disk = self.on_disk.borrow_mut();
+            for file in read {
+                on_disk.insert(key(&file.path), Rc::new(file));
+            }
+        }
+        let on_disk = self.on_disk.borrow();
+        Ok(paths
+            .iter()
+            .filter_map(|path| on_disk.get(&key(path)))
+            .map(|file| (**file).clone())
+            .collect())
+    }
+
+    /// [`lemma_http::read_files`], reading each file once per run.
+    fn read_files(
+        &self,
+        repository: &Path,
+        commit: Option<&str>,
+        prefixes: &[String],
+        extensions: &[&str],
+    ) -> Result<Vec<SourceFile>, VerifyError> {
+        let wanted = |path: &str| {
+            let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
+            extensions.contains(&extension)
+                && is_under_any(path, prefixes)
+                && !path.contains("node_modules/")
+        };
+        match commit {
+            Some(commit) => self.commit_files(repository, commit, &wanted),
+            None => self.working_files(repository, &wanted),
+        }
+    }
+
+    /// [`lemma_http::read_files_where`], reading a commit's files once per
+    /// run.
+    fn read_files_where(
+        &self,
+        repository: &Path,
+        commit: Option<&str>,
+        wanted: &dyn Fn(&str) -> bool,
+    ) -> Result<Vec<SourceFile>, VerifyError> {
+        let wanted = |path: &str| wanted(path) && !path.contains("node_modules/");
+        match commit {
+            Some(commit) => self.commit_files(repository, commit, &wanted),
+            None => self.working_files(repository, &wanted),
+        }
+    }
+
+    /// [`lemma_http::list_files`], listing a commit once per run.
+    fn list_files(
+        &self,
+        repository: &Path,
+        commit: Option<&str>,
+    ) -> Result<Vec<String>, VerifyError> {
+        let Some(commit) = commit else {
+            return Ok(lemma_http::list_files(repository, None)?);
+        };
+        Ok(self.listing(repository, commit)?.as_ref().clone())
+    }
+}
+
+/// Whether `path` is one of `prefixes` or below one, as a Git pathspec
+/// names a directory or file; every path when there are none.
+fn is_under_any(path: &str, prefixes: &[String]) -> bool {
+    prefixes.is_empty()
+        || prefixes.iter().any(|prefix| {
+            let prefix = prefix.trim_end_matches('/');
+            path == prefix
+                || path
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+}
+
+/// The code a service's routes and the schemas they use are in.
+fn route_and_schema_files(
+    repository: &Repository,
+    snapshot: &Snapshot<'_>,
+) -> Result<Vec<SourceFile>, VerifyError> {
+    let directories: Vec<String> = repository
+        .routes
+        .iter()
+        .chain(&repository.schemas)
+        .cloned()
+        .collect();
+    snapshot.specs.read_files(
+        &repository.path,
+        snapshot.commit,
+        &directories,
+        &CODE_EXTENSIONS,
+    )
 }
 
 fn service(
@@ -464,13 +664,8 @@ fn service(
     if !snapshots.contains(&"head") || repository.routes.is_empty() {
         return Ok(());
     }
-    let directories: Vec<String> = repository
-        .routes
-        .iter()
-        .chain(&repository.schemas)
-        .cloned()
-        .collect();
-    let files = lemma_http::read_files(&repository.path, commit, &directories, &CODE_EXTENSIONS)?;
+    let files = route_and_schema_files(repository, snapshot)?;
+    extractor.prefetch(&files, &CodeOptions::default())?;
     let mut read = Vec::new();
     for file in files
         .iter()
@@ -496,7 +691,7 @@ fn service(
         service: service_name,
         known: files.iter().map(|file| file.path.clone()).collect(),
         route_aliases: &route_aliases,
-        imports: read_import_aliases(repository, commit)?,
+        imports: read_import_aliases(repository, commit, snapshot.specs)?,
     };
     for (file, facts) in &read {
         schema_facts(&scope, &file.path, facts, writer);
@@ -799,7 +994,7 @@ fn consumer(
     writer: &mut FactWriter<'_>,
     extractor: &mut FactReader,
 ) -> Result<(), VerifyError> {
-    let files = lemma_http::read_files(
+    let files = snapshot.specs.read_files(
         &repository.path,
         snapshot.commit,
         &repository.include,
@@ -817,13 +1012,16 @@ fn consumer(
         },
         system: snapshot.system,
         clients: snapshot.clients,
-        depends_on_a_client: depends_on_a_client(repository, snapshot.commit, snapshot.clients)?,
-        every_file: lemma_http::list_files(&repository.path, snapshot.commit)?
+        depends_on_a_client: depends_on_a_client(repository, snapshot.commit, snapshot)?,
+        every_file: snapshot
+            .specs
+            .list_files(&repository.path, snapshot.commit)?
             .into_iter()
             .collect(),
         reexports: BTreeMap::new(),
-        imports: read_import_aliases(repository, snapshot.commit)?,
+        imports: read_import_aliases(repository, snapshot.commit, snapshot.specs)?,
     };
+    extractor.prefetch(&files, &scope.options)?;
     let scope = ConsumerScope {
         reexports: generated_reexports(&scope, &files, extractor)?,
         ..scope
@@ -957,9 +1155,9 @@ fn generated_reexports(
         let facts = code_facts(file, &scope.options, extractor)?;
         let generated: Vec<(String, String)> = facts
             .reexports
-            .into_iter()
+            .iter()
             .filter(|reexport| is_generated_module(scope, &file.path, &reexport.module))
-            .map(|reexport| (reexport.name, reexport.module))
+            .map(|reexport| (reexport.name.clone(), reexport.module.clone()))
             .collect();
         if !generated.is_empty() {
             found.insert(file.path.clone(), generated);
@@ -1110,12 +1308,13 @@ fn write_client_method_calls(
 fn read_import_aliases(
     repository: &Repository,
     commit: Option<&str>,
+    specs: &SpecCache,
 ) -> Result<PathAliases, VerifyError> {
     let is_tsconfig = |path: &str| {
         let name = path.rsplit('/').next().unwrap_or(path);
         name.starts_with("tsconfig") && has_extension(name, "json")
     };
-    let files = lemma_http::read_files_where(&repository.path, commit, &is_tsconfig)?;
+    let files = specs.read_files_where(&repository.path, commit, &is_tsconfig)?;
     Ok(PathAliases::from_files(&files))
 }
 
@@ -1257,38 +1456,139 @@ fn code_facts(
     file: &SourceFile,
     options: &CodeOptions,
     extractor: &mut FactReader,
-) -> Result<CodeFacts, VerifyError> {
+) -> Result<Rc<CodeFacts>, VerifyError> {
     extractor.facts(file, options)
+}
+
+/// A file's facts with the key a run keeps them under.
+type KeyedFacts = ((String, u64, String), CodeFacts);
+
+/// A file's facts: kept from an earlier run if the cache holds them,
+/// otherwise extracted (with `extractor`, made on first use) and kept.
+fn kept_or_extracted(
+    file: &SourceFile,
+    options_text: &str,
+    options: &CodeOptions,
+    cache: Option<&crate::FactsCache>,
+    extractor: &mut Option<Extractor>,
+) -> Result<CodeFacts, VerifyError> {
+    let kept = cache.map(|cache| kept_facts_path(cache, file, options_text));
+    if let Some(facts) = kept.as_deref().and_then(read_kept_facts) {
+        return Ok(facts);
+    }
+    let extractor = match extractor {
+        Some(extractor) => extractor,
+        None => {
+            extractor.insert(Extractor::new().map_err(|source| VerifyError::Syntax { source })?)
+        }
+    };
+    let facts = lemma_http::extract(&file.path, &file.contents, options, extractor)?;
+    if let Some(kept) = &kept {
+        keep_facts(kept, &facts);
+    }
+    Ok(facts)
+}
+
+/// Where the facts of `file`, read with `options` (as their key text gives
+/// them), are kept: named by the build, the path, the options and the
+/// contents.
+fn kept_facts_path(cache: &crate::FactsCache, file: &SourceFile, options: &str) -> PathBuf {
+    let mut described = format!("{}\0{}\0{options}\0", cache.build, file.path).into_bytes();
+    described.extend_from_slice(file.contents.as_bytes());
+    let digest = lemma_model::content_hash(&described);
+    cache
+        .directory
+        .join(&digest[..2])
+        .join(format!("{}.json", &digest[2..]))
+}
+
+/// Facts kept at `path`, if they are there and readable.
+fn read_kept_facts(path: &Path) -> Option<CodeFacts> {
+    let text = std::fs::read(path).ok()?;
+    serde_json::from_slice(&text).ok()
+}
+
+/// Keeps `facts` at `path`. A cache that cannot be written only costs the
+/// next run a parse, so failures are not errors.
+fn keep_facts(path: &Path, facts: &CodeFacts) {
+    let Some(directory) = path.parent() else {
+        return;
+    };
+    let Ok(text) = serde_json::to_vec(facts) else {
+        return;
+    };
+    let partial = path.with_extension(format!("{}.partial", std::process::id()));
+    let _ = std::fs::create_dir_all(directory)
+        .and_then(|()| std::fs::write(&partial, text))
+        .and_then(|()| std::fs::rename(&partial, path));
 }
 
 /// Reads files' code facts, each file once per run for the same contents
 /// and options: a file a change leaves alone is read at both its commits.
 struct FactReader {
     extractor: Extractor,
-    read: BTreeMap<(String, u64, String), CodeFacts>,
+    cache: Option<crate::FactsCache>,
+    read: BTreeMap<(String, u64, String), Rc<CodeFacts>>,
 }
 
 impl FactReader {
-    fn new() -> Result<Self, VerifyError> {
+    fn new(cache: Option<crate::FactsCache>) -> Result<Self, VerifyError> {
         Ok(Self {
             extractor: Extractor::new().map_err(|source| VerifyError::Syntax { source })?,
+            cache,
             read: BTreeMap::new(),
         })
+    }
+
+    fn key(file: &SourceFile, options: &CodeOptions) -> (String, u64, String) {
+        let mut hasher = DefaultHasher::new();
+        file.contents.hash(&mut hasher);
+        (file.path.clone(), hasher.finish(), format!("{options:?}"))
+    }
+
+    /// Reads the facts of every file in `files` not read yet, in parallel
+    /// chunks with an extractor each, so the calls that follow find them.
+    fn prefetch(&mut self, files: &[SourceFile], options: &CodeOptions) -> Result<(), VerifyError> {
+        use rayon::prelude::*;
+        let wanted: Vec<(&SourceFile, (String, u64, String))> = files
+            .iter()
+            .filter(|file| !lemma_http::is_test_file(&file.path))
+            .map(|file| (file, Self::key(file, options)))
+            .filter(|(_, key)| !self.read.contains_key(key))
+            .collect();
+        let cache = self.cache.as_ref();
+        let parsed: Vec<Vec<KeyedFacts>> = wanted
+            .par_chunks(128)
+            .map(|chunk| {
+                let mut extractor = None;
+                chunk
+                    .iter()
+                    .map(|(file, key)| {
+                        let facts =
+                            kept_or_extracted(file, &key.2, options, cache, &mut extractor)?;
+                        Ok((key.clone(), facts))
+                    })
+                    .collect::<Result<Vec<_>, VerifyError>>()
+            })
+            .collect::<Result<Vec<_>, VerifyError>>()?;
+        for (key, facts) in parsed.into_iter().flatten() {
+            self.read.insert(key, Rc::new(facts));
+        }
+        Ok(())
     }
 
     fn facts(
         &mut self,
         file: &SourceFile,
         options: &CodeOptions,
-    ) -> Result<CodeFacts, VerifyError> {
-        let mut hasher = DefaultHasher::new();
-        file.contents.hash(&mut hasher);
-        let key = (file.path.clone(), hasher.finish(), format!("{options:?}"));
+    ) -> Result<Rc<CodeFacts>, VerifyError> {
+        let key = Self::key(file, options);
         if let Some(found) = self.read.get(&key) {
-            return Ok(found.clone());
+            return Ok(Rc::clone(found));
         }
         let facts = lemma_http::extract(&file.path, &file.contents, options, &mut self.extractor)?;
-        self.read.insert(key, facts.clone());
+        let facts = Rc::new(facts);
+        self.read.insert(key, Rc::clone(&facts));
         Ok(facts)
     }
 }

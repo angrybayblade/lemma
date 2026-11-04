@@ -37,6 +37,19 @@ pub(crate) fn run(args: &VerifyArgs, json: bool) -> ExitCode {
     }
 }
 
+/// Lemma's cache of facts read from code, for this build of Lemma: the
+/// build is named by a digest of its executable, so a rebuild never reads
+/// facts an older extractor wrote. `None` when the executable cannot be
+/// read, which only means nothing is kept.
+pub(crate) fn facts_cache() -> Option<lemma_verify::FactsCache> {
+    let executable = std::env::current_exe().ok()?;
+    let bytes = std::fs::read(executable).ok()?;
+    Some(lemma_verify::FactsCache {
+        directory: lemma_graph::repos::cache_directory().join("facts"),
+        build: lemma_model::content_hash(&bytes),
+    })
+}
+
 fn verify(args: &VerifyArgs) -> anyhow::Result<Report> {
     let mut manifest = Manifest::load(&args.manifest)?;
     if let Some(base) = &args.base {
@@ -48,6 +61,7 @@ fn verify(args: &VerifyArgs) -> anyhow::Result<Report> {
     let options = Options {
         explain: args.explain,
         relations: args.relations.clone(),
+        facts_cache: facts_cache(),
     };
     let report: Result<Report, VerifyError> = match args.engine.as_deref() {
         Some("reference") => lemma_verify::verify(&manifest, &ReferenceEngine, &options),
