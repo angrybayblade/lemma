@@ -44,10 +44,27 @@ pub(crate) fn run(args: &VerifyArgs, json: bool) -> ExitCode {
 pub(crate) fn facts_cache() -> Option<lemma_verify::FactsCache> {
     let executable = std::env::current_exe().ok()?;
     let bytes = std::fs::read(executable).ok()?;
+    let build = lemma_model::content_hash(&bytes);
+    let facts = lemma_graph::repos::cache_directory().join("facts");
+    remove_other_builds(&facts, &build[..16]);
     Some(lemma_verify::FactsCache {
-        directory: lemma_graph::repos::cache_directory().join("facts"),
-        build: lemma_model::content_hash(&bytes),
+        directory: facts.join(&build[..16]),
+        build,
     })
+}
+
+/// Removes the facts other builds of Lemma kept: they are never read
+/// again, and each is the size of every repository's facts. Removing is
+/// tidying, so a failure only leaves them for the next run.
+fn remove_other_builds(facts: &std::path::Path, build: &str) {
+    let Ok(entries) = std::fs::read_dir(facts) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        if entry.file_name() != build {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 fn verify(args: &VerifyArgs) -> anyhow::Result<Report> {
