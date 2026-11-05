@@ -7,12 +7,14 @@
 mod classify;
 mod declaration;
 mod nesting;
+mod pool;
 
 use lemma_model::{Language, Position, Span, Symbol};
 use tree_sitter::{Node, Parser, Query, QueryCursor, QueryMatch, StreamingIterator};
 
 pub use crate::declaration::declaration_text;
 use crate::nesting::Definition;
+pub use crate::pool::ExtractorPool;
 
 /// Changes whenever extraction output could change, so snapshots built by an
 /// older extractor get a different fingerprint.

@@ -4,11 +4,10 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::sync::{Mutex, PoisonError};
 
-use lemma_model::{IndexedFile, Language, content_hash};
+use lemma_model::{IndexedFile, content_hash};
 use lemma_store::{FileStamp, StampedFile, StoredFile};
-use lemma_syntax::{Extraction, Extractor};
+use lemma_syntax::ExtractorPool;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::IndexError;
@@ -92,7 +91,7 @@ fn scan_file(
         return Ok(Scan::Restamped(restamped));
     }
 
-    let extraction = extractors.extract(file.language, &contents)?;
+    let extraction = extractors.with(|extractor| extractor.extract(file.language, &contents))??;
     Ok(Scan::Parsed(StampedFile {
         file: IndexedFile {
             path: file.relative_path,
@@ -105,40 +104,6 @@ fn scan_file(
     }))
 }
 
-/// One extractor per worker thread, created the first time that thread has
-/// to parse. Setting one up compiles every query (about 10 ms), so a no-op
-/// re-index should not pay for it, and parsers cannot be shared between
-/// threads. A long-lived index keeps its pool, so later edits pay nothing.
-pub(crate) struct ExtractorPool {
-    slots: Vec<Mutex<Option<Extractor>>>,
-}
-
-impl ExtractorPool {
-    pub fn new() -> Self {
-        // One slot per pool thread, plus one for a caller outside the pool.
-        let slots = (0..=rayon::current_num_threads())
-            .map(|_| Mutex::new(None))
-            .collect();
-        Self { slots }
-    }
-
-    fn extract(&self, language: Language, source: &str) -> Result<Extraction, IndexError> {
-        let index = rayon::current_thread_index().map_or(0, |thread| thread + 1);
-        let Some(slot) = self.slots.get(index) else {
-            return Ok(Extractor::new()?.extract(language, source)?);
-        };
-        // Each slot is only used by its own thread, so a poisoned lock just
-        // means an earlier extraction on this thread failed; the extractor
-        // itself is still usable.
-        let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
-        let extractor = match slot.take() {
-            Some(extractor) => extractor,
-            None => Extractor::new()?,
-        };
-        Ok(slot.insert(extractor).extract(language, source)?)
-    }
-}
-
 fn read_utf8(path: &Path) -> Option<String> {
     let bytes = fs::read(path).ok()?;
     String::from_utf8(bytes).ok()
@@ -147,6 +112,7 @@ fn read_utf8(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lemma_model::Language;
 
     fn stored_file(stamp: FileStamp) -> StoredFile {
         StoredFile {

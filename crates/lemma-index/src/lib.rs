@@ -20,11 +20,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use lemma_model::{Language, Snapshot};
 use lemma_store::{FactStore, NewSnapshot, SnapshotUpdate, Store, StoreError, StoredSnapshot};
-use lemma_syntax::{EXTRACTOR_VERSION, SyntaxError};
+use lemma_syntax::{EXTRACTOR_VERSION, ExtractorPool, SyntaxError};
 
 pub use crate::selection::{InvalidPattern, RuleSpec, Selection};
 
-use crate::scan::{ExtractorPool, ReusePolicy};
+use crate::scan::ReusePolicy;
 use crate::scope::{DirtyScope, WalkScope};
 use crate::state::{ChangeSet, Coverage, FileSet};
 
