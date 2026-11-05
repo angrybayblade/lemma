@@ -45,6 +45,7 @@ pub fn members(workspace: &Path, cache: &Path) -> Result<Vec<Member>, GraphError
         level: None,
         cache: cache.to_path_buf(),
         facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
     };
     let repos = check::load(workspace, &options)?;
     Ok(repos

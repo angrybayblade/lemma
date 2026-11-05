@@ -57,6 +57,9 @@ pub struct CheckOptions {
     /// Where facts read from code are kept between runs; `None` keeps
     /// nothing.
     pub facts_cache: Option<lemma_verify::FactsCache>,
+    /// How much consumer code inference reads: what the change's findings
+    /// rest on (the default), or everything.
+    pub evaluation: lemma_verify::Evaluation,
 }
 
 /// How serious a finding is.
@@ -335,6 +338,7 @@ struct Inference<'a> {
     cache: &'a Path,
     facts_cache: Option<&'a lemma_verify::FactsCache>,
     listings: &'a Arc<lemma_http::Listings>,
+    evaluation: lemma_verify::Evaluation,
 }
 
 /// What every inference in one check shares: its options, and the
@@ -370,6 +374,7 @@ fn infer_change<E: Engine>(
         cache: &options.cache,
         facts_cache: options.facts_cache.as_ref(),
         listings,
+        evaluation: options.evaluation,
     };
     infer_links(repos, &run, level, engine, findings)
 }
@@ -403,6 +408,7 @@ fn infer_drift<E: Engine>(
             cache: &options.cache,
             facts_cache: options.facts_cache.as_ref(),
             listings,
+            evaluation: options.evaluation,
         };
         if let Some(found) = infer_links(repos, &run, level, engine, findings)? {
             inferred = Some(found);
@@ -459,7 +465,7 @@ fn infer_links<E: Engine>(
         facts_cache: run.facts_cache.cloned(),
         // Tracing asks for the calls of further operations as it reaches
         // them (see `affects::CallSource`).
-        evaluation: lemma_verify::Evaluation::Demand,
+        evaluation: run.evaluation,
     };
     let report =
         lemma_verify::verify_with_listings(&inferred.manifest, engine, &options, run.listings)
@@ -481,14 +487,25 @@ fn infer_links<E: Engine>(
     Ok(Some((distinct_calls(&report), walkable)))
 }
 
-/// How many distinct caller and operation pairs inference found.
+/// How many distinct caller and operation pairs inference found, of the
+/// operations it read every call of: calls read only as context (from a
+/// file a caller imports, say) are not counted.
 fn distinct_calls(report: &lemma_verify::Report) -> usize {
+    let covered: Option<BTreeSet<&String>> = report
+        .covered
+        .as_ref()
+        .map(|covered| covered.iter().collect());
     let calls: BTreeSet<(&String, &String)> = report
         .relations
         .get("calls")
         .into_iter()
         .flatten()
         .filter_map(|row| Some((row.first()?, row.get(1)?)))
+        .filter(|(_, operation)| {
+            covered
+                .as_ref()
+                .is_none_or(|covered| covered.contains(operation))
+        })
         .collect();
     calls.len()
 }

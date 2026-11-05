@@ -106,6 +106,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
         level: Some(Level::Check),
         cache: workspace.path().join("cache"),
         facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
     };
 
     let report = check(

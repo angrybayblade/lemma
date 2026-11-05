@@ -138,6 +138,10 @@ pub(crate) struct CheckArgs {
     /// Default: Soufflé if it is installed, otherwise the reference engine.
     #[arg(long)]
     pub engine: Option<String>,
+    /// How much consumer code inference reads: `demand` (the code a finding
+    /// can rest on, the default) or `full`.
+    #[arg(long, value_parser = ["demand", "full"])]
+    pub evaluation: Option<String>,
 }
 
 #[derive(Args)]
