@@ -283,8 +283,9 @@ fn write_targets(out: &mut dyn Write, targets: &[Target], nouns: [&str; 2]) -> i
             (_, true) => writeln!(out, "  {location}  (external)")?,
             (Some(symbol), false) => writeln!(
                 out,
-                "  {location}  {} #{}",
-                symbol.symbol.qualified_name, symbol.id
+                "  {location}  {} {}",
+                symbol.symbol.qualified_name,
+                crate::output::qualified_id(symbol)
             )?,
             (None, false) => writeln!(out, "  {location}")?,
         }
