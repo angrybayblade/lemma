@@ -15,7 +15,7 @@ use crate::functions::{Functions, Kind, NameId};
 use crate::handlers::{Definition, Lookup, RouteSite, helper_called_at, resolve};
 
 /// A function or method in a repository, with the names its body mentions.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function {
     /// The file it is in, relative to the repository root.
     pub file: String,

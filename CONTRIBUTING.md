@@ -128,6 +128,8 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | anchor | A relation, computed without consumer facts, holding the operations a requirement's calls must be of | seed, root, trigger |
 | index term | A string a file's code facts are indexed by, standing for calls the file may make | key, tag, token |
 | covered operations | The operations whose calls a change-driven run read in full | scope, focus, subset |
+| unit record | One file's parse in Lemma's binary format, kept under a key naming its contents | blob, entry, row |
+| segment | An immutable object built from many unit records at once, such as a repository's functions, named by a digest of its inputs | pack, bundle, snapshot |
 
 Extend this table when a new domain concept appears, in the same change that introduces it.
 

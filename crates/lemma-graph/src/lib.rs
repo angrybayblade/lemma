@@ -165,4 +165,13 @@ pub enum GraphError {
         #[source]
         source: lemma_syntax::SyntaxError,
     },
+    /// A file's functions, just parsed, could not be read back.
+    #[error("could not read back the functions parsed from {path}")]
+    FunctionRecord {
+        /// The file.
+        path: String,
+        /// Why.
+        #[source]
+        source: lemma_store::RecordError,
+    },
 }
