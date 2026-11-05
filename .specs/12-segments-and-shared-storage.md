@@ -1,6 +1,6 @@
 # Segments and shared storage
 
-**Status: proposal, 2026-11-05.** Nothing below is implemented. It refines the storage half of [spec 10](10-native-datastore.md): that document's logical model (three identities, units owned by producers, coverage as data, receipts) and its review follow-up (content-addressed units, snapshots as manifests of units) stand. This document decides the physical format those units take, how they group into shareable segments, and how segments move between a laptop, a devbox and CI. Measurements are from `main` at `db6848e` on the generated systems in `bench/lemmabench/scale.py`.
+**Status: partly implemented, 2026-11-05.** Function records, per-repository segments for tracing's functions and selection's terms, and the unit cache's write path have landed; see [What landed](#what-landed) for what differs from the proposal and why. The rest is a proposal. It refines the storage half of [spec 10](10-native-datastore.md): that document's logical model (three identities, units owned by producers, coverage as data, receipts) and its review follow-up (content-addressed units, snapshots as manifests of units) stand. This document decides the physical format those units take, how they group into shareable segments, and how segments move between a laptop, a devbox and CI. Measurements are from `main` at `db6848e` on the generated systems in `bench/lemmabench/scale.py`.
 
 ## Goals
 
@@ -163,6 +163,38 @@ The client never needs the manifest from the server to be correct: it can comput
 
 Locally: keep segments reachable from named heads, pinned readers, and the last *n* snapshots per repository (today's `--keep` and `--ttl` apply to segments too); evict least recently used beyond a disk budget. In a shared store: keep segments reachable from recent commits on active branches. Content addressing makes eviction safe: a missing segment is rebuilt or pulled, never wrong.
 
+## What landed
+
+Measured with `lemma check --change '#svc0' --evaluation demand --no-daemon` on an 8-CPU Linux VM, on systems from `bench/lemmabench/scale.py`. Findings and traces are byte-identical to `main` at `c815e7c` in every row:
+
+| System | | `main` | Now |
+|---|---|---|---|
+| 100k files, 20 repositories of 5k | warm | 5.5 s, 1.15 GB | 1.7 s, 0.20 GB |
+| | cold | 33–38 s | 23 s, 0.9 GB |
+| 100k files in one consumer repository | warm | 58 s, 2.4 GB | 4.0 s, 0.45 GB |
+| | after a one-file commit in it | 58 s | 6.1 s once, then 3.6 s |
+| 300 files | warm | 0.13 s | 0.13 s |
+
+At 100k files in 20 repositories, tracing's warm share fell from 3.5 s to 0.25 s and choosing consumer files from 0.58 s to 0.20 s. In the single large repository most of the gain is the interned walk: the old one compared strings across every function of the repository for each route.
+
+- **Function records** (`lemma-graph::functions`). A file's functions are one record with its own sorted string table, kept in `units.db` in place of the functions JSON (72 MB instead of 126 MB at 100k files). Records share one codec (`lemma-store::records`): little-endian fixed-width fields, length-prefixed columns, sorted string tables, a closing BLAKE3 digest, and every length checked before use.
+- **Tracing walks interned names.** A repository's functions are one table (`Functions`): every file, name and identifier stored once and referred to by its rank in one sorted table, so ids compare in the order of their text and a walk visits functions and names in the same order it did with strings. The name index is two integer arrays (counts and mentioners), rebuilt on load.
+- **Functions segments.** Each repository's merged table is kept as one segment (`lemma-store::segments`), an immutable file named by a digest of every traced file's unit key in order, written to a temporary name and renamed. Unchanged repository: one read and digest check (0.07 s for all twenty repositories at 100k files). Changed: records decoded in parallel and merged, then the segment written in the background, only if every file had a record (a file Git vouched for but that could not be read is retried next run, not left out for good).
+- **Terms segments** (`lemma-verify::term_segments`). Each repository's consumer files' index terms as one segment: term to file positions. Selection reads it instead of asking SQLite whether each file is indexed (0.28 s at 100k). When it is missing, selection runs as before and the segment is built in the background, reading indexed files' terms back through a new index on `unit_terms (unit)`.
+- **Unit cache writes.** Digest keys scatter inserts over the whole table, and with 64 KiB pages SQLite's default 2 MiB page cache holds some thirty: a cold run spent most of its time rewriting pages, waiting on the writer. The writer now inserts in key order, with a 32 MiB page cache, and writes what is queued as one transaction of up to about 256 MB, so other writers get the lock in turn and the write-ahead log stays small. Cold 100k: 38 s to 23 s. (A 256 MiB cache and unbounded transactions were 0.7 s faster and 200 MB larger; the bound is worth more on laptops and with concurrent Lemma processes.)
+- **Retention.** Segments live under the build's facts directory, removed with it. Within it, each group (one repository checkout's functions, or its terms) keeps its four most recently used segments; any segment unused for two weeks, and any temporary file older than an hour, is removed when a segment is written.
+
+Where experiment moved the design:
+
+- **No prebuilt `names` section.** Rebuilding the name index from a segment's columns takes about 30 ms at 100k files; storing it adds 27 MB (40%) to the segment, which costs about as much to read and check. It is rebuilt.
+- **Segments are per repository, keyed by its files' unit keys, not by Git tree.** That is what the warm path needed, and it works for working-directory snapshots too. Its cost is the changed repository: a miss rebuilds the whole repository's segments from records (about 2 s for 100k files, the one-file-commit row above) and writes them whole. Tree-keyed segments with boundaries, or patching a missed segment from the group's last one by unit key, are the fix for monorepos; the first is also what sharing (stage D) needs.
+- **Code facts are still JSON.** Change-driven evaluation decodes only the files it selects (9k of 100k here, 0.12 s), so records for them would save under 0.1 s.
+- **Still keyed by the build of Lemma**, not a profile digest.
+
+Next, by expected gain: patch a missed segment from its group's last one (monorepos, CI on pull requests, the daemon after edits); one parse per file (stage B, about 4.5 s of a cold 100k check); keep decoded segments in the daemon's memory; check large segments' digests on several threads; lengths are `u32`, so a segment over 4 GiB (several million files in one repository) never checks and is rebuilt every run until segments are split.
+
+What remains of a warm 100k check is mostly outside storage: Soufflé (0.3 s), writing selected files' facts into the grammar (0.27 s), listing repositories (0.16 s).
+
 ## Rollout
 
 Each stage stands alone, is gated, and keeps tier 0 as the oracle.
@@ -186,7 +218,7 @@ Spec 10's promotion criteria still govern making any of this the default, with t
 
 ## Vocabulary
 
-To add to CONTRIBUTING's table when the code lands: **unit record** (one file's parse in Lemma's format), **segment** (the unit records of one subtree with indexes, keyed by tree), **overlay** (records for uncommitted files), **catalog** (the mutable local store), **profile** (what determines a record's bytes).
+**Unit record** and **segment** are in CONTRIBUTING's table; the rest join it when their code lands: **unit record** (one file's parse in Lemma's format), **segment** (the unit records of one subtree with indexes, keyed by tree), **overlay** (records for uncommitted files), **catalog** (the mutable local store), **profile** (what determines a record's bytes).
 
 ## Open questions
 
