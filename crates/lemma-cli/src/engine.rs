@@ -32,9 +32,8 @@ use lemma_store::{
 
 use crate::addresses;
 use crate::cli::{
-    Cli, Command, DEFAULT_KEEP, DEFAULT_TTL, DefinitionArgs, GraphArgs, GraphDirection,
-    GraphDrawing, GraphSourceArg, LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget,
-    SymbolsArgs,
+    Cli, Command, DefinitionArgs, GraphArgs, GraphDirection, GraphDrawing, GraphSourceArg,
+    LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget, SymbolsArgs,
 };
 use crate::output::{self, Format};
 use crate::selection;
@@ -181,34 +180,39 @@ impl Engine {
                     keep,
                     ttl: crate::duration::parse_duration(&ttl)?,
                 };
-                self.index(&request, &invocation.resolve(&path), retention, out)
+                self.index(
+                    &request,
+                    &invocation.resolve(&path),
+                    Indexing::Command(retention),
+                    out,
+                )
             }
             Command::Symbols(args) => {
-                self.refresh_index(&request)?;
+                self.refresh_index(&request);
                 self.symbols(&request, args, out)
             }
             Command::Outline { path } => {
-                self.refresh_index(&request)?;
+                self.refresh_index(&request);
                 self.outline(&request, &path, out)
             }
             Command::Refs(args) => {
-                self.refresh_index(&request)?;
+                self.refresh_index(&request);
                 self.references(&request, args, out)
             }
             Command::Definition(args) => {
-                self.refresh_index(&request)?;
+                self.refresh_index(&request);
                 self.definition(&request, &args, out)
             }
             Command::Implementations(args) => {
-                self.refresh_index(&request)?;
+                self.refresh_index(&request);
                 self.implementations(&request, args, out)
             }
             Command::Signature(args) => {
-                self.refresh_index(&request)?;
+                self.refresh_index(&request);
                 self.signature(&request, args, out)
             }
             Command::Graph(args) => {
-                self.refresh_index(&request)?;
+                self.refresh_index(&request);
                 self.graph(&request, args, out)
             }
             Command::Providers => self.providers(&request, out),
@@ -219,36 +223,34 @@ impl Engine {
         }
     }
 
-    /// Brings the index a query reads up to date with its files first, as
-    /// the MCP server does, so a query never answers from, or refuses over,
-    /// a file edited since `lemma index`. Files whose size and times are
-    /// unchanged cost a `stat` each. An index given with `--db` is left as
-    /// it is: what it indexes is not known from its location.
-    fn refresh_index(&mut self, request: &Request<'_>) -> anyhow::Result<()> {
+    /// Brings the index a query reads up to date with its files first, so a
+    /// query never answers from, or refuses over, a file edited since
+    /// `lemma index`. Files whose size and times are unchanged cost a `stat`
+    /// each. An index given with `--db` is left as it is: what it indexes is
+    /// not known from its location.
+    fn refresh_index(&mut self, request: &Request<'_>) {
         if request.db.is_some() {
-            return Ok(());
+            return;
         }
         // Without an index the query reports that itself.
         let Ok(db_path) = request.find_index() else {
-            return Ok(());
+            return;
         };
         let Some(root) = db_path.parent().and_then(Path::parent) else {
-            return Ok(());
-        };
-        let retention = Retention {
-            keep: DEFAULT_KEEP,
-            ttl: crate::duration::parse_duration(DEFAULT_TTL)?,
+            return;
         };
         let root = root.to_path_buf();
-        self.index(request, &root, retention, &mut io::sink())?;
-        Ok(())
+        // A refresh that fails (a `lemma.yaml` mid-edit, a pin that needs a
+        // fetch while offline) leaves the index as it was: the query still
+        // answers from it, and reports any file that changed as stale.
+        let _ = self.index(request, &root, Indexing::Refresh, &mut io::sink());
     }
 
     fn index(
         &mut self,
         request: &Request<'_>,
         path: &Path,
-        retention: Retention,
+        indexing: Indexing,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
         let (root, lemma_path) = selection::locate(path)?;
@@ -258,7 +260,7 @@ impl Engine {
             .transpose()?;
         if let (Some(source), Some(lemma_path)) = (&source, &lemma_path) {
             if selection::is_workspace(&source.file) {
-                return self.index_workspace(request, lemma_path, retention, out);
+                return self.index_workspace(request, lemma_path, indexing, out);
             }
         }
         let db_path = match &request.db {
@@ -266,7 +268,9 @@ impl Engine {
             None => default_index_path(&root)?,
         };
         let indexed = self.index_repository(&db_path, &root, source.as_ref())?;
-        self.apply_retention(&db_path, &root, retention)?;
+        if let Indexing::Command(retention) = indexing {
+            self.apply_retention(&db_path, &root, retention)?;
+        }
         let mut warnings: Vec<String> = source
             .is_none()
             .then(|| selection::MISSING_LEMMA_FILE.to_owned())
@@ -282,8 +286,12 @@ impl Engine {
         if self.warms_up_after_index {
             let origin = request.origin();
             let summary = &indexed.summary;
-            let languages: Vec<Language> = summary.files_by_language.keys().copied().collect();
-            self.warm_up(&db_path, &root, &languages, &origin)?;
+            // A query's refresh starts no servers: the query starts the one it
+            // needs.
+            if matches!(indexing, Indexing::Command(_)) {
+                let languages: Vec<Language> = summary.files_by_language.keys().copied().collect();
+                self.warm_up(&db_path, &root, &languages, &origin)?;
+            }
             self.origins.insert((db_path.clone(), root), origin);
             let slot = self.searches.entry(db_path.clone()).or_default();
             build_search(slot, &db_path, &summary.snapshot.fingerprint);
@@ -340,7 +348,7 @@ impl Engine {
         &mut self,
         request: &Request<'_>,
         lemma_path: &Path,
-        retention: Retention,
+        indexing: Indexing,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
         let root = lemma_path.parent().unwrap_or(Path::new("."));
@@ -349,7 +357,7 @@ impl Engine {
         let mut workspace = WorkspaceIndex::default();
         for member in &members {
             let result = self.index_member(member, &cache);
-            if result.is_ok() {
+            if let (Ok(_), Indexing::Command(retention)) = (&result, indexing) {
                 self.apply_retention(&default_index_path(&member.root)?, &member.root, retention)?;
             }
             workspace.record(member, result)?;
@@ -1024,6 +1032,17 @@ fn workspace_file(db_path: &Path) -> Option<PathBuf> {
     let root = db_path.parent()?.parent()?;
     let file = root.join(lemma_graph::config::LEMMA_FILE);
     file.exists().then_some(file)
+}
+
+/// Why an index is being brought up to date.
+#[derive(Clone, Copy)]
+enum Indexing {
+    /// `lemma index`: drops snapshots `retention` no longer keeps, and in the
+    /// daemon starts language servers for what it indexed.
+    Command(Retention),
+    /// Before a query: indexes changed files and nothing more, keeping
+    /// whatever snapshots the last `lemma index` kept.
+    Refresh,
 }
 
 /// What indexing one repository produced.
