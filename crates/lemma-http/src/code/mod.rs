@@ -249,6 +249,7 @@ pub fn extract(
         prefixes: BTreeMap::new(),
         client_functions: BTreeMap::new(),
         examples: 0,
+        bound_paths: BTreeMap::new(),
     };
     walk.visit(tree.root_node());
     walk.collect_strings(tree.root_node());
@@ -315,6 +316,18 @@ struct Walk<'a> {
     /// How many `example` or `examples` values the walk is inside: their
     /// objects are sample data in a document, not routes or requests.
     examples: usize,
+    /// Paths assigned to local variables (`url = f"{base}/v1/users/{id}"`),
+    /// by enclosing function and variable, so a request passed the
+    /// variable (`requests.get(url)`) gets its method.
+    bound_paths: BTreeMap<(Option<String>, String), BoundPath>,
+}
+
+/// A path string assigned to a variable: its node, as consumed strings
+/// are tracked, its text, and where it is.
+struct BoundPath {
+    node: usize,
+    template: String,
+    location: Location,
 }
 
 /// Keys whose value is sample data in an API document.
@@ -328,7 +341,11 @@ impl Walk<'_> {
     fn visit(&mut self, node: Node<'_>) {
         match node.kind() {
             "object" => self.object(node),
-            "variable_declarator" => self.zod_definition(node),
+            "variable_declarator" => {
+                self.bind_path(node);
+                self.zod_definition(node);
+            }
+            "assignment" => self.bind_path(node),
             "call_expression" | "call" => self.call(node),
             "import_statement" | "import_from_statement" => self.import(node),
             "export_statement" => self.export(node),
@@ -439,29 +456,116 @@ impl Walk<'_> {
             .or_else(|| self.nested_path_argument(arguments));
         let Some(path_node) = path_argument.filter(|node| !self.consumed.contains(&node.id()))
         else {
+            self.call_with_bound_path(&parts, arguments, &strings);
             return;
         };
         let template = self.string_value(path_node).unwrap_or_default();
+        let method = self.request_method(&parts, arguments, &strings);
+        self.add_reference(&method, &template, path_node);
+    }
+
+    /// The method of a request call: a method argument beside the path
+    /// (`http.NewRequest("POST", url)`, `request("GET", "/v1/x")`), the
+    /// called name (`requests.get`), or a `method` option; `*` if none.
+    fn request_method(
+        &self,
+        parts: &[String],
+        arguments: Node<'_>,
+        strings: &[Node<'_>],
+    ) -> String {
         let verb_argument = strings
             .iter()
             .filter_map(|argument| self.string_value(*argument))
             .find(|text| VERBS.contains(&text.to_ascii_lowercase().as_str()))
             .or_else(|| self.go_method_constant(arguments))
             .or_else(|| self.rust_method_constant(arguments));
-        // A method argument beside the path builds a request:
-        // `http.NewRequest("POST", url)`, `request("GET", "/v1/x")`.
         if let Some(verb) = verb_argument {
-            self.add_reference(&canonical_method(&verb), &template, path_node);
-            return;
+            return canonical_method(&verb);
         }
         let called = parts.last().map(String::as_str).unwrap_or_default();
-        let method = if VERBS.contains(&called.to_ascii_lowercase().as_str()) {
-            canonical_method(called)
-        } else {
-            self.method_option(arguments)
-                .map_or_else(|| "*".to_owned(), |method| canonical_method(&method))
+        if VERBS.contains(&called.to_ascii_lowercase().as_str()) {
+            return canonical_method(called);
+        }
+        self.method_option(arguments)
+            .map_or_else(|| "*".to_owned(), |method| canonical_method(&method))
+    }
+
+    /// A request passed a variable holding a path assigned earlier in the
+    /// same function (`url = f"{base}/v1/users/{id}"; requests.get(url)`):
+    /// the path is reported with the call's method, rather than later as a
+    /// string whose method is unknown.
+    fn call_with_bound_path(
+        &mut self,
+        parts: &[String],
+        arguments: Node<'_>,
+        strings: &[Node<'_>],
+    ) {
+        let function = self.location(arguments).function;
+        let mut cursor = arguments.walk();
+        let bound = arguments
+            .named_children(&mut cursor)
+            .filter(|argument| argument.kind() == "identifier")
+            .find_map(|argument| {
+                let key = (function.clone(), self.text(argument).to_owned());
+                self.bound_paths.get(&key)
+            });
+        let Some(bound) = bound else {
+            return;
         };
-        self.add_reference(&method, &template, path_node);
+        let (node, template, location) =
+            (bound.node, bound.template.clone(), bound.location.clone());
+        let method = self.request_method(parts, arguments, strings);
+        // A call that does not say how it sends (`print(url)`) leaves the
+        // path to a later request, or to be reported with no method.
+        if method == "*" {
+            return;
+        }
+        let Some(path) = canonical_path(&template, &self.options.path_markers) else {
+            return;
+        };
+        self.consumed.push(node);
+        self.facts.path_references.push(PathReference {
+            method,
+            path,
+            location,
+        });
+    }
+
+    /// Remembers a path string assigned to a plain variable, by the function
+    /// it is assigned in.
+    fn bind_path(&mut self, node: Node<'_>) {
+        let (name, value) = match node.kind() {
+            "assignment" => (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ),
+            _ => (
+                node.child_by_field_name("name"),
+                node.child_by_field_name("value"),
+            ),
+        };
+        let (Some(name), Some(value)) = (name, value) else {
+            return;
+        };
+        if name.kind() != "identifier" {
+            return;
+        }
+        let Some(template) = self
+            .string_value(value)
+            .filter(|text| has_marker(text, &self.options.path_markers))
+        else {
+            return;
+        };
+        let location = self.location(value);
+        let key = (location.function.clone(), self.text(name).to_owned());
+        self.bound_paths.insert(
+            key,
+            BoundPath {
+                node: value.id(),
+                template,
+                location,
+            },
+        );
     }
 
     /// Records a call through a chain of at least three names.
@@ -987,6 +1091,20 @@ mod tests {
             ("GET", "/v1/users")
         );
         assert_eq!(found.path_references, []);
+    }
+
+    #[test]
+    fn a_request_passed_a_path_variable_gets_the_request_method() {
+        let source = "def get_connection(id):\n    url = f\"{BASE}/v1/connections/{id}\"\n    print(url)\n    return requests.get(url)\n";
+
+        let found = facts("client.py", source);
+
+        let calls: Vec<(&str, &str)> = found
+            .path_references
+            .iter()
+            .map(|reference| (reference.method.as_str(), reference.path.as_str()))
+            .collect();
+        assert_eq!(calls, [("GET", "/v1/connections/{}")]);
     }
 
     #[test]
