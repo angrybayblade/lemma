@@ -2,7 +2,7 @@
 
 Captured: 2026-10-28
 
-Updated 2026-11-04. The intended authoring surface is a modular `.lm` language. [Document 10](10-native-datastore.md) proposes a native primary datastore for agent workspaces, including versioned code facts, organisation-defined relations and verification evidence.
+Updated 2026-11-05: [document 12](12-segments-and-shared-storage.md) proposes Lemma's storage format, segments keyed by Git tree that move between local machines, devboxes and CI. Updated 2026-11-04. The intended authoring surface is a modular `.lm` language. [Document 10](10-native-datastore.md) proposes a native primary datastore for agent workspaces, including versioned code facts, organisation-defined relations and verification evidence.
 
 These notes consolidate the design discussion leading to Lemma. They include accepted architectural directions, research, experiments, proposals, and open questions. The accepted starting direction is a Rust core, a lightweight syntax index, pluggable language-server semantic providers, and Lemma-owned relationship semantics. Since 2026-11-01: rules are Datalog, evaluated by Soufflé first behind a pluggable engine interface, and relationships are declared in a user-definable grammar written in YAML or `.ls` files (see document 8). Since 2026-11-02: each repository has a composable `lemma.yaml` (services and a `graph` of links), parents compose repositories, and linked operations' schemas are compared as JSON Schema (see document 9).
 
@@ -27,6 +27,7 @@ These notes consolidate the design discussion leading to Lemma. They include acc
 9. [Composable manifests, links and schema checks](09-composable-manifests.md)
 10. [Native index and evidence store](10-native-datastore.md)
 11. [Change-driven evaluation](11-change-driven-evaluation.md)
+12. [Segments and shared storage](12-segments-and-shared-storage.md)
 
 ## Status conventions
 
