@@ -188,6 +188,8 @@ pub fn check<E: Engine>(
     for link in &links {
         checker.check_link(link)?;
     }
+    // Adapters build in the same shared worktree resolvers ran in.
+    checker.reads.release();
     let mut findings = checker.findings;
     findings.extend(unsupported_documents(&repos)?);
     let mut seeds = declared_seeds(&findings, &links, &repos);

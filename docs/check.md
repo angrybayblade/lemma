@@ -109,6 +109,8 @@ An operation is something a service provides or calls, with a request and a resp
 | A command's output | `resolver: { command: "{python} scripts/spec.py" }` and `request: { path: "$.create_charge.request" }` | The command, run in the repository at the commit; the location is a JSON path into its output |
 | A document | `request: { file: spec.json, path: "$.create_charge.request" }` | The file; `format: openapi` converts OpenAPI 3.0's `nullable` |
 
+A command's output, and a Python type read with Pydantic, are kept in Lemma's cache for the commit they were produced at, by the code's Git tree, the command and its environment, the interpreter and its installed packages when Python runs, and `PATH`, `VIRTUAL_ENV` and `PYTHONPATH`; a commit not checked out runs in one worktree Lemma reuses per repository. Set `cache: false` on a resolver whose output depends on anything else, such as a running service or files Git ignores.
+
 `{python}`, `{node}`, `{go}` and `{cargo}` in a command are the service's `runtime`, which defaults to `python3`, `node`, `go` and `cargo`. A relative interpreter such as `.venv/bin/python` is the repository's own environment. `runtime.env` sets environment variables for every command, such as `PYTHONPATH: src`.
 
 Each language's reader follows its serializer's rules, because a type is read differently on the sending and receiving sides:
@@ -171,3 +173,4 @@ When a commit predates the repository's `lemma.yaml`, the working directory's is
 - Types are followed within the files read: Go and Rust in the anchored file's directory, TypeScript through relative imports, Python in the anchored file's directory when Pydantic is not available.
 - Routes whose paths are built at run time are not found, so tracing cannot pass through them.
 - Tracing reads the call graph by name and can include functions that only share a name with a caller.
+- The working directory is read as Git sees it: files it ignores (a `.venv`, build output) are not code. Links to directories are followed.
