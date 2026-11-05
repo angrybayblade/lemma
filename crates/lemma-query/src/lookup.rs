@@ -220,6 +220,7 @@ pub(crate) fn ask_providers<A: Ask>(
         let session = match pool.session(&*store, snapshot, &provider, options.request_timeout) {
             Ok(session) => session,
             Err(PoolError::Store(error)) => return Err(error.into()),
+            Err(PoolError::Files(source)) => return Err(QueryError::Files { source }),
             Err(PoolError::Start(error)) => {
                 start_failures.push(format!("{}: {}", definition.id, describe(&error)));
                 continue;
@@ -280,7 +281,7 @@ fn open_projects<A: Ask>(
 }
 
 /// The identifier at a position, read from the file on disk.
-fn identifier_at(root: &Path, at: SourcePoint<'_>) -> Option<String> {
+pub(crate) fn identifier_at(root: &Path, at: SourcePoint<'_>) -> Option<String> {
     let source = fs::read_to_string(root.join(at.path)).ok()?;
     let line = source.lines().nth(at.position.line as usize)?;
     let column = at.position.column as usize;
@@ -317,7 +318,7 @@ fn files_mentioning(
 }
 
 /// TypeScript and TSX share projects.
-fn same_family(left: Language, right: Language) -> bool {
+pub(crate) fn same_family(left: Language, right: Language) -> bool {
     let family = |language| match language {
         Language::Tsx => Language::TypeScript,
         other => other,
@@ -415,7 +416,7 @@ fn provenance(definition: &ProviderDefinition, provider_version: Option<String>)
 
 /// The error and its whole cause chain, since the top-level message alone
 /// ("provider failed") rarely says what to fix.
-fn describe(error: &dyn Error) -> String {
+pub(crate) fn describe(error: &dyn Error) -> String {
     let mut message = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {

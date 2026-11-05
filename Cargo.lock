@@ -585,6 +585,7 @@ name = "lemma-cli"
 version = "0.1.0-rc0"
 dependencies = [
  "anyhow",
+ "blake3",
  "clap",
  "lemma-graph",
  "lemma-http",
@@ -599,6 +600,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.21",
  "toml",
 ]
 
@@ -720,6 +722,7 @@ dependencies = [
  "lemma-store",
  "lemma-syntax",
  "memchr",
+ "serde",
  "thiserror 2.0.21",
 ]
 
