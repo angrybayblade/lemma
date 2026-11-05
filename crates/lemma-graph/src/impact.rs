@@ -8,7 +8,7 @@
 //! functions in a repository are not followed, since a mention cannot say
 //! which one is meant. Language servers can make this precise later.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use crate::handlers::{Definition, Lookup, RouteSite, helper_called_at, resolve};
@@ -607,7 +607,7 @@ impl Step {
                 // it goes on by name from them.
                 let reached: Vec<(usize, Option<usize>)> =
                     given.iter().map(|index| (*index, None)).collect();
-                let seeds = next_names(functions, &reached, &lookup.followable, &BTreeSet::new())
+                let seeds = next_names(functions, &reached, lookup, &BTreeSet::new())
                     .into_iter()
                     .collect();
                 Walked::from_names(functions, lookup, seeds, given)
@@ -653,7 +653,6 @@ impl Walked {
         for index in given {
             walked.add(index, None, false);
         }
-        let followable = &names.followable;
         let mut frontier: BTreeMap<String, Option<usize>> = BTreeMap::new();
         for (name, from) in seeds {
             frontier.entry(name).or_insert(from);
@@ -670,7 +669,7 @@ impl Walked {
                 .filter(|(index, _, _)| !names.registrations.contains(index))
                 .map(|(index, from, _)| (*index, *from))
                 .collect();
-            let next_frontier = next_names(functions, &onward, followable, &followed);
+            let next_frontier = next_names(functions, &onward, names, &followed);
             for (index, from, through_type) in next {
                 walked.add(index, from, through_type);
             }
@@ -774,14 +773,14 @@ impl Walked {
 fn next_names(
     functions: &[Function],
     reached: &[(usize, Option<usize>)],
-    followable: &Followable,
+    lookup: &NameIndex,
     followed: &BTreeSet<String>,
 ) -> BTreeMap<String, Option<usize>> {
     let mut names = BTreeMap::new();
     for (index, _) in reached {
         let candidates = callable_names(&functions[*index])
             .into_iter()
-            .filter(|name| followable.contains(name) && !followed.contains(*name));
+            .filter(|name| lookup.is_followable(name) && !followed.contains(*name));
         for name in candidates {
             names.entry(name.to_owned()).or_insert(Some(*index));
         }
@@ -839,10 +838,12 @@ fn language(file: &str) -> &str {
 }
 
 /// What a walk looks names up in: which it may follow, and which functions
-/// mention each, by their index.
+/// mention each, by their index. Only looked up, never iterated, so hash
+/// maps keep no order out of the results.
 struct NameIndex {
-    followable: Followable,
-    mentioners: BTreeMap<String, Vec<usize>>,
+    /// How many functions define each name, or bind it.
+    definitions: HashMap<String, usize>,
+    mentioners: HashMap<String, Vec<usize>>,
     /// Functions holding a route's registration, whose names a walk does
     /// not follow on: what mentions a registration (a router collecting
     /// routes, a generator documenting them) reads the route, it does not
@@ -853,18 +854,33 @@ struct NameIndex {
 
 impl NameIndex {
     fn of(functions: &[Function]) -> Self {
-        let mut mentioners: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        let mut definitions: HashMap<String, usize> = HashMap::new();
+        let mut mentioners: HashMap<String, Vec<usize>> = HashMap::new();
         for (index, function) in functions.iter().enumerate() {
-            let mentioned: BTreeSet<&String> = function.mentions.iter().collect();
-            for name in mentioned {
+            let defined = std::iter::once(&function.name).chain(&function.binds);
+            for name in defined {
+                *definitions.entry(name.clone()).or_insert(0) += 1;
+            }
+            for name in &function.mentions {
                 mentioners.entry(name.clone()).or_default().push(index);
             }
         }
         Self {
-            followable: Followable::of(functions),
+            definitions,
             mentioners,
             registrations: BTreeSet::new(),
         }
+    }
+
+    /// Whether a walk may follow `name`: defined by few functions, so a
+    /// mention says which is meant, and mentioned by few, so reaching a
+    /// function through one is evidence (`errorToHTTPException`, which
+    /// every handler mentions, is not). A type's name, which no function
+    /// defines, is held to the second only.
+    fn is_followable(&self, name: &str) -> bool {
+        let defining = self.definitions.get(name).copied().unwrap_or(0);
+        let mentioning = self.mentioners.get(name).map_or(0, Vec::len);
+        defining <= MAX_DEFINITIONS && mentioning <= MAX_MENTIONS
     }
 }
 
@@ -889,41 +905,6 @@ fn registrations(functions: &[Function], routes: &[(Route, Handler)]) -> BTreeSe
         }
     }
     found
-}
-
-/// The names a walk may follow: defined by few functions, so a mention
-/// says which is meant, and mentioned by few, so reaching a function
-/// through one is evidence (`errorToHTTPException`, which every handler
-/// mentions, is not). A type's name, which no function defines, is held to
-/// the second only.
-struct Followable {
-    definitions: BTreeMap<String, usize>,
-    mentions: BTreeMap<String, usize>,
-}
-
-impl Followable {
-    fn of(index: &[Function]) -> Self {
-        let mut definitions: BTreeMap<String, usize> = BTreeMap::new();
-        let mut mentions: BTreeMap<String, usize> = BTreeMap::new();
-        for function in index {
-            *definitions.entry(function.name.clone()).or_insert(0) += 1;
-            for bound in &function.binds {
-                *definitions.entry(bound.clone()).or_insert(0) += 1;
-            }
-            for name in &function.mentions {
-                *mentions.entry(name.clone()).or_insert(0) += 1;
-            }
-        }
-        Self {
-            definitions,
-            mentions,
-        }
-    }
-
-    fn contains(&self, name: &str) -> bool {
-        self.definitions.get(name).copied().unwrap_or(0) <= MAX_DEFINITIONS
-            && self.mentions.get(name).copied().unwrap_or(0) <= MAX_MENTIONS
-    }
 }
 
 fn caller(call: &Call) -> Affected {

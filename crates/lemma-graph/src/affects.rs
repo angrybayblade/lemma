@@ -356,8 +356,8 @@ pub struct CodeReading<'a> {
     pub listings: &'a lemma_http::Listings,
 }
 
-/// Repositories' functions, read once each. A repository that cannot be
-/// read gives none, and the first such error is kept to report.
+/// Reads repositories' functions. A repository that cannot be read gives
+/// none, and the first such error is kept to report.
 pub(crate) struct Code<'a> {
     repos: &'a BTreeMap<String, Repo>,
     /// The build of Lemma and the units each file's functions are kept in
@@ -366,7 +366,6 @@ pub(crate) struct Code<'a> {
     /// Repositories' files, listed once per run with verification.
     listings: &'a lemma_http::Listings,
     extractors: ExtractorPool,
-    functions: BTreeMap<String, Vec<Function>>,
     failure: Option<GraphError>,
 }
 
@@ -383,7 +382,6 @@ impl<'a> Code<'a> {
             kept,
             listings: reading.listings,
             extractors: ExtractorPool::new(),
-            functions: BTreeMap::new(),
             failure: None,
         }
     }
@@ -393,24 +391,20 @@ impl<'a> Code<'a> {
         self.failure
     }
 
+    /// A repository's functions. Not kept: a trace's [`impact::Tracing`]
+    /// keeps each repository it reads, indexed.
     pub(crate) fn functions(&mut self, repository: &str) -> Vec<Function> {
-        if let Some(functions) = self.functions.get(repository) {
-            return functions.clone();
-        }
         let read = match self.repos.get(repository) {
             Some(repo) => functions_of(repo, &mut self.kept, self.listings, &self.extractors),
             None => Ok(Vec::new()),
         };
-        let functions = match read {
+        match read {
             Ok(functions) => functions,
             Err(error) => {
                 self.failure.get_or_insert(error);
                 Vec::new()
             }
-        };
-        self.functions
-            .insert(repository.to_owned(), functions.clone());
-        functions
+        }
     }
 }
 
