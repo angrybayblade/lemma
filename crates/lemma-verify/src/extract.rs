@@ -6,12 +6,13 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use lemma_grammar::CompiledGrammar;
-use lemma_http::{CodeFacts, CodeOptions, Operation, PathAliases, SourceFile};
+use lemma_http::{
+    CodeFacts, CodeOptions, ListedFile, Operation, PathAliases, SourceFile, is_under_any,
+};
 use lemma_logic::Value;
 use lemma_syntax::ExtractorPool;
 
@@ -141,22 +142,10 @@ fn read_clients(
         } else {
             repository.commit.as_deref()
         };
-        let files = specs.read_files(
-            &repository.path,
-            commit,
-            &repository.include,
-            &CODE_EXTENSIONS,
-        )?;
-        extractor.prefetch(&files, &options)?;
+        let files = specs.code_files(&repository.path, commit, &repository.include)?;
         let mut found = Vec::new();
-        for file in files
-            .iter()
-            .filter(|file| !lemma_http::is_test_file(&file.path))
-        {
-            found.extend(client_methods(
-                name,
-                code_facts(file, &options, extractor)?.as_ref(),
-            ));
+        for (_, facts) in extractor.read(&repository.path, commit, &files, &options)? {
+            found.extend(client_methods(name, &facts));
         }
         packages.extend(package_names(repository, commit, &found, specs)?);
         methods.extend(found);
@@ -445,37 +434,37 @@ struct Snapshot<'a> {
 /// and the commit it falls back to, and the file read.
 type SpecKey = (PathBuf, Option<String>, Option<Option<String>>, String);
 
-/// File listings by repository and commit.
-type Listings = BTreeMap<(PathBuf, String), Rc<Vec<String>>>;
-
-/// Working directories' files by repository.
-type Walks = BTreeMap<PathBuf, Rc<Vec<String>>>;
+/// File listings, with blobs, by repository and commit (`None` for the
+/// working directory).
+type Listings = BTreeMap<(PathBuf, Option<String>), Rc<Vec<ListedFile>>>;
 
 /// The operations of each spec read in one run, so a spec several passes
 /// read is parsed once.
 #[derive(Default)]
 struct SpecCache {
     read: RefCell<BTreeMap<SpecKey, Vec<Operation>>>,
-    /// Each repository's file listing at a commit.
+    /// Each repository's files at a commit or in its working directory.
     listings: RefCell<Listings>,
     /// Files read at a commit, by repository, commit and path: the entries
     /// and snapshots of one repository read many of the same files.
     blobs: RefCell<BTreeMap<(PathBuf, String, String), Rc<SourceFile>>>,
-    /// Each working directory's files, walked once per run.
-    walks: RefCell<Walks>,
     /// Files read from a working directory, by repository and path.
     on_disk: RefCell<BTreeMap<(PathBuf, String), Rc<SourceFile>>>,
 }
 
 impl SpecCache {
-    /// Every file of the repository at `repository` in `commit`, listed
-    /// once per run.
-    fn listing(&self, repository: &Path, commit: &str) -> Result<Rc<Vec<String>>, VerifyError> {
-        let key = (repository.to_owned(), commit.to_owned());
+    /// Every file of the repository at `repository` in `commit`, or in its
+    /// working directory, with blobs, listed once per run.
+    fn listing(
+        &self,
+        repository: &Path,
+        commit: Option<&str>,
+    ) -> Result<Rc<Vec<ListedFile>>, VerifyError> {
+        let key = (repository.to_owned(), commit.map(str::to_owned));
         if let Some(found) = self.listings.borrow().get(&key) {
             return Ok(Rc::clone(found));
         }
-        let listed = Rc::new(lemma_http::list_files(repository, Some(commit))?);
+        let listed = Rc::new(lemma_http::list_with_blobs(repository, commit)?);
         self.listings.borrow_mut().insert(key, Rc::clone(&listed));
         Ok(listed)
     }
@@ -488,8 +477,12 @@ impl SpecCache {
         commit: &str,
         wanted: &dyn Fn(&str) -> bool,
     ) -> Result<Vec<SourceFile>, VerifyError> {
-        let listing = self.listing(repository, commit)?;
-        let paths: Vec<&String> = listing.iter().filter(|path| wanted(path)).collect();
+        let listing = self.listing(repository, Some(commit))?;
+        let paths: Vec<&String> = listing
+            .iter()
+            .map(|file| &file.path)
+            .filter(|path| wanted(path))
+            .collect();
         let key = |path: &str| (repository.to_owned(), commit.to_owned(), path.to_owned());
         let missing: Vec<String> = {
             let blobs = self.blobs.borrow();
@@ -514,30 +507,19 @@ impl SpecCache {
             .collect())
     }
 
-    /// Every file of the working directory at `repository`, walked once per
-    /// run. Sorted.
-    fn walk(&self, repository: &Path) -> Result<Rc<Vec<String>>, VerifyError> {
-        if let Some(found) = self.walks.borrow().get(repository) {
-            return Ok(Rc::clone(found));
-        }
-        let mut walked = lemma_http::walk_files(repository)?;
-        walked.sort();
-        let walked = Rc::new(walked);
-        self.walks
-            .borrow_mut()
-            .insert(repository.to_owned(), Rc::clone(&walked));
-        Ok(walked)
-    }
-
-    /// The working directory's files `wanted` accepts, the directory walked
+    /// The working directory's files `wanted` accepts, the directory listed
     /// and each file read once per run. Sorted by path.
     fn working_files(
         &self,
         repository: &Path,
         wanted: &dyn Fn(&str) -> bool,
     ) -> Result<Vec<SourceFile>, VerifyError> {
-        let walk = self.walk(repository)?;
-        let paths: Vec<&String> = walk.iter().filter(|path| wanted(path)).collect();
+        let listing = self.listing(repository, None)?;
+        let paths: Vec<&String> = listing
+            .iter()
+            .map(|file| &file.path)
+            .filter(|path| wanted(path))
+            .collect();
         let key = |path: &str| (repository.to_owned(), path.to_owned());
         let missing: Vec<String> = {
             let on_disk = self.on_disk.borrow();
@@ -562,25 +544,27 @@ impl SpecCache {
             .collect())
     }
 
-    /// [`lemma_http::read_files`], reading each file once per run.
-    fn read_files(
+    /// The code files under `prefixes`, listed with their blobs but not
+    /// read: their facts may already be known. Sorted by path.
+    fn code_files(
         &self,
         repository: &Path,
         commit: Option<&str>,
         prefixes: &[String],
-        extensions: &[&str],
-    ) -> Result<Vec<SourceFile>, VerifyError> {
-        let wanted = |path: &str| {
+    ) -> Result<Vec<ListedFile>, VerifyError> {
+        if commit.is_none() {
+            lemma_http::require_prefixes(repository, prefixes)?;
+        }
+        let is_code = |path: &str| {
             let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
-            extensions.contains(&extension)
-                && is_under_any(path, prefixes)
-                && !path.contains("node_modules/")
+            CODE_EXTENSIONS.contains(&extension) && is_under_any(path, prefixes)
         };
-        let Some(commit) = commit else {
-            require_prefixes(repository, prefixes)?;
-            return self.working_files(repository, &wanted);
-        };
-        self.commit_files(repository, commit, &wanted)
+        let listing = self.listing(repository, commit)?;
+        Ok(listing
+            .iter()
+            .filter(|file| is_code(&file.path))
+            .cloned()
+            .collect())
     }
 
     /// [`lemma_http::read_files_where`], reading a commit's files once per
@@ -604,73 +588,25 @@ impl SpecCache {
         repository: &Path,
         commit: Option<&str>,
     ) -> Result<Vec<String>, VerifyError> {
-        let Some(commit) = commit else {
-            // The working directory's listing is the walk's.
-            return Ok(self.walk(repository)?.as_ref().clone());
-        };
-        Ok(self.listing(repository, commit)?.as_ref().clone())
+        let listing = self.listing(repository, commit)?;
+        Ok(listing.iter().map(|file| file.path.clone()).collect())
     }
-}
-
-/// Whether `path` is one of `prefixes` or below one, as a Git pathspec
-/// names a directory or file; every path when there are none.
-fn is_under_any(path: &str, prefixes: &[String]) -> bool {
-    prefixes.is_empty()
-        || prefixes.iter().any(|prefix| {
-            let prefix = normal_prefix(prefix);
-            prefix.is_empty()
-                || path == prefix
-                || path
-                    .strip_prefix(prefix)
-                    .is_some_and(|rest| rest.starts_with('/'))
-        })
-}
-
-/// Fails for a prefix the working directory does not have: a directory the
-/// configuration names that is not there is a mistake to report, not an
-/// empty service.
-fn require_prefixes(repository: &Path, prefixes: &[String]) -> Result<(), VerifyError> {
-    let missing = prefixes
-        .iter()
-        .map(|prefix| normal_prefix(prefix))
-        .find(|prefix| !prefix.is_empty() && !repository.join(prefix).exists());
-    let Some(missing) = missing else {
-        return Ok(());
-    };
-    Err(lemma_http::SourceError::Io {
-        path: repository.join(missing),
-        source: std::io::Error::from(std::io::ErrorKind::NotFound),
-    }
-    .into())
-}
-
-/// A prefix as paths are listed: without a leading `./` or a trailing `/`;
-/// empty for the whole repository (`.`).
-fn normal_prefix(prefix: &str) -> &str {
-    let mut prefix = prefix.trim_end_matches('/');
-    while let Some(rest) = prefix.strip_prefix("./") {
-        prefix = rest;
-    }
-    if prefix == "." { "" } else { prefix }
 }
 
 /// The code a service's routes and the schemas they use are in.
 fn route_and_schema_files(
     repository: &Repository,
     snapshot: &Snapshot<'_>,
-) -> Result<Vec<SourceFile>, VerifyError> {
+) -> Result<Vec<ListedFile>, VerifyError> {
     let directories: Vec<String> = repository
         .routes
         .iter()
         .chain(&repository.schemas)
         .cloned()
         .collect();
-    snapshot.specs.read_files(
-        &repository.path,
-        snapshot.commit,
-        &directories,
-        &CODE_EXTENSIONS,
-    )
+    snapshot
+        .specs
+        .code_files(&repository.path, snapshot.commit, &directories)
 }
 
 fn service(
@@ -696,14 +632,7 @@ fn service(
         return Ok(());
     }
     let files = route_and_schema_files(repository, snapshot)?;
-    extractor.prefetch(&files, &CodeOptions::default())?;
-    let mut read = Vec::new();
-    for file in files
-        .iter()
-        .filter(|file| !lemma_http::is_test_file(&file.path))
-    {
-        read.push((file, code_facts(file, &CodeOptions::default(), extractor)?));
-    }
+    let read = extractor.read(&repository.path, commit, &files, &CodeOptions::default())?;
     let is_route_file = |path: &str| {
         repository
             .routes
@@ -712,7 +641,7 @@ fn service(
     };
     let written = read
         .iter()
-        .filter(|(file, _)| is_route_file(&file.path))
+        .filter(|(path, _)| is_route_file(path))
         .flat_map(|(_, facts)| written_routes(facts))
         .collect();
     let mut route_aliases = lemma_http::implied_aliases(&documents, &written);
@@ -724,13 +653,13 @@ fn service(
         route_aliases: &route_aliases,
         imports: read_import_aliases(repository, commit, snapshot.specs)?,
     };
-    for (file, facts) in &read {
-        schema_facts(&scope, &file.path, facts, writer);
-        if !is_route_file(&file.path) {
+    for (path, facts) in &read {
+        schema_facts(&scope, path, facts, writer);
+        if !is_route_file(path) {
             continue;
         }
         for route in facts.method_paths.iter().filter(|item| item.method != "*") {
-            route_facts(&scope, &file.path, route, writer);
+            route_facts(&scope, path, route, writer);
         }
     }
     Ok(())
@@ -1025,12 +954,10 @@ fn consumer(
     writer: &mut FactWriter<'_>,
     extractor: &mut FactReader,
 ) -> Result<(), VerifyError> {
-    let files = snapshot.specs.read_files(
-        &repository.path,
-        snapshot.commit,
-        &repository.include,
-        &CODE_EXTENSIONS,
-    )?;
+    let files =
+        snapshot
+            .specs
+            .code_files(&repository.path, snapshot.commit, &repository.include)?;
     let scope = ConsumerScope {
         name,
         service: repository.service.as_deref(),
@@ -1052,17 +979,13 @@ fn consumer(
         reexports: BTreeMap::new(),
         imports: read_import_aliases(repository, snapshot.commit, snapshot.specs)?,
     };
-    extractor.prefetch(&files, &scope.options)?;
+    let read = extractor.read(&repository.path, snapshot.commit, &files, &scope.options)?;
     let scope = ConsumerScope {
-        reexports: generated_reexports(&scope, &files, extractor)?,
+        reexports: generated_reexports(&scope, &read),
         ..scope
     };
-    for file in files
-        .iter()
-        .filter(|file| !lemma_http::is_test_file(&file.path))
-    {
-        let facts = code_facts(file, &scope.options, extractor)?;
-        consumer_file(&scope, &file.path, &facts, writer);
+    for (path, facts) in &read {
+        consumer_file(&scope, path, facts, writer);
     }
     Ok(())
 }
@@ -1175,26 +1098,21 @@ fn write_calls(
 /// '../generated/api'`), with each name and module.
 fn generated_reexports(
     scope: &ConsumerScope<'_>,
-    files: &[SourceFile],
-    extractor: &mut FactReader,
-) -> Result<BTreeMap<String, Vec<(String, String)>>, VerifyError> {
+    read: &[(String, Rc<CodeFacts>)],
+) -> BTreeMap<String, Vec<(String, String)>> {
     let mut found = BTreeMap::new();
-    for file in files
-        .iter()
-        .filter(|file| file.contents.contains("export * as"))
-    {
-        let facts = code_facts(file, &scope.options, extractor)?;
+    for (path, facts) in read {
         let generated: Vec<(String, String)> = facts
             .reexports
             .iter()
-            .filter(|reexport| is_generated_module(scope, &file.path, &reexport.module))
+            .filter(|reexport| is_generated_module(scope, path, &reexport.module))
             .map(|reexport| (reexport.name.clone(), reexport.module.clone()))
             .collect();
         if !generated.is_empty() {
-            found.insert(file.path.clone(), generated);
+            found.insert(path.clone(), generated);
         }
     }
-    Ok(found)
+    found
 }
 
 /// Whether an import names a module inside the repository that no file
@@ -1483,14 +1401,6 @@ fn read_at_snapshot(
     Ok(lemma_http::read_file(&repository.path, other, file)?)
 }
 
-fn code_facts(
-    file: &SourceFile,
-    options: &CodeOptions,
-    extractor: &mut FactReader,
-) -> Result<Rc<CodeFacts>, VerifyError> {
-    extractor.facts(file, options)
-}
-
 /// A file's facts, read with this thread's extractor from `extractors`.
 fn extracted(
     file: &SourceFile,
@@ -1503,26 +1413,27 @@ fn extracted(
     Ok(facts)
 }
 
-/// The key a file's facts are kept under between runs: the build of
-/// Lemma, the path, the options (as their key text gives them) and the
-/// contents.
-fn unit_key(build: &str, file: &SourceFile, options: &str) -> String {
-    let mut described = format!("{build}\0facts\0{}\0{options}\0", file.path).into_bytes();
-    described.extend_from_slice(file.contents.as_bytes());
+/// The key a file's facts are kept under, in memory and between runs: the
+/// build of Lemma, the path, the options (as their key text gives them)
+/// and what names the contents ([`lemma_http::contents_key`]).
+fn unit_key(build: &str, path: &str, options: &str, contents: &[u8]) -> String {
+    let mut described = format!("{build}\0facts\0{path}\0{options}\0").into_bytes();
+    described.extend_from_slice(contents);
     lemma_model::content_hash(&described)
 }
 
-/// What a parallel read of one file gives: its facts, and their encoding
-/// when they are new and should be kept.
+/// A parsed file's facts, and their encoding when they should be kept.
 type ReadFacts = (CodeFacts, Option<Vec<u8>>);
 
-/// Reads files' code facts, each file once per run for the same contents
-/// and options: a file a change leaves alone is read at both its commits.
+/// Reads files' code facts, each once per run for the same contents and
+/// options (a file a change leaves alone has one blob at both its
+/// commits), and keeps them between runs when given a cache.
 struct FactReader {
     extractors: ExtractorPool,
     /// The build of Lemma and the units it keeps, when facts are kept.
     kept: Option<(String, lemma_store::UnitCache)>,
-    read: BTreeMap<(String, u64, String), Rc<CodeFacts>>,
+    /// Facts read in this run, by unit key.
+    read: BTreeMap<String, Rc<CodeFacts>>,
 }
 
 impl FactReader {
@@ -1541,88 +1452,127 @@ impl FactReader {
         }
     }
 
-    fn key(file: &SourceFile, options: &CodeOptions) -> (String, u64, String) {
-        let mut hasher = DefaultHasher::new();
-        file.contents.hash(&mut hasher);
-        (file.path.clone(), hasher.finish(), format!("{options:?}"))
-    }
-
-    /// Reads the facts of every file in `files` not read yet, in parallel,
-    /// so the calls that follow find them.
-    fn prefetch(&mut self, files: &[SourceFile], options: &CodeOptions) -> Result<(), VerifyError> {
-        use rayon::prelude::*;
-        let wanted: Vec<(&SourceFile, (String, u64, String))> = files
+    /// The facts of `files` in `repository` at `commit` (the working
+    /// directory when `None`), less test files and files no longer there,
+    /// by path in `files`' order. A file is read from disk or Git only when
+    /// its facts are not known by its blob: Git names files it can vouch
+    /// for without their being read.
+    fn read(
+        &mut self,
+        repository: &Path,
+        commit: Option<&str>,
+        files: &[ListedFile],
+        options: &CodeOptions,
+    ) -> Result<Vec<(String, Rc<CodeFacts>)>, VerifyError> {
+        let code: Vec<&ListedFile> = files
             .iter()
             .filter(|file| !lemma_http::is_test_file(&file.path))
-            .map(|file| (file, Self::key(file, options)))
-            .filter(|(_, key)| !self.read.contains_key(key))
             .collect();
+        // A file Git has no blob for is named by its contents, so those are
+        // read first.
+        let unvouched: Vec<String> = code
+            .iter()
+            .filter(|file| file.blob.is_none())
+            .map(|file| file.path.clone())
+            .collect();
+        let mut contents: BTreeMap<String, SourceFile> =
+            lemma_http::read_listed(repository, commit, &unvouched)?
+                .into_iter()
+                .map(|file| (file.path.clone(), file))
+                .collect();
+        let build = self.kept.as_ref().map_or("", |(build, _)| build.as_str());
         let options_text = format!("{options:?}");
-        let unit_keys: Vec<String> = match &self.kept {
-            Some((build, _)) => wanted
-                .iter()
-                .map(|(file, _)| unit_key(build, file, &options_text))
-                .collect(),
-            None => Vec::new(),
+        let mut keyed = Vec::new();
+        for file in code {
+            // A file gone between listing and reading has no key.
+            let Some(named) = lemma_http::contents_key(file, contents.get(&file.path)) else {
+                continue;
+            };
+            keyed.push((file, unit_key(build, &file.path, &options_text, &named)));
+        }
+        let unknown: Vec<(&ListedFile, &String)> = keyed
+            .iter()
+            .filter(|(_, key)| !self.read.contains_key(key))
+            .map(|(file, key)| (*file, key))
+            .collect();
+        let kept = self.kept_facts(&unknown);
+        let to_read: Vec<String> = unknown
+            .iter()
+            .filter(|(file, key)| !kept.contains_key(*key) && !contents.contains_key(&file.path))
+            .map(|(file, _)| file.path.clone())
+            .collect();
+        for file in lemma_http::read_listed(repository, commit, &to_read)? {
+            contents.insert(file.path.clone(), file);
+        }
+        let to_parse: Vec<(&SourceFile, &String)> = unknown
+            .iter()
+            .filter(|(_, key)| !kept.contains_key(*key))
+            .filter_map(|(file, key)| Some((contents.get(&file.path)?, *key)))
+            .collect();
+        let parsed = self.parse(&to_parse, options)?;
+        self.read.extend(kept);
+        self.read.extend(parsed);
+        Ok(keyed
+            .iter()
+            .filter_map(|(file, key)| Some((file.path.clone(), Rc::clone(self.read.get(key)?))))
+            .collect())
+    }
+
+    /// The facts the cache keeps for `files`, decoded in parallel. A cache
+    /// that cannot be read, or an entry that does not decode, only means
+    /// parsing.
+    fn kept_facts(&self, files: &[(&ListedFile, &String)]) -> BTreeMap<String, Rc<CodeFacts>> {
+        let Some((_, units)) = &self.kept else {
+            return BTreeMap::new();
         };
-        // A cache that cannot be read only means parsing.
-        let found = self
-            .kept
-            .as_ref()
-            .and_then(|(_, units)| units.get_many(&unit_keys).ok())
-            .unwrap_or_default();
+        let keys: Vec<String> = files.iter().map(|(_, key)| (*key).clone()).collect();
+        let decoded = units.get_decoded(&keys, |bytes| {
+            serde_json::from_slice::<CodeFacts>(bytes).ok()
+        });
+        decoded
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(key, facts)| (key, Rc::new(facts)))
+            .collect()
+    }
+
+    /// Parses `files` in parallel and keeps the new facts, by key. The
+    /// results keep the files' order, so the first failure in that order
+    /// is the one reported, whatever thread hit it.
+    fn parse(
+        &mut self,
+        files: &[(&SourceFile, &String)],
+        options: &CodeOptions,
+    ) -> Result<Vec<(String, Rc<CodeFacts>)>, VerifyError> {
+        use rayon::prelude::*;
         let is_keeping = self.kept.is_some();
-        // Kept facts are decoded and the rest parsed in parallel; the
-        // results keep the files' order, so the first failure in that
-        // order is the one reported, whatever thread hit it.
         let extractors = &self.extractors;
-        let read: Vec<Result<ReadFacts, VerifyError>> = wanted
+        let read: Vec<Result<ReadFacts, VerifyError>> = files
             .par_iter()
-            .enumerate()
             .with_min_len(8)
-            .map(|(position, (file, _))| {
-                let kept = unit_keys.get(position).and_then(|key| found.get(key));
-                if let Some(facts) = kept.and_then(|bytes| serde_json::from_slice(bytes).ok()) {
-                    return Ok((facts, None));
-                }
+            .map(|(file, _)| {
                 let facts = extracted(file, options, extractors)?;
-                let encoded = if is_keeping {
-                    serde_json::to_vec(&facts).ok()
-                } else {
-                    None
-                };
+                let encoded = is_keeping
+                    .then(|| serde_json::to_vec(&facts).ok())
+                    .flatten();
                 Ok((facts, encoded))
             })
             .collect();
+        let mut parsed = Vec::new();
         let mut new_units = Vec::new();
-        for (position, result) in read.into_iter().enumerate() {
+        for ((_, key), result) in files.iter().zip(read) {
             let (facts, encoded) = result?;
-            if let (Some(encoded), Some(key)) = (encoded, unit_keys.get(position)) {
-                new_units.push((key.clone(), encoded));
+            if let Some(encoded) = encoded {
+                new_units.push(((*key).clone(), encoded));
             }
-            self.read.insert(wanted[position].1.clone(), Rc::new(facts));
+            parsed.push(((*key).clone(), Rc::new(facts)));
         }
         if let Some((_, units)) = &mut self.kept {
             // Keeping is an optimisation: a failure only costs a later run
             // a parse.
             let _ = units.put_many(&new_units);
         }
-        Ok(())
-    }
-
-    fn facts(
-        &mut self,
-        file: &SourceFile,
-        options: &CodeOptions,
-    ) -> Result<Rc<CodeFacts>, VerifyError> {
-        let key = Self::key(file, options);
-        if let Some(found) = self.read.get(&key) {
-            return Ok(Rc::clone(found));
-        }
-        let facts = extracted(file, options, &self.extractors)?;
-        let facts = Rc::new(facts);
-        self.read.insert(key, Rc::clone(&facts));
-        Ok(facts)
+        Ok(parsed)
     }
 }
 
@@ -1840,22 +1790,6 @@ fn join(directory: &Path, specifier: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn prefixes_match_as_git_pathspecs_do() {
-        let prefixes = |list: &[&str]| {
-            list.iter()
-                .map(|prefix| (*prefix).to_owned())
-                .collect::<Vec<_>>()
-        };
-
-        assert!(is_under_any("src/app.ts", &prefixes(&["./src"])));
-        assert!(is_under_any("src/app.ts", &prefixes(&["src/"])));
-        assert!(is_under_any("src/app.ts", &prefixes(&["."])));
-        assert!(is_under_any("src/app.ts", &prefixes(&["src/app.ts"])));
-        assert!(!is_under_any("srcx/app.ts", &prefixes(&["src"])));
-        assert!(!is_under_any("lib/app.ts", &prefixes(&["./src"])));
-    }
 
     fn http_contracts() -> CompiledGrammar {
         let grammar = lemma_grammar::parse_grammar(crate::HTTP_CONTRACTS).unwrap();

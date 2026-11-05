@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use lemma_http::ListedFile;
 use lemma_model::{Language, SymbolKind};
 use lemma_syntax::ExtractorPool;
 
@@ -532,74 +533,139 @@ fn inline_handler(
 }
 
 /// A repository's functions and methods at head, from the directories its
-/// services' code, routes and operations are in.
+/// services' code, routes and operations are in. A file is read only when
+/// its functions are not kept under its blob, so an unchanged repository
+/// is listed but not read.
 pub(crate) fn functions_of(
     repo: &Repo,
     kept: &mut Option<(String, lemma_store::UnitCache)>,
     extractors: &ExtractorPool,
 ) -> Result<Vec<Function>, GraphError> {
-    use rayon::prelude::*;
     let Some(prefixes) = code_directories(repo) else {
         return Ok(Vec::new());
     };
     let checkout = &repo.checkouts[HEAD];
-    let files = lemma_http::read_files(
-        &checkout.root,
-        checkout.commit.as_deref(),
-        &prefixes,
-        &CODE_EXTENSIONS,
-    )
-    .map_err(|source| GraphError::Source { source })?;
-    let code: Vec<&lemma_http::SourceFile> = files
+    let (root, commit) = (checkout.root.as_path(), checkout.commit.as_deref());
+    let source_error = |source| GraphError::Source { source };
+    if commit.is_none() {
+        lemma_http::require_prefixes(root, &prefixes).map_err(source_error)?;
+    }
+    let listed = lemma_http::list_with_blobs(root, commit).map_err(source_error)?;
+    let code: Vec<&ListedFile> = listed
         .iter()
-        .filter(|file| !lemma_http::is_test_file(&file.path))
+        .filter(|file| is_traced_code(&file.path, &prefixes))
         .collect();
-    let keys: Vec<String> = match kept.as_ref() {
-        Some((build, _)) => code.iter().map(|file| functions_key(build, file)).collect(),
-        None => Vec::new(),
+    // A file Git has no blob for is named by its contents, so those are
+    // read first.
+    let unvouched: Vec<String> = code
+        .iter()
+        .filter(|file| file.blob.is_none())
+        .map(|file| file.path.clone())
+        .collect();
+    let mut contents = read_by_path(root, commit, &unvouched)?;
+    let build = kept.as_ref().map_or("", |(build, _)| build.as_str());
+    let keyed: Vec<(&ListedFile, String)> = code
+        .into_iter()
+        .filter_map(|file| {
+            let named = lemma_http::contents_key(file, contents.get(&file.path))?;
+            Some((file, functions_key(build, &file.path, &named)))
+        })
+        .collect();
+    let keys: Vec<String> = keyed.iter().map(|(_, key)| key.clone()).collect();
+    let mut by_key = kept_functions(kept.as_ref(), &keys);
+    let to_read: Vec<String> = keyed
+        .iter()
+        .filter(|(file, key)| !by_key.contains_key(key) && !contents.contains_key(&file.path))
+        .map(|(file, _)| file.path.clone())
+        .collect();
+    contents.extend(read_by_path(root, commit, &to_read)?);
+    let to_parse: Vec<(&lemma_http::SourceFile, &String)> = keyed
+        .iter()
+        .filter(|(_, key)| !by_key.contains_key(key))
+        .filter_map(|(file, key)| Some((contents.get(&file.path)?, key)))
+        .collect();
+    by_key.extend(parse_functions(&to_parse, kept, extractors)?);
+    Ok(keyed
+        .iter()
+        .filter_map(|(_, key)| by_key.remove(key))
+        .flatten()
+        .collect())
+}
+
+/// Whether tracing reads the file at `path`: code under one of `prefixes`
+/// that is not a test.
+fn is_traced_code(path: &str, prefixes: &[String]) -> bool {
+    let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
+    CODE_EXTENSIONS.contains(&extension)
+        && lemma_http::is_under_any(path, prefixes)
+        && !lemma_http::is_test_file(path)
+}
+
+/// The files at `paths` at `commit` or in the working directory, by path.
+fn read_by_path(
+    root: &std::path::Path,
+    commit: Option<&str>,
+    paths: &[String],
+) -> Result<BTreeMap<String, lemma_http::SourceFile>, GraphError> {
+    let read = lemma_http::read_listed(root, commit, paths)
+        .map_err(|source| GraphError::Source { source })?;
+    Ok(read
+        .into_iter()
+        .map(|file| (file.path.clone(), file))
+        .collect())
+}
+
+/// The functions `kept` holds under `keys`, decoded in parallel. A cache
+/// that cannot be read, or an entry that does not decode, only means
+/// parsing.
+fn kept_functions(
+    kept: Option<&(String, lemma_store::UnitCache)>,
+    keys: &[String],
+) -> BTreeMap<String, Vec<Function>> {
+    let Some((_, units)) = kept else {
+        return BTreeMap::new();
     };
-    // A cache that cannot be read only means parsing.
-    let found = kept
-        .as_ref()
-        .and_then(|(_, units)| units.get_many(&keys).ok())
-        .unwrap_or_default();
+    units
+        .get_decoded(keys, |bytes| serde_json::from_slice(bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Reads `files`' functions in parallel, by key, and keeps them in `kept`.
+/// The results keep the files' order, so the first failure is the one
+/// reported.
+fn parse_functions(
+    files: &[(&lemma_http::SourceFile, &String)],
+    kept: &mut Option<(String, lemma_store::UnitCache)>,
+    extractors: &ExtractorPool,
+) -> Result<Vec<(String, Vec<Function>)>, GraphError> {
+    use rayon::prelude::*;
     let is_keeping = kept.is_some();
-    // Kept functions are decoded and the rest read in parallel; the
-    // results keep the files' order, so the first failure is the one
-    // reported.
-    let per_file: Vec<Result<ReadFunctions, GraphError>> = code
+    let per_file: Vec<Result<ReadFunctions, GraphError>> = files
         .par_iter()
-        .enumerate()
         .with_min_len(8)
-        .map(|(position, file)| {
-            let kept = keys.get(position).and_then(|key| found.get(key));
-            if let Some(functions) = kept.and_then(|bytes| serde_json::from_slice(bytes).ok()) {
-                return Ok((functions, None));
-            }
+        .map(|(file, _)| {
             let functions = read_functions(file, extractors)?;
-            let encoded = if is_keeping {
-                serde_json::to_vec(&functions).ok()
-            } else {
-                None
-            };
+            let encoded = is_keeping
+                .then(|| serde_json::to_vec(&functions).ok())
+                .flatten();
             Ok((functions, encoded))
         })
         .collect();
-    let mut functions = Vec::new();
+    let mut parsed = Vec::new();
     let mut new_units = Vec::new();
-    for (position, result) in per_file.into_iter().enumerate() {
-        let (found, encoded) = result?;
-        if let (Some(encoded), Some(key)) = (encoded, keys.get(position)) {
-            new_units.push((key.clone(), encoded));
+    for ((_, key), result) in files.iter().zip(per_file) {
+        let (functions, encoded) = result?;
+        if let Some(encoded) = encoded {
+            new_units.push(((*key).clone(), encoded));
         }
-        functions.extend(found);
+        parsed.push(((*key).clone(), functions));
     }
     if let Some((_, units)) = kept.as_mut() {
         // Keeping is an optimisation: a failure only costs a later run a
         // parse.
         let _ = units.put_many(&new_units);
     }
-    Ok(functions)
+    Ok(parsed)
 }
 
 /// A file's functions, and their encoding when they are new and should be
@@ -607,10 +673,10 @@ pub(crate) fn functions_of(
 type ReadFunctions = (Vec<Function>, Option<Vec<u8>>);
 
 /// The key a file's functions are kept under: the build of Lemma, the
-/// path and the contents.
-fn functions_key(build: &str, file: &lemma_http::SourceFile) -> String {
-    let mut described = format!("{build}\0functions\0{}\0", file.path).into_bytes();
-    described.extend_from_slice(file.contents.as_bytes());
+/// path and what names the contents ([`lemma_http::contents_key`]).
+fn functions_key(build: &str, path: &str, contents: &[u8]) -> String {
+    let mut described = format!("{build}\0functions\0{path}\0").into_bytes();
+    described.extend_from_slice(contents);
     lemma_model::content_hash(&described)
 }
 
