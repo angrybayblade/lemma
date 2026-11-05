@@ -43,6 +43,14 @@ const PAGE_SIZE_BYTES: i64 = 65_536;
 /// than copying through reads.
 const MAPPED_BYTES: i64 = 1 << 32;
 
+/// The page cache of the connection writing batches, in KiB (SQLite's
+/// negative `cache_size`); it grows only as pages are used.
+const WRITER_CACHE_KIBIBYTES: i64 = -32_768;
+
+/// About how much one transaction of the writer holds, in bytes of keys
+/// and values.
+const TRANSACTION_BYTES: usize = 256 << 20;
+
 /// Units read and decoded at a time by [`UnitCache::get_decoded`].
 const DECODED_PER_CHUNK: usize = 4096;
 
@@ -210,36 +218,93 @@ fn start_writer(path: &Path) -> Writer {
         let Ok(mut connection) = open_writer(&path) else {
             return;
         };
-        for batch in received {
+        // Batches queued while one was written go into the next
+        // transaction together: keys are digests, so each transaction
+        // rewrites pages all over the table, and one large one rewrites
+        // each page once where many small ones rewrote it each time.
+        for first in &received {
+            let mut units = Vec::new();
+            let mut terms = Vec::new();
+            let mut size_bytes = 0;
+            let mut next = Some(first);
+            while let Some(batch) = next {
+                size_bytes += batch_size_bytes(&batch);
+                match batch {
+                    Batch::Units(entries) => units.extend(entries),
+                    Batch::Terms(indexed) => terms.extend(indexed),
+                }
+                // Bounded, so other writers get the lock in turn and the
+                // write-ahead log stays small; what is left waits for the
+                // next transaction.
+                next = (size_bytes < TRANSACTION_BYTES)
+                    .then(|| received.try_recv().ok())
+                    .flatten();
+            }
             // Best effort, as `put_later` says.
-            let _ = match batch {
-                Batch::Units(entries) => insert_many(&mut connection, &entries),
-                Batch::Terms(terms) => insert_terms(&mut connection, &terms),
-            };
+            let _ = write_batches(&mut connection, &mut units, &terms);
         }
     });
     Writer { batches, thread }
 }
 
-/// Writes each unit's terms and marks it indexed, in one transaction.
-fn insert_terms(
+/// About how many bytes a batch adds to a transaction.
+fn batch_size_bytes(batch: &Batch) -> usize {
+    match batch {
+        Batch::Units(entries) => entries
+            .iter()
+            .map(|(key, value)| key.len() + value.len())
+            .sum(),
+        Batch::Terms(terms) => terms
+            .iter()
+            .map(|(unit, unit_terms)| {
+                let terms_bytes: usize = unit_terms.iter().map(String::len).sum();
+                unit.len() * (unit_terms.len() + 1) + terms_bytes
+            })
+            .sum(),
+    }
+}
+
+/// Writes `units` and each of `terms`' units' terms, marking those units
+/// indexed, in one transaction. Rows go in in key order: keys are digests,
+/// so in arrival order each insert lands on a page of its own and the
+/// transaction rewrites much of the table.
+fn write_batches(
     connection: &mut Connection,
+    units: &mut [(String, Vec<u8>)],
     terms: &[(String, Vec<String>)],
 ) -> Result<(), StoreError> {
+    // A stable sort keeps a key queued twice in arrival order, so its
+    // last value is the one kept, as before.
+    units.sort_by(|left, right| left.0.cmp(&right.0));
     let transaction = connection.transaction()?;
-    {
-        let mut term = transaction
-            .prepare_cached("INSERT OR IGNORE INTO unit_terms (term, unit) VALUES (?1, ?2)")?;
-        let mut indexed =
-            transaction.prepare_cached("INSERT OR IGNORE INTO indexed_units (unit) VALUES (?1)")?;
-        for (unit, unit_terms) in terms {
-            for text in unit_terms {
-                term.execute(params![text, unit])?;
-            }
-            indexed.execute(params![unit])?;
-        }
-    }
+    insert_units(&transaction, units)?;
+    insert_terms(&transaction, terms)?;
     transaction.commit()?;
+    Ok(())
+}
+
+/// Writes each unit's terms and marks it indexed.
+fn insert_terms(
+    transaction: &rusqlite::Transaction<'_>,
+    terms: &[(String, Vec<String>)],
+) -> Result<(), StoreError> {
+    let mut term = transaction
+        .prepare_cached("INSERT OR IGNORE INTO unit_terms (term, unit) VALUES (?1, ?2)")?;
+    let mut indexed =
+        transaction.prepare_cached("INSERT OR IGNORE INTO indexed_units (unit) VALUES (?1)")?;
+    let mut rows: Vec<(&String, &String)> = terms
+        .iter()
+        .flat_map(|(unit, unit_terms)| unit_terms.iter().map(move |text| (text, unit)))
+        .collect();
+    rows.sort_unstable();
+    for (text, unit) in rows {
+        term.execute(params![text, unit])?;
+    }
+    let mut units: Vec<&String> = terms.iter().map(|(unit, _)| unit).collect();
+    units.sort_unstable();
+    for unit in units {
+        indexed.execute(params![unit])?;
+    }
     Ok(())
 }
 
@@ -287,6 +352,10 @@ fn open_writer(path: &Path) -> Result<Connection, StoreError> {
     let connection = Connection::open(path)?;
     connection.busy_timeout(Duration::from_secs(60))?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
+    // SQLite's default cache (2 MiB) holds some 30 of this file's 64 KiB
+    // pages: too few for a sorted transaction's inserts to finish with a
+    // page before it is evicted and written.
+    connection.pragma_update(None, "cache_size", WRITER_CACHE_KIBIBYTES)?;
     Ok(connection)
 }
 
@@ -299,14 +368,21 @@ fn insert_many(
         return Ok(());
     }
     let transaction = connection.transaction()?;
-    {
-        let mut statement = transaction
-            .prepare_cached("INSERT OR REPLACE INTO units (key, value) VALUES (?1, ?2)")?;
-        for (key, value) in entries {
-            statement.execute(params![key, value])?;
-        }
-    }
+    insert_units(&transaction, entries)?;
     transaction.commit()?;
+    Ok(())
+}
+
+/// Writes `entries` in `transaction`.
+fn insert_units(
+    transaction: &rusqlite::Transaction<'_>,
+    entries: &[(String, Vec<u8>)],
+) -> Result<(), StoreError> {
+    let mut statement =
+        transaction.prepare_cached("INSERT OR REPLACE INTO units (key, value) VALUES (?1, ?2)")?;
+    for (key, value) in entries {
+        statement.execute(params![key, value])?;
+    }
     Ok(())
 }
 
@@ -352,6 +428,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(found, BTreeMap::from([("a".to_owned(), b"one".to_vec())]));
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_key_kept_twice_holds_the_value_kept_last() {
+        let directory = tempfile_directory("twice");
+        let path = directory.join("units.db");
+        let mut cache = UnitCache::open(&path).unwrap();
+
+        cache.put_later(vec![
+            ("b".to_owned(), b"first".to_vec()),
+            ("a".to_owned(), b"other".to_vec()),
+        ]);
+        cache.put_later(vec![("b".to_owned(), b"last".to_vec())]);
+        drop(cache);
+        let found = UnitCache::open(&path)
+            .unwrap()
+            .get_many(&["b".to_owned()])
+            .unwrap();
+
+        assert_eq!(found, BTreeMap::from([("b".to_owned(), b"last".to_vec())]));
         let _ = std::fs::remove_dir_all(&directory);
     }
 
