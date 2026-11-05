@@ -180,6 +180,36 @@ pub enum CodeError {
 
 const VERBS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
 
+/// `facts` with every list sorted and, where order carries no meaning,
+/// without repeats, so the same file always gives the same facts.
+fn sorted(mut facts: CodeFacts) -> CodeFacts {
+    facts.method_paths.sort();
+    facts.path_references.sort();
+    facts.client_calls.sort();
+    facts.mentions.sort();
+    facts.mentions.dedup();
+    facts.imports.sort();
+    facts.imports.dedup();
+    facts.imported_names = facts
+        .import_bindings
+        .iter()
+        .map(|binding| binding.local.clone())
+        .collect();
+    facts.imported_names.sort();
+    facts.imported_names.dedup();
+    facts.import_bindings.sort();
+    facts.import_bindings.dedup();
+    facts.reexports.sort();
+    facts.reexports.dedup();
+    facts.imported_modules.sort();
+    facts.imported_modules.dedup();
+    facts.schema_uses.sort();
+    facts.strict_schemas.sort();
+    facts.strict_schemas.dedup();
+    facts.schema_unions.sort();
+    facts
+}
+
 /// Reads one source file. Files in other languages give no facts.
 pub fn extract(
     file: &str,
@@ -218,35 +248,11 @@ pub fn extract(
         consumed: Vec::new(),
         prefixes: BTreeMap::new(),
         client_functions: BTreeMap::new(),
+        examples: 0,
     };
     walk.visit(tree.root_node());
     walk.collect_strings(tree.root_node());
-    let mut facts = walk.facts;
-    facts.method_paths.sort();
-    facts.path_references.sort();
-    facts.client_calls.sort();
-    facts.mentions.sort();
-    facts.mentions.dedup();
-    facts.imports.sort();
-    facts.imports.dedup();
-    facts.imported_names = facts
-        .import_bindings
-        .iter()
-        .map(|binding| binding.local.clone())
-        .collect();
-    facts.imported_names.sort();
-    facts.imported_names.dedup();
-    facts.import_bindings.sort();
-    facts.import_bindings.dedup();
-    facts.reexports.sort();
-    facts.reexports.dedup();
-    facts.imported_modules.sort();
-    facts.imported_modules.dedup();
-    facts.schema_uses.sort();
-    facts.strict_schemas.sort();
-    facts.strict_schemas.dedup();
-    facts.schema_unions.sort();
-    Ok(facts)
+    Ok(sorted(walk.facts))
 }
 
 /// The grammar to parse a file with. JavaScript has no language of its own
@@ -306,7 +312,17 @@ struct Walk<'a> {
     /// Functions imported from a generated client's module, by local name,
     /// with the name the client exports them under.
     client_functions: BTreeMap<String, String>,
+    /// How many `example` or `examples` values the walk is inside: their
+    /// objects are sample data in a document, not routes or requests.
+    examples: usize,
 }
+
+/// Keys whose value is sample data in an API document.
+const EXAMPLE_KEYS: [&str; 2] = ["example", "examples"];
+
+/// Keys that name the host a request goes to: an object with one describes
+/// a request to another server (such as one being signed), never a route.
+const HOST_KEYS: [&str; 4] = ["host", "hostname", "protocol", "port"];
 
 impl Walk<'_> {
     fn visit(&mut self, node: Node<'_>) {
@@ -322,18 +338,34 @@ impl Walk<'_> {
             _ => {}
         }
         self.mention(node);
+        let is_example = self.is_example_pair(node);
+        self.examples += usize::from(is_example);
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             self.visit(child);
         }
+        self.examples -= usize::from(is_example);
+    }
+
+    /// Whether `node` is a pair whose key is `example` or `examples`.
+    fn is_example_pair(&self, node: Node<'_>) -> bool {
+        if node.kind() != "pair" {
+            return false;
+        }
+        node.child_by_field_name("key")
+            .is_some_and(|key| EXAMPLE_KEYS.contains(&self.text(key).trim_matches(['"', '\''])))
     }
 
     /// `{ method: 'get', path: '/v1/users' }`: a route declaration in a
     /// service, a request descriptor in a consumer.
     fn object(&mut self, node: Node<'_>) {
+        if self.examples > 0 {
+            return;
+        }
         let mut method = None;
         let mut path = None;
         let mut request = None;
+        let mut names_a_host = false;
         let mut cursor = node.walk();
         for pair in node
             .named_children(&mut cursor)
@@ -349,13 +381,20 @@ impl Walk<'_> {
                 "method" => method = self.string_value(value),
                 "path" | "url" => path = Some(value),
                 "request" => request = Some(value),
-                _ => {}
+                key => names_a_host |= HOST_KEYS.contains(&key),
             }
         }
         let Some(path_node) = path else { return };
         let Some(template) = self.string_value(path_node) else {
             return;
         };
+        if names_a_host {
+            let method = method
+                .as_deref()
+                .map_or_else(|| "*".to_owned(), canonical_method);
+            self.add_reference(&method, &template, path_node);
+            return;
+        }
         if let (Some(method), Some(request)) = (method.as_deref(), request) {
             self.zod_route_request(method, &template, request);
         }
@@ -948,6 +987,35 @@ mod tests {
             ("GET", "/v1/users")
         );
         assert_eq!(found.path_references, []);
+    }
+
+    #[test]
+    fn objects_in_examples_are_sample_data_not_method_paths() {
+        let source = "export const route = createRoute({\n  method: 'patch',\n  path: '/v1/configs/{id}',\n  examples: { enable: { path: '/v1/configs/ac_1a2b/ENABLED', method: 'PATCH' } },\n})\n";
+
+        let found = facts("route.ts", source);
+
+        let paths: Vec<&str> = found
+            .method_paths
+            .iter()
+            .map(|item| item.path.as_str())
+            .collect();
+        assert_eq!(paths, ["/v1/configs/{}"]);
+    }
+
+    #[test]
+    fn a_request_to_another_host_is_a_call_not_a_method_path() {
+        let source = "const request = await signer.sign({\n  method: 'GET',\n  protocol: 'http:',\n  hostname: host,\n  path: '/v1/token',\n})\n";
+
+        let found = facts("iam.ts", source);
+
+        assert_eq!(found.method_paths, []);
+        let calls: Vec<(&str, &str)> = found
+            .path_references
+            .iter()
+            .map(|reference| (reference.method.as_str(), reference.path.as_str()))
+            .collect();
+        assert_eq!(calls, [("GET", "/v1/token")]);
     }
 
     #[test]
