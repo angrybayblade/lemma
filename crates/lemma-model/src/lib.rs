@@ -446,8 +446,9 @@ pub struct Use {
     /// The node it uses.
     pub to: String,
     /// How it was found: `lsp` or `names` for a symbol's own uses, `call`,
-    /// `route` or `name` for a trace across services, `declared` for a
-    /// link a `lemma.yaml` declares.
+    /// `route`, `name` or `type` (a body naming only a method's type) for a
+    /// trace across services, `declared` for a link a `lemma.yaml`
+    /// declares.
     pub source: String,
 }
 
