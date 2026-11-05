@@ -4,12 +4,6 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use lemma_model::{Language, SymbolKind};
-
-/// Snapshots `lemma index` keeps in each repository's index by default.
-pub(crate) const DEFAULT_KEEP: usize = 5;
-
-/// How long `lemma index` keeps a snapshot by default.
-pub(crate) const DEFAULT_TTL: &str = "14d";
 #[derive(Parser)]
 #[command(
     name = "lemma",
@@ -50,12 +44,12 @@ pub(crate) enum Command {
         path: PathBuf,
         /// Snapshots of pinned commits (worktrees a workspace indexes) to
         /// keep in each repository's index, most recently indexed first.
-        #[arg(long, default_value_t = DEFAULT_KEEP)]
+        #[arg(long, default_value_t = 5)]
         keep: usize,
         /// How long a pinned commit's snapshot is kept after it was last
         /// indexed: `14d`, `12h`, or `never` to keep it until `--keep`
         /// pushes it out.
-        #[arg(long, default_value = DEFAULT_TTL)]
+        #[arg(long, default_value = "14d")]
         ttl: String,
     },
     /// Search indexed symbols by name.

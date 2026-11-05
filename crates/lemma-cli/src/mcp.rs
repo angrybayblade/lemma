@@ -36,6 +36,9 @@ index refreshes itself before every query; an id keeps naming its definition acr
 the definition keeps its name and kind. \"No references found\" means the server \
 saw nothing, not that the code is unused.";
 
+/// What a query prints when there is no index to answer from.
+const NO_INDEX: &str = "no index found";
+
 /// A command's result, as the tool returns it.
 struct Finished {
     stdout: String,
@@ -206,13 +209,14 @@ fn call_tool(
         .and_then(Value::as_object)
         .unwrap_or(&empty);
     let args = command_for(name, arguments)?;
-    if name != "index" {
-        // Keep answers current without spending an agent's call on it: an
-        // update with nothing changed takes milliseconds. A failure shows
-        // up in the query itself.
+    // A query brings an existing index up to date itself. Only where there
+    // is none yet is one built first, so an agent never spends a call on it.
+    let mut finished = run(args.clone());
+    let lacks_index = finished.exit_code == 1 && finished.stderr.contains(NO_INDEX);
+    if name != "index" && lacks_index {
         run(vec!["index".to_owned(), ".".to_owned()]);
+        finished = run(args);
     }
-    let finished = run(args);
     let is_error = finished.exit_code == 1;
     let text = if is_error {
         finished.stderr.trim().to_owned()
@@ -464,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn queries_refresh_the_index_first() {
+    fn queries_run_directly_where_an_index_exists() {
         let line = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"outline","arguments":{"file":"a.py"}}}"#;
         let mut commands = Vec::new();
 
@@ -477,7 +481,29 @@ mod tests {
             }
         });
 
-        assert_eq!(commands, ["index .", "outline a.py"]);
+        assert_eq!(commands, ["outline a.py"]);
+    }
+
+    #[test]
+    fn a_query_without_an_index_builds_one_and_asks_again() {
+        let line = r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"outline","arguments":{"file":"a.py"}}}"#;
+        let mut commands = Vec::new();
+
+        handle_line(line, &mut |args| {
+            let is_first = commands.is_empty();
+            commands.push(args.join(" "));
+            Finished {
+                stdout: String::new(),
+                stderr: if is_first {
+                    "error: no index found here".to_owned()
+                } else {
+                    String::new()
+                },
+                exit_code: u8::from(is_first),
+            }
+        });
+
+        assert_eq!(commands, ["outline a.py", "index .", "outline a.py"]);
     }
 
     #[test]
