@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rusqlite::{Connection, params};
@@ -35,6 +37,16 @@ const DECODED_PER_CHUNK: usize = 4096;
 pub struct UnitCache {
     path: PathBuf,
     connection: Connection,
+    /// Writes units handed to [`UnitCache::put_later`]; started on first
+    /// use.
+    writer: Option<Writer>,
+}
+
+/// A thread writing batches of units on its own connection, so a caller
+/// carries on while they are written and synced to disk.
+struct Writer {
+    batches: mpsc::Sender<Vec<(String, Vec<u8>)>>,
+    thread: JoinHandle<()>,
 }
 
 impl UnitCache {
@@ -53,6 +65,7 @@ impl UnitCache {
         Ok(Self {
             path: path.to_owned(),
             connection,
+            writer: None,
         })
     }
 
@@ -98,20 +111,79 @@ impl UnitCache {
 
     /// Keeps `entries`, in one transaction.
     pub fn put_many(&mut self, entries: &[(String, Vec<u8>)]) -> Result<(), StoreError> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-        let transaction = self.connection.transaction()?;
-        {
-            let mut statement = transaction
-                .prepare_cached("INSERT OR REPLACE INTO units (key, value) VALUES (?1, ?2)")?;
-            for (key, value) in entries {
-                statement.execute(params![key, value])?;
-            }
-        }
-        transaction.commit()?;
-        Ok(())
+        insert_many(&mut self.connection, entries)
     }
+
+    /// Keeps `entries` in the background, in one transaction, while the
+    /// caller carries on; dropping the cache waits for every batch to be
+    /// written. Keeping is best effort: a batch that cannot be written
+    /// only costs a later run the work of producing it again.
+    pub fn put_later(&mut self, entries: Vec<(String, Vec<u8>)>) {
+        if entries.is_empty() {
+            return;
+        }
+        let path = &self.path;
+        let writer = self.writer.get_or_insert_with(|| start_writer(path));
+        // A writer that has stopped drops what it is sent, as it would
+        // fail to write it.
+        let _ = writer.batches.send(entries);
+    }
+}
+
+impl Drop for UnitCache {
+    fn drop(&mut self) {
+        let Some(Writer { batches, thread }) = self.writer.take() else {
+            return;
+        };
+        drop(batches);
+        // The writer only ends early by panicking, which loses no more
+        // than its unwritten batches.
+        let _ = thread.join();
+    }
+}
+
+/// Starts a thread writing the batches it is sent to the cache at `path`.
+fn start_writer(path: &Path) -> Writer {
+    let (batches, received) = mpsc::channel::<Vec<(String, Vec<u8>)>>();
+    let path = path.to_owned();
+    let thread = std::thread::spawn(move || {
+        let Ok(mut connection) = open_writer(&path) else {
+            return;
+        };
+        for batch in received {
+            // Best effort, as `put_later` says.
+            let _ = insert_many(&mut connection, &batch);
+        }
+    });
+    Writer { batches, thread }
+}
+
+/// A second connection to the cache at `path`, for writing.
+fn open_writer(path: &Path) -> Result<Connection, StoreError> {
+    let connection = Connection::open(path)?;
+    connection.busy_timeout(Duration::from_secs(60))?;
+    connection.pragma_update(None, "synchronous", "NORMAL")?;
+    Ok(connection)
+}
+
+/// Writes `entries` on `connection` in one transaction.
+fn insert_many(
+    connection: &mut Connection,
+    entries: &[(String, Vec<u8>)],
+) -> Result<(), StoreError> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let transaction = connection.transaction()?;
+    {
+        let mut statement = transaction
+            .prepare_cached("INSERT OR REPLACE INTO units (key, value) VALUES (?1, ?2)")?;
+        for (key, value) in entries {
+            statement.execute(params![key, value])?;
+        }
+    }
+    transaction.commit()?;
+    Ok(())
 }
 
 /// The values `connection`'s cache holds under those of `keys`.
@@ -141,6 +213,30 @@ fn select_many(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn units_kept_later_are_written_by_the_time_the_cache_is_dropped() {
+        let directory = tempfile_directory("later");
+        let path = directory.join("units.db");
+        let mut cache = UnitCache::open(&path).unwrap();
+
+        cache.put_later(vec![("a".to_owned(), b"one".to_vec())]);
+        drop(cache);
+        let found = UnitCache::open(&path)
+            .unwrap()
+            .get_many(&["a".to_owned()])
+            .unwrap();
+
+        assert_eq!(found, BTreeMap::from([("a".to_owned(), b"one".to_vec())]));
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    fn tempfile_directory(name: &str) -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("lemma-units-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
 
     #[test]
     fn kept_units_are_found_by_key_and_others_are_not() {

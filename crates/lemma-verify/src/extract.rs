@@ -1586,9 +1586,7 @@ impl FactReader {
             parsed.push(((*key).clone(), Rc::new(facts)));
         }
         if let Some((_, units)) = &mut self.kept {
-            // Keeping is an optimisation: a failure only costs a later run
-            // a parse.
-            let _ = units.put_many(&new_units);
+            units.put_later(new_units);
         }
         Ok(parsed)
     }
