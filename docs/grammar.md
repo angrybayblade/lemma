@@ -123,7 +123,7 @@ requirements:
 
 `when` is a rule body. Its variables, in the order they first appear in a positive atom, become the finding's values; `explain` refers to them as `{name}`. Findings are sorted by severity, requirement and message, so output is the same every run.
 
-Each finding also says whether the change introduced it. A requirement that compares the snapshots (it reads `@base`, directly or through a rule) only matches what changed, so its findings are introduced. A requirement over one snapshot, such as a route its spec does not declare, may already have matched before the change: Lemma evaluates it at the base too, and a finding that matches there as well is reported as not introduced.
+Each finding also says whether the change introduced it. A requirement that compares the snapshots (it reads `@base`, directly or through a rule) only matches what changed, so its findings are introduced. A requirement over one snapshot, such as a route its spec does not declare, may already have matched before the change: Lemma evaluates it at the base too, and a finding that matches there as well is reported as not introduced. Findings are matched by their text values, not their numbers, so a route that only moved down its file is the same route. For a relation only such a base evaluation reads, facts the grammar declares without a snapshot hold in both snapshots, unless it declares base facts of its own.
 
 Severity decides what a finding does: `lemma verify` exits with 4 when any finding is an error, so CI can gate on errors while warnings and informational findings only report. Choose severity by what a match proves:
 

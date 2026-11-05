@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lemma_grammar::{CompiledGrammar, Severity};
-use lemma_logic::{Derivation, Engine, EvaluationError, Fact, Request, Symbols};
+use lemma_logic::{Derivation, Engine, EvaluationError, Fact, Request, Symbols, Value};
 
 pub use extract::operation_key;
 pub use manifest::{Change, GeneratedDocument, Manifest, Repository, Role};
@@ -311,13 +311,24 @@ fn describe<E: std::error::Error + 'static>(error: &EvaluationError<E>) -> Strin
 }
 
 /// Findings with the fact each came from, sorted.
+/// What makes a finding the same one at the base and the head: its text
+/// values. Numbers are positions (a line moves when code above it changes),
+/// so a route that only moved down its file is not new.
+fn identity(row: &[Value]) -> Vec<Value> {
+    row.iter()
+        .filter(|value| !matches!(value, Value::Number(_)))
+        .copied()
+        .collect()
+}
+
 fn findings(grammar: &CompiledGrammar, derived: &lemma_logic::Derived) -> Vec<(Finding, Fact)> {
     let mut found = Vec::new();
     for requirement in &grammar.requirements {
-        let at_base: BTreeSet<&lemma_logic::Tuple> = requirement
+        let at_base: BTreeSet<Vec<Value>> = requirement
             .base_relation
             .iter()
             .flat_map(|relation| derived.rows(relation))
+            .map(|row| identity(row))
             .collect();
         for row in derived.rows(&requirement.relation) {
             let values: BTreeMap<String, String> = requirement
@@ -335,7 +346,7 @@ fn findings(grammar: &CompiledGrammar, derived: &lemma_logic::Derived) -> Vec<(F
                 severity: severity_name(requirement.severity),
                 message: fill(&template, &values),
                 values,
-                introduced: !at_base.contains(row),
+                introduced: !at_base.contains(&identity(row)),
                 derivation: None,
             };
             found.push((
