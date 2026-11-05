@@ -240,8 +240,9 @@ fn focus<'a>(
     operations: Option<&'a BTreeSet<String>>,
 ) -> extract::Focus<'a> {
     match (evaluability, operations) {
-        (Some(demand::Evaluability::ChangeDriven(plan)), Some(operations)) => {
-            extract::Focus::Operations(operations, plan.import_depth)
+        // Callers only: their calls need no imported files.
+        (Some(demand::Evaluability::ChangeDriven(_)), Some(operations)) => {
+            extract::Focus::Operations(operations, 0)
         }
         (Some(demand::Evaluability::ChangeDriven(plan)), None) => extract::Focus::Change(plan),
         _ => extract::Focus::Everything,
