@@ -235,7 +235,7 @@ pub fn attach(
     seeds: &[(usize, Seed)],
     walkable: &Walkable,
     repos: &BTreeMap<String, Repo>,
-    facts: Option<&lemma_verify::FactsCache>,
+    reading: &CodeReading<'_>,
 ) -> Result<(), GraphError> {
     let problems: Vec<&(usize, Seed)> = seeds
         .iter()
@@ -245,7 +245,7 @@ pub fn attach(
         return Ok(());
     }
     let routes = read_routes(&walkable.routes, repos)?;
-    let mut code = Code::new(repos, facts);
+    let mut code = Code::new(repos, reading);
     let mut traces: BTreeMap<&Seed, Vec<Impact>> = BTreeMap::new();
     let mut tracing = impact::Tracing::default();
     for (index, seed) in problems {
@@ -266,6 +266,15 @@ pub fn attach(
     code.into_failure().map_or(Ok(()), Err)
 }
 
+/// How tracing reads code: the facts kept between runs, if any, and the
+/// repositories' listings, shared with verification.
+pub struct CodeReading<'a> {
+    /// Where functions are kept between runs.
+    pub facts: Option<&'a lemma_verify::FactsCache>,
+    /// Repositories' files, listed once per run.
+    pub listings: &'a lemma_http::Listings,
+}
+
 /// Repositories' functions, read once each. A repository that cannot be
 /// read gives none, and the first such error is kept to report.
 pub(crate) struct Code<'a> {
@@ -273,18 +282,17 @@ pub(crate) struct Code<'a> {
     /// The build of Lemma and the units each file's functions are kept in
     /// between runs, when they are kept.
     kept: Option<(String, lemma_store::UnitCache)>,
+    /// Repositories' files, listed once per run with verification.
+    listings: &'a lemma_http::Listings,
     extractors: ExtractorPool,
     functions: BTreeMap<String, Vec<Function>>,
     failure: Option<GraphError>,
 }
 
 impl<'a> Code<'a> {
-    pub(crate) fn new(
-        repos: &'a BTreeMap<String, Repo>,
-        facts: Option<&'a lemma_verify::FactsCache>,
-    ) -> Self {
+    pub(crate) fn new(repos: &'a BTreeMap<String, Repo>, reading: &CodeReading<'a>) -> Self {
         // A cache that cannot be opened only means every file is parsed.
-        let kept = facts.and_then(|cache| {
+        let kept = reading.facts.and_then(|cache| {
             std::fs::create_dir_all(&cache.directory).ok()?;
             let units = lemma_store::UnitCache::open(&cache.directory.join("units.db")).ok()?;
             Some((cache.build.clone(), units))
@@ -292,6 +300,7 @@ impl<'a> Code<'a> {
         Self {
             repos,
             kept,
+            listings: reading.listings,
             extractors: ExtractorPool::new(),
             functions: BTreeMap::new(),
             failure: None,
@@ -308,7 +317,7 @@ impl<'a> Code<'a> {
             return functions.clone();
         }
         let read = match self.repos.get(repository) {
-            Some(repo) => functions_of(repo, &mut self.kept, &self.extractors),
+            Some(repo) => functions_of(repo, &mut self.kept, self.listings, &self.extractors),
             None => Ok(Vec::new()),
         };
         let functions = match read {
@@ -539,6 +548,7 @@ fn inline_handler(
 pub(crate) fn functions_of(
     repo: &Repo,
     kept: &mut Option<(String, lemma_store::UnitCache)>,
+    listings: &lemma_http::Listings,
     extractors: &ExtractorPool,
 ) -> Result<Vec<Function>, GraphError> {
     let Some(prefixes) = code_directories(repo) else {
@@ -550,7 +560,7 @@ pub(crate) fn functions_of(
     if commit.is_none() {
         lemma_http::require_prefixes(root, &prefixes).map_err(source_error)?;
     }
-    let listed = lemma_http::list_with_blobs(root, commit).map_err(source_error)?;
+    let listed = listings.get(root, commit).map_err(source_error)?;
     let code: Vec<&ListedFile> = listed
         .iter()
         .filter(|file| is_traced_code(&file.path, &prefixes))

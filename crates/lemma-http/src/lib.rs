@@ -21,8 +21,8 @@ pub use paths::{
     canonical_method, canonical_path, canonical_route, has_marker, is_test_file, path_markers,
 };
 pub use source::{
-    ListedFile, SourceError, SourceFile, contents_key, is_under_any, list_files, list_with_blobs,
-    read_file, read_files, read_files_where, read_from_disk, read_listed, read_paths,
-    require_prefixes,
+    ListedFile, Listings, SourceError, SourceFile, contents_key, is_under_any, list_files,
+    list_with_blobs, read_file, read_files, read_files_where, read_from_disk, read_listed,
+    read_paths, require_prefixes,
 };
 pub use tsconfig::PathAliases;
