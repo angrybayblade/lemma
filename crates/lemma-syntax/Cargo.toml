@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 lemma-model.workspace = true
+rayon.workspace = true
 thiserror.workspace = true
 tree-sitter.workspace = true
 tree-sitter-go.workspace = true
