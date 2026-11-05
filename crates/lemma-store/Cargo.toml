@@ -1,6 +1,6 @@
 [package]
 name = "lemma-store"
-description = "SQLite storage for snapshots, symbols, and provider results."
+description = "Storage for snapshots, symbols, provider results, units and segments."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+blake3.workspace = true
 lemma-model.workspace = true
 rayon.workspace = true
 rusqlite.workspace = true
