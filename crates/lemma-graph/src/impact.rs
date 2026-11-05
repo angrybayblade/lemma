@@ -182,7 +182,7 @@ pub enum LinkKind {
 }
 
 impl LinkKind {
-    /// Its name in output: `route`, `call` or `name`.
+    /// Its name in output: `route`, `call`, `name` or `type`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Route => "route",
@@ -651,15 +651,24 @@ impl Walked {
             let same_language = |from: &Option<usize>| {
                 from.is_none_or(|from| language(&functions[from].file) == language(&function.file))
             };
-            let from = function
+            let matched: Vec<(&String, Option<usize>)> = function
                 .mentions
                 .iter()
                 .filter(|name| !own.contains(&name.as_str()))
-                .filter_map(|name| Some((name, frontier.get(name)?)))
-                .find(|(_, from)| same_language(from));
-            if let Some((name, from)) = from {
-                let through_type = from.is_some_and(|from| functions[from].name != *name);
-                found.push((index, *from, through_type));
+                .filter_map(|name| Some((name, *frontier.get(name)?)))
+                .filter(|(_, from)| same_language(from))
+                .collect();
+            let through_type = |(name, from): &(&String, Option<usize>)| {
+                from.is_some_and(|from| names_only_type(&functions[from], name))
+            };
+            // A function naming the method itself as well as its type
+            // reaches it directly.
+            let chosen = matched
+                .iter()
+                .find(|reached| !through_type(reached))
+                .or_else(|| matched.first());
+            if let Some(reached) = chosen {
+                found.push((index, reached.1, through_type(reached)));
             }
         }
         found
@@ -755,6 +764,13 @@ fn callable_names(function: &Function) -> Vec<&str> {
         names.push(container.rsplit('.').next().unwrap_or(container));
     }
     names
+}
+
+/// Whether `name` is the type `function` is a method of, rather than the
+/// function's own name.
+fn names_only_type(function: &Function, name: &str) -> bool {
+    let names = callable_names(function);
+    !function.name.is_empty() && function.name != name && names.get(1) == Some(&name)
 }
 
 /// A file's language, as far as calls by name go: its extension, with
@@ -1107,6 +1123,12 @@ mod tests {
                 "SubmitTask.InvokeWithRuntimeEnv()",
             ),
             function("jobs.go", "RunJob", (1, 5), "action.Invoke()"),
+            function(
+                "direct.go",
+                "Direct",
+                (1, 5),
+                "a := SubmitTask{}; a.Invoke()",
+            ),
         ];
         let names = NameIndex::of(&index);
         let seeds = vec![
@@ -1117,7 +1139,7 @@ mod tests {
         let walked = Walked::from_names(&index, &names, seeds, vec![0]);
 
         assert_eq!(walked.through_type, BTreeSet::from([1]));
-        assert!(walked.is_reached[2]);
+        assert!(walked.is_reached[2] && walked.is_reached[3]);
     }
 
     #[test]
