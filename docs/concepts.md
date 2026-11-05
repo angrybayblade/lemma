@@ -31,9 +31,9 @@ On a 73,000-file repository a re-index with nothing changed takes about 32 ms, a
 
 ## Stale results
 
-Positions in the index refer to the files as they were when indexed. Before asking a language server about a symbol, Lemma checks that the symbol's file still has the same contents. If it changed, the result is *stale* and no server is asked, because the stored position could point at the wrong code. Run `lemma index` again to fix it.
+Positions in the index refer to the files as they were when indexed. Before asking a language server about a symbol, Lemma checks that the symbol's file still has the same contents. If it changed, the result is *stale* and no server is asked, because the stored position could point at the wrong code. Queries re-index before they run, as the MCP server does, so this only happens with an index given by `--db`.
 
-Only the symbol's own file is checked. A server started for the lookup reads other files as they are on disk. A warm server sees edits to them once you run `lemma index`.
+Only the symbol's own file is checked. A server started for the lookup reads other files as they are on disk. A warm server sees edits to them once they are indexed, which every query does first.
 
 ## "No references" is not "unused"
 

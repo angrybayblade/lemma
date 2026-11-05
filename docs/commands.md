@@ -51,7 +51,7 @@ Searches indexed symbols by name or qualified name.
 
 Qualified names join enclosing definitions with dots: a method `delete` in class `Router` is `Router.delete`. For Go methods the receiver type is used: `func (s *Server) Start()` is `Server.Start`.
 
-Ids (`#412`) are valid until the next `lemma index` that records a change.
+Ids (`#412`) name a definition for as long as it keeps its name and kind: editing its file, even moving it, keeps the id. In a workspace each repository numbers its own symbols, so ids are written with the repository, `#billing:412`; pass them as shown.
 
 ## `lemma outline <file>`
 
@@ -91,7 +91,7 @@ Each reference shows its location and, when it sits inside an indexed definition
 | *N* references | The server found these. |
 | no references found | The server answered with nothing. This only covers what it could see, and does not prove the symbol is unused. |
 | does not support reference lookup | The server answered but cannot find references. |
-| changed since it was indexed | The file was edited after indexing, so the stored position may be wrong. Run `lemma index` again. |
+| changed since it was indexed | The file changed after indexing, so the stored position may be wrong. Queries re-index first, so this only appears with `--db`; run `lemma index` on that index. |
 | no provider is installed | No server for this language is on `PATH`. |
 | lookup failed | A server started but failed, or none could start. The message says why. |
 

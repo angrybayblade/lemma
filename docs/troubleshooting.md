@@ -16,11 +16,11 @@ Only definitions are indexed: functions, methods, classes, interfaces, structs, 
 
 ## `matches N symbols`
 
-Several definitions share the name. Narrow it with the qualified name (`Router.delete`), `--language`, `--kind`, `--path`, or pick one by id.
+Several definitions share the name. Narrow it with the qualified name (`Router.delete`), `--language`, `--kind`, `--path`, or pick one by id. In a workspace, pass the id with its repository, as listed (`#billing:412`).
 
 ## `changed since it was indexed`
 
-The symbol's file was edited after indexing. Run `lemma index` again.
+The symbol's file was edited after indexing. Queries re-index first, so this appears only with `--db`: run `lemma index` on that index.
 
 ## `no <language> provider is installed`
 
@@ -50,7 +50,7 @@ Then ask again with `lemma refs <symbol> --refresh`, because the earlier answer 
 - `lemma daemon stop` stops it; the next command starts a fresh one.
 - `--no-daemon`, or `LEMMA_NO_DAEMON=1`, runs a command in-process.
 - Language servers are found on the `PATH` of the command you run, but a server already running keeps its environment. After changing a server's environment, stop the daemon.
-- A warm server learns about edits when you run `lemma index`. If results ignore a recent edit, re-index.
+- A warm server learns about edits when they are indexed, which every query does first.
 
 ## `index uses schema version ...`
 
