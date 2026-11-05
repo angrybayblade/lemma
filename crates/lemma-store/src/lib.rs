@@ -1137,14 +1137,19 @@ fn insert_files(
         ])?;
         let file_id = transaction.last_insert_rowid();
         for symbol in &file.symbols {
-            // A new symbol gets a fresh id: NULL makes SQLite choose one.
-            let kept_id = previous
-                .get_mut(&(
-                    file.path.clone(),
-                    symbol.qualified_name.clone(),
-                    symbol.kind.as_str().to_owned(),
-                ))
-                .and_then(VecDeque::pop_front);
+            // A new symbol gets a fresh id: NULL makes SQLite choose one. A
+            // first index has no ids to keep, so it builds no keys.
+            let kept_id = if previous.is_empty() {
+                None
+            } else {
+                previous
+                    .get_mut(&(
+                        file.path.clone(),
+                        symbol.qualified_name.clone(),
+                        symbol.kind.as_str().to_owned(),
+                    ))
+                    .and_then(VecDeque::pop_front)
+            };
             insert_symbol.execute(params![
                 file_id,
                 symbol.name,
