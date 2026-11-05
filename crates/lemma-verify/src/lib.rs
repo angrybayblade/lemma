@@ -210,8 +210,9 @@ pub struct FactsCache {
 /// The relations `options` asks for (such as `calls`), complete for calls
 /// of `operations` (`METHOD /path`) and reading only the consumer code that
 /// may make them; no findings. For finding the callers of operations a
-/// trace reaches without reading every caller of every operation. The
-/// grammar must allow change-driven evaluation, or everything is read.
+/// trace reaches without reading every caller of every operation. With
+/// [`Evaluation::Full`], or a grammar that does not allow change-driven
+/// evaluation, everything is read.
 pub fn calls_of<E: Engine>(
     manifest: &Manifest,
     engine: &E,
@@ -219,40 +220,35 @@ pub fn calls_of<E: Engine>(
     listings: &Arc<lemma_http::Listings>,
     operations: &BTreeSet<String>,
 ) -> Result<Report, VerifyError> {
-    let mut grammar = load_grammar(manifest)?;
-    check_relations(&grammar, &options.relations)?;
-    let plan = demand::plan(&grammar);
-    let focus: extract::Focus<'_, E> = match &plan {
-        Ok(_) => extract::Focus::Operations(operations),
-        Err(_) => extract::Focus::Everything,
-    };
-    let mut writer = extract::FactWriter::new(&mut grammar);
-    let covered = extract::extract_all(
-        manifest,
-        &mut writer,
-        options.facts_cache.as_ref(),
-        listings,
-        &focus,
-    )?;
-    let facts = writer.counts;
-    let request = Request {
-        outputs: options.relations.iter().cloned().collect(),
-        ..Request::default()
-    };
-    let derived = evaluate(&grammar, engine, &request)?;
-    let relations = relation_rows(&grammar, &derived, &options.relations);
-    Ok(Report {
-        change: format!("calls of {} operations", operations.len()),
-        engine: engine.name().to_owned(),
-        evaluation: match &plan {
-            Ok(_) => "demand".to_owned(),
-            Err(reason) => format!("full: {reason}"),
-        },
-        covered: covered.map(|operations| operations.into_iter().collect()),
-        facts,
-        findings: Vec::new(),
-        relations,
-    })
+    run(manifest, engine, options, listings, Some(operations))
+}
+
+/// How much code a run read, for its report: `full`, `demand`, or `full:
+/// <why>` when demand was asked for and the grammar does not allow it.
+fn evaluation_label(evaluability: Option<&demand::Evaluability>) -> String {
+    match evaluability {
+        None => "full".to_owned(),
+        Some(demand::Evaluability::ChangeDriven(_)) => "demand".to_owned(),
+        Some(demand::Evaluability::Full(reason)) => format!("full: {reason}"),
+    }
+}
+
+/// Which consumer code a run reads: what the change's findings rest on, the
+/// callers of `operations`, or everything.
+fn focus<'a, E>(
+    evaluability: Option<&'a demand::Evaluability>,
+    operations: Option<&'a BTreeSet<String>>,
+    engine: &'a E,
+) -> extract::Focus<'a, E> {
+    match (evaluability, operations) {
+        (Some(demand::Evaluability::ChangeDriven(plan)), Some(operations)) => {
+            extract::Focus::Operations(operations, plan.import_depth)
+        }
+        (Some(demand::Evaluability::ChangeDriven(plan)), None) => {
+            extract::Focus::Change(plan, engine)
+        }
+        _ => extract::Focus::Everything,
+    }
 }
 
 /// The grammar `manifest` names, or the built-in one, compiled.
@@ -286,21 +282,27 @@ pub fn verify_with_listings<E: Engine>(
     options: &Options,
     listings: &Arc<lemma_http::Listings>,
 ) -> Result<Report, VerifyError> {
+    run(manifest, engine, options, listings, None)
+}
+
+/// Extracts and evaluates: the change's findings and the relations asked
+/// for, or, given `operations`, only the relations, complete for calls of
+/// those operations.
+fn run<E: Engine>(
+    manifest: &Manifest,
+    engine: &E,
+    options: &Options,
+    listings: &Arc<lemma_http::Listings>,
+    operations: Option<&BTreeSet<String>>,
+) -> Result<Report, VerifyError> {
     let mut grammar = load_grammar(manifest)?;
     check_relations(&grammar, &options.relations)?;
-    let plan = match options.evaluation {
+    let evaluability = match options.evaluation {
         Evaluation::Full => None,
         Evaluation::Demand => Some(demand::plan(&grammar)),
     };
-    let evaluation = match &plan {
-        None => "full".to_owned(),
-        Some(Ok(_)) => "demand".to_owned(),
-        Some(Err(reason)) => format!("full: {reason}"),
-    };
-    let focus = match &plan {
-        Some(Ok(plan)) => extract::Focus::Change(plan, engine),
-        _ => extract::Focus::Everything,
-    };
+    let evaluation = evaluation_label(evaluability.as_ref());
+    let focus = focus(evaluability.as_ref(), operations, engine);
     let mut writer = extract::FactWriter::new(&mut grammar);
     let covered = extract::extract_all(
         manifest,
@@ -310,20 +312,34 @@ pub fn verify_with_listings<E: Engine>(
         &focus,
     )?;
     let facts = writer.counts;
-    let derived = evaluate(&grammar, engine, &wanted(&grammar, &options.relations))?;
-    let mut findings = findings(&grammar, &derived);
+    let request = match operations {
+        Some(_) => Request {
+            outputs: options.relations.iter().cloned().collect(),
+            ..Request::default()
+        },
+        None => wanted(&grammar, &options.relations),
+    };
+    let derived = evaluate(&grammar, engine, &request)?;
+    let mut findings = match operations {
+        Some(_) => Vec::new(),
+        None => findings(&grammar, &derived),
+    };
     let relations = relation_rows(&grammar, &derived, &options.relations);
     if options.explain {
         add_derivations(&grammar, engine, &mut findings)?;
     }
     let change = &manifest.change;
-    Ok(Report {
-        change: format!(
+    let described = match operations {
+        Some(operations) => format!("calls of {} operations", operations.len()),
+        None => format!(
             "{} {}..{}",
             change.repository,
             change.base,
             change.head_label()
         ),
+    };
+    Ok(Report {
+        change: described,
         engine: engine.name().to_owned(),
         evaluation,
         covered: covered.map(|operations| operations.into_iter().collect()),
@@ -385,7 +401,7 @@ fn relation_rows(
     relations
 }
 
-fn evaluate<E: Engine>(
+pub(crate) fn evaluate<E: Engine>(
     grammar: &CompiledGrammar,
     engine: &E,
     request: &Request,
@@ -397,7 +413,7 @@ fn evaluate<E: Engine>(
     })
 }
 
-pub(crate) fn describe<E: std::error::Error + 'static>(error: &EvaluationError<E>) -> String {
+fn describe<E: std::error::Error + 'static>(error: &EvaluationError<E>) -> String {
     let mut message = error.to_string();
     let mut source = std::error::Error::source(error);
     while let Some(cause) = source {

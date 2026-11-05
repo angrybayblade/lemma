@@ -115,11 +115,22 @@ pub fn extract_all<E: lemma_logic::Engine>(
         Focus::Change(plan, engine) => {
             Some(crate::demand::operations(writer.grammar(), *engine, plan)?)
         }
-        Focus::Operations(operations) => Some((*operations).clone()),
+        Focus::Operations(operations, _) => Some((*operations).clone()),
     };
-    let reads_changed_files = matches!(focus, Focus::Change(plan, _) if plan.reads_changed_files);
+    let (reads_changed_files, import_depth) = match focus {
+        Focus::Change(plan, _) => (plan.reads_changed_files, plan.import_depth),
+        Focus::Operations(_, depth) => (false, *depth),
+        Focus::Everything => (false, 0),
+    };
     let selection = operations.as_ref().map(|operations| {
-        Selection::of(operations, &clients, writer.grammar(), reads_changed_files)
+        let grammar = writer.grammar();
+        Selection::of(
+            operations,
+            &clients,
+            grammar,
+            reads_changed_files,
+            import_depth,
+        )
     });
     for (name, repository) in consumers {
         for mut snapshot in snapshots(manifest, repository, &system, &clients, &specs) {
@@ -137,8 +148,9 @@ pub(crate) enum Focus<'a, E> {
     /// What the change's findings can rest on, by the grammar's plan, with
     /// the engine that evaluates its anchors.
     Change(&'a crate::demand::Plan, &'a E),
-    /// The code that may call these operations (`METHOD /path`).
-    Operations(&'a BTreeSet<String>),
+    /// The code that may call these operations (`METHOD /path`), and the
+    /// files it imports to the depth given.
+    Operations(&'a BTreeSet<String>, usize),
 }
 
 /// What change-driven evaluation reads of consumer code: the files that may
@@ -153,6 +165,9 @@ pub(crate) struct Selection {
     /// finds their handlers.
     own_terms: BTreeMap<String, BTreeSet<String>>,
     reads_changed_files: bool,
+    /// How many levels of imports the grammar's rules follow from a
+    /// calling file: the files read beyond those selected.
+    import_depth: usize,
 }
 
 impl Selection {
@@ -165,6 +180,7 @@ impl Selection {
         clients: &Clients,
         grammar: &CompiledGrammar,
         reads_changed_files: bool,
+        import_depth: usize,
     ) -> Self {
         let mut terms = BTreeSet::new();
         for operation in operations {
@@ -181,6 +197,7 @@ impl Selection {
             terms,
             own_terms: undeclared_terms(grammar),
             reads_changed_files,
+            import_depth,
         }
     }
 }
@@ -1200,8 +1217,6 @@ fn selected_files(
     let Some(selection) = snapshot.selection else {
         return Ok(files.to_vec());
     };
-    let commit = snapshot.commit;
-    let place = (repository.path.as_path(), commit);
     let mut terms = selection.terms.clone();
     if let Some(own) = scope
         .service
@@ -1209,27 +1224,104 @@ fn selected_files(
     {
         terms.extend(own.iter().cloned());
     }
-    let mut chosen = extractor.select(place, files, &scope.options, &terms)?;
-    if selection.reads_changed_files {
-        chosen.extend(edited_paths(repository, snapshot)?);
-    }
-    let first: Vec<ListedFile> = files
-        .iter()
-        .filter(|file| chosen.contains(&file.path))
-        .cloned()
-        .collect();
-    for (path, facts) in extractor.read(&repository.path, commit, &first, &scope.options)? {
-        let imported = facts
-            .imports
-            .iter()
-            .filter_map(|specifier| resolve_import(&path, specifier, &scope.known, &scope.imports));
-        chosen.extend(imported);
+    let edited = if selection.reads_changed_files {
+        edited_paths(repository, snapshot)?
+    } else {
+        BTreeSet::new()
+    };
+    let here = Candidates {
+        repository,
+        commit: snapshot.commit,
+        files,
+        known: &scope.known,
+        imports: &scope.imports,
+        options: &scope.options,
+    };
+    let mut chosen = chosen_paths(&here, &terms, &edited, selection.import_depth, extractor)?;
+    // In the changed repository both commits read the same files: a file
+    // read at one only (imported by an edited file, say) would have facts
+    // there and none at the other, which reads as a change.
+    if let Some(other) = snapshot.other {
+        let there_files =
+            snapshot
+                .specs
+                .code_files(&repository.path, other, &repository.include)?;
+        let there_known: BTreeSet<String> =
+            there_files.iter().map(|file| file.path.clone()).collect();
+        let there_imports = read_import_aliases(repository, other, snapshot.specs)?;
+        let there = Candidates {
+            repository,
+            commit: other,
+            files: &there_files,
+            known: &there_known,
+            imports: &there_imports,
+            options: &scope.options,
+        };
+        chosen.extend(chosen_paths(
+            &there,
+            &terms,
+            &edited,
+            selection.import_depth,
+            extractor,
+        )?);
     }
     Ok(files
         .iter()
         .filter(|file| chosen.contains(&file.path))
         .cloned()
         .collect())
+}
+
+/// One commit's consumer files to choose among, and how their imports
+/// resolve there.
+struct Candidates<'a> {
+    repository: &'a Repository,
+    commit: Commit<'a>,
+    files: &'a [ListedFile],
+    known: &'a BTreeSet<String>,
+    imports: &'a PathAliases,
+    options: &'a CodeOptions,
+}
+
+/// The paths among `candidates` that may make a call `terms` name, that
+/// are `edited`, or that those import, `depth` levels down.
+fn chosen_paths(
+    candidates: &Candidates<'_>,
+    terms: &BTreeSet<String>,
+    edited: &BTreeSet<String>,
+    depth: usize,
+    extractor: &mut FactReader,
+) -> Result<BTreeSet<String>, VerifyError> {
+    let place = (candidates.repository.path.as_path(), candidates.commit);
+    let mut chosen = extractor.select(place, candidates.files, candidates.options, terms)?;
+    chosen.extend(
+        candidates
+            .files
+            .iter()
+            .filter(|file| edited.contains(&file.path))
+            .map(|file| file.path.clone()),
+    );
+    // The files they import, as far down as the grammar's rules follow
+    // imports, each level read for the next.
+    let mut frontier = chosen.clone();
+    for _ in 0..depth {
+        let level: Vec<ListedFile> = candidates
+            .files
+            .iter()
+            .filter(|file| frontier.contains(&file.path))
+            .cloned()
+            .collect();
+        let read = extractor.read(place.0, place.1, &level, candidates.options)?;
+        frontier = read
+            .iter()
+            .flat_map(|(path, facts)| {
+                imported_files(path, facts, candidates.known, candidates.imports)
+            })
+            .filter(|path| !chosen.contains(path))
+            .collect();
+        chosen.extend(frontier.iter().cloned());
+    }
+    Ok(chosen)
 }
 
 /// The files the change edited in the changed repository: those whose
@@ -1455,6 +1547,9 @@ fn write_generated_calls(
 /// The generated function a call names, and the generated module it is
 /// from: `listTools` in `listTools()` imported from it, or in
 /// `api.listTools()` where `api` is the module or a re-export of it.
+/// Change-driven evaluation finds such calls by the call's last name and
+/// the names a file imports (`terms.rs`), for calls of at most two names
+/// rooted at an import; a call resolved here must stay within that.
 fn generated_function<'f>(
     scope: &'f ConsumerScope<'_>,
     path: &str,
@@ -1543,13 +1638,7 @@ fn write_imports(
     facts: &CodeFacts,
     writer: &mut FactWriter<'_>,
 ) {
-    let package_files = same_package(path, &scope.known);
-    let imported = facts
-        .imports
-        .iter()
-        .filter_map(|specifier| resolve_import(path, specifier, &scope.known, &scope.imports))
-        .chain(package_files);
-    for target in imported {
+    for target in imported_files(path, facts, &scope.known, &scope.imports) {
         let target_id = format!("{}:{target}", scope.name);
         writer.add(
             "imports",
@@ -1825,14 +1914,15 @@ impl FactReader {
                 .any(|term| wanted.contains(term))
         };
         let keys: Vec<String> = keyed.iter().map(|(_, key)| key.clone()).collect();
-        // A cache that cannot be read only means reading every file.
+        // A cache that cannot be read, in either lookup, only means reading
+        // every file: none counts as indexed.
         let (indexed, hits) = match &self.kept {
             Some((_, units)) => {
                 let wanted: Vec<String> = wanted.iter().cloned().collect();
-                (
-                    units.indexed(&keys).unwrap_or_default(),
-                    units.units_with(&wanted).unwrap_or_default(),
-                )
+                match (units.indexed(&keys), units.units_with(&wanted)) {
+                    (Ok(indexed), Ok(hits)) => (indexed, hits),
+                    _ => (BTreeSet::new(), BTreeSet::new()),
+                }
             }
             None => (BTreeSet::new(), BTreeSet::new()),
         };
@@ -1997,6 +2087,23 @@ fn has_extension(path: &str, extension: &str) -> bool {
     Path::new(path)
         .extension()
         .is_some_and(|found| found.eq_ignore_ascii_case(extension))
+}
+
+/// The files `path` imports, resolved, and for Go the other files of its
+/// package, which share its names without importing them.
+fn imported_files(
+    path: &str,
+    facts: &CodeFacts,
+    known: &BTreeSet<String>,
+    imports: &PathAliases,
+) -> Vec<String> {
+    let mut imported: Vec<String> = facts
+        .imports
+        .iter()
+        .filter_map(|specifier| resolve_import(path, specifier, known, imports))
+        .collect();
+    imported.extend(same_package(path, known));
+    imported
 }
 
 /// For a Go file, the other files of its package: Go code uses names from
