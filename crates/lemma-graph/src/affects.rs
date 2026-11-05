@@ -245,12 +245,18 @@ pub fn attach(
     let routes = read_routes(&walkable.routes, repos)?;
     let mut code = Code::new(repos)?;
     let mut traces: BTreeMap<&Seed, Vec<Impact>> = BTreeMap::new();
+    let mut tracing = impact::Tracing::default();
     for (index, seed) in problems {
         if !traces.contains_key(seed) {
             let mut functions = |repository: &str| code.functions(repository);
             let start = impact::Start::Names(seed.clone());
-            let (affected, links) =
-                impact::trace_links(&start, &mut functions, &routes, &walkable.calls);
+            let (affected, links) = impact::trace_links(
+                &mut tracing,
+                &start,
+                &mut functions,
+                &routes,
+                &walkable.calls,
+            );
             traces.insert(seed, describe(&affected, &links));
         }
         findings[*index].affects.clone_from(&traces[seed]);
