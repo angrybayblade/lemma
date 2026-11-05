@@ -1,19 +1,22 @@
 //! `lemma check`: checks the links declared in composable lemma.yaml files.
 
 use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
 
 use lemma_graph::config::Level;
 use lemma_graph::{Change, CheckOptions, GraphError, Impact, Report, Severity};
 use lemma_logic::ReferenceEngine;
+use lemma_providers::ProviderRegistry;
 use lemma_souffle::SouffleEngine;
 
+use crate::anchors::ProviderReferences;
 use crate::cli::CheckArgs;
 
 /// Exit code when a finding is an error.
 const EXIT_VIOLATED: u8 = 4;
 
-pub(crate) fn run(args: &CheckArgs, json: bool) -> ExitCode {
+pub(crate) fn run(args: &CheckArgs, providers: Option<&Path>, json: bool) -> ExitCode {
     let change = args.change.as_ref().map(|repository| Change {
         repository: repository.clone(),
         base: args.base.clone().unwrap_or_default(),
@@ -32,7 +35,7 @@ pub(crate) fn run(args: &CheckArgs, json: bool) -> ExitCode {
             _ => lemma_verify::Evaluation::Demand,
         },
     };
-    let report = match check(args, &options) {
+    let report = match check(args, &options, providers) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("error: {error:#}");
@@ -57,18 +60,45 @@ pub(crate) fn run(args: &CheckArgs, json: bool) -> ExitCode {
     ExitCode::from(if violated { EXIT_VIOLATED } else { 0 })
 }
 
-fn check(args: &CheckArgs, options: &CheckOptions) -> anyhow::Result<Report> {
+fn check(
+    args: &CheckArgs,
+    options: &CheckOptions,
+    providers: Option<&Path>,
+) -> anyhow::Result<Report> {
     let manifest = &args.manifest;
+    let mut references = if args.anchors {
+        Some(ProviderReferences::new(registry(providers)?))
+    } else {
+        None
+    };
+    let references = references
+        .as_mut()
+        .map(|references| references as &mut dyn lemma_graph::References);
     let report: Result<Report, GraphError> = match args.engine.as_deref() {
-        Some("reference") => lemma_graph::check(manifest, options, &ReferenceEngine),
-        Some("souffle") => lemma_graph::check(manifest, options, &SouffleEngine::find()?),
+        Some("reference") => lemma_graph::check(manifest, options, &ReferenceEngine, references),
+        Some("souffle") => {
+            lemma_graph::check(manifest, options, &SouffleEngine::find()?, references)
+        }
         Some(other) => anyhow::bail!("unknown engine `{other}`; use `souffle` or `reference`"),
         None => match SouffleEngine::find() {
-            Ok(souffle) => lemma_graph::check(manifest, options, &souffle),
-            Err(_) => lemma_graph::check(manifest, options, &ReferenceEngine),
+            Ok(souffle) => lemma_graph::check(manifest, options, &souffle, references),
+            Err(_) => lemma_graph::check(manifest, options, &ReferenceEngine, references),
         },
     };
     Ok(report?)
+}
+
+/// The built-in providers, plus those in `providers` when given.
+fn registry(providers: Option<&Path>) -> anyhow::Result<ProviderRegistry> {
+    let Some(file) = providers else {
+        return Ok(ProviderRegistry::builtin()?);
+    };
+    anyhow::ensure!(
+        file.is_file(),
+        "provider configuration {} does not exist",
+        file.display()
+    );
+    Ok(ProviderRegistry::load(file)?)
 }
 
 fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Result<()> {

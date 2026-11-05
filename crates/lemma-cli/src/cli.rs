@@ -142,6 +142,11 @@ pub(crate) struct CheckArgs {
     /// can rest on, the default) or `full`.
     #[arg(long, value_parser = ["demand", "full"])]
     pub evaluation: Option<String>,
+    /// Also ask language servers who calls each link's caller anchor, and
+    /// warn when a method nothing calls is anchored while a sibling method
+    /// is called. Starts a server per repository, so it takes longer.
+    #[arg(long)]
+    pub anchors: bool,
 }
 
 #[derive(Args)]

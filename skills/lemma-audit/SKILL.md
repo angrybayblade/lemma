@@ -34,6 +34,7 @@ Check each item against the code. Record the file and line that shows the gap.
 | A cross-repository call inference cannot see | Calls not over documented HTTP: function runtimes (Lambda `Invoke`), queues and topics, RPC stubs, webhooks, shared databases | Declare an operation on each side with schemas, and a link in `graph.links` |
 | A declared operation's schema is missing or open | Operations without `schema`; informational findings about types that could not be followed | Point `request`/`response` at the types (`file#Type`), or a resolver command |
 | A link points nowhere | `link` findings: an operation not declared, or an anchor that does not resolve | Fix the address or the `path` |
+| A link's caller is anchored at code nothing calls | `lemma check --anchors`: `anchor` warnings naming the sibling methods that are called | Move the caller's `path` to the method the code calls |
 | An external service is unpinned | `#name` services with `git` and no `ref` | Pin a commit in the parent |
 
 For a call inference cannot see, find both ends: the code that sends (a client method, a publisher) and the code that receives (a handler, a consumer). Each end becomes an operation in its repository's `lemma.yaml`, and the link goes from the sender's operation to the receiver's.

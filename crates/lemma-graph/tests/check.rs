@@ -7,8 +7,9 @@ use std::path::Path;
 use std::process::Command;
 
 use lemma_graph::config::Level;
-use lemma_graph::{Change, CheckOptions, Severity, check};
+use lemma_graph::{Change, CheckOptions, References, Severity, Uses, check};
 use lemma_logic::ReferenceEngine;
+use lemma_model::{Language, Location, Position, Span};
 
 fn git(directory: &Path, args: &[&str]) {
     let status = Command::new("git")
@@ -91,8 +92,9 @@ type Charges struct{}
 func (c *Charges) Create() {}
 "#;
 
-#[test]
-fn a_provider_change_that_breaks_a_go_caller_is_reported() {
+/// The provider, the caller with `caller_go` as its client, and the parent
+/// composing them.
+fn system(caller_go: &str) -> tempfile::TempDir {
     let workspace = tempfile::tempdir().unwrap();
     let provider = workspace.path().join("provider");
     let caller = workspace.path().join("caller");
@@ -108,12 +110,18 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
     write(&provider.join("spec.json"), SPEC_HEAD);
     git(&provider, &["commit", "-q", "-am", "head"]);
     write(&caller.join("lemma.yaml"), CALLER_LEMMA);
-    write(&caller.join("client/charges.go"), CALLER_GO);
+    write(&caller.join("client/charges.go"), caller_go);
     git(&caller, &["init", "-q"]);
     write(
         &workspace.path().join("lemma.yaml"),
         "services:\n  \"#provider\": { path: provider }\n  \"#caller\": { path: caller }\n",
     );
+    workspace
+}
+
+#[test]
+fn a_provider_change_that_breaks_a_go_caller_is_reported() {
+    let workspace = system(CALLER_GO);
     let options = CheckOptions {
         change: Some(Change {
             repository: "#provider".to_owned(),
@@ -130,6 +138,7 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
         &workspace.path().join("lemma.yaml"),
         &options,
         &ReferenceEngine,
+        None,
     )
     .unwrap();
 
@@ -146,5 +155,63 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
             "request: the receiver requires `currency` at the root; the sender may leave it out",
             "response: the receiver expects `receipt_url` at the root; the sender does not send it",
         ]
+    );
+}
+
+/// Uses by the line of the name asked about: the declaration only for
+/// `Create` (line 13), and a call from elsewhere for `CreateWithRetry`
+/// (line 14).
+struct FakeReferences;
+
+impl References for FakeReferences {
+    fn uses(&mut self, _: &Path, file: &str, _: Language, position: Position) -> Uses {
+        let at = |path: &str, line: u32| {
+            let start = Position { line, column: 0 };
+            Location {
+                path: path.to_owned(),
+                span: Span { start, end: start },
+                is_external: false,
+            }
+        };
+        let mut uses = vec![at(file, position.line)];
+        if position.line == 14 {
+            uses.push(at("cmd/main.go", 3));
+        }
+        Ok(Some(uses))
+    }
+}
+
+#[test]
+fn a_caller_anchored_at_a_method_nothing_calls_is_warned_about() {
+    let caller_go = format!("{CALLER_GO}func (c *Charges) CreateWithRetry() {{}}\n");
+    let workspace = system(&caller_go);
+    let options = CheckOptions {
+        change: None,
+        level: Some(Level::Check),
+        cache: workspace.path().join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
+    };
+
+    let report = check(
+        &workspace.path().join("lemma.yaml"),
+        &options,
+        &ReferenceEngine,
+        Some(&mut FakeReferences),
+    )
+    .unwrap();
+
+    let anchors: Vec<(Severity, &str)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.check == "anchor")
+        .map(|finding| (finding.severity, finding.message.as_str()))
+        .collect();
+    assert_eq!(
+        anchors,
+        [(
+            Severity::Warning,
+            "the caller operation #caller:services.web.create_charge's anchor `client/charges.go:Charges.Create` is never called, while `CreateWithRetry` (called 1 time) of the same type is: the anchor may name the wrong method, and traces from it find nothing"
+        )]
     );
 }

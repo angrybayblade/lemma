@@ -113,6 +113,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
         &workspace.path().join("lemma.yaml"),
         &options,
         &ReferenceEngine,
+        None,
     )
     .unwrap();
 

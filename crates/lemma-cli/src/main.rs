@@ -6,6 +6,7 @@
 //! sockets, or if no daemon can be started, the command runs in-process.
 
 mod addresses;
+mod anchors;
 mod check;
 mod cli;
 #[cfg(unix)]
@@ -40,7 +41,7 @@ fn main() -> ExitCode {
         return verify::run(args, cli.json);
     }
     if let Command::Check(args) = &cli.command {
-        return check::run(args, cli.json);
+        return check::run(args, cli.providers.as_deref(), cli.json);
     }
     if matches!(cli.command, Command::Mcp) {
         return run_mcp(!cli.no_daemon && !daemon_disabled_by_environment());
