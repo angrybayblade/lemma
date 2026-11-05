@@ -140,8 +140,9 @@ pub struct Report {
     pub level: Level,
     /// How many declared links were checked.
     pub links: usize,
-    /// How many calls from code to documented operations were found and
-    /// checked; `None` without a change, when inference does not run.
+    /// How many calls from code to the operations the change touches were
+    /// found and checked (inference reads only the code that may make
+    /// them); `None` when inference does not run.
     pub inferred_links: Option<usize>,
     /// Every repository read.
     pub repositories: Vec<ResolvedRepository>,
@@ -199,7 +200,47 @@ pub fn check<E: Engine>(
         facts,
         listings: &listings,
     };
-    affects::attach(&mut findings, &seeds, &walkable, &repos, &reading)?;
+    let mut fetch = |operations: &BTreeSet<String>| {
+        fetch_calls(
+            walkable.partial.as_ref(),
+            operations,
+            engine,
+            facts,
+            &listings,
+        )
+    };
+    let mut source = affects::CallSource {
+        walkable: &walkable,
+        fetch: &mut fetch,
+    };
+    affects::attach(&mut findings, &seeds, &mut source, &repos, &reading)?;
+    sort_findings(&mut findings);
+    Ok(Report {
+        level,
+        links: links.len(),
+        inferred_links,
+        repositories: resolved(&repos),
+        findings,
+    })
+}
+
+/// When inference read only some consumer code: the operations whose calls
+/// it holds completely, and what to ask for more with.
+fn partial_calls(
+    report: &lemma_verify::Report,
+    inferred: &infer::Inferred,
+) -> Option<affects::PartialCalls> {
+    let covered = report.covered.as_ref()?;
+    Some(affects::PartialCalls {
+        covered: covered.iter().cloned().collect(),
+        manifest: inferred.manifest.clone(),
+        owners: inferred.repositories.clone(),
+    })
+}
+
+/// Sorts findings by severity, link, check and message, so a report reads
+/// the same every run.
+fn sort_findings(findings: &mut [Finding]) {
     findings.sort_by(|left, right| {
         (left.severity, &left.link, &left.check, &left.message).cmp(&(
             right.severity,
@@ -208,13 +249,29 @@ pub fn check<E: Engine>(
             &right.message,
         ))
     });
-    Ok(Report {
-        level,
-        links: links.len(),
-        inferred_links,
-        repositories: resolved(&repos),
-        findings,
-    })
+}
+
+/// The calls of `operations` the inference behind `partial` did not read:
+/// verified again, reading only the code that may make them.
+fn fetch_calls<E: Engine>(
+    partial: Option<&affects::PartialCalls>,
+    operations: &BTreeSet<String>,
+    engine: &E,
+    facts: Option<&lemma_verify::FactsCache>,
+    listings: &Arc<lemma_http::Listings>,
+) -> Result<Vec<crate::impact::Call>, GraphError> {
+    let Some(partial) = partial else {
+        return Ok(Vec::new());
+    };
+    let options = lemma_verify::Options {
+        explain: false,
+        relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
+        facts_cache: facts.cloned(),
+        evaluation: lemma_verify::Evaluation::Demand,
+    };
+    let report = lemma_verify::calls_of(&partial.manifest, engine, &options, listings, operations)
+        .map_err(|source| GraphError::Inference { source })?;
+    Ok(affects::walkable(&report.relations, &partial.owners).calls)
 }
 
 /// The findings of the declared links, and of documents Lemma cannot read.
@@ -400,13 +457,15 @@ fn infer_links<E: Engine>(
         explain: false,
         relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
         facts_cache: run.facts_cache.cloned(),
-        // Tracing reads every call, not only the change's.
-        evaluation: lemma_verify::Evaluation::Full,
+        // Tracing asks for the calls of further operations as it reaches
+        // them (see `affects::CallSource`).
+        evaluation: lemma_verify::Evaluation::Demand,
     };
     let report =
         lemma_verify::verify_with_listings(&inferred.manifest, engine, &options, run.listings)
             .map_err(|source| GraphError::Inference { source })?;
     let mut walkable = affects::walkable(&report.relations, &inferred.repositories);
+    walkable.partial = partial_calls(&report, &inferred);
     for found in &report.findings {
         if let Some(seed) = affects::inferred_seed(&found.values, &inferred.repositories) {
             walkable.seeds.push((findings.len(), seed));
@@ -419,6 +478,11 @@ fn infer_links<E: Engine>(
         }
         findings.push(finding);
     }
+    Ok(Some((distinct_calls(&report), walkable)))
+}
+
+/// How many distinct caller and operation pairs inference found.
+fn distinct_calls(report: &lemma_verify::Report) -> usize {
     let calls: BTreeSet<(&String, &String)> = report
         .relations
         .get("calls")
@@ -426,7 +490,7 @@ fn infer_links<E: Engine>(
         .flatten()
         .filter_map(|row| Some((row.first()?, row.get(1)?)))
         .collect();
-    Ok(Some((calls.len(), walkable)))
+    calls.len()
 }
 
 /// Gives each service whose operations come from its code the documents its
