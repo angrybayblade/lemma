@@ -1,8 +1,10 @@
-//! SQLite storage for snapshots, symbols, and provider results.
+//! Storage for snapshots, symbols, and provider results in SQLite, and
+//! for what is read from code: units kept per file, and segments built
+//! from many of them, in one checked binary layout ([`RecordWriter`]).
 //!
-//! This is Lemma's shared storage format: every language and provider writes
-//! the same normalized rows, so tools can query them without knowing where
-//! they came from.
+//! The SQLite index is Lemma's shared storage format: every language and
+//! provider writes the same normalized rows, so tools can query them
+//! without knowing where they came from.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -14,8 +16,12 @@ use lemma_model::{
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
+mod records;
+mod segments;
 mod units;
 
+pub use records::{RecordError, RecordReader, RecordWriter, StringTable};
+pub use segments::{SegmentKey, SegmentStore};
 pub use units::UnitCache;
 
 /// Version of `schema.sql`. Databases written with another version are
@@ -30,6 +36,9 @@ pub enum StoreError {
     /// SQLite reported an error.
     #[error("database error")]
     Sqlite(#[from] rusqlite::Error),
+    /// A file of the store could not be read or written.
+    #[error("store file error")]
+    Io(#[from] std::io::Error),
     /// The database was written by a different version of Lemma.
     #[error(
         "index uses schema version {found}, expected {SCHEMA_VERSION}; run `lemma index` to rebuild it"

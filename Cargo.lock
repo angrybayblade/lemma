@@ -741,6 +741,7 @@ dependencies = [
 name = "lemma-store"
 version = "0.1.0-rc0"
 dependencies = [
+ "blake3",
  "lemma-model",
  "rayon",
  "rusqlite",
