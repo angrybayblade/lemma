@@ -584,6 +584,14 @@ impl Engine {
         let mut report =
             lemma_query::find_implementations(store, &context, target, &mut self.pool)?;
         label_with_repository(&mut report.symbol, repository.as_deref());
+        if let lemma_model::Outcome::Found(targets) = &mut report.answer.outcome {
+            for symbol in targets
+                .iter_mut()
+                .filter_map(|target| target.symbol.as_mut())
+            {
+                label_with_repository(symbol, repository.as_deref());
+            }
+        }
         output::implementation_report(out, &report, request.format)?;
         Ok(exit_code(&report.answer.outcome))
     }
