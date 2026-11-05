@@ -171,9 +171,10 @@ pub struct Report {
 pub struct Options {
     /// Attach each finding's derivation.
     pub explain: bool,
-    /// Relations to report in full, such as `calls` (derived) or `route`
-    /// (read from code), for inspecting or measuring what the rules saw and
-    /// concluded.
+    /// Relations to report, such as `calls` (derived) or `route` (read from
+    /// code), for inspecting or measuring what the rules saw and concluded.
+    /// Complete only under [`Evaluation::Full`]: change-driven evaluation
+    /// reads only some consumer files.
     pub relations: Vec<String>,
     /// Where the facts read from code are kept between runs; `None` keeps
     /// nothing.
