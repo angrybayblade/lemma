@@ -179,24 +179,39 @@ impl Selection {
         reads_changed_files: bool,
         import_depth: usize,
     ) -> Self {
-        let mut terms = BTreeSet::new();
-        for operation in operations {
-            let Some((method, path)) = operation.split_once(' ') else {
-                continue;
-            };
-            terms.insert(crate::terms::path_term(path));
-            let names = clients.names_calling(method, path);
-            terms.extend(names.iter().map(|name| crate::terms::name_term(name)));
-        }
-        let chains = table_chains(grammar, operations);
-        terms.extend(chains.iter().map(|chain| crate::terms::chain_term(chain)));
+        let own_terms = undeclared_operations(grammar)
+            .into_iter()
+            .map(|(service, operations)| (service, operation_terms(&operations, clients, grammar)))
+            .collect();
         Self {
-            terms,
-            own_terms: undeclared_terms(grammar),
+            terms: operation_terms(operations, clients, grammar),
+            own_terms,
             reads_changed_files,
             import_depth,
         }
     }
+}
+
+/// The terms a call of one of `operations` (`METHOD /path`) is indexed by:
+/// their paths, the operation-table chains naming them, and the names
+/// client methods and generated functions give them.
+fn operation_terms(
+    operations: &BTreeSet<String>,
+    clients: &Clients,
+    grammar: &CompiledGrammar,
+) -> BTreeSet<String> {
+    let mut terms = BTreeSet::new();
+    for operation in operations {
+        let Some((method, path)) = operation.split_once(' ') else {
+            continue;
+        };
+        terms.insert(crate::terms::path_term(path));
+        let names = clients.names_calling(method, path);
+        terms.extend(names.iter().map(|name| crate::terms::name_term(name)));
+    }
+    let chains = table_chains(grammar, operations);
+    terms.extend(chains.iter().map(|chain| crate::terms::chain_term(chain)));
+    terms
 }
 
 /// What the system's services serve, from their specs at every commit they
@@ -1148,9 +1163,9 @@ fn consumer(
     Ok(())
 }
 
-/// Each service's operations that no route declares, as path terms, from
-/// the specs' and routes' facts written so far.
-fn undeclared_terms(grammar: &CompiledGrammar) -> BTreeMap<String, BTreeSet<String>> {
+/// Each service's operations (`METHOD /path`) that no route declares,
+/// from the specs' and routes' facts written so far.
+fn undeclared_operations(grammar: &CompiledGrammar) -> BTreeMap<String, BTreeSet<String>> {
     let display = |value: &Value| grammar.symbols.display(*value);
     let declared: BTreeSet<(String, String)> = grammar
         .facts
@@ -1169,14 +1184,13 @@ fn undeclared_terms(grammar: &CompiledGrammar) -> BTreeMap<String, BTreeSet<Stri
     let mut undeclared: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for row in grammar.facts.rows("operation") {
         // `service, operation, method, path`.
-        let [service, operation, _, path] = &row[..] else {
+        let [service, operation, ..] = &row[..] else {
             continue;
         };
         let key = (display(service), display(operation));
         if !declared.contains(&key) {
-            let (service, _) = key;
-            let term = crate::terms::path_term(&display(path));
-            undeclared.entry(service).or_default().insert(term);
+            let (service, operation) = key;
+            undeclared.entry(service).or_default().insert(operation);
         }
     }
     undeclared
