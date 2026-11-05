@@ -48,3 +48,13 @@ Runs and reports go to `~/lemmabench/rounds/NAME/`. `report.md` has per-arm mean
 ```sh
 python3 -m unittest tests.test_lemmabench tests.test_toolserver
 ```
+
+## Scale
+
+`lemmabench.scale` measures how `lemma check` scales with the size of a system rather than how agents use it. `generate` writes services (OpenAPI documents) and consumer repositories in TypeScript and Python of any size, every one a Git repository, and a second commit making one operation require a new field; the same seed writes the same system. `run` checks that change cold and warm, reporting wall time, peak memory and the cache's size, and fails unless exactly the generated callers of the changed operation are flagged.
+
+```sh
+python3 -m lemmabench.scale generate --out /tmp/scale-100k --consumer-files 100000
+python3 -m lemmabench.scale run --workspace /tmp/scale-100k --lemma target/release/lemma
+```
+
