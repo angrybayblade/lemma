@@ -463,6 +463,7 @@ impl Engine {
             symbol: target,
             linked,
             workspace: _,
+            repository,
         } = located;
         let store = open_store(&mut self.stores, &db_path)?;
         let root = snapshot.snapshot.root.clone();
@@ -473,13 +474,14 @@ impl Engine {
             registry: &registry,
             options: &options,
         };
-        let report = lemma_query::find_references(
+        let mut report = lemma_query::find_references(
             store,
             &context,
             target,
             args.include_declaration,
             &mut self.pool,
         )?;
+        label_with_repository(&mut report.symbol, repository.as_deref());
         output::reference_report(out, &report, &linked, &root, request.format)?;
         Ok(exit_code(&report.answer.outcome))
     }
@@ -522,6 +524,7 @@ impl Engine {
             symbol: target,
             linked: _,
             workspace: _,
+            repository,
         } = located;
         let store = open_store(&mut self.stores, &db_path)?;
         let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
@@ -531,7 +534,9 @@ impl Engine {
             registry: &registry,
             options: &options,
         };
-        let report = lemma_query::find_implementations(store, &context, target, &mut self.pool)?;
+        let mut report =
+            lemma_query::find_implementations(store, &context, target, &mut self.pool)?;
+        label_with_repository(&mut report.symbol, repository.as_deref());
         output::implementation_report(out, &report, request.format)?;
         Ok(exit_code(&report.answer.outcome))
     }
@@ -551,6 +556,7 @@ impl Engine {
             symbol: target,
             linked: _,
             workspace: _,
+            repository,
         } = located;
         let store = open_store(&mut self.stores, &db_path)?;
         let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
@@ -560,7 +566,8 @@ impl Engine {
             registry: &registry,
             options: &options,
         };
-        let report = lemma_query::signature_of(store, &context, target, &mut self.pool)?;
+        let mut report = lemma_query::signature_of(store, &context, target, &mut self.pool)?;
+        label_with_repository(&mut report.symbol, repository.as_deref());
         output::signature_report(out, &report, request.format)?;
         let is_described = report.declaration.is_some() || report.hover.outcome.is_answered();
         Ok(if is_described { 0 } else { EXIT_NO_ANSWER })
@@ -618,6 +625,7 @@ impl Engine {
             symbol: target,
             linked,
             workspace,
+            repository: _,
         } = located;
         let store = open_store(&mut self.stores, &db_path)?;
         let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
@@ -682,6 +690,7 @@ impl Engine {
             symbol,
             linked,
             workspace: None,
+            repository: None,
         }))
     }
 
@@ -741,6 +750,7 @@ impl Engine {
             symbol,
             linked,
             workspace,
+            repository: Some(repository),
         }))
     }
 
@@ -753,11 +763,22 @@ impl Engine {
     ) -> anyhow::Result<InWorkspace> {
         let mut resolved = Vec::new();
         let mut candidates = Vec::new();
+        // A repository-qualified id (`#billing:607`) names a symbol in that
+        // member only: ids are numbered per repository, so a bare one can
+        // match a different symbol in every member.
+        let qualified = qualified_id(&target.symbol);
+        let (wanted, symbol) = match &qualified {
+            Some((repository, id)) => (Some(repository.as_str()), format!("#{id}")),
+            None => (None, target.symbol.clone()),
+        };
         for member in members {
+            if wanted.is_some_and(|repository| repository != member.name) {
+                continue;
+            }
             let Some((store, snapshot)) = self.member_index(member)? else {
                 continue;
             };
-            let found = select_symbol(store, &snapshot, &target.symbol, target.filters.clone())?;
+            let found = select_symbol(store, &snapshot, &symbol, target.filters.clone())?;
             let labelled = |mut symbol: StoredSymbol| {
                 symbol.path = format!("{}:{}", member.name, symbol.path);
                 symbol
@@ -794,6 +815,7 @@ impl Engine {
             symbol: symbol.clone(),
             linked,
             workspace,
+            repository: Some(member.name.clone()),
         })))
     }
 
@@ -920,6 +942,18 @@ struct Located {
     /// The workspace lemma.yaml, when the symbol was found through a
     /// workspace's index.
     workspace: Option<PathBuf>,
+    /// The workspace member the symbol is in, such as `#billing`, so
+    /// answers show the id to pass back (`#billing:607`).
+    repository: Option<String>,
+}
+
+/// Labels an answer's symbol with the workspace member it is in, as
+/// workspace searches label theirs, once the lookup no longer reads its
+/// path.
+fn label_with_repository(symbol: &mut StoredSymbol, repository: Option<&str>) {
+    if let Some(repository) = repository {
+        symbol.path = format!("{repository}:{}", symbol.path);
+    }
 }
 
 /// What a name means across a workspace: one symbol, or several, each
@@ -1375,10 +1409,15 @@ fn select_symbol(
         return addresses::resolve_export(store, snapshot, &address);
     }
     if let Some(id) = symbol.strip_prefix('#') {
-        let id: i64 = id
-            .parse()
-            .with_context(|| format!("`{symbol}` is not a valid symbol id"))?;
-        let found: Option<StoredSymbol> = store.symbol(snapshot.id, id)?;
+        let id: i64 = id.parse().with_context(|| {
+            format!(
+                "`{symbol}` is not a valid symbol id; in a workspace, qualify it with its \
+                 repository: `#billing:607`"
+            )
+        })?;
+        let found = store
+            .symbol(snapshot.id, id)?
+            .filter(|found| matches_filters(found, &filters));
         return Ok(found.map_or(SymbolResolution::Unresolved, SymbolResolution::Resolved));
     }
     let selector = SymbolSelector {
@@ -1388,6 +1427,28 @@ fn select_symbol(
         path_contains: filters.path,
     };
     Ok(lemma_query::resolve_symbol(store, snapshot.id, &selector)?)
+}
+
+/// Whether `symbol` passes `filters`, as a symbol found by name must.
+fn matches_filters(symbol: &StoredSymbol, filters: &crate::cli::Filters) -> bool {
+    filters.kind.is_none_or(|kind| symbol.symbol.kind == kind)
+        && filters
+            .language
+            .is_none_or(|language| symbol.language == language)
+        && filters
+            .path
+            .as_deref()
+            .is_none_or(|path| symbol.path.contains(path))
+}
+
+/// A repository-qualified symbol id: `#billing:607`, also written
+/// `#billing:#607` or `#billing#607`. The repository keeps its `#`.
+fn qualified_id(text: &str) -> Option<(String, i64)> {
+    let rest = text.strip_prefix('#')?;
+    let split = rest.find([':', '#'])?;
+    let (name, id) = (&rest[..split], &rest[split + 1..]);
+    let id = id.strip_prefix('#').unwrap_or(id).parse().ok()?;
+    (!name.is_empty()).then(|| (format!("#{name}"), id))
 }
 
 /// Adds to `graph` what its callers reach beyond their repository: the
@@ -1561,6 +1622,21 @@ fn inode_of(_path: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repository_qualified_ids_are_read_in_every_written_form() {
+        let forms = ["#billing:607", "#billing:#607", "#billing#607"];
+
+        let read: Vec<Option<(String, i64)>> =
+            forms.iter().map(|form| qualified_id(form)).collect();
+
+        assert!(
+            read.iter()
+                .all(|id| *id == Some(("#billing".to_owned(), 607)))
+        );
+        assert_eq!(qualified_id("#607"), None);
+        assert_eq!(qualified_id("#billing:services.api.create"), None);
+    }
 
     #[test]
     fn locations_count_from_one() {
