@@ -172,7 +172,15 @@ fn trace(
     routes: &[Route],
     calls: &[Call],
 ) -> Vec<(usize, Affected)> {
-    trace_links(&Start::Names(seed.clone()), functions, routes, calls).0
+    let mut tracing = Tracing::default();
+    trace_links(
+        &mut tracing,
+        &Start::Names(seed.clone()),
+        functions,
+        routes,
+        calls,
+    )
+    .0
 }
 
 /// As [`trace`], from `start`, with the links between what it reaches:
@@ -180,12 +188,13 @@ fn trace(
 /// operation they call, and, from reached functions, the calls from a
 /// handler down to them.
 pub fn trace_links(
+    tracing: &mut Tracing,
     start: &Start,
     functions: &mut dyn FnMut(&str) -> Vec<Function>,
     routes: &[Route],
     calls: &[Call],
 ) -> (Vec<(usize, Affected)>, Vec<Link>) {
-    let mut repositories: BTreeMap<String, Repository> = BTreeMap::new();
+    let repositories = &mut tracing.repositories;
     let mut tracer = Tracer::default();
     tracer.pending.push_back(Step {
         start: start.clone(),
@@ -197,7 +206,7 @@ pub fn trace_links(
         let repository = repositories
             .entry(name.clone())
             .or_insert_with(|| Repository::read(functions(&name), routes, &name));
-        let walked = step.walk(&repository.functions);
+        let walked = step.walk(&repository.functions, &repository.names);
         for (route, handler) in &repository.routes {
             if let Some(found) = handler.resolve(&repository.functions, &walked) {
                 let handled = Handled {
@@ -213,11 +222,21 @@ pub fn trace_links(
     tracer.finish()
 }
 
+/// What traces from several starts share: each repository's functions,
+/// routes and name indexes, worked out once for all of them. A trace per
+/// problem would otherwise index every repository again.
+#[derive(Default)]
+pub struct Tracing {
+    repositories: BTreeMap<String, Repository>,
+}
+
 /// A repository's functions and routes, with each route's possible
-/// handlers worked out once.
+/// handlers and the names its functions define and mention worked out
+/// once.
 struct Repository {
     functions: Vec<Function>,
     routes: Vec<(Route, Handler)>,
+    names: NameIndex,
 }
 
 impl Repository {
@@ -231,7 +250,12 @@ impl Repository {
             .filter(|route| route.repository == name)
             .map(|route| (route.clone(), Handler::of(route, &functions, &defined)))
             .collect();
-        Self { functions, routes }
+        let names = NameIndex::of(&functions);
+        Self {
+            functions,
+            routes,
+            names,
+        }
     }
 }
 
@@ -459,11 +483,11 @@ impl Step {
         }
     }
 
-    fn walk(&self, functions: &[Function]) -> Walked {
+    fn walk(&self, functions: &[Function], lookup: &NameIndex) -> Walked {
         match &self.start {
             Start::Names(seed) => {
                 let seeds = seed.names.iter().map(|name| (name.clone(), None)).collect();
-                let mut walked = Walked::from_names(functions, seeds, Vec::new());
+                let mut walked = Walked::from_names(functions, lookup, seeds, Vec::new());
                 // Functions named by the seed are reached themselves.
                 let named = functions
                     .iter()
@@ -490,13 +514,12 @@ impl Step {
                 // The walk that found them may stop short of a route's
                 // handler (a constructor registered for a method's type), so
                 // it goes on by name from them.
-                let followable = Followable::of(functions);
                 let reached: Vec<(usize, Option<usize>)> =
                     given.iter().map(|index| (*index, None)).collect();
-                let seeds = next_names(functions, &reached, &followable, &BTreeSet::new())
+                let seeds = next_names(functions, &reached, &lookup.followable, &BTreeSet::new())
                     .into_iter()
                     .collect();
-                Walked::from_names(functions, seeds, given)
+                Walked::from_names(functions, lookup, seeds, given)
             }
         }
     }
@@ -518,6 +541,7 @@ impl Walked {
     /// from), after the `given` functions, which are reached already.
     fn from_names(
         functions: &[Function],
+        names: &NameIndex,
         seeds: Vec<(String, Option<usize>)>,
         given: Vec<usize>,
     ) -> Self {
@@ -530,23 +554,23 @@ impl Walked {
         for index in given {
             walked.add(index, None);
         }
-        let followable = Followable::of(functions);
+        let followable = &names.followable;
         let mut frontier: BTreeMap<String, Option<usize>> = BTreeMap::new();
         for (name, from) in seeds {
             frontier.entry(name).or_insert(from);
         }
         let mut followed: BTreeSet<String> = BTreeSet::new();
         for _ in 0..MAX_FUNCTION_HOPS {
-            let next = walked.callers(functions, &frontier);
+            let next = walked.callers(functions, names, &frontier);
             if next.is_empty() {
                 break;
             }
             followed.extend(frontier.keys().cloned());
-            let names = next_names(functions, &next, &followable, &followed);
+            let next_frontier = next_names(functions, &next, followable, &followed);
             for (index, from) in next {
                 walked.add(index, from);
             }
-            frontier = names;
+            frontier = next_frontier;
         }
         walked
     }
@@ -557,10 +581,20 @@ impl Walked {
     fn callers(
         &self,
         functions: &[Function],
+        names: &NameIndex,
         frontier: &BTreeMap<String, Option<usize>>,
     ) -> Vec<(usize, Option<usize>)> {
+        // Only functions that mention a frontier name can be callers; they
+        // are taken in index order, as a scan of every function would.
+        let candidates: BTreeSet<usize> = frontier
+            .keys()
+            .filter_map(|name| names.mentioners.get(name))
+            .flatten()
+            .copied()
+            .collect();
         let mut found = Vec::new();
-        for (index, function) in functions.iter().enumerate() {
+        for index in candidates {
+            let function = &functions[index];
             if self.is_reached[index] {
                 continue;
             }
@@ -617,7 +651,7 @@ impl Walked {
 fn next_names(
     functions: &[Function],
     reached: &[(usize, Option<usize>)],
-    followable: &Followable<'_>,
+    followable: &Followable,
     followed: &BTreeSet<String>,
 ) -> BTreeMap<String, Option<usize>> {
     let mut names = BTreeMap::new();
@@ -644,7 +678,7 @@ fn reach<'a>(index: &'a [Function], names: &[String]) -> Vec<&'a Function> {
         hops: 0,
         via: None,
     };
-    step.walk(index)
+    step.walk(index, &NameIndex::of(index))
         .order
         .into_iter()
         .map(|position| &index[position])
@@ -674,27 +708,50 @@ fn language(file: &str) -> &str {
     }
 }
 
+/// What a walk looks names up in: which it may follow, and which functions
+/// mention each, by their index.
+struct NameIndex {
+    followable: Followable,
+    mentioners: BTreeMap<String, Vec<usize>>,
+}
+
+impl NameIndex {
+    fn of(functions: &[Function]) -> Self {
+        let mut mentioners: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (index, function) in functions.iter().enumerate() {
+            let mentioned: BTreeSet<&String> = function.mentions.iter().collect();
+            for name in mentioned {
+                mentioners.entry(name.clone()).or_default().push(index);
+            }
+        }
+        Self {
+            followable: Followable::of(functions),
+            mentioners,
+        }
+    }
+}
+
 /// The names a walk may follow: defined by few functions, so a mention
 /// says which is meant, and mentioned by few, so reaching a function
 /// through one is evidence (`errorToHTTPException`, which every handler
 /// mentions, is not). A type's name, which no function defines, is held to
 /// the second only.
-struct Followable<'a> {
-    definitions: BTreeMap<&'a str, usize>,
-    mentions: BTreeMap<&'a str, usize>,
+struct Followable {
+    definitions: BTreeMap<String, usize>,
+    mentions: BTreeMap<String, usize>,
 }
 
-impl<'a> Followable<'a> {
-    fn of(index: &'a [Function]) -> Self {
-        let mut definitions: BTreeMap<&str, usize> = BTreeMap::new();
-        let mut mentions: BTreeMap<&str, usize> = BTreeMap::new();
+impl Followable {
+    fn of(index: &[Function]) -> Self {
+        let mut definitions: BTreeMap<String, usize> = BTreeMap::new();
+        let mut mentions: BTreeMap<String, usize> = BTreeMap::new();
         for function in index {
-            *definitions.entry(function.name.as_str()).or_insert(0) += 1;
+            *definitions.entry(function.name.clone()).or_insert(0) += 1;
             for bound in &function.binds {
-                *definitions.entry(bound.as_str()).or_insert(0) += 1;
+                *definitions.entry(bound.clone()).or_insert(0) += 1;
             }
             for name in &function.mentions {
-                *mentions.entry(name.as_str()).or_insert(0) += 1;
+                *mentions.entry(name.clone()).or_insert(0) += 1;
             }
         }
         Self {
@@ -906,7 +963,14 @@ mod tests {
             functions: vec![("handlers/execute.go".to_owned(), 1)],
         };
 
-        let (_, links) = trace_links(&start, &mut functions, &fixture_routes(), &fixture_calls());
+        let mut tracing = Tracing::default();
+        let (_, links) = trace_links(
+            &mut tracing,
+            &start,
+            &mut functions,
+            &fixture_routes(),
+            &fixture_calls(),
+        );
 
         let execute = Node::Affected(Affected::Operation {
             service: "tools".to_owned(),
