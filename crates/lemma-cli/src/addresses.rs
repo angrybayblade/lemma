@@ -208,8 +208,7 @@ pub(crate) fn add_root_links(graph: &mut UseGraph, linked: &[Linked], direction:
         };
         graph.relationships.push(relationship);
     }
-    graph.relationships.sort();
-    graph.relationships.dedup();
+    lemma_model::dedup_uses(&mut graph.relationships);
 }
 
 /// Adds to `graph` the links declared from its symbols' exports: each
@@ -245,8 +244,7 @@ pub(crate) fn add_links(graph: &mut UseGraph, exports: &[Export], links: &[Expor
             source: DECLARED.to_owned(),
         });
     }
-    graph.relationships.sort();
-    graph.relationships.dedup();
+    lemma_model::dedup_uses(&mut graph.relationships);
 }
 
 #[cfg(test)]

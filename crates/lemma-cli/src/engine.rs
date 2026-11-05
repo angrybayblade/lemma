@@ -1543,8 +1543,7 @@ fn add_system_trace(
         }
     }
     graph.relationships.extend(trace.relationships);
-    graph.relationships.sort();
-    graph.relationships.dedup();
+    lemma_model::dedup_uses(&mut graph.relationships);
     graph.notes.extend(trace.notes);
     Ok(())
 }
