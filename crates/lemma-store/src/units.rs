@@ -20,6 +20,13 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS units (
 /// Keys looked up per query, under SQLite's limit on parameters.
 const KEYS_PER_QUERY: usize = 500;
 
+/// The page size of a new cache file.
+const PAGE_SIZE_BYTES: i64 = 65_536;
+
+/// How much of the cache file a parallel reader maps into memory rather
+/// than copying through reads.
+const MAPPED_BYTES: i64 = 1 << 32;
+
 /// Units read and decoded at a time by [`UnitCache::get_decoded`].
 const DECODED_PER_CHUNK: usize = 4096;
 
@@ -35,6 +42,11 @@ impl UnitCache {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(60))?;
+        // Units are a few kilobytes each: with SQLite's default 4 KiB pages
+        // most spill onto overflow pages, and reading followed those
+        // chains. The page size only takes effect on a new file, before
+        // the write-ahead log is turned on.
+        connection.pragma_update(None, "page_size", PAGE_SIZE_BYTES)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.execute_batch(SCHEMA)?;
@@ -69,6 +81,7 @@ impl UnitCache {
             .map(|chunk| {
                 let connection = Connection::open(path)?;
                 connection.busy_timeout(Duration::from_secs(60))?;
+                connection.pragma_update(None, "mmap_size", MAPPED_BYTES)?;
                 let found = select_many(&connection, chunk)?;
                 Ok(found
                     .into_iter()
