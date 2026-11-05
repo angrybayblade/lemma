@@ -84,8 +84,8 @@ pub fn extract_all<E: lemma_logic::Engine>(
     writer: &mut FactWriter<'_>,
     cache: Option<&crate::FactsCache>,
     listings: &Arc<lemma_http::Listings>,
-    demand: Option<(&crate::demand::Plan, &E)>,
-) -> Result<(), VerifyError> {
+    focus: &Focus<'_, E>,
+) -> Result<Option<BTreeSet<String>>, VerifyError> {
     let mut extractor = FactReader::new(cache.cloned());
     check_files(manifest)?;
     let specs = SpecCache {
@@ -110,20 +110,35 @@ pub fn extract_all<E: lemma_logic::Engine>(
             }
         }
     }
-    let selection = match demand {
-        Some((plan, engine)) => {
-            let operations = crate::demand::operations(writer.grammar(), engine, plan)?;
-            Some(Selection::of(&operations, &clients, writer.grammar(), plan))
+    let operations = match focus {
+        Focus::Everything => None,
+        Focus::Change(plan, engine) => {
+            Some(crate::demand::operations(writer.grammar(), *engine, plan)?)
         }
-        None => None,
+        Focus::Operations(operations) => Some((*operations).clone()),
     };
+    let reads_changed_files = matches!(focus, Focus::Change(plan, _) if plan.reads_changed_files);
+    let selection = operations.as_ref().map(|operations| {
+        Selection::of(operations, &clients, writer.grammar(), reads_changed_files)
+    });
     for (name, repository) in consumers {
         for mut snapshot in snapshots(manifest, repository, &system, &clients, &specs) {
             snapshot.selection = selection.as_ref();
             consumer(name, repository, &snapshot, writer, &mut extractor)?;
         }
     }
-    Ok(())
+    Ok(operations)
+}
+
+/// Which consumer code to read.
+pub(crate) enum Focus<'a, E> {
+    /// All of it.
+    Everything,
+    /// What the change's findings can rest on, by the grammar's plan, with
+    /// the engine that evaluates its anchors.
+    Change(&'a crate::demand::Plan, &'a E),
+    /// The code that may call these operations (`METHOD /path`).
+    Operations(&'a BTreeSet<String>),
 }
 
 /// What change-driven evaluation reads of consumer code: the files that may
@@ -132,18 +147,24 @@ pub fn extract_all<E: lemma_logic::Engine>(
 /// for edited code, the files the change edited.
 pub(crate) struct Selection {
     terms: BTreeSet<String>,
+    /// For each service, the terms of its operations no route declares,
+    /// read in its own code only: that code registering them through a
+    /// helper (`registerExecute(router, '/v1/execute')`) is where tracing
+    /// finds their handlers.
+    own_terms: BTreeMap<String, BTreeSet<String>>,
     reads_changed_files: bool,
 }
 
 impl Selection {
-    /// The selection for `operations` (`METHOD /path`): their paths, the
+    /// The selection for `operations` (`METHOD /path`), reading the files a
+    /// change edits too when `reads_changed_files`: their paths, the
     /// operation-table chains naming them, and the names client methods
     /// and generated functions give them.
     fn of(
         operations: &BTreeSet<String>,
         clients: &Clients,
         grammar: &CompiledGrammar,
-        plan: &crate::demand::Plan,
+        reads_changed_files: bool,
     ) -> Self {
         let mut terms = BTreeSet::new();
         for operation in operations {
@@ -158,7 +179,8 @@ impl Selection {
         terms.extend(chains.iter().map(|chain| crate::terms::chain_term(chain)));
         Self {
             terms,
-            reads_changed_files: plan.reads_changed_files,
+            own_terms: undeclared_terms(grammar),
+            reads_changed_files,
         }
     }
 }
@@ -1112,6 +1134,40 @@ fn consumer(
     Ok(())
 }
 
+/// Each service's operations that no route declares, as path terms, from
+/// the specs' and routes' facts written so far.
+fn undeclared_terms(grammar: &CompiledGrammar) -> BTreeMap<String, BTreeSet<String>> {
+    let display = |value: &Value| grammar.symbols.display(*value);
+    let declared: BTreeSet<(String, String)> = grammar
+        .facts
+        .rows("route")
+        .filter_map(|row| {
+            // `service, method, path, file, line`.
+            let [service, method, path, ..] = &row[..] else {
+                return None;
+            };
+            Some((
+                display(service),
+                operation_key(&display(method), &display(path)),
+            ))
+        })
+        .collect();
+    let mut undeclared: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for row in grammar.facts.rows("operation") {
+        // `service, operation, method, path`.
+        let [service, operation, _, path] = &row[..] else {
+            continue;
+        };
+        let key = (display(service), display(operation));
+        if !declared.contains(&key) {
+            let (service, _) = key;
+            let term = crate::terms::path_term(&display(path));
+            undeclared.entry(service).or_default().insert(term);
+        }
+    }
+    undeclared
+}
+
 /// The operation-table chains that request one of `operations`, from the
 /// clients' facts written so far.
 fn table_chains(grammar: &CompiledGrammar, operations: &BTreeSet<String>) -> Vec<String> {
@@ -1146,7 +1202,14 @@ fn selected_files(
     };
     let commit = snapshot.commit;
     let place = (repository.path.as_path(), commit);
-    let mut chosen = extractor.select(place, files, &scope.options, &selection.terms)?;
+    let mut terms = selection.terms.clone();
+    if let Some(own) = scope
+        .service
+        .and_then(|service| selection.own_terms.get(service))
+    {
+        terms.extend(own.iter().cloned());
+    }
+    let mut chosen = extractor.select(place, files, &scope.options, &terms)?;
     if selection.reads_changed_files {
         chosen.extend(edited_paths(repository, snapshot)?);
     }

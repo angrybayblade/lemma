@@ -152,6 +152,11 @@ pub struct Report {
     /// How much consumer code was read: `full`, `demand`, or `full: <why>`
     /// when demand was asked for and the grammar does not allow it.
     pub evaluation: String,
+    /// When not all consumer code was read, the operations (`METHOD /path`)
+    /// whose calls the relations asked for hold completely; calls of other
+    /// operations may be missing. `None` when everything was read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub covered: Option<Vec<String>>,
     /// Facts extracted, by relation.
     pub facts: BTreeMap<String, usize>,
     /// Findings, most severe first, then by requirement and message.
@@ -202,6 +207,68 @@ pub struct FactsCache {
     pub build: String,
 }
 
+/// The relations `options` asks for (such as `calls`), complete for calls
+/// of `operations` (`METHOD /path`) and reading only the consumer code that
+/// may make them; no findings. For finding the callers of operations a
+/// trace reaches without reading every caller of every operation. The
+/// grammar must allow change-driven evaluation, or everything is read.
+pub fn calls_of<E: Engine>(
+    manifest: &Manifest,
+    engine: &E,
+    options: &Options,
+    listings: &Arc<lemma_http::Listings>,
+    operations: &BTreeSet<String>,
+) -> Result<Report, VerifyError> {
+    let mut grammar = load_grammar(manifest)?;
+    check_relations(&grammar, &options.relations)?;
+    let plan = demand::plan(&grammar);
+    let focus: extract::Focus<'_, E> = match &plan {
+        Ok(_) => extract::Focus::Operations(operations),
+        Err(_) => extract::Focus::Everything,
+    };
+    let mut writer = extract::FactWriter::new(&mut grammar);
+    let covered = extract::extract_all(
+        manifest,
+        &mut writer,
+        options.facts_cache.as_ref(),
+        listings,
+        &focus,
+    )?;
+    let facts = writer.counts;
+    let request = Request {
+        outputs: options.relations.iter().cloned().collect(),
+        ..Request::default()
+    };
+    let derived = evaluate(&grammar, engine, &request)?;
+    let relations = relation_rows(&grammar, &derived, &options.relations);
+    Ok(Report {
+        change: format!("calls of {} operations", operations.len()),
+        engine: engine.name().to_owned(),
+        evaluation: match &plan {
+            Ok(_) => "demand".to_owned(),
+            Err(reason) => format!("full: {reason}"),
+        },
+        covered: covered.map(|operations| operations.into_iter().collect()),
+        facts,
+        findings: Vec::new(),
+        relations,
+    })
+}
+
+/// The grammar `manifest` names, or the built-in one, compiled.
+fn load_grammar(manifest: &Manifest) -> Result<CompiledGrammar, VerifyError> {
+    let grammar_text = match &manifest.grammar {
+        Some(path) => std::fs::read_to_string(path).map_err(|source| VerifyError::Read {
+            path: path.clone(),
+            source,
+        })?,
+        None => HTTP_CONTRACTS.to_owned(),
+    };
+    Ok(lemma_grammar::compile(&lemma_grammar::parse_grammar(
+        &grammar_text,
+    )?)?)
+}
+
 /// Verifies a manifest's change with `engine`.
 pub fn verify<E: Engine>(
     manifest: &Manifest,
@@ -219,14 +286,7 @@ pub fn verify_with_listings<E: Engine>(
     options: &Options,
     listings: &Arc<lemma_http::Listings>,
 ) -> Result<Report, VerifyError> {
-    let grammar_text = match &manifest.grammar {
-        Some(path) => std::fs::read_to_string(path).map_err(|source| VerifyError::Read {
-            path: path.clone(),
-            source,
-        })?,
-        None => HTTP_CONTRACTS.to_owned(),
-    };
-    let mut grammar = lemma_grammar::compile(&lemma_grammar::parse_grammar(&grammar_text)?)?;
+    let mut grammar = load_grammar(manifest)?;
     check_relations(&grammar, &options.relations)?;
     let plan = match options.evaluation {
         Evaluation::Full => None,
@@ -237,17 +297,17 @@ pub fn verify_with_listings<E: Engine>(
         Some(Ok(_)) => "demand".to_owned(),
         Some(Err(reason)) => format!("full: {reason}"),
     };
-    let demand = match &plan {
-        Some(Ok(plan)) => Some((plan, engine)),
-        _ => None,
+    let focus = match &plan {
+        Some(Ok(plan)) => extract::Focus::Change(plan, engine),
+        _ => extract::Focus::Everything,
     };
     let mut writer = extract::FactWriter::new(&mut grammar);
-    extract::extract_all(
+    let covered = extract::extract_all(
         manifest,
         &mut writer,
         options.facts_cache.as_ref(),
         listings,
-        demand,
+        &focus,
     )?;
     let facts = writer.counts;
     let derived = evaluate(&grammar, engine, &wanted(&grammar, &options.relations))?;
@@ -266,6 +326,7 @@ pub fn verify_with_listings<E: Engine>(
         ),
         engine: engine.name().to_owned(),
         evaluation,
+        covered: covered.map(|operations| operations.into_iter().collect()),
         facts,
         findings: findings.into_iter().map(|(finding, _)| finding).collect(),
         relations,
