@@ -330,6 +330,15 @@ struct BoundPath {
     location: Location,
 }
 
+/// Whether `node` is a statement made of a string alone.
+fn is_bare_string_statement(node: Node<'_>) -> bool {
+    if node.kind() != "expression_statement" || node.named_child_count() != 1 {
+        return false;
+    }
+    node.named_child(0)
+        .is_some_and(|child| is_string_kind(child.kind()))
+}
+
 /// Keys whose value is sample data in an API document.
 const EXAMPLE_KEYS: [&str; 2] = ["example", "examples"];
 
@@ -887,6 +896,11 @@ impl Walk<'_> {
 
     /// Strings naming API paths that no object or call claimed.
     fn collect_strings(&mut self, node: Node<'_>) {
+        // A statement that is only a string does nothing: a docstring, or a
+        // directive such as "use strict". Its text is prose, never a call.
+        if is_bare_string_statement(node) {
+            return;
+        }
         let is_string = is_string_kind(node.kind());
         if is_string && !self.consumed.contains(&node.id()) {
             if let Some(text) = self
@@ -1105,6 +1119,15 @@ mod tests {
             .map(|reference| (reference.method.as_str(), reference.path.as_str()))
             .collect();
         assert_eq!(calls, [("GET", "/v1/connections/{}")]);
+    }
+
+    #[test]
+    fn docstrings_naming_a_route_are_not_calls() {
+        let source = "class Detailed(TypedDict):\n    \"\"\"Matching GET /v1/connections/{id} response.\"\"\"\n    id: str\n";
+
+        let found = facts("models.py", source);
+
+        assert_eq!(found.path_references, []);
     }
 
     #[test]
