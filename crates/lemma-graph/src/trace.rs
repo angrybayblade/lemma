@@ -86,7 +86,14 @@ pub fn trace_through_system<E: Engine>(
     };
     let mut code = Code::new(&repos)?;
     let mut functions = |name: &str| code.functions(name);
-    let (_, links) = impact::trace_links(&start, &mut functions, &routes, &walkable.calls);
+    let mut tracing = impact::Tracing::default();
+    let (_, links) = impact::trace_links(
+        &mut tracing,
+        &start,
+        &mut functions,
+        &routes,
+        &walkable.calls,
+    );
     if let Some(error) = code.into_failure() {
         return Err(error);
     }
