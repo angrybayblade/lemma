@@ -11,6 +11,7 @@ use lemma_syntax::ExtractorPool;
 use crate::GraphError;
 use crate::address::Link;
 use crate::check::{Finding, HEAD, Impact, Repo, Severity};
+use crate::functions::Functions;
 use crate::impact::{self, Affected, Call, Function, Route, Seed};
 
 /// Code files the call graph is read from.
@@ -396,16 +397,16 @@ impl<'a> Code<'a> {
 
     /// A repository's functions. Not kept: a trace's [`impact::Tracing`]
     /// keeps each repository it reads, indexed.
-    pub(crate) fn functions(&mut self, repository: &str) -> Vec<Function> {
+    pub(crate) fn functions(&mut self, repository: &str) -> Functions {
         let read = match self.repos.get(repository) {
             Some(repo) => functions_of(repo, &mut self.kept, self.listings, &self.extractors),
             None => Ok(Vec::new()),
         };
         match read {
-            Ok(functions) => functions,
+            Ok(functions) => Functions::from_functions(&functions),
             Err(error) => {
                 self.failure.get_or_insert(error);
-                Vec::new()
+                Functions::default()
             }
         }
     }
