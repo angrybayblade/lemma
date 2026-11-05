@@ -48,6 +48,12 @@ impl<'g> FactWriter<'g> {
         }
     }
 
+    /// Whether the grammar reads `relation` in `snapshot`, so facts for it
+    /// there are worth reading.
+    fn wants(&self, relation: &str, snapshot: &str) -> bool {
+        self.grammar.input_relation(relation, snapshot).is_some()
+    }
+
     fn add(&mut self, relation: &str, snapshots: &[&str], args: &[Arg<'_>]) {
         for snapshot in snapshots {
             let Some(name) = self.grammar.input_relation(relation, snapshot) else {
@@ -646,9 +652,19 @@ fn service(
     let documents = write_operations(service_name, repository, snapshot, writer)?;
     // Without route directories there is no route code to read; an empty
     // list would otherwise mean the whole repository. Routes are read at
-    // the base too, so a requirement over routes can tell what was there
-    // before the change.
-    if repository.routes.is_empty() {
+    // the head, and at the base too when the grammar reads them there (a
+    // requirement over routes telling what was there before the change).
+    let code_snapshots: Vec<&str> = snapshots
+        .iter()
+        .copied()
+        .filter(|snapshot| {
+            *snapshot == "head"
+                || SERVICE_CODE_RELATIONS
+                    .iter()
+                    .any(|relation| writer.wants(relation, snapshot))
+        })
+        .collect();
+    if repository.routes.is_empty() || code_snapshots.is_empty() {
         return Ok(());
     }
     let files = route_and_schema_files(repository, snapshot)?;
@@ -669,7 +685,7 @@ fn service(
     let scope = ServiceScope {
         name,
         service: service_name,
-        snapshots,
+        snapshots: &code_snapshots,
         known: files.iter().map(|file| file.path.clone()).collect(),
         route_aliases: &route_aliases,
         imports: read_import_aliases(repository, commit, snapshot.specs)?,
@@ -720,6 +736,16 @@ fn written_routes(facts: &CodeFacts) -> impl Iterator<Item = (String, String)> +
 }
 
 /// What every route file of one service shares.
+/// The relations a service's route and schema code is written to.
+const SERVICE_CODE_RELATIONS: [&str; 6] = [
+    "route",
+    "route_schema",
+    "inline_strict_route",
+    "strict_schema",
+    "union_member",
+    "imports",
+];
+
 struct ServiceScope<'a> {
     name: &'a str,
     service: &'a str,
