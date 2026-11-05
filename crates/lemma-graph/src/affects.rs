@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use lemma_model::{Language, SymbolKind};
-use lemma_syntax::Extractor;
+use lemma_syntax::ExtractorPool;
 
 use crate::GraphError;
 use crate::address::Link;
@@ -234,6 +234,7 @@ pub fn attach(
     seeds: &[(usize, Seed)],
     walkable: &Walkable,
     repos: &BTreeMap<String, Repo>,
+    facts: Option<&lemma_verify::FactsCache>,
 ) -> Result<(), GraphError> {
     let problems: Vec<&(usize, Seed)> = seeds
         .iter()
@@ -243,7 +244,7 @@ pub fn attach(
         return Ok(());
     }
     let routes = read_routes(&walkable.routes, repos)?;
-    let mut code = Code::new(repos)?;
+    let mut code = Code::new(repos, facts);
     let mut traces: BTreeMap<&Seed, Vec<Impact>> = BTreeMap::new();
     let mut tracing = impact::Tracing::default();
     for (index, seed) in problems {
@@ -268,19 +269,32 @@ pub fn attach(
 /// read gives none, and the first such error is kept to report.
 pub(crate) struct Code<'a> {
     repos: &'a BTreeMap<String, Repo>,
-    extractor: Extractor,
+    /// The build of Lemma and the units each file's functions are kept in
+    /// between runs, when they are kept.
+    kept: Option<(String, lemma_store::UnitCache)>,
+    extractors: ExtractorPool,
     functions: BTreeMap<String, Vec<Function>>,
     failure: Option<GraphError>,
 }
 
 impl<'a> Code<'a> {
-    pub(crate) fn new(repos: &'a BTreeMap<String, Repo>) -> Result<Self, GraphError> {
-        Ok(Self {
+    pub(crate) fn new(
+        repos: &'a BTreeMap<String, Repo>,
+        facts: Option<&'a lemma_verify::FactsCache>,
+    ) -> Self {
+        // A cache that cannot be opened only means every file is parsed.
+        let kept = facts.and_then(|cache| {
+            std::fs::create_dir_all(&cache.directory).ok()?;
+            let units = lemma_store::UnitCache::open(&cache.directory.join("units.db")).ok()?;
+            Some((cache.build.clone(), units))
+        });
+        Self {
             repos,
-            extractor: Extractor::new().map_err(|source| GraphError::Syntax { source })?,
+            kept,
+            extractors: ExtractorPool::new(),
             functions: BTreeMap::new(),
             failure: None,
-        })
+        }
     }
 
     /// The first repository that could not be read, if one could not.
@@ -293,7 +307,7 @@ impl<'a> Code<'a> {
             return functions.clone();
         }
         let read = match self.repos.get(repository) {
-            Some(repo) => functions_of(repo, &mut self.extractor),
+            Some(repo) => functions_of(repo, &mut self.kept, &self.extractors),
             None => Ok(Vec::new()),
         };
         let functions = match read {
@@ -521,8 +535,10 @@ fn inline_handler(
 /// services' code, routes and operations are in.
 pub(crate) fn functions_of(
     repo: &Repo,
-    extractor: &mut Extractor,
+    kept: &mut Option<(String, lemma_store::UnitCache)>,
+    extractors: &ExtractorPool,
 ) -> Result<Vec<Function>, GraphError> {
+    use rayon::prelude::*;
     let Some(prefixes) = code_directories(repo) else {
         return Ok(Vec::new());
     };
@@ -534,28 +550,92 @@ pub(crate) fn functions_of(
         &CODE_EXTENSIONS,
     )
     .map_err(|source| GraphError::Source { source })?;
-    let mut functions = Vec::new();
-    for file in files
-        .into_iter()
+    let code: Vec<&lemma_http::SourceFile> = files
+        .iter()
         .filter(|file| !lemma_http::is_test_file(&file.path))
-    {
-        let extension = file
-            .path
-            .rsplit_once('.')
-            .map_or("", |(_, extension)| extension);
-        let Some(language) = Language::from_extension(extension) else {
-            continue;
-        };
-        let extraction = extractor
-            .extract(language, &file.contents)
-            .map_err(|source| GraphError::Syntax { source })?;
-        functions.extend(file_functions(
-            &file.path,
-            &file.contents,
-            extraction.symbols,
-        ));
+        .collect();
+    let keys: Vec<String> = match kept.as_ref() {
+        Some((build, _)) => code.iter().map(|file| functions_key(build, file)).collect(),
+        None => Vec::new(),
+    };
+    // A cache that cannot be read only means parsing.
+    let found = kept
+        .as_ref()
+        .and_then(|(_, units)| units.get_many(&keys).ok())
+        .unwrap_or_default();
+    let is_keeping = kept.is_some();
+    // Kept functions are decoded and the rest read in parallel; the
+    // results keep the files' order, so the first failure is the one
+    // reported.
+    let per_file: Vec<Result<ReadFunctions, GraphError>> = code
+        .par_iter()
+        .enumerate()
+        .with_min_len(8)
+        .map(|(position, file)| {
+            let kept = keys.get(position).and_then(|key| found.get(key));
+            if let Some(functions) = kept.and_then(|bytes| serde_json::from_slice(bytes).ok()) {
+                return Ok((functions, None));
+            }
+            let functions = read_functions(file, extractors)?;
+            let encoded = if is_keeping {
+                serde_json::to_vec(&functions).ok()
+            } else {
+                None
+            };
+            Ok((functions, encoded))
+        })
+        .collect();
+    let mut functions = Vec::new();
+    let mut new_units = Vec::new();
+    for (position, result) in per_file.into_iter().enumerate() {
+        let (found, encoded) = result?;
+        if let (Some(encoded), Some(key)) = (encoded, keys.get(position)) {
+            new_units.push((key.clone(), encoded));
+        }
+        functions.extend(found);
+    }
+    if let Some((_, units)) = kept.as_mut() {
+        // Keeping is an optimisation: a failure only costs a later run a
+        // parse.
+        let _ = units.put_many(&new_units);
     }
     Ok(functions)
+}
+
+/// A file's functions, and their encoding when they are new and should be
+/// kept.
+type ReadFunctions = (Vec<Function>, Option<Vec<u8>>);
+
+/// The key a file's functions are kept under: the build of Lemma, the
+/// path and the contents.
+fn functions_key(build: &str, file: &lemma_http::SourceFile) -> String {
+    let mut described = format!("{build}\0functions\0{}\0", file.path).into_bytes();
+    described.extend_from_slice(file.contents.as_bytes());
+    lemma_model::content_hash(&described)
+}
+
+/// A file's functions, read with this thread's extractor from
+/// `extractors`; none for a file in no language Lemma reads.
+fn read_functions(
+    file: &lemma_http::SourceFile,
+    extractors: &ExtractorPool,
+) -> Result<Vec<Function>, GraphError> {
+    let extension = file
+        .path
+        .rsplit_once('.')
+        .map_or("", |(_, extension)| extension);
+    let Some(language) = Language::from_extension(extension) else {
+        return Ok(Vec::new());
+    };
+    let extraction = extractors
+        .with(|extractor| extractor.extract(language, &file.contents))
+        .and_then(|extraction| extraction)
+        .map_err(|source| GraphError::Syntax { source })?;
+    Ok(file_functions(
+        &file.path,
+        &file.contents,
+        extraction.symbols,
+    ))
 }
 
 /// One file's functions, methods and values, then its top-level code.
