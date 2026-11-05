@@ -23,7 +23,7 @@ use lemma_model::{Language, Outcome, Position};
 use lemma_providers::ProviderRegistry;
 use lemma_query::{
     IdlePolicy, LookupContext, LookupOptions, ServerState, SessionPool, SymbolResolution,
-    SymbolSearch, SymbolSelector, WarmUp,
+    SymbolSearch, SymbolSelector, UsesAnswer, WarmUp,
 };
 use lemma_store::{
     FactStore, NameMatch, Store, StoreError, StoredMember, StoredSnapshot, StoredSymbol,
@@ -31,6 +31,7 @@ use lemma_store::{
 };
 
 use crate::addresses;
+use crate::anchors::UsesRequest;
 use crate::cli::{
     Cli, Command, DefinitionArgs, GraphArgs, GraphDirection, GraphDrawing, GraphSourceArg,
     LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget, SymbolsArgs,
@@ -924,6 +925,25 @@ impl Engine {
             });
         }
         Ok(())
+    }
+
+    /// Where a symbol is used under a root that need not be indexed, asked of
+    /// the pool's servers so they stay warm for the next question.
+    pub fn uses(&mut self, question: &UsesRequest, invocation: &Invocation) -> UsesAnswer {
+        let origin = Origin {
+            path_env: invocation.path_env.clone(),
+            cwd: invocation.cwd.clone(),
+            providers_file: question.providers_file.clone(),
+        };
+        let registry = match origin.registry(&question.root) {
+            Ok(registry) => registry,
+            Err(error) => {
+                return UsesAnswer::Failed {
+                    message: format!("{error:#}"),
+                };
+            }
+        };
+        crate::anchors::uses_in(&mut self.pool, &registry, question)
     }
 
     /// Pauses and stops idle servers by `policy`, and, with

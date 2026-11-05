@@ -1,22 +1,21 @@
 //! `lemma check`: checks the links declared in composable lemma.yaml files.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use lemma_graph::config::Level;
 use lemma_graph::{Change, CheckOptions, GraphError, Impact, Report, Severity};
 use lemma_logic::ReferenceEngine;
-use lemma_providers::ProviderRegistry;
 use lemma_souffle::SouffleEngine;
 
-use crate::anchors::ProviderReferences;
+use crate::anchors::CheckReferences;
 use crate::cli::CheckArgs;
 
 /// Exit code when a finding is an error.
 const EXIT_VIOLATED: u8 = 4;
 
-pub(crate) fn run(args: &CheckArgs, providers: Option<&Path>, json: bool) -> ExitCode {
+pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCode {
     let change = args.change.as_ref().map(|repository| Change {
         repository: repository.clone(),
         base: args.base.clone().unwrap_or_default(),
@@ -35,7 +34,7 @@ pub(crate) fn run(args: &CheckArgs, providers: Option<&Path>, json: bool) -> Exi
             _ => lemma_verify::Evaluation::Demand,
         },
     };
-    let report = match check(args, &options, providers) {
+    let report = match check(args, &options, lsp) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("error: {error:#}");
@@ -60,17 +59,23 @@ pub(crate) fn run(args: &CheckArgs, providers: Option<&Path>, json: bool) -> Exi
     ExitCode::from(if violated { EXIT_VIOLATED } else { 0 })
 }
 
+/// Where `--anchors` gets language servers from.
+pub(crate) struct LanguageServers {
+    /// Whether to ask the running daemon's warm servers first.
+    pub asks_daemon: bool,
+    /// Provider configuration given with `--providers`.
+    pub providers_file: Option<PathBuf>,
+}
+
 fn check(
     args: &CheckArgs,
     options: &CheckOptions,
-    providers: Option<&Path>,
+    lsp: &LanguageServers,
 ) -> anyhow::Result<Report> {
     let manifest = &args.manifest;
-    let mut references = if args.anchors {
-        Some(ProviderReferences::new(registry(providers)?))
-    } else {
-        None
-    };
+    let mut references = args
+        .anchors
+        .then(|| CheckReferences::new(lsp.asks_daemon, lsp.providers_file.clone()));
     let references = references
         .as_mut()
         .map(|references| references as &mut dyn lemma_graph::References);
@@ -86,19 +91,6 @@ fn check(
         },
     };
     Ok(report?)
-}
-
-/// The built-in providers, plus those in `providers` when given.
-fn registry(providers: Option<&Path>) -> anyhow::Result<ProviderRegistry> {
-    let Some(file) = providers else {
-        return Ok(ProviderRegistry::builtin()?);
-    };
-    anyhow::ensure!(
-        file.is_file(),
-        "provider configuration {} does not exist",
-        file.display()
-    );
-    Ok(ProviderRegistry::load(file)?)
 }
 
 fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Result<()> {

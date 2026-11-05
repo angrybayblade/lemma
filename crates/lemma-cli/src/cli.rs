@@ -144,7 +144,8 @@ pub(crate) struct CheckArgs {
     pub evaluation: Option<String>,
     /// Also ask language servers who calls each link's caller anchor, and
     /// warn when a method nothing calls is anchored while a sibling method
-    /// is called. Starts a server per repository, so it takes longer.
+    /// is called. Uses the running daemon's warm servers, or, without one,
+    /// starts a server per repository, which takes longer.
     #[arg(long)]
     pub anchors: bool,
 }
