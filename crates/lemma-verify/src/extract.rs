@@ -71,7 +71,7 @@ pub fn extract_all(
     writer: &mut FactWriter<'_>,
     cache: Option<&crate::FactsCache>,
 ) -> Result<(), VerifyError> {
-    let mut extractor = FactReader::new(cache.cloned())?;
+    let mut extractor = FactReader::new(cache.cloned());
     check_files(manifest)?;
     let specs = SpecCache::default();
     let system = read_system(manifest, &specs)?;
@@ -576,10 +576,11 @@ impl SpecCache {
                 && is_under_any(path, prefixes)
                 && !path.contains("node_modules/")
         };
-        match commit {
-            Some(commit) => self.commit_files(repository, commit, &wanted),
-            None => self.working_files(repository, &wanted),
-        }
+        let Some(commit) = commit else {
+            require_prefixes(repository, prefixes)?;
+            return self.working_files(repository, &wanted);
+        };
+        self.commit_files(repository, commit, &wanted)
     }
 
     /// [`lemma_http::read_files_where`], reading a commit's files once per
@@ -604,7 +605,8 @@ impl SpecCache {
         commit: Option<&str>,
     ) -> Result<Vec<String>, VerifyError> {
         let Some(commit) = commit else {
-            return Ok(lemma_http::list_files(repository, None)?);
+            // The working directory's listing is the walk's.
+            return Ok(self.walk(repository)?.as_ref().clone());
         };
         Ok(self.listing(repository, commit)?.as_ref().clone())
     }
@@ -615,12 +617,41 @@ impl SpecCache {
 fn is_under_any(path: &str, prefixes: &[String]) -> bool {
     prefixes.is_empty()
         || prefixes.iter().any(|prefix| {
-            let prefix = prefix.trim_end_matches('/');
-            path == prefix
+            let prefix = normal_prefix(prefix);
+            prefix.is_empty()
+                || path == prefix
                 || path
                     .strip_prefix(prefix)
                     .is_some_and(|rest| rest.starts_with('/'))
         })
+}
+
+/// Fails for a prefix the working directory does not have: a directory the
+/// configuration names that is not there is a mistake to report, not an
+/// empty service.
+fn require_prefixes(repository: &Path, prefixes: &[String]) -> Result<(), VerifyError> {
+    let missing = prefixes
+        .iter()
+        .map(|prefix| normal_prefix(prefix))
+        .find(|prefix| !prefix.is_empty() && !repository.join(prefix).exists());
+    let Some(missing) = missing else {
+        return Ok(());
+    };
+    Err(lemma_http::SourceError::Io {
+        path: repository.join(missing),
+        source: std::io::Error::from(std::io::ErrorKind::NotFound),
+    }
+    .into())
+}
+
+/// A prefix as paths are listed: without a leading `./` or a trailing `/`;
+/// empty for the whole repository (`.`).
+fn normal_prefix(prefix: &str) -> &str {
+    let mut prefix = prefix.trim_end_matches('/');
+    while let Some(rest) = prefix.strip_prefix("./") {
+        prefix = rest;
+    }
+    if prefix == "." { "" } else { prefix }
 }
 
 /// The code a service's routes and the schemas they use are in.
@@ -1526,18 +1557,19 @@ fn keep_facts(path: &Path, facts: &CodeFacts) {
 /// Reads files' code facts, each file once per run for the same contents
 /// and options: a file a change leaves alone is read at both its commits.
 struct FactReader {
-    extractor: Extractor,
+    /// For files read one at a time, made on first use.
+    extractor: Option<Extractor>,
     cache: Option<crate::FactsCache>,
     read: BTreeMap<(String, u64, String), Rc<CodeFacts>>,
 }
 
 impl FactReader {
-    fn new(cache: Option<crate::FactsCache>) -> Result<Self, VerifyError> {
-        Ok(Self {
-            extractor: Extractor::new().map_err(|source| VerifyError::Syntax { source })?,
+    fn new(cache: Option<crate::FactsCache>) -> Self {
+        Self {
+            extractor: None,
             cache,
             read: BTreeMap::new(),
-        })
+        }
     }
 
     fn key(file: &SourceFile, options: &CodeOptions) -> (String, u64, String) {
@@ -1557,21 +1589,22 @@ impl FactReader {
             .filter(|(_, key)| !self.read.contains_key(key))
             .collect();
         let cache = self.cache.as_ref();
-        let parsed: Vec<Vec<KeyedFacts>> = wanted
-            .par_chunks(128)
-            .map(|chunk| {
-                let mut extractor = None;
-                chunk
-                    .iter()
-                    .map(|(file, key)| {
-                        let facts =
-                            kept_or_extracted(file, &key.2, options, cache, &mut extractor)?;
-                        Ok((key.clone(), facts))
-                    })
-                    .collect::<Result<Vec<_>, VerifyError>>()
-            })
-            .collect::<Result<Vec<_>, VerifyError>>()?;
-        for (key, facts) in parsed.into_iter().flatten() {
+        // One extractor per worker thread, made when it first parses; the
+        // results keep the files' order, so the first failure in that
+        // order is the one reported, whatever thread hit it.
+        let parsed: Vec<Result<KeyedFacts, VerifyError>> = wanted
+            .par_iter()
+            .with_min_len(8)
+            .map_init(
+                || None,
+                |extractor, (file, key)| {
+                    let facts = kept_or_extracted(file, &key.2, options, cache, extractor)?;
+                    Ok((key.clone(), facts))
+                },
+            )
+            .collect();
+        for result in parsed {
+            let (key, facts) = result?;
             self.read.insert(key, Rc::new(facts));
         }
         Ok(())
@@ -1586,7 +1619,13 @@ impl FactReader {
         if let Some(found) = self.read.get(&key) {
             return Ok(Rc::clone(found));
         }
-        let facts = lemma_http::extract(&file.path, &file.contents, options, &mut self.extractor)?;
+        let extractor = match &mut self.extractor {
+            Some(extractor) => extractor,
+            None => self
+                .extractor
+                .insert(Extractor::new().map_err(|source| VerifyError::Syntax { source })?),
+        };
+        let facts = lemma_http::extract(&file.path, &file.contents, options, extractor)?;
         let facts = Rc::new(facts);
         self.read.insert(key, Rc::clone(&facts));
         Ok(facts)
@@ -1807,6 +1846,22 @@ fn join(directory: &Path, specifier: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefixes_match_as_git_pathspecs_do() {
+        let prefixes = |list: &[&str]| {
+            list.iter()
+                .map(|prefix| (*prefix).to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        assert!(is_under_any("src/app.ts", &prefixes(&["./src"])));
+        assert!(is_under_any("src/app.ts", &prefixes(&["src/"])));
+        assert!(is_under_any("src/app.ts", &prefixes(&["."])));
+        assert!(is_under_any("src/app.ts", &prefixes(&["src/app.ts"])));
+        assert!(!is_under_any("srcx/app.ts", &prefixes(&["src"])));
+        assert!(!is_under_any("lib/app.ts", &prefixes(&["./src"])));
+    }
 
     fn http_contracts() -> CompiledGrammar {
         let grammar = lemma_grammar::parse_grammar(crate::HTTP_CONTRACTS).unwrap();
