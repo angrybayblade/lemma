@@ -272,12 +272,13 @@ impl Repository {
             .iter()
             .map(|function| function.name.as_str())
             .collect();
-        let routes = routes
+        let routes: Vec<(Route, Handler)> = routes
             .iter()
             .filter(|route| route.repository == name)
             .map(|route| (route.clone(), Handler::of(route, &functions, &defined)))
             .collect();
-        let names = NameIndex::of(&functions);
+        let mut names = NameIndex::of(&functions);
+        names.registrations = registrations(&functions, &routes);
         Self {
             functions,
             routes,
@@ -596,7 +597,12 @@ impl Walked {
                 break;
             }
             followed.extend(frontier.keys().cloned());
-            let next_frontier = next_names(functions, &next, followable, &followed);
+            let onward: Vec<(usize, Option<usize>)> = next
+                .iter()
+                .copied()
+                .filter(|(index, _)| !names.registrations.contains(index))
+                .collect();
+            let next_frontier = next_names(functions, &onward, followable, &followed);
             for (index, from) in next {
                 walked.add(index, from);
             }
@@ -744,6 +750,12 @@ fn language(file: &str) -> &str {
 struct NameIndex {
     followable: Followable,
     mentioners: BTreeMap<String, Vec<usize>>,
+    /// Functions holding a route's registration, whose names a walk does
+    /// not follow on: what mentions a registration (a router collecting
+    /// routes, a generator documenting them) reads the route, it does not
+    /// call its handler, and the route's operation is reached through the
+    /// route itself.
+    registrations: BTreeSet<usize>,
 }
 
 impl NameIndex {
@@ -758,8 +770,32 @@ impl NameIndex {
         Self {
             followable: Followable::of(functions),
             mentioners,
+            registrations: BTreeSet::new(),
         }
     }
+}
+
+/// The definitions that register `routes`: those whose code holds a route's
+/// declaring line, and a handler that is a value rather than a function
+/// (`const send = router.openapi(def, async (c) => ...)`), which code
+/// reads as part of a route table but never calls.
+fn registrations(functions: &[Function], routes: &[(Route, Handler)]) -> BTreeSet<usize> {
+    let mut found = BTreeSet::new();
+    for (route, handler) in routes {
+        let holding = functions.iter().enumerate().filter(|(_, function)| {
+            function.file == route.file
+                && function.lines.0 <= route.line
+                && route.line <= function.lines.1
+        });
+        found.extend(holding.map(|(index, _)| index));
+        if let Handler::Definition(index) | Handler::Enclosing(index) = handler {
+            let is_value = matches!(functions[*index].kind.as_str(), "constant" | "variable");
+            if is_value {
+                found.insert(*index);
+            }
+        }
+    }
+    found
 }
 
 /// The names a walk may follow: defined by few functions, so a mention
@@ -1035,6 +1071,36 @@ mod tests {
             used: gateway_handler,
             kind: LinkKind::Route,
         }));
+    }
+
+    #[test]
+    fn a_walk_stops_at_a_route_registration() {
+        let index = vec![
+            function("tools.ts", "dispatchTask", (1, 3), "run()"),
+            function("tools.ts", "routes", (5, 9), "[{ handler: dispatchTask }]"),
+            function("openapi.ts", "generateDoc", (1, 4), "describe(routes)"),
+        ];
+        let route = route("api", "POST /tools", "tools.ts", 6, "handler: dispatchTask");
+        let mut names = NameIndex::of(&index);
+        names.registrations = registrations(&index, &[(route, Handler::Definition(0))]);
+        let step = Step {
+            start: Start::Names(Seed {
+                repository: String::new(),
+                names: vec!["dispatchTask".to_owned()],
+            }),
+            hops: 0,
+            via: None,
+        };
+
+        let mut reached: Vec<&str> = step
+            .walk(&index, &names)
+            .order
+            .into_iter()
+            .map(|position| index[position].name.as_str())
+            .collect();
+
+        reached.sort_unstable();
+        assert_eq!(reached, ["dispatchTask", "routes"]);
     }
 
     #[test]
