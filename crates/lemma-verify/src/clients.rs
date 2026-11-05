@@ -188,6 +188,10 @@ impl Clients {
     /// The method a call through a chain reaches, if exactly one request
     /// fits: the method named like the chain's last name, in the resource
     /// matching most of the names before it.
+    ///
+    /// Change-driven evaluation finds the files that may make such a call by
+    /// the call's last name (`terms.rs`): a call this resolves must keep a
+    /// last name equal to the method's, in a chain of three names or more.
     pub fn resolve(&self, call: &MemberCall) -> Option<&ClientMethod> {
         let (last, before) = call.parts.split_last()?;
         let name = normalized(last);
