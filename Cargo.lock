@@ -739,6 +739,7 @@ name = "lemma-store"
 version = "0.1.0-rc0"
 dependencies = [
  "lemma-model",
+ "rayon",
  "rusqlite",
  "thiserror 2.0.21",
 ]
