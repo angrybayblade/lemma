@@ -41,7 +41,11 @@ fn main() -> ExitCode {
         return verify::run(args, cli.json);
     }
     if let Command::Check(args) = &cli.command {
-        return check::run(args, cli.providers.as_deref(), cli.json);
+        let lsp = check::LanguageServers {
+            asks_daemon: !cli.no_daemon && !daemon_disabled_by_environment(),
+            providers_file: cli.providers.clone(),
+        };
+        return check::run(args, &lsp, cli.json);
     }
     if matches!(cli.command, Command::Mcp) {
         return run_mcp(!cli.no_daemon && !daemon_disabled_by_environment());

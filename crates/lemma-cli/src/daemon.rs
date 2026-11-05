@@ -24,6 +24,9 @@ use anyhow::{Context, bail};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
+use lemma_query::UsesAnswer;
+
+use crate::anchors::UsesRequest;
 use crate::cli::Cli;
 use crate::config::{self, Config};
 use crate::engine::{Engine, Invocation};
@@ -49,6 +52,14 @@ enum Request {
         /// The caller's `PATH`, as raw bytes.
         path_env: Option<Vec<u8>>,
     },
+    /// Where a symbol under a root that need not be indexed is used, asked
+    /// by `lemma check --anchors` of the daemon's warm language servers.
+    Uses {
+        build: String,
+        question: UsesRequest,
+        cwd: PathBuf,
+        path_env: Option<Vec<u8>>,
+    },
     /// Apply the idle policy; sent by the daemon's own timer.
     Maintain,
     /// Report the running language servers.
@@ -64,6 +75,10 @@ enum Reply {
         stdout: String,
         stderr: String,
         exit_code: u8,
+    },
+    /// The answer to a `Uses` request.
+    Uses {
+        answer: UsesAnswer,
     },
     /// The daemon is from a different build and is exiting; start a new one.
     Restart,
@@ -102,7 +117,26 @@ pub(crate) fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
             stderr,
             exit_code,
         }),
-        Reply::Restart | Reply::Stopping => None,
+        Reply::Uses { .. } | Reply::Restart | Reply::Stopping => None,
+    }
+}
+
+/// Where a symbol is used, answered by the running daemon. `None` means no
+/// daemon of this build is running; none is started, since the caller can
+/// start its own servers as quickly.
+pub(crate) fn uses(question: &UsesRequest) -> Option<UsesAnswer> {
+    let socket = socket_path().ok()?;
+    let mut stream = UnixStream::connect(&socket).ok()?;
+    let request = Request::Uses {
+        build: build_id(),
+        question: question.clone(),
+        cwd: std::env::current_dir().ok()?,
+        path_env: std::env::var_os("PATH").map(OsString::into_vec),
+    };
+    send(&mut stream, &request).ok()?;
+    match receive::<Reply>(&mut stream).ok()? {
+        Reply::Uses { answer } => Some(answer),
+        Reply::Done { .. } | Reply::Restart | Reply::Stopping => None,
     }
 }
 
@@ -115,7 +149,7 @@ pub(crate) fn status() -> anyhow::Result<Option<String>> {
     send(&mut stream, &Request::Status)?;
     match receive::<Reply>(&mut stream)? {
         Reply::Done { stdout, .. } => Ok(Some(stdout)),
-        Reply::Restart | Reply::Stopping => Ok(None),
+        Reply::Uses { .. } | Reply::Restart | Reply::Stopping => Ok(None),
     }
 }
 
@@ -139,8 +173,7 @@ pub(crate) fn serve(idle_override: Option<Duration>) -> anyhow::Result<()> {
         // Another daemon won the race to start.
         return Ok(());
     };
-    let config_path = config::config_path();
-    let mut settings = Settings::load(config_path.as_deref())?;
+    let mut settings = Settings::load(config::config_path().as_deref())?;
     let mut engine = Engine::long_lived();
     let last_request = Arc::new(Mutex::new(Instant::now()));
     let idle_limit = idle_override.or(settings.config.idle_exit);
@@ -156,32 +189,7 @@ pub(crate) fn serve(idle_override: Option<Duration>) -> anyhow::Result<()> {
         let Ok(request) = receive::<Request>(&mut stream) else {
             continue;
         };
-        let reply = match request {
-            Request::Shutdown => Reply::Stopping,
-            Request::Maintain => {
-                settings.reload_if_changed(config_path.as_deref());
-                let config = &settings.config;
-                engine.maintain(&config.idle_policy, config.warms_up_on_activity);
-                done(String::new())
-            }
-            Request::Status => done(engine.status()),
-            Request::Run { ref build, .. } if *build != build_id() => Reply::Restart,
-            Request::Run {
-                args,
-                cwd,
-                path_env,
-                ..
-            } => {
-                *lock(&last_request) = Instant::now();
-                let invocation = Invocation {
-                    cwd,
-                    path_env: path_env.map(OsString::from_vec),
-                };
-                let reply = run(&mut engine, args, &invocation);
-                *lock(&last_request) = Instant::now();
-                reply
-            }
-        };
+        let reply = reply_to(request, &mut engine, &mut settings, &last_request);
         let is_exiting = matches!(reply, Reply::Stopping | Reply::Restart);
         // A caller that gave up is not a reason to stop serving others.
         let _ = send(&mut stream, &reply);
@@ -193,6 +201,67 @@ pub(crate) fn serve(idle_override: Option<Duration>) -> anyhow::Result<()> {
     let _ = fs::remove_file(&socket);
     engine.shutdown();
     Ok(())
+}
+
+/// The daemon's reply to one request.
+fn reply_to(
+    request: Request,
+    engine: &mut Engine,
+    settings: &mut Settings,
+    last_request: &Mutex<Instant>,
+) -> Reply {
+    match request {
+        Request::Shutdown => Reply::Stopping,
+        Request::Maintain => {
+            settings.reload_if_changed(config::config_path().as_deref());
+            let config = &settings.config;
+            engine.maintain(&config.idle_policy, config.warms_up_on_activity);
+            done(String::new())
+        }
+        Request::Status => done(engine.status()),
+        Request::Run { ref build, .. } | Request::Uses { ref build, .. }
+            if *build != build_id() =>
+        {
+            Reply::Restart
+        }
+        Request::Uses {
+            question,
+            cwd,
+            path_env,
+            ..
+        } => {
+            let invocation = invocation(cwd, path_env);
+            busy(last_request, || Reply::Uses {
+                answer: engine.uses(&question, &invocation),
+            })
+        }
+        Request::Run {
+            args,
+            cwd,
+            path_env,
+            ..
+        } => {
+            let invocation = invocation(cwd, path_env);
+            busy(last_request, || run(engine, args, &invocation))
+        }
+    }
+}
+
+/// Where a caller's request comes from.
+fn invocation(cwd: PathBuf, path_env: Option<Vec<u8>>) -> Invocation {
+    Invocation {
+        cwd,
+        path_env: path_env.map(OsString::from_vec),
+    }
+}
+
+/// Runs `work` for a caller, counting the daemon as busy, not idle, until
+/// it finishes.
+fn busy<T>(last_request: &Mutex<Instant>, work: impl FnOnce() -> T) -> T {
+    *lock(last_request) = Instant::now();
+    let result = work();
+    *lock(last_request) = Instant::now();
+    result
 }
 
 /// The config in force, and when its file last changed.

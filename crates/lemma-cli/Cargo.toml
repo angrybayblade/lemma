@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+blake3.workspace = true
 clap.workspace = true
 lemma-index.workspace = true
 lemma-logic.workspace = true
@@ -24,6 +25,7 @@ lemma-http.workspace = true
 lemma-verify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 toml.workspace = true
 
 [[bin]]
