@@ -660,8 +660,10 @@ pub(crate) fn functions_of(
         .collect();
     let mut contents = read_by_path(root, commit, &unvouched)?;
     let build = kept.as_ref().map_or("", |kept| kept.build.as_str());
+    // Keying is a digest per file, worth spreading over threads in a large
+    // repository; the order is kept.
     let keyed: Vec<(&ListedFile, String)> = code
-        .into_iter()
+        .into_par_iter()
         .filter_map(|file| {
             let named = lemma_http::contents_key(file, contents.get(&file.path))?;
             Some((file, functions_key(build, &file.path, &named)))
