@@ -109,7 +109,7 @@
       "properties": {
         "symbol": {
           "type": "string",
-          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols (`#415`), or an export's address from lemma.yaml (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
+          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from lemma.yaml (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
         },
         "kind": {
           "type": "string",
@@ -206,7 +206,7 @@
       "properties": {
         "symbol": {
           "type": "string",
-          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols (`#415`), or an export's address from lemma.yaml (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
+          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from lemma.yaml (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
         },
         "kind": {
           "type": "string",
@@ -261,7 +261,7 @@
       "properties": {
         "symbol": {
           "type": "string",
-          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols (`#415`), or an export's address from lemma.yaml (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
+          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from lemma.yaml (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
         },
         "kind": {
           "type": "string",

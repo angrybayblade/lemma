@@ -29,9 +29,11 @@ servers, so it answers \"where is this used, defined or implemented\" exactly wh
 guesses: it leaves out other symbols with the same name and mentions in comments and strings, and \
 follows imports and aliases. Prefer it to grep or rg for those questions, especially for common \
 names; use text search for strings, configuration and other files.\n\n\
-Workflow: `search_symbols` (or `outline` for a file) gives each definition an id like `#415`; pass \
-the id to `references`, `implementations` or `signature`. `definition` takes a file, line and \
-column. The index refreshes itself before every query. \"No references found\" means the server \
+Workflow: `search_symbols` (or `outline` for a file) gives each definition an id like `#415`, or \
+`#billing:415` in a workspace, where ids are numbered per repository; pass the id as shown to \
+`references`, `implementations` or `signature`. `definition` takes a file, line and column. The \
+index refreshes itself before every query; an id keeps naming its definition across edits while \
+the definition keeps its name and kind. \"No references found\" means the server \
 saw nothing, not that the code is unused.";
 
 /// A command's result, as the tool returns it.

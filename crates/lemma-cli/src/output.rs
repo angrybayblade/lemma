@@ -31,6 +31,9 @@ pub(crate) enum Format {
 #[derive(Serialize)]
 struct SymbolView<'a> {
     id: i64,
+    /// The id to pass back: `#607`, or `#billing:607` in a workspace,
+    /// where ids are numbered per repository.
+    qualified_id: String,
     name: &'a str,
     qualified_name: &'a str,
     kind: SymbolKind,
@@ -44,6 +47,7 @@ impl<'a> SymbolView<'a> {
     fn new(stored: &'a StoredSymbol) -> Self {
         Self {
             id: stored.id,
+            qualified_id: qualified_id(stored),
             name: &stored.symbol.name,
             qualified_name: &stored.symbol.qualified_name,
             kind: stored.symbol.kind,
@@ -412,10 +416,22 @@ pub(crate) fn providers(
     Ok(())
 }
 
+/// How a symbol's id is written for passing back: `#607`, or, for a symbol
+/// a workspace found in one of its repositories (its path then starts with
+/// the repository, `#billing:src/charges.go`), `#billing:607`.
+pub(crate) fn qualified_id(stored: &StoredSymbol) -> String {
+    match stored.path.split_once(':') {
+        Some((repository, _)) if repository.starts_with('#') => {
+            format!("{repository}:{}", stored.id)
+        }
+        _ => format!("#{}", stored.id),
+    }
+}
+
 fn symbol_line(stored: &StoredSymbol) -> String {
     format!(
-        "#{:<7} {:<10} {}  {}:{}",
-        stored.id,
+        "{:<8} {:<10} {}  {}:{}",
+        qualified_id(stored),
         stored.symbol.kind.as_str(),
         stored.symbol.qualified_name,
         stored.path,
