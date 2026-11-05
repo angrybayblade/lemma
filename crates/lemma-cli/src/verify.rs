@@ -46,24 +46,38 @@ pub(crate) fn facts_cache() -> Option<lemma_verify::FactsCache> {
     let bytes = std::fs::read(executable).ok()?;
     let build = lemma_model::content_hash(&bytes);
     let facts = lemma_graph::repos::cache_directory().join("facts");
-    remove_other_builds(&facts, &build[..16]);
-    Some(lemma_verify::FactsCache {
-        directory: facts.join(&build[..16]),
-        build,
-    })
+    let directory = facts.join(&build[..16]);
+    // Marks this build as the latest used, for `remove_older_builds`.
+    let _ = std::fs::create_dir_all(&directory);
+    let _ = std::fs::File::create(directory.join(".used"));
+    remove_older_builds(&facts, KEPT_BUILDS);
+    Some(lemma_verify::FactsCache { directory, build })
 }
 
-/// Removes the facts other builds of Lemma kept: they are never read
-/// again, and each is the size of every repository's facts. Removing is
-/// tidying, so a failure only leaves them for the next run.
-fn remove_other_builds(facts: &std::path::Path, build: &str) {
+/// How many builds' facts are kept: an installed Lemma and a development
+/// build used in turn keep theirs, older releases' go.
+const KEPT_BUILDS: usize = 3;
+
+/// Removes the facts of all but the `kept` builds used most recently: an
+/// older build's facts are not read again, and each is the size of every
+/// repository's facts. Removing is tidying, so a failure only leaves them
+/// for the next run.
+fn remove_older_builds(facts: &std::path::Path, kept: usize) {
     let Ok(entries) = std::fs::read_dir(facts) else {
         return;
     };
-    for entry in entries.filter_map(Result::ok) {
-        if entry.file_name() != build {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
+    let mut builds: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .filter_map(Result::ok)
+        .map(|entry| {
+            let used = std::fs::metadata(entry.path().join(".used"))
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (used, entry.path())
+        })
+        .collect();
+    builds.sort_by(|left, right| right.cmp(left));
+    for (_, path) in builds.into_iter().skip(kept) {
+        let _ = std::fs::remove_dir_all(path);
     }
 }
 
