@@ -465,8 +465,6 @@ struct Tracer {
 }
 
 impl Tracer {
-    /// Records a route whose handler was reached, and queues the callers of
-    /// its operation.
     /// Walks from `step` in `repository`, visiting each route whose handler
     /// it reaches.
     fn walk(&mut self, step: &Step, repository: &Repository) {
@@ -484,6 +482,8 @@ impl Tracer {
         }
     }
 
+    /// Records a route whose handler was reached, and sets its operation
+    /// aside for the round's calls to be asked for.
     fn visit(&mut self, step: &Step, handled: &Handled<'_>) {
         let route = handled.route;
         let operation = Affected::Operation {

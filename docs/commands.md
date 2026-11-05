@@ -210,6 +210,7 @@ Checks a change across the repositories listed in a manifest and reports what it
 | `--all` | List informational findings too, not just their count. |
 | `--base <commit>`, `--head <commit>` | Check these commits instead of the manifest's `change.base` and `change.head`, as in CI. |
 | `--relation <name>` | Also print every row of a relation the grammar derives, such as `calls`. Repeatable. |
+| `--evaluation <how>` | `demand` reads only the consumer code a finding can rest on; `full` reads everything; `both` runs the two and fails if their findings differ. Default: `demand`, or `full` with `--relation`. |
 
 Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
@@ -224,6 +225,7 @@ Checks a change against every repository composed by a parent `lemma.yaml`: decl
 | `--level <level>` | `audit` (problems are warnings) or `check` (problems are errors). Overrides the graph's level. |
 | `--all` | List informational findings too, not just their count. |
 | `--engine <name>` | The rule engine for inferred links: `souffle` or `reference`. Default: Soufflé if installed. |
+| `--evaluation <how>` | `demand` (the default) reads only the consumer code inferred findings can rest on, asking for more callers as traces reach further operations; `full` reads everything. |
 
 Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 

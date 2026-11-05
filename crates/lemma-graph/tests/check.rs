@@ -123,6 +123,7 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
         level: Some(Level::Check),
         cache: workspace.path().join("cache"),
         facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
     };
 
     let report = check(

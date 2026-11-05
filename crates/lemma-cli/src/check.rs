@@ -27,6 +27,10 @@ pub(crate) fn run(args: &CheckArgs, json: bool) -> ExitCode {
         }),
         cache: lemma_graph::repos::cache_directory(),
         facts_cache: crate::verify::facts_cache(),
+        evaluation: match args.evaluation.as_deref() {
+            Some("full") => lemma_verify::Evaluation::Full,
+            _ => lemma_verify::Evaluation::Demand,
+        },
     };
     let report = match check(args, &options) {
         Ok(report) => report,
