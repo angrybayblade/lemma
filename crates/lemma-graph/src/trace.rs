@@ -215,8 +215,7 @@ fn to_graph(links: &[Link], reached: &BTreeMap<(String, u32), &str>, offset: &st
             source: link.kind.as_str().to_owned(),
         });
     }
-    trace.relationships.sort();
-    trace.relationships.dedup();
+    lemma_model::dedup_uses(&mut trace.relationships);
     trace
 }
 

@@ -452,6 +452,14 @@ pub struct Use {
     pub source: String,
 }
 
+/// Sorts `uses` and keeps one per pair of nodes. A pair found several ways
+/// keeps the source that sorts first, so a use found by name is kept over
+/// the same use found only through a type.
+pub fn dedup_uses(uses: &mut Vec<Use>) {
+    uses.sort();
+    uses.dedup_by(|later, earlier| later.from == earlier.from && later.to == earlier.to);
+}
+
 /// What kind of entry point a service exports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
