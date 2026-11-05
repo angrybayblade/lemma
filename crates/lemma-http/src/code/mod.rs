@@ -180,8 +180,9 @@ pub enum CodeError {
 
 const VERBS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
 
-/// `facts` with every list sorted and, where order carries no meaning,
-/// without repeats, so the same file always gives the same facts.
+/// `facts` with its lists sorted and, where order carries no meaning,
+/// without repeats, so the same file always gives the same facts. Member
+/// calls keep source order.
 fn sorted(mut facts: CodeFacts) -> CodeFacts {
     facts.method_paths.sort();
     facts.path_references.sort();
@@ -338,6 +339,24 @@ fn is_bare_string_statement(node: Node<'_>) -> bool {
     node.named_child(0)
         .is_some_and(|child| is_string_kind(child.kind()))
 }
+
+/// Names HTTP clients usually go by, for telling `requests.get(url)` from
+/// `cache.get(url)`.
+const HTTP_CLIENTS: [&str; 13] = [
+    "requests",
+    "httpx",
+    "aiohttp",
+    "session",
+    "client",
+    "http",
+    "https",
+    "axios",
+    "api",
+    "ky",
+    "got",
+    "superagent",
+    "request",
+];
 
 /// Keys whose value is sample data in an API document.
 const EXAMPLE_KEYS: [&str; 2] = ["example", "examples"];
@@ -499,6 +518,37 @@ impl Walk<'_> {
             .map_or_else(|| "*".to_owned(), |method| canonical_method(&method))
     }
 
+    /// The method of a call that is plainly a request: a method argument or
+    /// option, or a verb called on an HTTP client (`requests.get`,
+    /// `self.session.post`, a configured client receiver).
+    fn plain_request_method(
+        &self,
+        parts: &[String],
+        arguments: Node<'_>,
+        strings: &[Node<'_>],
+    ) -> Option<String> {
+        let method = self.request_method(parts, arguments, strings);
+        if method == "*" {
+            return None;
+        }
+        let called = parts.last().map(String::as_str).unwrap_or_default();
+        if !VERBS.contains(&called.to_ascii_lowercase().as_str()) {
+            return Some(method);
+        }
+        let receiver = parts
+            .len()
+            .checked_sub(2)
+            .and_then(|position| parts.get(position))
+            .map_or("", |part| part.trim_start_matches('_'));
+        let is_client = HTTP_CLIENTS.contains(&receiver.to_ascii_lowercase().as_str())
+            || self
+                .options
+                .client_receivers
+                .iter()
+                .any(|configured| configured.trim_start_matches('_') == receiver);
+        is_client.then_some(method)
+    }
+
     /// A request passed a variable holding a path assigned earlier in the
     /// same function (`url = f"{base}/v1/users/{id}"; requests.get(url)`):
     /// the path is reported with the call's method, rather than later as a
@@ -523,12 +573,12 @@ impl Walk<'_> {
         };
         let (node, template, location) =
             (bound.node, bound.template.clone(), bound.location.clone());
-        let method = self.request_method(parts, arguments, strings);
-        // A call that does not say how it sends (`print(url)`) leaves the
+        // Only a call that is plainly a request names the method: a `get`
+        // on a cache or map is not. Any other call (`print(url)`) leaves the
         // path to a later request, or to be reported with no method.
-        if method == "*" {
+        let Some(method) = self.plain_request_method(parts, arguments, strings) else {
             return;
-        }
+        };
         let Some(path) = canonical_path(&template, &self.options.path_markers) else {
             return;
         };
@@ -1120,6 +1170,20 @@ mod tests {
             .map(|reference| (reference.method.as_str(), reference.path.as_str()))
             .collect();
         assert_eq!(calls, [("GET", "/v1/connections/{}")]);
+    }
+
+    #[test]
+    fn a_cache_lookup_by_path_variable_is_not_a_request() {
+        let source = "async function load(id) {\n  const url = `${base}/v1/users/${id}`\n  if (cache.get(url)) return cache.get(url)\n  return fetch(url, { method: 'POST' })\n}\n";
+
+        let found = facts("load.ts", source);
+
+        let methods: Vec<&str> = found
+            .path_references
+            .iter()
+            .map(|reference| reference.method.as_str())
+            .collect();
+        assert_eq!(methods, ["POST"]);
     }
 
     #[test]
