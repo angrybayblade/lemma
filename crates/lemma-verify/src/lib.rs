@@ -10,6 +10,7 @@ mod demand;
 mod extract;
 mod manifest;
 mod system;
+mod term_segments;
 mod terms;
 
 use std::collections::{BTreeMap, BTreeSet};
