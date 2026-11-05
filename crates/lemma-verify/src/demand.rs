@@ -5,29 +5,29 @@
 //!
 //! Consumer files are most of a large system and almost none of a change.
 //! Their facts are needed only where a finding can rest on them, which the
-//! grammar's requirements say. A requirement qualifies when it is one of:
+//! grammar's requirements say. Each requirement must be one of these, each
+//! checked from the rules' structure rather than from relation names:
 //!
 //! - **complete**: it reads no fact from consumer files (routes against
 //!   specs, a client's declared parameters);
-//! - **anchored**: it rests on calls of an operation (a relation built only
-//!   from the extractor's call facts) joined, through shared variables, to a
-//!   relation computed without consumer facts, such as the operations the
-//!   change removed. Its other consumer facts are about the calling code's
-//!   own file and the files it imports;
-//! - **change-local**: it rests on consumer facts guarded by a negation of
-//!   the same facts at the base (`!called_before(c, m, p)`), so it can only
-//!   hold for code the change edits.
+//! - **anchored**: every call it rests on is a call of an operation held by
+//!   a relation computed without consumer facts (the operations the change
+//!   removed, say), and its other consumer facts are about the calling code:
+//!   its own file, the functions in it, and the files it imports;
+//! - **change-local**: each consumer fact it rests on is guarded by the
+//!   negation of the same row at the base (`!called_before(c, m, p)`), so it
+//!   can only hold for code the change edits.
 //!
 //! A grammar with any other requirement is evaluated in full.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use lemma_grammar::CompiledGrammar;
-use lemma_logic::{Atom, Engine, Literal, Request, Rule, Term, Value};
+use lemma_logic::{Atom, Literal, ReferenceEngine, Request, Rule, Term, Value};
 
 /// Input relations written from consumer files: read, in change-driven
 /// evaluation, only for the files a finding can rest on.
-pub(crate) const SELECTED_INPUTS: [&str; 9] = [
+const SELECTED_INPUTS: [&str; 9] = [
     "calls_path",
     "calls_client",
     "client_operation",
@@ -39,27 +39,20 @@ pub(crate) const SELECTED_INPUTS: [&str; 9] = [
     "part_of_service",
 ];
 
-/// Consumer facts a selection keeps complete for an operation: every file
-/// that could write a call of it, and the service each such file is part
-/// of.
-const CALL_INPUTS: [&str; 4] = [
-    "calls_path",
-    "calls_client",
-    "client_operation",
-    "part_of_service",
-];
-
-/// The consumer facts a call is read from: a call-like relation reads at
-/// least one.
+/// The consumer facts a call is read from.
 const CALL_FACTS: [&str; 3] = ["calls_path", "calls_client", "client_operation"];
+
+/// The consumer fact saying which service a file belongs to: complete for
+/// every file read.
+const MEMBERSHIP: &str = "part_of_service";
 
 /// Consumer facts written with each call, for the path it calls: complete
 /// for every call in a file read.
 const WRITTEN_WITH_CALLS: [&str; 1] = ["addressed_to"];
 
-/// Consumer facts about one file, complete for every file read and for the
-/// files it imports.
-const SCOPED_INPUTS: [&str; 4] = ["mentions", "in_file", "named", "imports"];
+/// Consumer facts about one scope (a file or a function in it): complete
+/// for every file read.
+const SCOPED_INPUTS: [&str; 3] = ["mentions", "in_file", "named"];
 
 /// Inputs written only from services' route and schema code, which is
 /// always read whole. `imports` rows keyed by such a file are complete too.
@@ -80,8 +73,8 @@ pub(crate) struct Plan {
     /// Whether a requirement can hold for code a change edits, so files
     /// that differ between the base and the head are read.
     pub reads_changed_files: bool,
-    /// How many `imports` joins a rule chains from a file: the levels of
-    /// imported files to read beyond the files selected.
+    /// How many levels of imports anchored requirements follow from the
+    /// calling code: the imported files to read beyond those selected.
     pub import_depth: usize,
 }
 
@@ -105,19 +98,7 @@ pub(crate) fn plan(grammar: &CompiledGrammar) -> Evaluability {
 
 /// The plan, or why there is none.
 fn change_driven_plan(grammar: &CompiledGrammar) -> Result<Plan, String> {
-    let rules = grammar.program.rules();
-    let raw = inputs_read(rules, &BTreeSet::new());
-    // Relations about service code read imports only of service files,
-    // which are complete; they count as reading no consumer fact.
-    let reads = inputs_read(rules, &service_keyed(rules, &raw));
-    let depth = imports_depth(rules)?;
-    let mut kinds = Kinds {
-        rules,
-        reads,
-        depth,
-        change_local: BTreeSet::new(),
-    };
-    kinds.change_local = kinds.change_local_relations();
+    let kinds = Kinds::of(grammar.program.rules());
     let outputs: BTreeSet<&str> = grammar
         .requirements
         .iter()
@@ -131,7 +112,8 @@ fn change_driven_plan(grammar: &CompiledGrammar) -> Result<Plan, String> {
         reads_changed_files: false,
         import_depth: 0,
     };
-    for rule in rules
+    for rule in kinds
+        .rules
         .iter()
         .filter(|rule| outputs.contains(rule.head.relation.as_str()))
     {
@@ -154,13 +136,11 @@ fn change_driven_plan(grammar: &CompiledGrammar) -> Result<Plan, String> {
 }
 
 /// The operations, as `METHOD /path`, findings can be about: every
-/// operation named in a row of `plan`'s anchors, evaluated over the facts
-/// written so far, which hold no consumer facts. Every operation of the
-/// specs is a candidate, so a value that happens to look like one but is
-/// not one is left out.
-pub(crate) fn operations<E: Engine>(
+/// operation named in a row of `plan`'s anchors, evaluated in-process over
+/// the facts written so far, which hold no consumer facts. Only values that
+/// are operations of the specs count.
+pub(crate) fn operations(
     grammar: &CompiledGrammar,
-    engine: &E,
     plan: &Plan,
 ) -> Result<BTreeSet<String>, crate::VerifyError> {
     let known: BTreeSet<Value> = ["operation", "operation@base"]
@@ -172,7 +152,7 @@ pub(crate) fn operations<E: Engine>(
         outputs: plan.anchors.iter().cloned().collect(),
         ..Request::default()
     };
-    let derived = crate::evaluate(grammar, engine, &request)?;
+    let derived = crate::evaluate(grammar, &ReferenceEngine, &request)?;
     let mut operations = BTreeSet::new();
     for anchor in &plan.anchors {
         for row in derived.rows(anchor) {
@@ -183,248 +163,552 @@ pub(crate) fn operations<E: Engine>(
     Ok(operations)
 }
 
-/// What is known of a grammar's relations: the inputs each derived one
-/// reads, and which hold only for edited code.
-struct Kinds<'a> {
-    rules: &'a [Rule],
-    reads: BTreeMap<String, BTreeSet<String>>,
-    /// How many `imports` joins each derived relation chains.
-    depth: BTreeMap<String, usize>,
-    /// Derived relations every rule of which holds only for edited code,
-    /// such as calls a change adds.
-    change_local: BTreeSet<String>,
-}
-
 /// How a requirement depends on consumer facts.
 enum Shape {
     Complete,
-    /// The relations computed without consumer facts it is anchored on, and
-    /// how many levels of imports its other consumer facts reach.
+    /// The relations holding the operations its calls are of, and how many
+    /// levels of imports its other consumer facts reach.
     Anchored(Vec<String>, usize),
     ChangeLocal,
     Other,
 }
 
-impl Kinds<'_> {
+/// What the rules say of each derived relation.
+struct Kinds<'a> {
+    rules: &'a [Rule],
+    /// The consumer inputs each derived relation reads, counting relations
+    /// about service code as reading none.
+    consumer: BTreeMap<String, BTreeSet<String>>,
+    /// Relations whose rows are calls: column 0 the calling code, column 1
+    /// the operation called, column 2 the calling file.
+    calls: BTreeSet<String>,
+    /// Relations about one scope, with the columns whose values stay within
+    /// the scope's file (and its imports) and how many imports they reach.
+    scoped: BTreeMap<String, Scope>,
+    /// Relations holding only for code a change edits.
+    change_local: BTreeSet<String>,
+}
+
+/// What a relation about one scope reaches: its columns within the scope's
+/// file and imports, and how many levels of imports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Scope {
+    columns: BTreeSet<usize>,
+    depth: usize,
+}
+
+impl<'a> Kinds<'a> {
+    fn of(rules: &'a [Rule]) -> Self {
+        let raw = inputs_read(rules, &BTreeSet::new());
+        let consumer = inputs_read(rules, &service_keyed(rules, &raw))
+            .into_iter()
+            .map(|(relation, inputs)| {
+                let consumer = inputs
+                    .into_iter()
+                    .filter(|input| SELECTED_INPUTS.contains(&input.as_str()))
+                    .collect();
+                (relation, consumer)
+            })
+            .collect();
+        let mut kinds = Self {
+            rules,
+            consumer,
+            calls: BTreeSet::new(),
+            scoped: BTreeMap::new(),
+            change_local: BTreeSet::new(),
+        };
+        kinds.calls = kinds.call_relations();
+        kinds.scoped = kinds.scoped_relations();
+        kinds.change_local = kinds.change_local_relations();
+        kinds
+    }
+
     /// Whether `relation` is, or reads, a consumer input.
     fn is_selected(&self, relation: &str) -> bool {
         SELECTED_INPUTS.contains(&input_name(relation))
-            || self.consumer_inputs(relation).next().is_some()
+            || self
+                .consumer
+                .get(relation)
+                .is_some_and(|inputs| !inputs.is_empty())
     }
 
-    /// The consumer inputs a derived relation reads.
-    fn consumer_inputs<'s>(&'s self, relation: &str) -> impl Iterator<Item = &'s str> {
-        self.reads
-            .get(relation)
-            .into_iter()
-            .flatten()
-            .map(String::as_str)
-            .filter(|input| SELECTED_INPUTS.contains(input))
+    fn is_derived(&self, relation: &str) -> bool {
+        self.consumer.contains_key(relation)
     }
 
-    /// Whether `relation` is derived and reads no consumer input but
-    /// `allowed`.
-    fn reads_only(&self, relation: &str, allowed: &[&str]) -> bool {
-        let mut inputs = self.consumer_inputs(relation).peekable();
-        inputs.peek().is_some() && inputs.all(|input| allowed.contains(&input))
+    fn defining(&self, relation: &str) -> impl Iterator<Item = &'a Rule> + '_ {
+        let relation = relation.to_owned();
+        self.rules
+            .iter()
+            .filter(move |rule| rule.head.relation == relation)
     }
 
-    /// Whether `relation`'s rows are calls of an operation that a selection
-    /// keeps complete.
-    fn is_call(&self, relation: &str) -> bool {
-        if input_name(relation) == "client_operation" {
-            return true;
+    /// Relations every rule of which derives a call: its operation column
+    /// from an `operation` atom or another call, its calling code from a
+    /// call fact or another call, reading no consumer fact but calls and the
+    /// calling file's service.
+    fn call_relations(&self) -> BTreeSet<String> {
+        let mut calls: BTreeSet<String> = BTreeSet::new();
+        loop {
+            let found: BTreeSet<String> = self
+                .consumer
+                .keys()
+                .filter(|relation| {
+                    let mut defining = self.defining(relation).peekable();
+                    defining.peek().is_some()
+                        && defining.all(|rule| derives_call(rule, &calls, |r| self.is_selected(r)))
+                })
+                .cloned()
+                .collect();
+            if found == calls {
+                return calls;
+            }
+            calls = found;
         }
-        self.reads_only(relation, &CALL_INPUTS)
-            && self
-                .consumer_inputs(relation)
-                .any(|input| CALL_FACTS.contains(&input))
-            && binds_operation_column(relation, self.rules)
     }
 
-    /// Whether `relation` holds facts about one file only.
-    fn is_scoped(&self, relation: &str) -> bool {
-        SCOPED_INPUTS.contains(&input_name(relation)) || self.reads_only(relation, &SCOPED_INPUTS)
+    /// Whether an atom's rows are calls.
+    fn is_call(&self, relation: &str) -> bool {
+        input_name(relation) == "client_operation" || self.calls.contains(relation)
+    }
+
+    /// Relations about one scope: every consumer fact in their rules
+    /// reachable from the head's first column through `in_file` and
+    /// `imports`. Relations whose reach keeps growing (imports followed
+    /// through themselves) are not scoped.
+    fn scoped_relations(&self) -> BTreeMap<String, Scope> {
+        let mut scoped: BTreeMap<String, Scope> = BTreeMap::new();
+        for _ in 0..=self.rules.len() {
+            let found: BTreeMap<String, Scope> = self
+                .consumer
+                .keys()
+                .filter_map(|relation| {
+                    let scope = self.relation_scope(relation, &scoped)?;
+                    Some((relation.clone(), scope))
+                })
+                .collect();
+            if found == scoped {
+                return scoped;
+            }
+            scoped = found;
+        }
+        // Still changing: some reach is unbounded. Keep only what is stable.
+        BTreeMap::new()
+    }
+
+    /// What `relation` reaches when every rule defining it is about one
+    /// scope: the columns all of them keep within it, at the deepest reach.
+    fn relation_scope(&self, relation: &str, scoped: &BTreeMap<String, Scope>) -> Option<Scope> {
+        let rule_scopes: Option<Vec<Scope>> = self
+            .defining(relation)
+            .map(|rule| rule_scope(rule, scoped, |r| self.is_selected(r)))
+            .collect();
+        let rule_scopes = rule_scopes?;
+        let columns = rule_scopes
+            .iter()
+            .map(|scope| scope.columns.clone())
+            .reduce(|left, right| left.intersection(&right).copied().collect())?;
+        let depth = rule_scopes.iter().map(|scope| scope.depth).max()?;
+        Some(Scope { columns, depth })
     }
 
     fn change_local_relations(&self) -> BTreeSet<String> {
-        self.reads
+        self.consumer
             .keys()
             .filter(|relation| {
-                let mut defining = self
-                    .rules
-                    .iter()
-                    .filter(|rule| &rule.head.relation == *relation)
-                    .peekable();
-                defining.peek().is_some()
-                    && defining.all(|rule| matches!(self.shape(&rule.body), Shape::ChangeLocal))
+                let mut defining = self.defining(relation).peekable();
+                defining.peek().is_some() && defining.all(|rule| self.is_change_local(&rule.body))
             })
             .cloned()
             .collect()
     }
 
     fn shape(&self, body: &[Literal]) -> Shape {
-        let positive: Vec<&Atom> = body.iter().filter_map(positive).collect();
-        let negative: Vec<&Atom> = body.iter().filter_map(negative).collect();
-        let selected: Vec<&Atom> = positive
+        let selected = body
             .iter()
-            .chain(&negative)
-            .copied()
-            .filter(|atom| self.is_selected(&atom.relation))
-            .collect();
-        if selected.is_empty() {
+            .filter_map(atom)
+            .any(|atom| self.is_selected(&atom.relation));
+        if !selected {
             return Shape::Complete;
         }
-        if let Some((anchors, depth)) = self.anchors(&positive, &selected) {
+        if let Some((anchors, depth)) = self.anchors(body) {
             return Shape::Anchored(anchors, depth);
         }
-        if self.is_change_local(&positive, &negative) {
+        if self.is_change_local(body) {
             return Shape::ChangeLocal;
         }
         Shape::Other
     }
 
-    /// The relations computed without consumer facts that a call in the
-    /// body is joined to, when the body's other consumer facts are scoped
-    /// to the calling file.
-    fn anchors(&self, positive: &[&Atom], selected: &[&Atom]) -> Option<(Vec<String>, usize)> {
+    /// The relations holding the operations of every call the body rests
+    /// on, and how far into imports its other consumer facts reach, when
+    /// those are all about the calling code.
+    fn anchors(&self, body: &[Literal]) -> Option<(Vec<String>, usize)> {
+        let positive: Vec<&Atom> = body.iter().filter_map(positive).collect();
         let calls: Vec<&Atom> = positive
             .iter()
             .copied()
             .filter(|atom| self.is_call(&atom.relation))
             .collect();
-        // The calling code: each call's consumer and file.
-        let calling: BTreeSet<&str> = calls
-            .iter()
-            .flat_map(|atom| {
-                [0, 2]
-                    .into_iter()
-                    .filter_map(|column| variable_at(atom, column))
-            })
-            .collect();
-        // Facts about the calling code start from it: it is their subject.
-        let rest_scoped = selected
-            .iter()
-            .filter(|atom| !self.is_call(&atom.relation))
-            .all(|atom| {
-                self.is_scoped(&atom.relation)
-                    && variable_at(atom, 0).is_some_and(|subject| calling.contains(subject))
-            });
-        if calls.is_empty() || !rest_scoped {
+        if calls.is_empty()
+            || body
+                .iter()
+                .filter_map(negative)
+                .any(|atom| self.is_call(&atom.relation))
+        {
             return None;
         }
-        // Any relation without consumer facts joins the call to an anchor,
-        // but only derived ones are anchors: their rows are what phase one
-        // evaluates.
-        let complete: Vec<&Atom> = positive
-            .iter()
-            .copied()
-            .filter(|atom| !self.is_selected(&atom.relation))
-            .collect();
-        let joined = joined_to(&calls, &complete);
-        // An anchor's rows must name operations: it shares a variable the
-        // body binds to an operation.
-        let operation_variables = operation_variables(positive, |relation| self.is_call(relation));
-        let anchors: Vec<String> = complete
-            .iter()
-            .filter(|atom| {
-                joined.contains(&atom.relation.as_str())
-                    && self.reads.contains_key(&atom.relation)
-                    && variables(atom).any(|variable| operation_variables.contains(variable))
-            })
-            .map(|atom| atom.relation.clone())
-            .collect();
-        let depth = selected
-            .iter()
-            .filter(|atom| !self.is_call(&atom.relation))
-            .map(|atom| {
-                usize::from(input_name(&atom.relation) == "imports")
-                    + self.depth.get(&atom.relation).copied().unwrap_or(0)
-            })
-            // Each starts from the calling code: siblings, not a chain.
-            .max()
-            .unwrap_or(0);
-        (!anchors.is_empty()).then_some((anchors, depth))
+        let mut anchors = Vec::new();
+        for call in &calls {
+            let operation = call_operation(call, &positive)?;
+            let holding: Vec<String> = positive
+                .iter()
+                .filter(|atom| {
+                    self.is_derived(&atom.relation)
+                        && !self.is_selected(&atom.relation)
+                        && variables(atom).any(|variable| variable == operation)
+                })
+                .map(|atom| atom.relation.clone())
+                .collect();
+            if holding.is_empty() {
+                return None;
+            }
+            anchors.extend(holding);
+        }
+        let depth = self.calling_code_depth(body, &calls)?;
+        Some((anchors, depth))
     }
 
-    /// Whether every consumer fact the body rests on is either a relation
-    /// holding only for edited code, or guarded by a negation of consumer
-    /// facts at the base sharing a variable with it.
-    fn is_change_local(&self, positive: &[&Atom], negative: &[&Atom]) -> bool {
-        let selected: Vec<&Atom> = positive
+    /// How many levels of imports the body's consumer facts other than its
+    /// calls reach from the calling code, when all of them are about it:
+    /// its consumer, its file, or what `in_file` and `imports` reach from
+    /// those.
+    fn calling_code_depth(&self, body: &[Literal], calls: &[&Atom]) -> Option<usize> {
+        let mut reach = Reach::default();
+        let calling_code = calls
             .iter()
-            .copied()
+            .flat_map(|call| [variable_at(call, 0), variable_at(call, 2)])
+            .flatten();
+        for variable in calling_code {
+            reach.add(variable, 0);
+        }
+        let others: Vec<&Atom> = body
+            .iter()
+            .filter_map(atom)
+            .filter(|atom| self.is_selected(&atom.relation) && !self.is_call(&atom.relation))
+            .collect();
+        reach.spread(&others, &self.scoped);
+        let mut depth = 0;
+        for atom in others {
+            let subject = variable_at(atom, 0)?;
+            let reached = reach.depth(subject)?;
+            let own = self
+                .scoped
+                .get(&atom.relation)
+                .map_or(0, |scope| scope.depth);
+            let is_membership = input_name(&atom.relation) == MEMBERSHIP;
+            let is_scoped = is_membership
+                || SCOPED_INPUTS.contains(&input_name(&atom.relation))
+                || input_name(&atom.relation) == "imports"
+                || self.scoped.contains_key(&atom.relation);
+            if !is_scoped {
+                return None;
+            }
+            depth = depth.max(reached + own);
+        }
+        Some(depth)
+    }
+
+    /// Whether every consumer fact the body rests on holds only for edited
+    /// code: a relation that does, a consumer input whose row is guarded by
+    /// the negation of the same row at the base, or a fact written with
+    /// such a call. Its negated consumer facts must be those guards, or the
+    /// service membership of a guarded call's file.
+    fn is_change_local(&self, body: &[Literal]) -> bool {
+        let positive: Vec<&Atom> = body
+            .iter()
+            .filter_map(positive)
             .filter(|atom| self.is_selected(&atom.relation))
             .collect();
-        let guards: Vec<(&Atom, BTreeSet<String>)> = negative
+        let negative: Vec<&Atom> = body
             .iter()
-            .map(|guard| (*guard, selected_at_base(&guard.relation, self.rules)))
-            .filter(|(_, inputs)| !inputs.is_empty())
+            .filter_map(negative)
+            .filter(|atom| self.is_selected(&atom.relation))
             .collect();
-        let is_edited = |atom: &&Atom| self.change_local.contains(&atom.relation);
-        // A guard negates, at the base, the very facts it guards, keyed by the
-        // same code (its consumer): then only code the change edits can hold.
-        let is_guarded = |atom: &&Atom| {
-            let Some(consumer) = variable_at(atom, 0) else {
-                return false;
-            };
-            let facts: BTreeSet<String> = self.atom_consumer_inputs(atom);
-            guards.iter().any(|(guard, inputs)| {
-                variables(guard).any(|variable| variable == consumer) && facts.is_subset(inputs)
-            })
-        };
-        let guarded: Vec<&Atom> = selected
+        if positive.is_empty() {
+            return false;
+        }
+        let guarded: Vec<&Atom> = positive
             .iter()
             .copied()
-            .filter(|atom| is_edited(atom) || is_guarded(atom))
+            .filter(|atom| {
+                negative
+                    .iter()
+                    .any(|guard| self.is_same_row_guard(guard, atom))
+            })
             .collect();
-        // Facts written with each call come with the guarded call's file.
-        let is_written_with_call = |atom: &&Atom| {
-            WRITTEN_WITH_CALLS.contains(&input_name(&atom.relation))
-                && guarded.iter().any(|call| shares_variable(atom, call))
-        };
-        let rests_on_edits = selected.iter().any(is_edited) || !guards.is_empty();
-        !selected.is_empty()
-            && rests_on_edits
-            && selected
-                .iter()
-                .all(|atom| is_edited(atom) || is_guarded(atom) || is_written_with_call(atom))
+        let edited: Vec<&Atom> = positive
+            .iter()
+            .copied()
+            .filter(|atom| self.change_local.contains(&atom.relation))
+            .collect();
+        let rests_on_edits = !guarded.is_empty() || !edited.is_empty();
+        let positives_bounded = positive.iter().all(|atom| {
+            guarded.contains(atom)
+                || edited.contains(atom)
+                || (WRITTEN_WITH_CALLS.contains(&input_name(&atom.relation))
+                    && guarded.iter().any(|call| shares_variable(atom, call)))
+        });
+        let negatives_bounded = negative.iter().all(|atom| {
+            guarded.iter().any(|row| self.is_same_row_guard(atom, row))
+                || (input_name(&atom.relation) == MEMBERSHIP
+                    && variable_at(atom, 0).is_some_and(|file| {
+                        guarded
+                            .iter()
+                            .chain(&edited)
+                            .any(|row| variables(row).any(|variable| variable == file))
+                    }))
+        });
+        rests_on_edits && positives_bounded && negatives_bounded
     }
 
-    /// The consumer inputs an atom reads: its own relation if it is one,
-    /// otherwise those its relation reads.
-    fn atom_consumer_inputs(&self, atom: &Atom) -> BTreeSet<String> {
-        let name = input_name(&atom.relation);
-        if SELECTED_INPUTS.contains(&name) {
-            return BTreeSet::from([name.to_owned()]);
+    /// Whether `guard` is the negation of `row`'s own row at the base: a
+    /// relation with one rule reading only `row`'s input at the base, with
+    /// nothing but variables, and used with `row`'s variables in the columns
+    /// it copies, its calling code (column 0) among them.
+    fn is_same_row_guard(&self, guard: &Atom, row: &Atom) -> bool {
+        if !SELECTED_INPUTS.contains(&input_name(&row.relation)) || row.relation.ends_with("@base")
+        {
+            return false;
         }
-        self.consumer_inputs(&atom.relation)
-            .map(str::to_owned)
-            .collect()
+        let defining: Vec<&Rule> = self.defining(&guard.relation).collect();
+        let [rule] = defining[..] else {
+            return false;
+        };
+        let [Literal::Positive(read)] = &rule.body[..] else {
+            return false;
+        };
+        if read.relation != format!("{}@base", row.relation) {
+            return false;
+        }
+        let mut copies_calling_code = false;
+        for (head_column, head_term) in rule.head.terms.iter().enumerate() {
+            let Term::Variable(name) = head_term else {
+                return false;
+            };
+            let Some(read_column) = read
+                .terms
+                .iter()
+                .position(|term| matches!(term, Term::Variable(other) if other == name))
+            else {
+                return false;
+            };
+            let (Some(used), Some(rowed)) = (
+                variable_at(guard, head_column),
+                variable_at(row, read_column),
+            ) else {
+                return false;
+            };
+            if used != rowed {
+                return false;
+            }
+            copies_calling_code |= read_column == 0;
+        }
+        copies_calling_code
+            && read
+                .terms
+                .iter()
+                .all(|term| matches!(term, Term::Variable(_) | Term::Wildcard))
     }
 }
 
-/// The relations among `complete` sharing a variable with `calls`,
-/// directly or through one another.
-fn joined_to<'a>(calls: &[&Atom], complete: &[&'a Atom]) -> BTreeSet<&'a str> {
-    let mut variables: BTreeSet<&str> = calls.iter().flat_map(|atom| variables(atom)).collect();
-    let mut joined = BTreeSet::new();
-    loop {
-        let before = joined.len();
-        for atom in complete {
-            if variables_of(atom).any(|variable| variables.contains(variable)) {
-                joined.insert(atom.relation.as_str());
-                variables.extend(variables_of(atom));
+/// Whether `rule` derives a call: column 1 bound to an operation (column 1
+/// of an `operation` atom or of a call), column 0 to the calling code
+/// (column 0 of a call fact or a call), and no consumer fact read but calls
+/// and the service membership of the calling file.
+fn derives_call(rule: &Rule, calls: &BTreeSet<String>, is_selected: impl Fn(&str) -> bool) -> bool {
+    let positive: Vec<&Atom> = rule.body.iter().filter_map(positive).collect();
+    let is_call =
+        |relation: &str| CALL_FACTS.contains(&input_name(relation)) || calls.contains(relation);
+    let (Some(operation), Some(caller)) = (variable_at(&rule.head, 1), variable_at(&rule.head, 0))
+    else {
+        return false;
+    };
+    let operation_bound = positive.iter().any(|atom| {
+        (input_name(&atom.relation) == "operation" || calls.contains(&atom.relation))
+            && variable_at(atom, 1) == Some(operation)
+    });
+    let caller_bound = positive
+        .iter()
+        .any(|atom| is_call(&atom.relation) && variable_at(atom, 0) == Some(caller));
+    let files: BTreeSet<&str> = positive
+        .iter()
+        .filter(|atom| is_call(&atom.relation))
+        .filter_map(|atom| file_variable(atom))
+        .collect();
+    let only_calls = rule.body.iter().filter_map(atom).all(|atom| {
+        !is_selected(&atom.relation)
+            || is_call(&atom.relation)
+            || reads_only_membership_of(atom, &files)
+    });
+    operation_bound && caller_bound && only_calls
+}
+
+/// Whether `atom` is service membership (or a relation over it, keyed in
+/// column 0) of one of `files`.
+fn reads_only_membership_of(atom: &Atom, files: &BTreeSet<&str>) -> bool {
+    variable_at(atom, 0).is_some_and(|file| files.contains(file))
+        && (input_name(&atom.relation) == MEMBERSHIP
+            || !SELECTED_INPUTS.contains(&input_name(&atom.relation)))
+}
+
+/// The file column of a call: column 3 of `calls_path` (`consumer, method,
+/// path, file, line`), column 2 of `calls_client` and of derived calls,
+/// column 4 of `client_operation`.
+fn file_variable(atom: &Atom) -> Option<&str> {
+    let column = match input_name(&atom.relation) {
+        "calls_path" => 3,
+        "client_operation" => 4,
+        _ => 2,
+    };
+    variable_at(atom, column)
+}
+
+/// The variable holding a call's operation: column 1 of a derived call, or
+/// for a client table's operation, column 1 of the `operation` atom joined
+/// to it on method and path.
+fn call_operation<'a>(call: &'a Atom, positive: &[&'a Atom]) -> Option<&'a str> {
+    if input_name(&call.relation) != "client_operation" {
+        return variable_at(call, 1);
+    }
+    let (method, path) = (variable_at(call, 2)?, variable_at(call, 3)?);
+    positive
+        .iter()
+        .filter(|atom| input_name(&atom.relation) == "operation")
+        .find(|atom| variable_at(atom, 2) == Some(method) && variable_at(atom, 3) == Some(path))
+        .and_then(|atom| variable_at(atom, 1))
+}
+
+/// The variables a body reaches from the calling code, each with how many
+/// imports away.
+#[derive(Default)]
+struct Reach<'a> {
+    depth: BTreeMap<&'a str, usize>,
+}
+
+impl<'a> Reach<'a> {
+    fn add(&mut self, variable: &'a str, depth: usize) -> bool {
+        let entry = self.depth.entry(variable).or_insert(usize::MAX);
+        if depth < *entry {
+            *entry = depth;
+            return true;
+        }
+        false
+    }
+
+    fn depth(&self, variable: &str) -> Option<usize> {
+        self.depth.get(variable).copied()
+    }
+
+    /// Spreads reach through `in_file` (a reached scope's file, a reached
+    /// file's functions), `imports` (one level further) and relations about
+    /// one scope (the columns they keep within it), until it stops growing.
+    fn spread(&mut self, atoms: &[&'a Atom], scoped: &BTreeMap<String, Scope>) {
+        loop {
+            let mut grew = false;
+            for atom in atoms {
+                grew |= self.step(atom, scoped);
+            }
+            if !grew {
+                return;
             }
         }
-        if joined.len() == before {
-            return joined;
-        }
     }
+
+    /// Spreads reach through one atom; whether it grew.
+    fn step(&mut self, atom: &'a Atom, scoped: &BTreeMap<String, Scope>) -> bool {
+        let Some(first) = variable_at(atom, 0) else {
+            return false;
+        };
+        let second = variable_at(atom, 1);
+        let mut grew = false;
+        match input_name(&atom.relation) {
+            "in_file" => {
+                if let (Some(depth), Some(file)) = (self.depth(first), second) {
+                    grew |= self.add(file, depth);
+                }
+                if let Some(depth) = second.and_then(|file| self.depth(file)) {
+                    grew |= self.add(first, depth);
+                }
+            }
+            "imports" => {
+                if let (Some(depth), Some(imported)) = (self.depth(first), second) {
+                    grew |= self.add(imported, depth + 1);
+                }
+            }
+            _ => {
+                let (Some(scope), Some(depth)) = (scoped.get(&atom.relation), self.depth(first))
+                else {
+                    return false;
+                };
+                let kept = scope
+                    .columns
+                    .iter()
+                    .filter_map(|column| variable_at(atom, *column));
+                for variable in kept {
+                    grew |= self.add(variable, depth + scope.depth);
+                }
+            }
+        }
+        grew
+    }
+}
+
+/// What one rule of a candidate scoped relation reaches from its head's
+/// first column, or `None` when a consumer fact in it is out of reach.
+fn rule_scope(
+    rule: &Rule,
+    scoped: &BTreeMap<String, Scope>,
+    is_selected: impl Fn(&str) -> bool,
+) -> Option<Scope> {
+    let start = variable_at(&rule.head, 0)?;
+    let selected: Vec<&Atom> = rule
+        .body
+        .iter()
+        .filter_map(atom)
+        .filter(|atom| is_selected(&atom.relation))
+        .collect();
+    let mut reach = Reach::default();
+    reach.add(start, 0);
+    reach.spread(&selected, scoped);
+    let mut depth = 0;
+    for atom in &selected {
+        let name = input_name(&atom.relation);
+        let known = SCOPED_INPUTS.contains(&name)
+            || name == "imports"
+            || scoped.contains_key(&atom.relation);
+        if !known {
+            return None;
+        }
+        let reached = reach.depth(variable_at(atom, 0)?)?;
+        let own = scoped.get(&atom.relation).map_or(0, |scope| scope.depth);
+        let further = usize::from(name == "imports");
+        depth = depth.max(reached + own + further);
+    }
+    let columns = rule
+        .head
+        .terms
+        .iter()
+        .enumerate()
+        .filter(|(_, term)| matches!(term, Term::Variable(name) if reach.depth(name).is_some()))
+        .map(|(column, _)| column)
+        .collect();
+    Some(Scope { columns, depth })
 }
 
 /// For each derived relation, the input relations its rules read,
-/// transitively, by name without a snapshot.
+/// transitively, by name without a snapshot. A relation in `complete`
+/// reads its own rules' `imports` as service imports, which are complete.
 fn inputs_read(rules: &[Rule], complete: &BTreeSet<String>) -> BTreeMap<String, BTreeSet<String>> {
     let derived: BTreeSet<&str> = rules
         .iter()
@@ -434,14 +718,13 @@ fn inputs_read(rules: &[Rule], complete: &BTreeSet<String>) -> BTreeMap<String, 
     loop {
         let mut grew = false;
         for rule in rules {
-            // A complete relation's own rules read service imports only.
             let is_complete = complete.contains(&rule.head.relation);
             let found: BTreeSet<String> = rule
                 .body
                 .iter()
                 .filter_map(atom)
                 .filter(|atom| !(is_complete && input_name(&atom.relation) == "imports"))
-                .flat_map(|atom| atom_inputs(atom, &derived, &reads))
+                .flat_map(|atom| atom_inputs(atom, &derived, &reads, complete))
                 .collect();
             let entry = reads.entry(rule.head.relation.clone()).or_default();
             let size = entry.len();
@@ -452,6 +735,29 @@ fn inputs_read(rules: &[Rule], complete: &BTreeSet<String>) -> BTreeMap<String, 
             return reads;
         }
     }
+}
+
+/// The inputs reading `atom` reads: its own relation if it is an input, what
+/// its relation is known to read so far if derived, and nothing from a
+/// relation about service code.
+fn atom_inputs(
+    atom: &Atom,
+    derived: &BTreeSet<&str>,
+    reads: &BTreeMap<String, BTreeSet<String>>,
+    complete: &BTreeSet<String>,
+) -> Vec<String> {
+    if !derived.contains(atom.relation.as_str()) {
+        return vec![input_name(&atom.relation).to_owned()];
+    }
+    reads
+        .get(&atom.relation)
+        .into_iter()
+        .flatten()
+        .filter(|input| {
+            !(complete.contains(&atom.relation) && SELECTED_INPUTS.contains(&input.as_str()))
+        })
+        .cloned()
+        .collect()
 }
 
 /// The derived relations about service code: those whose only consumer
@@ -513,129 +819,12 @@ fn is_keyed_everywhere(relation: &str, rules: &[Rule], keyed: &BTreeSet<String>)
     })
 }
 
-/// The inputs reading `atom` reads: its own relation if it is an input,
-/// otherwise what its relation is known to read so far.
-fn atom_inputs(
-    atom: &Atom,
-    derived: &BTreeSet<&str>,
-    reads: &BTreeMap<String, BTreeSet<String>>,
-) -> Vec<String> {
-    if !derived.contains(atom.relation.as_str()) {
-        return vec![input_name(&atom.relation).to_owned()];
-    }
-    reads
-        .get(&atom.relation)
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect()
-}
-
-/// The consumer inputs `relation`, or a relation it is derived from, reads
-/// at the base.
-fn selected_at_base(relation: &str, rules: &[Rule]) -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    let mut pending = vec![relation.to_owned()];
-    let mut seen = BTreeSet::new();
-    while let Some(next) = pending.pop() {
-        if !seen.insert(next.clone()) {
-            continue;
-        }
-        let read: Vec<&Atom> = rules
-            .iter()
-            .filter(|rule| rule.head.relation == next)
-            .flat_map(|rule| rule.body.iter().filter_map(atom))
-            .collect();
-        for atom in &read {
-            let name = input_name(&atom.relation);
-            if atom.relation.ends_with("@base") && SELECTED_INPUTS.contains(&name) {
-                found.insert(name.to_owned());
-            }
-        }
-        pending.extend(read.iter().map(|atom| atom.relation.clone()));
-    }
-    found
-}
-
-/// The variables `positive` binds to an operation: column 1 of an
-/// `operation` atom, or of a call.
-fn operation_variables<'a>(
-    positive: &[&'a Atom],
-    is_call: impl Fn(&str) -> bool,
-) -> BTreeSet<&'a str> {
-    positive
-        .iter()
-        .filter(|atom| input_name(&atom.relation) == "operation" || is_call(&atom.relation))
-        .filter_map(|atom| variable_at(atom, 1))
-        .collect()
-}
-
-/// Whether every rule deriving `relation` binds its column 1 to an
-/// operation: column 1 of an `operation` atom, or of the relation itself or
-/// another such relation.
-fn binds_operation_column(relation: &str, rules: &[Rule]) -> bool {
-    let defining: Vec<&Rule> = rules
-        .iter()
-        .filter(|rule| rule.head.relation == relation)
-        .collect();
-    !defining.is_empty()
-        && defining.iter().all(|rule| {
-            let Some(column) = variable_at(&rule.head, 1) else {
-                return false;
-            };
-            rule.body.iter().filter_map(positive).any(|atom| {
-                let names_operation = input_name(&atom.relation) == "operation"
-                    || (atom.relation != relation
-                        && rules
-                            .iter()
-                            .any(|other| other.head.relation == atom.relation));
-                names_operation && variable_at(atom, 1) == Some(column)
-            })
-        })
-}
-
-/// For each derived relation, at most how many `imports` joins one of its
-/// derivations chains (counted generously: every join in a rule, plus the
-/// chains of the relations it reads), or why that has no bound: a rule
-/// following imports through itself.
-fn imports_depth(rules: &[Rule]) -> Result<BTreeMap<String, usize>, String> {
-    let mut depth: BTreeMap<String, usize> = BTreeMap::new();
-    // Each pass can lengthen a chain by one rule; more passes than rules
-    // means a cycle through imports.
-    for _ in 0..=rules.len() {
-        let mut grew = false;
-        for rule in rules {
-            let total: usize = rule
-                .body
-                .iter()
-                .filter_map(atom)
-                .map(|atom| {
-                    usize::from(input_name(&atom.relation) == "imports")
-                        + depth.get(atom.relation.as_str()).copied().unwrap_or(0)
-                })
-                .sum();
-            let entry = depth.entry(rule.head.relation.clone()).or_insert(0);
-            if total > *entry {
-                *entry = total;
-                grew = true;
-            }
-        }
-        if !grew {
-            return Ok(depth);
-        }
-    }
-    Err(
-        "a rule follows imports through itself, so the files a finding rests on cannot be bounded"
-            .to_owned(),
-    )
-}
-
 /// A program relation's input name: `calls_path@base` is `calls_path`.
 fn input_name(relation: &str) -> &str {
     relation.strip_suffix("@base").unwrap_or(relation)
 }
 
-/// The variable in `column` of `atom`, if one is written there.
+/// Whether two atoms share a variable.
 fn shares_variable(left: &Atom, right: &Atom) -> bool {
     let right: BTreeSet<&str> = variables(right).collect();
     variables(left).any(|variable| right.contains(variable))
@@ -650,10 +839,6 @@ fn variable_at(atom: &Atom, column: usize) -> Option<&str> {
 }
 
 fn variables(atom: &Atom) -> impl Iterator<Item = &str> {
-    variables_of(atom)
-}
-
-fn variables_of(atom: &Atom) -> impl Iterator<Item = &str> {
     atom.terms.iter().filter_map(|term| match term {
         Term::Variable(name) => Some(name.as_str()),
         _ => None,
@@ -689,6 +874,18 @@ mod tests {
         lemma_grammar::compile(&lemma_grammar::parse_grammar(text).unwrap()).unwrap()
     }
 
+    fn with(extra_rules: &str, requirement: &str) -> CompiledGrammar {
+        let base = crate::HTTP_CONTRACTS.trim_end();
+        let (head, requirements) = base.split_once("\nrequirements:\n").unwrap();
+        compiled(&format!(
+            "{head}\n{extra_rules}\nrequirements:\n{requirements}\n  extra:\n    when: {requirement}\n    severity: info\n"
+        ))
+    }
+
+    fn refused(grammar: &CompiledGrammar) -> String {
+        change_driven_plan(grammar).unwrap_err()
+    }
+
     #[test]
     fn the_built_in_grammar_is_change_driven() {
         let grammar = compiled(crate::HTTP_CONTRACTS);
@@ -711,12 +908,11 @@ mod tests {
         assert_eq!(plan.import_depth, 1);
     }
 
-    fn with(extra_rules: &str, requirement: &str) -> CompiledGrammar {
-        let base = crate::HTTP_CONTRACTS.trim_end();
-        let (head, requirements) = base.split_once("\nrequirements:\n").unwrap();
-        compiled(&format!(
-            "{head}\n{extra_rules}\nrequirements:\n{requirements}\n  extra:\n    when: {requirement}\n    severity: info\n"
-        ))
+    #[test]
+    fn a_requirement_over_every_call_is_evaluated_in_full() {
+        let grammar = with("", "calls(c, op, f, l)");
+
+        assert!(refused(&grammar).contains("extra"));
     }
 
     #[test]
@@ -726,18 +922,37 @@ mod tests {
             r#"calls(c, op, f, l), removed_operation(op), mentions(g, "legacy")"#,
         );
 
-        let reason = change_driven_plan(&grammar).unwrap_err();
-
-        assert!(reason.contains("extra"), "{reason}");
+        assert!(refused(&grammar).contains("extra"));
     }
 
     #[test]
-    fn an_anchor_that_is_not_derived_is_no_anchor() {
-        let grammar = with("", "calls(c, op, f, l), operation@base(s, op, m, p)");
+    fn a_scope_that_strays_from_the_calling_file_is_not_a_scope() {
+        let grammar = with(
+            "  - uses_anywhere(c, n) :- in_file(c, f), mentions(g, n).",
+            "calls(c, op, f, l), removed_response_field(op, fld, leaf), !uses_anywhere(c, leaf)",
+        );
 
-        let reason = change_driven_plan(&grammar).unwrap_err();
+        assert!(refused(&grammar).contains("extra"));
+    }
 
-        assert!(reason.contains("extra"), "{reason}");
+    #[test]
+    fn an_anchor_on_another_operation_than_the_calls_is_no_anchor() {
+        let grammar = with(
+            "",
+            "calls(c, op, f, l), operation@base(s, op, m, p), operation@base(s, op2, m2, p2), removed_operation(op2)",
+        );
+
+        assert!(refused(&grammar).contains("extra"));
+    }
+
+    #[test]
+    fn a_relation_whose_second_column_is_no_operation_is_no_call() {
+        let grammar = with(
+            "  - service_of(op, s) :- operation@base(s, op, _, _).\n  - calls_service(c, s, f, l) :- calls(c, op, f, l), service_of(op, s).\n  - retired_service(s) :- removed_operation(op), service_of(op, s).",
+            "calls_service(c, s, f, l), retired_service(s)",
+        );
+
+        assert!(refused(&grammar).contains("extra"));
     }
 
     #[test]
@@ -747,9 +962,27 @@ mod tests {
             "newly_called(c, m, p)",
         );
 
-        let reason = change_driven_plan(&grammar).unwrap_err();
+        assert!(refused(&grammar).contains("extra"));
+    }
 
-        assert!(reason.contains("extra"), "{reason}");
+    #[test]
+    fn a_guard_narrower_than_the_row_is_no_guard() {
+        let grammar = with(
+            "  - called_before_get(c, m, p) :- calls_path@base(c, m, p, _, _), m = \"GET\".\n  - newly(c, m, p) :- calls_path(c, m, p, f, l), !called_before_get(c, m, p).",
+            "newly(c, m, p)",
+        );
+
+        assert!(refused(&grammar).contains("extra"));
+    }
+
+    #[test]
+    fn a_second_negation_of_other_code_spoils_a_guard() {
+        let grammar = with(
+            "  - first_ever(c, m, p) :- calls_path(c, m, p, f, l), !called_before(c, m, p), !called_by_anyone(m, p).\n  - called_by_anyone(m, p) :- calls_path@base(_, m, p, _, _).",
+            "first_ever(c, m, p)",
+        );
+
+        assert!(refused(&grammar).contains("extra"));
     }
 
     #[test]
@@ -765,15 +998,12 @@ mod tests {
     }
 
     #[test]
-    fn a_requirement_over_every_call_is_evaluated_in_full() {
-        let text = format!(
-            "{}\n  every_call:\n    when: calls(c, op, f, l)\n    severity: info\n",
-            crate::HTTP_CONTRACTS.trim_end()
+    fn imports_followed_through_themselves_are_evaluated_in_full() {
+        let grammar = with(
+            "  - reaches(f, g) :- imports(f, g).\n  - reaches(f, h) :- reaches(f, g), imports(g, h).\n  - uses_far(c, n) :- in_file(c, f), reaches(f, g), mentions(g, n).",
+            "calls(c, op, f, l), removed_response_field(op, fld, leaf), uses_far(c, leaf)",
         );
-        let grammar = compiled(&text);
 
-        let reason = change_driven_plan(&grammar).unwrap_err();
-
-        assert!(reason.contains("every_call"), "{reason}");
+        assert!(refused(&grammar).contains("extra"));
     }
 }

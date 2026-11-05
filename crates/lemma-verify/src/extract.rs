@@ -79,12 +79,12 @@ impl<'g> FactWriter<'g> {
 }
 
 /// Extracts every repository's facts.
-pub fn extract_all<E: lemma_logic::Engine>(
+pub fn extract_all(
     manifest: &Manifest,
     writer: &mut FactWriter<'_>,
     cache: Option<&crate::FactsCache>,
     listings: &Arc<lemma_http::Listings>,
-    focus: &Focus<'_, E>,
+    focus: &Focus<'_>,
 ) -> Result<Option<BTreeSet<String>>, VerifyError> {
     let mut extractor = FactReader::new(cache.cloned());
     check_files(manifest)?;
@@ -112,13 +112,11 @@ pub fn extract_all<E: lemma_logic::Engine>(
     }
     let operations = match focus {
         Focus::Everything => None,
-        Focus::Change(plan, engine) => {
-            Some(crate::demand::operations(writer.grammar(), *engine, plan)?)
-        }
+        Focus::Change(plan) => Some(crate::demand::operations(writer.grammar(), plan)?),
         Focus::Operations(operations, _) => Some((*operations).clone()),
     };
     let (reads_changed_files, import_depth) = match focus {
-        Focus::Change(plan, _) => (plan.reads_changed_files, plan.import_depth),
+        Focus::Change(plan) => (plan.reads_changed_files, plan.import_depth),
         Focus::Operations(_, depth) => (false, *depth),
         Focus::Everything => (false, 0),
     };
@@ -142,12 +140,11 @@ pub fn extract_all<E: lemma_logic::Engine>(
 }
 
 /// Which consumer code to read.
-pub(crate) enum Focus<'a, E> {
+pub(crate) enum Focus<'a> {
     /// All of it.
     Everything,
-    /// What the change's findings can rest on, by the grammar's plan, with
-    /// the engine that evaluates its anchors.
-    Change(&'a crate::demand::Plan, &'a E),
+    /// What the change's findings can rest on, by the grammar's plan.
+    Change(&'a crate::demand::Plan),
     /// The code that may call these operations (`METHOD /path`), and the
     /// files it imports to the depth given.
     Operations(&'a BTreeSet<String>, usize),
