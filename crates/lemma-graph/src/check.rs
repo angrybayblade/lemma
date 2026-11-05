@@ -202,7 +202,8 @@ pub fn check<E: Engine>(
         None => (None, Walkable::default()),
     };
     seeds.extend(walkable.seeds.iter().cloned());
-    affects::attach(&mut findings, &seeds, &walkable, &repos)?;
+    let facts = options.facts_cache.as_ref();
+    affects::attach(&mut findings, &seeds, &walkable, &repos, facts)?;
     findings.sort_by(|left, right| {
         (left.severity, &left.link, &left.check, &left.message).cmp(&(
             right.severity,
