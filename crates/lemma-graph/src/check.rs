@@ -774,7 +774,7 @@ fn inferred_finding(found: &lemma_verify::Finding, level: Level) -> Finding {
         link,
         check: found.requirement.clone(),
         message: found.message.clone(),
-        introduced: true,
+        introduced: found.introduced,
         affects: Vec::new(),
     }
 }

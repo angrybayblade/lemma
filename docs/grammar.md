@@ -123,6 +123,8 @@ requirements:
 
 `when` is a rule body. Its variables, in the order they first appear in a positive atom, become the finding's values; `explain` refers to them as `{name}`. Findings are sorted by severity, requirement and message, so output is the same every run.
 
+Each finding also says whether the change introduced it. A requirement that compares the snapshots (it reads `@base`, directly or through a rule) only matches what changed, so its findings are introduced. A requirement over one snapshot, such as a route its spec does not declare, may already have matched before the change: Lemma evaluates it at the base too, and a finding that matches there as well is reported as not introduced.
+
 Severity decides what a finding does: `lemma verify` exits with 4 when any finding is an error, so CI can gate on errors while warnings and informational findings only report. Choose severity by what a match proves:
 
 | Severity | Use when a match means | Built-in examples |
@@ -148,11 +150,11 @@ A requirement that rests on a name being present (`uses(c, leaf)`) should look n
 | `required_request_field` | operation, field path, last name | service specs: required in every enclosing object and every union branch |
 | `response_field` | operation, field path, last name | service specs, 2xx responses |
 | `strict_request` | operation | service specs: `additionalProperties: false` |
-| `route` | service, method, path, file, line | service route code (head only) |
-| `route_schema` | service, method, path, part (`body`/`query`), file, schema | service route code (head only) |
-| `inline_strict_route` | service, method, path, part | a route's own schema is `.strict()` (head only) |
-| `strict_schema` | file, name | `const name = z.object(..).strict()` (head only) |
-| `union_member` | file, union, member | `z.union`/`z.discriminatedUnion` members; `*` for a non-strict inline member (head only) |
+| `route` | service, method, path, file, line | service route code |
+| `route_schema` | service, method, path, part (`body`/`query`), file, schema | service route code |
+| `inline_strict_route` | service, method, path, part | a route's own schema is `.strict()` |
+| `strict_schema` | file, name | `const name = z.object(..).strict()` |
+| `union_member` | file, union, member | `z.union`/`z.discriminatedUnion` members; `*` for a non-strict inline member |
 | `client_operation` | client, function, method, path, file, line | `generated_from` specs, functions named by `call_names` |
 | `client_parameter` | client, method, path, name, location | client specs |
 | `calls_path` | consumer, method (`*` if unknown), path, file, line | consumer code: path strings and request calls |
