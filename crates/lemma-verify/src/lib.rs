@@ -9,6 +9,7 @@ mod clients;
 mod extract;
 mod manifest;
 mod system;
+mod terms;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
