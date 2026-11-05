@@ -1817,6 +1817,9 @@ struct FactReader {
     kept: Option<(String, lemma_store::UnitCache)>,
     /// Facts read in this run, by unit key.
     read: BTreeMap<String, Rc<CodeFacts>>,
+    /// Units whose terms this run has sent to the cache, which its writer
+    /// may not have stored yet.
+    termed: BTreeSet<String>,
 }
 
 impl FactReader {
@@ -1832,6 +1835,7 @@ impl FactReader {
             extractors: ExtractorPool::new(),
             kept,
             read: BTreeMap::new(),
+            termed: BTreeSet::new(),
         }
     }
 
@@ -1936,12 +1940,13 @@ impl FactReader {
                 .any(|term| wanted.contains(term))
         };
         let keys: Vec<String> = keyed.iter().map(|(_, key)| key.clone()).collect();
+        let among: BTreeSet<String> = keys.iter().cloned().collect();
         // A cache that cannot be read, in either lookup, only means reading
         // every file: none counts as indexed.
         let (indexed, hits) = match &self.kept {
             Some((_, units)) => {
                 let wanted: Vec<String> = wanted.iter().cloned().collect();
-                match (units.indexed(&keys), units.units_with(&wanted)) {
+                match (units.indexed(&keys), units.units_with(&wanted, &among)) {
                     (Ok(indexed), Ok(hits)) => (indexed, hits),
                     _ => (BTreeSet::new(), BTreeSet::new()),
                 }
@@ -1970,7 +1975,10 @@ impl FactReader {
             if matches(&facts) {
                 chosen.insert(path.clone());
             }
-            if let Some(key) = key_of.get(path.as_str()) {
+            let Some(key) = key_of.get(path.as_str()) else {
+                continue;
+            };
+            if self.termed.insert((*key).clone()) {
                 backfill.push(((*key).clone(), crate::terms::code_terms(&facts)));
             }
         }
@@ -2028,6 +2036,7 @@ impl FactReader {
             if let Some(encoded) = encoded {
                 new_units.push(((*key).clone(), encoded));
                 new_terms.push(((*key).clone(), crate::terms::code_terms(&facts)));
+                self.termed.insert((*key).clone());
             }
             parsed.push(((*key).clone(), Rc::new(facts)));
         }

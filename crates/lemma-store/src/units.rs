@@ -174,13 +174,19 @@ impl UnitCache {
         )
     }
 
-    /// The units indexed by any of `terms`.
-    pub fn units_with(&self, terms: &[String]) -> Result<BTreeSet<String>, StoreError> {
-        select_column(
-            &self.connection,
-            "SELECT unit FROM unit_terms WHERE term IN",
-            terms,
-        )
+    /// Those of `among` indexed by any of `terms`. The cache holds other
+    /// repositories and commits too, whose units are skipped as they are
+    /// read rather than collected.
+    pub fn units_with(
+        &self,
+        terms: &[String],
+        among: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>, StoreError> {
+        let mut found = BTreeSet::new();
+        for batch in terms.chunks(KEYS_PER_QUERY) {
+            found.extend(units_among(&self.connection, batch, among)?);
+        }
+        Ok(found)
     }
 }
 
@@ -235,6 +241,26 @@ fn insert_terms(
     }
     transaction.commit()?;
     Ok(())
+}
+
+/// Those of `among` indexed by any of `terms`, one statement's worth.
+fn units_among(
+    connection: &Connection,
+    terms: &[String],
+    among: &BTreeSet<String>,
+) -> Result<Vec<String>, StoreError> {
+    let placeholders = vec!["?"; terms.len()].join(",");
+    let query = format!("SELECT unit FROM unit_terms WHERE term IN ({placeholders})");
+    let mut statement = connection.prepare_cached(&query)?;
+    let mut rows = statement.query(rusqlite::params_from_iter(terms))?;
+    let mut found = Vec::new();
+    while let Some(row) = rows.next()? {
+        let unit = row.get_ref(0)?.as_str().map_err(rusqlite::Error::from)?;
+        if among.contains(unit) {
+            found.push(unit.to_owned());
+        }
+    }
+    Ok(found)
 }
 
 /// The values of a one-column `query` (`SELECT x FROM t WHERE y IN`) over
@@ -350,7 +376,10 @@ mod tests {
         let cache = UnitCache::open(&path).unwrap();
         let keys = ["a".to_owned(), "b".to_owned(), "c".to_owned()];
         let indexed = cache.indexed(&keys).unwrap();
-        let calling = cache.units_with(&["path:/v1/users".to_owned()]).unwrap();
+        let among = BTreeSet::from(["a".to_owned(), "b".to_owned()]);
+        let calling = cache
+            .units_with(&["path:/v1/users".to_owned()], &among)
+            .unwrap();
 
         assert_eq!(indexed, BTreeSet::from(["a".to_owned(), "b".to_owned()]));
         assert_eq!(calling, BTreeSet::from(["a".to_owned()]));
