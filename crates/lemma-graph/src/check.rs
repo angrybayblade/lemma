@@ -409,7 +409,7 @@ fn infer_links<E: Engine>(
         if let Some(seed) = affects::inferred_seed(&found.values, &inferred.repositories) {
             walkable.seeds.push((findings.len(), seed));
         }
-        let mut finding = inferred_finding(found, level);
+        let mut finding = inferred_finding(found, level, !run.is_drift);
         if run.is_drift {
             finding
                 .message
@@ -758,9 +758,13 @@ fn retain_existing(
 }
 
 /// A grammar finding as a finding: its errors are problems, which the level
-/// makes warnings or errors; everything it reports is about the change.
-fn inferred_finding(found: &lemma_verify::Finding, level: Level) -> Finding {
+/// makes warnings or errors. With a change, as for declared links, only
+/// what the change introduced counts; what was already there is
+/// informational.
+fn inferred_finding(found: &lemma_verify::Finding, level: Level, has_change: bool) -> Finding {
+    let counts = found.introduced || !has_change;
     let severity = match (found.severity, level) {
+        _ if !counts => Severity::Info,
         ("error", Level::Check) => Severity::Error,
         ("error" | "warning", _) => Severity::Warning,
         _ => Severity::Info,
