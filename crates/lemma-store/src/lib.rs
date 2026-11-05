@@ -4,6 +4,7 @@
 //! the same normalized rows, so tools can query them without knowing where
 //! they came from.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -406,14 +407,17 @@ impl Store {
             ],
         )?;
         let snapshot_id = transaction.last_insert_rowid();
-        insert_files(&transaction, snapshot_id, files)?;
+        insert_files(&transaction, snapshot_id, files, &mut PreviousIds::new())?;
         replace_uncommitted_paths(&transaction, snapshot_id, uncommitted_paths)?;
         transaction.commit()?;
         Ok(snapshot_id)
     }
 
     /// Updates a stored snapshot in place, rewriting only the files that
-    /// changed. Symbols of untouched files keep their ids.
+    /// changed. Symbols of untouched files keep their ids, and so does a
+    /// symbol of a changed file that is still there under the same
+    /// qualified name and kind: an id an agent holds survives edits around
+    /// it.
     ///
     /// When any file's contents changed, every cached provider answer for the
     /// snapshot is dropped: an edit in one file can change the references to
@@ -442,13 +446,18 @@ impl Store {
             transaction.execute("DELETE FROM answers WHERE snapshot_id = ?1", [snapshot_id])?;
         }
 
+        let changed_paths: Vec<&String> = update
+            .changed
+            .iter()
+            .map(|changed| &changed.file.path)
+            .collect();
+        let mut previous = previous_ids(&transaction, snapshot_id, &changed_paths)?;
         let mut delete_file =
             transaction.prepare_cached("DELETE FROM files WHERE snapshot_id = ?1 AND path = ?2")?;
-        let changed_paths = update.changed.iter().map(|changed| &changed.file.path);
-        for path in update.removed.iter().chain(changed_paths) {
+        for path in update.removed.iter().chain(changed_paths.iter().copied()) {
             delete_file.execute(params![snapshot_id, path])?;
         }
-        insert_files(&transaction, snapshot_id, update.changed)?;
+        insert_files(&transaction, snapshot_id, update.changed, &mut previous)?;
 
         let mut restamp = transaction.prepare_cached(
             "UPDATE files SET size_bytes = ?3, modified_ns = ?4, changed_ns = ?5, inode = ?6
@@ -1056,10 +1065,49 @@ impl FactStore for Store {
     }
 }
 
+/// The ids a changed file's symbols had, by path, qualified name and kind,
+/// in source order: symbols sharing all three (overloads) are matched in
+/// order.
+type PreviousIds = BTreeMap<(String, String, String), VecDeque<i64>>;
+
+/// The ids of the symbols in `paths` of the snapshot, before they are
+/// rewritten.
+fn previous_ids(
+    transaction: &Transaction<'_>,
+    snapshot_id: i64,
+    paths: &[&String],
+) -> Result<PreviousIds, StoreError> {
+    let mut statement = transaction.prepare_cached(
+        "SELECT symbols.id, symbols.qualified_name, symbols.kind
+         FROM symbols JOIN files ON files.id = symbols.file_id
+         WHERE files.snapshot_id = ?1 AND files.path = ?2
+         ORDER BY symbols.start_line, symbols.start_column, symbols.id",
+    )?;
+    let mut previous = PreviousIds::new();
+    for path in paths {
+        let rows = statement.query_map(params![snapshot_id, path], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, qualified_name, kind) = row?;
+            previous
+                .entry(((*path).clone(), qualified_name, kind))
+                .or_default()
+                .push_back(id);
+        }
+    }
+    Ok(previous)
+}
+
 fn insert_files(
     transaction: &Transaction<'_>,
     snapshot_id: i64,
     files: &[StampedFile],
+    previous: &mut PreviousIds,
 ) -> Result<(), StoreError> {
     let mut insert_file = transaction.prepare_cached(
         "INSERT INTO files (snapshot_id, path, language, content_hash, has_syntax_errors,
@@ -1069,8 +1117,9 @@ fn insert_files(
     let mut insert_symbol = transaction.prepare_cached(
         "INSERT INTO symbols (file_id, name, qualified_name, kind,
                               start_line, start_column, end_line, end_column,
-                              name_start_line, name_start_column, name_end_line, name_end_column)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                              name_start_line, name_start_column, name_end_line, name_end_column,
+                              id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
     )?;
 
     for StampedFile { file, stamp } in files {
@@ -1088,6 +1137,14 @@ fn insert_files(
         ])?;
         let file_id = transaction.last_insert_rowid();
         for symbol in &file.symbols {
+            // A new symbol gets a fresh id: NULL makes SQLite choose one.
+            let kept_id = previous
+                .get_mut(&(
+                    file.path.clone(),
+                    symbol.qualified_name.clone(),
+                    symbol.kind.as_str().to_owned(),
+                ))
+                .and_then(VecDeque::pop_front);
             insert_symbol.execute(params![
                 file_id,
                 symbol.name,
@@ -1101,6 +1158,7 @@ fn insert_files(
                 symbol.name_span.start.column,
                 symbol.name_span.end.line,
                 symbol.name_span.end.column,
+                kept_id,
             ])?;
         }
     }

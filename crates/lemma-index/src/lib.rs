@@ -676,6 +676,30 @@ mod tests {
     }
 
     #[test]
+    fn symbols_still_in_an_edited_file_keep_their_ids() {
+        let repository = sample_repository();
+        let mut store = Store::open_in_memory().unwrap();
+        write(
+            repository.path(),
+            "py/edited.py",
+            "def kept():\n    pass\n\ndef dropped():\n    pass\n",
+        );
+        let first = index_directory(repository.path(), &mut store).unwrap();
+        let kept_ids = symbol_ids(&store, first.snapshot_id, "kept");
+
+        write(
+            repository.path(),
+            "py/edited.py",
+            "# moved down\n\ndef added():\n    pass\n\ndef kept():\n    return 1\n",
+        );
+        let second = index_directory(repository.path(), &mut store).unwrap();
+
+        assert_eq!(symbol_ids(&store, second.snapshot_id, "kept"), kept_ids);
+        assert_eq!(symbol_ids(&store, second.snapshot_id, "dropped"), []);
+        assert_eq!(symbol_ids(&store, second.snapshot_id, "added").len(), 1);
+    }
+
+    #[test]
     fn deleted_files_leave_the_index() {
         let repository = sample_repository();
         let mut store = Store::open_in_memory().unwrap();
