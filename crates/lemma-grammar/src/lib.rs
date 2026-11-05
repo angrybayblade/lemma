@@ -24,6 +24,7 @@
 
 mod compile;
 mod rules;
+mod twins;
 
 use std::collections::BTreeMap;
 
@@ -252,6 +253,58 @@ facts:
         let error = compiled(text).unwrap_err();
 
         assert!(error.to_string().contains("path@base"));
+    }
+
+    const UNDECLARED_ROUTES: &str = r"
+grammar: g
+relations:
+  route:     { args: [Text], attributes: { path: Text } }
+  specified: { args: [Text], attributes: { path: Text } }
+rules:
+  - declared(s, p) :- specified(s, p).
+requirements:
+  route_not_in_spec:
+    when: route(s, p), !declared(s, p)
+    severity: info
+facts:
+  - { relation: route, values: [api, /old], snapshot: base }
+  - { relation: route, values: [api, /old] }
+  - { relation: route, values: [api, /new] }
+";
+
+    #[test]
+    fn a_requirement_over_one_snapshot_is_also_found_at_the_base() {
+        let grammar = compiled(UNDECLARED_ROUTES).unwrap();
+        let requirement = &grammar.requirements[0];
+        let base_relation = requirement.base_relation.clone().unwrap();
+
+        let derived = evaluate(
+            &ReferenceEngine,
+            &grammar.program,
+            &grammar.facts,
+            &Request::default(),
+        )
+        .unwrap();
+
+        let paths = |relation: &str| -> Vec<String> {
+            let mut paths: Vec<String> = derived
+                .rows(relation)
+                .map(|row| grammar.symbols.display(row[1]))
+                .collect();
+            paths.sort();
+            paths
+        };
+        assert_eq!(paths(&requirement.relation), ["/new", "/old"]);
+        assert_eq!(paths(&base_relation), ["/old"]);
+    }
+
+    #[test]
+    fn a_requirement_comparing_snapshots_has_no_base_twin() {
+        let grammar = compiled(BREAKING_CHANGE).unwrap();
+
+        let requirement = &grammar.requirements[0];
+
+        assert_eq!(requirement.base_relation, None);
     }
 
     #[test]

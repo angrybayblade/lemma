@@ -645,8 +645,10 @@ fn service(
     }
     let documents = write_operations(service_name, repository, snapshot, writer)?;
     // Without route directories there is no route code to read; an empty
-    // list would otherwise mean the whole repository.
-    if !snapshots.contains(&"head") || repository.routes.is_empty() {
+    // list would otherwise mean the whole repository. Routes are read at
+    // the base too, so a requirement over routes can tell what was there
+    // before the change.
+    if repository.routes.is_empty() {
         return Ok(());
     }
     let files = route_and_schema_files(repository, snapshot)?;
@@ -667,6 +669,7 @@ fn service(
     let scope = ServiceScope {
         name,
         service: service_name,
+        snapshots,
         known: files.iter().map(|file| file.path.clone()).collect(),
         route_aliases: &route_aliases,
         imports: read_import_aliases(repository, commit, snapshot.specs)?,
@@ -720,6 +723,8 @@ fn written_routes(facts: &CodeFacts) -> impl Iterator<Item = (String, String)> +
 struct ServiceScope<'a> {
     name: &'a str,
     service: &'a str,
+    /// The snapshots the service's code facts are written to.
+    snapshots: &'a [&'a str],
     known: BTreeSet<String>,
     route_aliases: &'a BTreeMap<String, String>,
     imports: PathAliases,
@@ -755,7 +760,7 @@ fn schema_facts(
     for schema in &facts.strict_schemas {
         writer.add(
             "strict_schema",
-            &["head"],
+            scope.snapshots,
             &[Arg::Text(&file_id), Arg::Text(schema)],
         );
     }
@@ -766,7 +771,7 @@ fn schema_facts(
                 Arg::Text(&union.name),
                 Arg::Text(member),
             ];
-            writer.add("union_member", &["head"], &args);
+            writer.add("union_member", scope.snapshots, &args);
         }
     }
     for specifier in &facts.imports {
@@ -774,7 +779,7 @@ fn schema_facts(
             let target_id = format!("{}:{target}", scope.name);
             writer.add(
                 "imports",
-                &["head"],
+                scope.snapshots,
                 &[Arg::Text(&file_id), Arg::Text(&target_id)],
             );
         }
@@ -798,9 +803,9 @@ fn schema_use_facts(
     if let Some(schema) = &used.schema {
         let mut args = route.to_vec();
         args.extend([Arg::Text(file_id), Arg::Text(schema)]);
-        writer.add("route_schema", &["head"], &args);
+        writer.add("route_schema", scope.snapshots, &args);
     } else if used.is_inline_strict {
-        writer.add("inline_strict_route", &["head"], &route);
+        writer.add("inline_strict_route", scope.snapshots, &route);
     }
 }
 
@@ -820,7 +825,7 @@ fn route_facts(
             Arg::Text(file),
             Arg::Number(line),
         ];
-        writer.add("route", &["head"], &args);
+        writer.add("route", scope.snapshots, &args);
     }
 }
 

@@ -15,6 +15,7 @@ use lemma_logic::{
 use serde::Deserialize;
 
 use crate::rules::{RawAtom, RawLiteral, RawRule, RawTerm, parse_body, parse_rule};
+use crate::twins;
 use crate::{DeclaredFact, GrammarError, GrammarFile, RelationSpec, SNAPSHOTS};
 
 /// Sources a relation's facts may come from.
@@ -48,6 +49,11 @@ pub struct Requirement {
     pub relation: String,
     /// The variables of each finding, in column order.
     pub variables: Vec<String>,
+    /// For a requirement that reads a single snapshot, the derived relation
+    /// holding what it finds in the base snapshot: a finding there too was
+    /// not introduced by the change. `None` for a requirement comparing
+    /// snapshots, whose findings are the change's by construction.
+    pub base_relation: Option<String>,
 }
 
 /// What the grammar says about an input relation.
@@ -127,7 +133,11 @@ pub fn compile(file: &GrammarFile) -> Result<CompiledGrammar, GrammarError> {
         declare(&mut inputs, &mut columns, &name, relation_columns, spec)?;
     }
     let mut symbols = Symbols::new();
-    let parsed = parse_all(file)?;
+    let mut parsed = parse_all(file)?;
+    // Checked before twins are added, so errors name the rules as written.
+    base_snapshot_inputs(&parsed, &inputs)?;
+    let twins = requirement_twins(&parsed, &inputs);
+    parsed.rules.extend(twins.rules);
     let base_inputs = base_snapshot_inputs(&parsed, &inputs)?;
     let mut builder = Builder {
         inputs: &inputs,
@@ -135,7 +145,7 @@ pub fn compile(file: &GrammarFile) -> Result<CompiledGrammar, GrammarError> {
         symbols: &mut symbols,
     };
     let (rules, derived) = builder.rules(&parsed)?;
-    let requirements = requirements(file, &parsed)?;
+    let requirements = requirements(file, &parsed, &twins.relations)?;
     let relations = relations(&columns, &base_inputs, derived);
     let program = Program::new(relations, rules)?;
     let facts = declared_facts(&file.facts, &program, &mut symbols)?;
@@ -587,7 +597,23 @@ fn requirement_variables(body: &[RawLiteral]) -> Vec<String> {
     variables
 }
 
-fn requirements(file: &GrammarFile, parsed: &Parsed) -> Result<Vec<Requirement>, GrammarError> {
+/// Base-snapshot twins of the requirements that read a single snapshot.
+fn requirement_twins(parsed: &Parsed, inputs: &BTreeMap<String, RelationInfo>) -> twins::Twins {
+    let mut rules = parsed.rules.clone();
+    let mut names = Vec::new();
+    for (name, text, body) in &parsed.requirements {
+        let rule = requirement_rule(name, body);
+        names.push(rule.head.relation.clone());
+        rules.push((text.clone(), rule));
+    }
+    twins::base_twins(&rules, &names, inputs)
+}
+
+fn requirements(
+    file: &GrammarFile,
+    parsed: &Parsed,
+    twins: &BTreeMap<String, String>,
+) -> Result<Vec<Requirement>, GrammarError> {
     parsed
         .requirements
         .iter()
@@ -597,11 +623,13 @@ fn requirements(file: &GrammarFile, parsed: &Parsed) -> Result<Vec<Requirement>,
             if variables.is_empty() {
                 return Err(rule_error(text, "a requirement needs a positive condition"));
             }
+            let relation = format!("requirement:{name}");
             Ok(Requirement {
                 name: name.clone(),
                 severity: spec.severity,
                 explain: spec.explain.clone(),
-                relation: format!("requirement:{name}"),
+                base_relation: twins.get(&relation).cloned(),
+                relation,
                 variables,
             })
         })

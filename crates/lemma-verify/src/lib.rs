@@ -10,7 +10,7 @@ mod extract;
 mod manifest;
 mod system;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -130,6 +130,11 @@ pub struct Finding {
     pub message: String,
     /// The value of each variable.
     pub values: BTreeMap<String, String>,
+    /// Whether the change brought it about. A requirement comparing the
+    /// snapshots only holds for what changed; one over a single snapshot,
+    /// such as a route its spec does not declare, may already have held at
+    /// the base, and then it was not introduced.
+    pub introduced: bool,
     /// Why it holds, as an indented proof, when explanations were asked for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub derivation: Option<String>,
@@ -247,7 +252,9 @@ fn wanted(grammar: &CompiledGrammar, relations: &[String]) -> Request {
     let outputs = grammar
         .requirements
         .iter()
-        .map(|requirement| requirement.relation.clone())
+        .flat_map(|requirement| {
+            std::iter::once(requirement.relation.clone()).chain(requirement.base_relation.clone())
+        })
         .chain(relations.iter().cloned())
         .collect();
     Request {
@@ -307,6 +314,11 @@ fn describe<E: std::error::Error + 'static>(error: &EvaluationError<E>) -> Strin
 fn findings(grammar: &CompiledGrammar, derived: &lemma_logic::Derived) -> Vec<(Finding, Fact)> {
     let mut found = Vec::new();
     for requirement in &grammar.requirements {
+        let at_base: BTreeSet<&lemma_logic::Tuple> = requirement
+            .base_relation
+            .iter()
+            .flat_map(|relation| derived.rows(relation))
+            .collect();
         for row in derived.rows(&requirement.relation) {
             let values: BTreeMap<String, String> = requirement
                 .variables
@@ -323,6 +335,7 @@ fn findings(grammar: &CompiledGrammar, derived: &lemma_logic::Derived) -> Vec<(F
                 severity: severity_name(requirement.severity),
                 message: fill(&template, &values),
                 values,
+                introduced: !at_base.contains(row),
                 derivation: None,
             };
             found.push((
