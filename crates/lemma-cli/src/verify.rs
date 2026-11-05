@@ -115,7 +115,12 @@ fn verify(args: &VerifyArgs) -> anyhow::Result<Report> {
         };
         Ok(report?)
     };
-    match args.evaluation.as_str() {
+    let default = if args.relations.is_empty() {
+        "demand"
+    } else {
+        "full"
+    };
+    match args.evaluation.as_deref().unwrap_or(default) {
         "full" => run(Evaluation::Full),
         "demand" => run(Evaluation::Demand),
         "both" => {
