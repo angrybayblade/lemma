@@ -1801,6 +1801,27 @@ fn unit_key(build: &str, path: &str, options: &str, contents: &[u8]) -> String {
     lemma_model::content_hash(&described)
 }
 
+/// The terms segment of the files `keys` name, each file's terms taken
+/// from `fresh`, else from `stored`, else none.
+fn term_segment(
+    keys: &[String],
+    stored: &BTreeMap<String, Vec<String>>,
+    fresh: &BTreeMap<String, Vec<String>>,
+) -> Vec<u8> {
+    let none = Vec::new();
+    let file_terms: Vec<&[String]> = keys
+        .iter()
+        .map(|key| {
+            fresh
+                .get(key)
+                .or_else(|| stored.get(key))
+                .unwrap_or(&none)
+                .as_slice()
+        })
+        .collect();
+    crate::term_segments::encode(&file_terms)
+}
+
 /// Files with their unit keys, and the contents read to key those Git
 /// cannot vouch for.
 type Keyed = (Vec<(ListedFile, String)>, BTreeMap<String, SourceFile>);
@@ -1811,10 +1832,32 @@ type ReadFacts = (CodeFacts, Option<Vec<u8>>);
 /// Reads files' code facts, each once per run for the same contents and
 /// options (a file a change leaves alone has one blob at both its
 /// commits), and keeps them between runs when given a cache.
+/// What a [`FactReader`] keeps between runs, for one build of Lemma:
+/// each file's facts and terms as units, and each repository's terms as a
+/// segment.
+struct Kept {
+    build: String,
+    units: lemma_store::UnitCache,
+    /// Where `units` is, for a thread reading it on its own connection.
+    units_path: PathBuf,
+    segments: Arc<lemma_store::SegmentStore>,
+    /// Segments being built and written, waited for when this is dropped.
+    writing: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Kept {
+    fn drop(&mut self) {
+        for writer in self.writing.drain(..) {
+            // A writer only fails by panicking, which loses one segment.
+            let _ = writer.join();
+        }
+    }
+}
+
 struct FactReader {
     extractors: ExtractorPool,
-    /// The build of Lemma and the units it keeps, when facts are kept.
-    kept: Option<(String, lemma_store::UnitCache)>,
+    /// What is kept between runs, when facts are kept.
+    kept: Option<Kept>,
     /// Facts read in this run, by unit key.
     read: BTreeMap<String, Rc<CodeFacts>>,
     /// Units whose terms this run has sent to the cache, which its writer
@@ -1828,8 +1871,16 @@ impl FactReader {
     fn new(cache: Option<crate::FactsCache>) -> Self {
         let kept = cache.and_then(|cache| {
             std::fs::create_dir_all(&cache.directory).ok()?;
-            let units = lemma_store::UnitCache::open(&cache.directory.join("units.db")).ok()?;
-            Some((cache.build, units))
+            let units_path = cache.directory.join("units.db");
+            let units = lemma_store::UnitCache::open(&units_path).ok()?;
+            let segments = lemma_store::SegmentStore::new(&cache.directory.join("segments"));
+            Some(Kept {
+                build: cache.build,
+                units,
+                units_path,
+                segments: Arc::new(segments),
+                writing: Vec::new(),
+            })
         });
         Self {
             extractors: ExtractorPool::new(),
@@ -1905,7 +1956,7 @@ impl FactReader {
                 .into_iter()
                 .map(|file| (file.path.clone(), file))
                 .collect();
-        let build = self.kept.as_ref().map_or("", |(build, _)| build.as_str());
+        let build = self.kept.as_ref().map_or("", |kept| kept.build.as_str());
         let options_text = format!("{options:?}");
         let mut keyed = Vec::new();
         for file in code {
@@ -1934,25 +1985,18 @@ impl FactReader {
         let (keyed, _) = self.keyed(repository, commit, files, options)?;
         let mut wanted = terms.clone();
         wanted.insert(crate::terms::REEXPORTS.to_owned());
-        let matches = |facts: &CodeFacts| {
-            crate::terms::code_terms(facts)
-                .iter()
-                .any(|term| wanted.contains(term))
-        };
         let keys: Vec<String> = keyed.iter().map(|(_, key)| key.clone()).collect();
-        let among: BTreeSet<String> = keys.iter().cloned().collect();
-        // A cache that cannot be read, in either lookup, only means reading
-        // every file: none counts as indexed.
-        let (indexed, hits) = match &self.kept {
-            Some((_, units)) => {
-                let wanted: Vec<String> = wanted.iter().cloned().collect();
-                match (units.indexed(&keys), units.units_with(&wanted, &among)) {
-                    (Ok(indexed), Ok(hits)) => (indexed, hits),
-                    _ => (BTreeSet::new(), BTreeSet::new()),
-                }
-            }
-            None => (BTreeSet::new(), BTreeSet::new()),
-        };
+        let segment = self
+            .kept
+            .as_ref()
+            .map(|kept| crate::term_segments::key(&kept.build, repository, &keys));
+        if let Some(found) = self.kept_term_files(segment.as_ref(), &wanted, keyed.len()) {
+            return Ok(found
+                .into_iter()
+                .map(|position| keyed[position].0.path.clone())
+                .collect());
+        }
+        let (indexed, hits) = self.indexed_and_hits(&keys, &wanted);
         let mut chosen: BTreeSet<String> = keyed
             .iter()
             .filter(|(_, key)| indexed.contains(key) && hits.contains(key))
@@ -1963,36 +2007,109 @@ impl FactReader {
             .filter(|(_, key)| !indexed.contains(key))
             .map(|(file, _)| file.clone())
             .collect();
-        if unindexed.is_empty() {
-            return Ok(chosen);
-        }
         let key_of: BTreeMap<&str, &String> = keyed
             .iter()
             .map(|(file, key)| (file.path.as_str(), key))
             .collect();
-        let mut backfill = Vec::new();
+        let mut fresh: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (path, facts) in self.read(repository, commit, &unindexed, options)? {
-            if matches(&facts) {
+            let file_terms = crate::terms::code_terms(&facts);
+            if file_terms.iter().any(|term| wanted.contains(term)) {
                 chosen.insert(path.clone());
             }
-            let Some(key) = key_of.get(path.as_str()) else {
-                continue;
-            };
-            if self.termed.insert((*key).clone()) {
-                backfill.push(((*key).clone(), crate::terms::code_terms(&facts)));
+            if let Some(key) = key_of.get(path.as_str()) {
+                fresh.insert((*key).clone(), file_terms);
             }
         }
-        if let Some((_, units)) = &mut self.kept {
-            units.put_terms_later(backfill);
+        let backfill: Vec<(String, Vec<String>)> = fresh
+            .iter()
+            .filter(|(key, _)| self.termed.insert((*key).clone()))
+            .map(|(key, terms)| (key.clone(), terms.clone()))
+            .collect();
+        if let Some(kept) = &mut self.kept {
+            kept.units.put_terms_later(backfill);
+        }
+        // Every file's terms are known once each indexed file's are read
+        // back, so the next run can skip the lookups above.
+        let is_complete = fresh.len() == unindexed.len();
+        if let (Some(segment), true) = (segment, is_complete) {
+            self.put_term_segment(segment, keys, indexed, fresh);
         }
         Ok(chosen)
+    }
+
+    /// Those of `keys` whose terms the cache holds, and those of them any
+    /// of `wanted` indexes. A cache that cannot be read, in either lookup,
+    /// only means reading every file: none counts as indexed.
+    fn indexed_and_hits(
+        &self,
+        keys: &[String],
+        wanted: &BTreeSet<String>,
+    ) -> (BTreeSet<String>, BTreeSet<String>) {
+        let Some(kept) = &self.kept else {
+            return (BTreeSet::new(), BTreeSet::new());
+        };
+        let among: BTreeSet<String> = keys.iter().cloned().collect();
+        let wanted: Vec<String> = wanted.iter().cloned().collect();
+        match (
+            kept.units.indexed(keys),
+            kept.units.units_with(&wanted, &among),
+        ) {
+            (Ok(indexed), Ok(hits)) => (indexed, hits),
+            _ => (BTreeSet::new(), BTreeSet::new()),
+        }
+    }
+
+    /// The positions of files any of `wanted` indexes, from the terms
+    /// segment under `key`; `None` when it is missing or does not check,
+    /// which only means looking each file up.
+    fn kept_term_files(
+        &self,
+        key: Option<&lemma_store::SegmentKey>,
+        wanted: &BTreeSet<String>,
+        file_count: usize,
+    ) -> Option<BTreeSet<usize>> {
+        let bytes = self.kept.as_ref()?.segments.get(key?).ok()??;
+        crate::term_segments::files_with(&bytes, wanted, file_count).ok()
+    }
+
+    /// Keeps the terms segment of the files `keys` name, from the terms of
+    /// those `indexed`, read back from the cache, and of the others in
+    /// `fresh`. Built in the background: reading the indexed files' terms
+    /// back takes a while in a large repository, and nothing in this run
+    /// reads the segment. Keeping is best effort: a segment that cannot be
+    /// built or written only means looking files up again next run.
+    fn put_term_segment(
+        &mut self,
+        segment: lemma_store::SegmentKey,
+        keys: Vec<String>,
+        indexed: BTreeSet<String>,
+        fresh: BTreeMap<String, Vec<String>>,
+    ) {
+        let Some(kept) = &mut self.kept else {
+            return;
+        };
+        let units_path = kept.units_path.clone();
+        let segments = Arc::clone(&kept.segments);
+        let writer = std::thread::Builder::new().spawn(move || {
+            let Ok(units) = lemma_store::UnitCache::open(&units_path) else {
+                return;
+            };
+            let indexed: Vec<String> = indexed.into_iter().collect();
+            let Ok(stored) = units.terms_of(&indexed) else {
+                return;
+            };
+            let bytes = term_segment(&keys, &stored, &fresh);
+            let _ = segments.put(&segment, &bytes);
+        });
+        kept.writing.extend(writer.ok());
     }
 
     /// The facts the cache keeps for `files`, decoded in parallel. A cache
     /// that cannot be read, or an entry that does not decode, only means
     /// parsing.
     fn kept_facts(&self, files: &[(&ListedFile, &String)]) -> BTreeMap<String, Rc<CodeFacts>> {
-        let Some((_, units)) = &self.kept else {
+        let Some(Kept { units, .. }) = &self.kept else {
             return BTreeMap::new();
         };
         let keys: Vec<String> = files.iter().map(|(_, key)| (*key).clone()).collect();
@@ -2040,7 +2157,7 @@ impl FactReader {
             }
             parsed.push(((*key).clone(), Rc::new(facts)));
         }
-        if let Some((_, units)) = &mut self.kept {
+        if let Some(Kept { units, .. }) = &mut self.kept {
             units.put_later(new_units);
             units.put_terms_later(new_terms);
         }

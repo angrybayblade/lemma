@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS unit_terms (
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS indexed_units (
     unit TEXT PRIMARY KEY
-) WITHOUT ROWID;";
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS unit_terms_by_unit ON unit_terms (unit);";
 
 /// Keys looked up per query, under SQLite's limit on parameters.
 const KEYS_PER_QUERY: usize = 500;
@@ -180,6 +181,26 @@ impl UnitCache {
             "SELECT unit FROM indexed_units WHERE unit IN",
             units,
         )
+    }
+
+    /// The terms each of `units` is indexed by; a unit indexed by none, or
+    /// not indexed, is left out.
+    pub fn terms_of(&self, units: &[String]) -> Result<BTreeMap<String, Vec<String>>, StoreError> {
+        let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for batch in units.chunks(KEYS_PER_QUERY) {
+            let placeholders = vec!["?"; batch.len()].join(",");
+            let mut statement = self.connection.prepare_cached(&format!(
+                "SELECT unit, term FROM unit_terms WHERE unit IN ({placeholders})"
+            ))?;
+            let rows = statement.query_map(rusqlite::params_from_iter(batch), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (unit, term) = row?;
+                found.entry(unit).or_default().push(term);
+            }
+        }
+        Ok(found)
     }
 
     /// Those of `among` indexed by any of `terms`. The cache holds other
@@ -473,6 +494,7 @@ mod tests {
         let cache = UnitCache::open(&path).unwrap();
         let keys = ["a".to_owned(), "b".to_owned(), "c".to_owned()];
         let indexed = cache.indexed(&keys).unwrap();
+        let terms = cache.terms_of(&keys).unwrap();
         let among = BTreeSet::from(["a".to_owned(), "b".to_owned()]);
         let calling = cache
             .units_with(&["path:/v1/users".to_owned()], &among)
@@ -480,6 +502,10 @@ mod tests {
 
         assert_eq!(indexed, BTreeSet::from(["a".to_owned(), "b".to_owned()]));
         assert_eq!(calling, BTreeSet::from(["a".to_owned()]));
+        assert_eq!(
+            terms,
+            BTreeMap::from([("a".to_owned(), vec!["path:/v1/users".to_owned()])])
+        );
         let _ = std::fs::remove_dir_all(&directory);
     }
 
