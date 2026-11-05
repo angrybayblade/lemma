@@ -1280,8 +1280,10 @@ struct Candidates<'a> {
     options: &'a CodeOptions,
 }
 
-/// The paths among `candidates` that may make a call `terms` name, that
-/// are `edited`, or that those import, `depth` levels down.
+/// The paths among `candidates` that may make a call `terms` name, or that
+/// those import, `depth` levels down, and those `edited`. Edited files'
+/// imports are not followed: requirements holding for edited code read
+/// only facts of the edited file itself.
 fn chosen_paths(
     candidates: &Candidates<'_>,
     terms: &BTreeSet<String>,
@@ -1291,13 +1293,6 @@ fn chosen_paths(
 ) -> Result<BTreeSet<String>, VerifyError> {
     let place = (candidates.repository.path.as_path(), candidates.commit);
     let mut chosen = extractor.select(place, candidates.files, candidates.options, terms)?;
-    chosen.extend(
-        candidates
-            .files
-            .iter()
-            .filter(|file| edited.contains(&file.path))
-            .map(|file| file.path.clone()),
-    );
     // The files they import, as far down as the grammar's rules follow
     // imports, each level read for the next.
     let mut frontier = chosen.clone();
