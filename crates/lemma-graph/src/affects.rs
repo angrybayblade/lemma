@@ -671,9 +671,7 @@ fn parse_functions(
         parsed.push(((*key).clone(), functions));
     }
     if let Some((_, units)) = kept.as_mut() {
-        // Keeping is an optimisation: a failure only costs a later run a
-        // parse.
-        let _ = units.put_many(&new_units);
+        units.put_later(new_units);
     }
     Ok(parsed)
 }
