@@ -1940,6 +1940,7 @@ impl FactReader {
         files: &[ListedFile],
         options: &CodeOptions,
     ) -> Result<Keyed, VerifyError> {
+        use rayon::prelude::*;
         let code: Vec<&ListedFile> = files
             .iter()
             .filter(|file| !lemma_http::is_test_file(&file.path))
@@ -1958,15 +1959,17 @@ impl FactReader {
                 .collect();
         let build = self.kept.as_ref().map_or("", |kept| kept.build.as_str());
         let options_text = format!("{options:?}");
-        let mut keyed = Vec::new();
-        for file in code {
-            // A file gone between listing and reading has no key.
-            let Some(named) = lemma_http::contents_key(file, contents.get(&file.path)) else {
-                continue;
-            };
-            let key = unit_key(build, &file.path, &options_text, &named);
-            keyed.push((file.clone(), key));
-        }
+        // Keying is a digest per file, worth spreading over threads in a
+        // large repository; the order is kept. A file gone between listing
+        // and reading has no key.
+        let keyed = code
+            .into_par_iter()
+            .filter_map(|file| {
+                let named = lemma_http::contents_key(file, contents.get(&file.path))?;
+                let key = unit_key(build, &file.path, &options_text, &named);
+                Some((file.clone(), key))
+            })
+            .collect();
         Ok((keyed, contents))
     }
 
