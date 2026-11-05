@@ -99,7 +99,7 @@ pub fn trace_through_system<E: Engine>(
         &start,
         &mut functions,
         &routes,
-        &walkable.calls,
+        &mut impact::known_calls(&walkable.calls),
     );
     if let Some(error) = code.into_failure() {
         return Err(error);

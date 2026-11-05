@@ -55,7 +55,35 @@ pub struct Walkable {
     pub routes: Vec<RouteSite>,
     /// Trace starts for inferred findings, by their index in the findings.
     pub seeds: Vec<(usize, Seed)>,
+    /// When inference read only some consumer code, the operations whose
+    /// calls `calls` holds completely, and how to ask for the calls of
+    /// others; `None` when `calls` holds every call.
+    pub partial: Option<PartialCalls>,
 }
+
+/// Calls inference read for some operations only.
+#[derive(Debug)]
+pub struct PartialCalls {
+    /// The operations (`METHOD /path`) whose calls are all known.
+    pub covered: BTreeSet<String>,
+    /// The manifest inference verified, to ask for more calls with.
+    pub manifest: lemma_verify::Manifest,
+    /// Each manifest entry's repository.
+    pub owners: BTreeMap<String, String>,
+}
+
+/// Where a trace gets the calls of the operations it reaches: those
+/// inference found, and, for operations it did not read every call of,
+/// `fetch`, asked once per round with the operations not known yet.
+pub struct CallSource<'a> {
+    /// What inference found.
+    pub walkable: &'a Walkable,
+    /// Asks for the calls of operations inference did not read all of.
+    pub fetch: &'a mut FetchCalls<'a>,
+}
+
+/// Asks for the calls of some operations.
+pub type FetchCalls<'a> = dyn FnMut(&BTreeSet<String>) -> Result<Vec<Call>, GraphError> + 'a;
 
 /// Reads inference's `calls` and `route` rows, naming repositories by
 /// `owners` (entry name to repository).
@@ -83,6 +111,7 @@ pub fn walkable(
             .collect(),
         routes,
         seeds: Vec::new(),
+        partial: None,
     }
 }
 
@@ -233,10 +262,11 @@ pub fn declared_seed(link: &Link, repos: &BTreeMap<String, Repo>) -> Option<Seed
 pub fn attach(
     findings: &mut [Finding],
     seeds: &[(usize, Seed)],
-    walkable: &Walkable,
+    source: &mut CallSource<'_>,
     repos: &BTreeMap<String, Repo>,
     reading: &CodeReading<'_>,
 ) -> Result<(), GraphError> {
+    let walkable = source.walkable;
     let problems: Vec<&(usize, Seed)> = seeds
         .iter()
         .filter(|(index, _)| findings[*index].severity != Severity::Info)
@@ -248,22 +278,73 @@ pub fn attach(
     let mut code = Code::new(repos, reading);
     let mut traces: BTreeMap<&Seed, Vec<Impact>> = BTreeMap::new();
     let mut tracing = impact::Tracing::default();
+    let mut known = KnownCalls::default();
     for (index, seed) in problems {
         if !traces.contains_key(seed) {
             let mut functions = |repository: &str| code.functions(repository);
+            let mut calls = |operations: &BTreeSet<String>| known.of(operations, source);
             let start = impact::Start::Names(seed.clone());
-            let (affected, links) = impact::trace_links(
-                &mut tracing,
-                &start,
-                &mut functions,
-                &routes,
-                &walkable.calls,
-            );
+            let (affected, links) =
+                impact::trace_links(&mut tracing, &start, &mut functions, &routes, &mut calls);
             traces.insert(seed, describe(&affected, &links));
         }
         findings[*index].affects.clone_from(&traces[seed]);
     }
+    if let Some(error) = known.failure {
+        return Err(error);
+    }
     code.into_failure().map_or(Ok(()), Err)
+}
+
+/// The calls fetched for operations inference did not read every call of,
+/// by operation, kept for all of a check's traces.
+#[derive(Default)]
+struct KnownCalls {
+    fetched: BTreeMap<String, Vec<Call>>,
+    /// The first fetch that failed; its operations count as uncalled.
+    failure: Option<GraphError>,
+}
+
+impl KnownCalls {
+    /// The calls of `operations`: from inference where it read them all,
+    /// otherwise fetched, once per operation.
+    fn of(&mut self, operations: &BTreeSet<String>, source: &mut CallSource<'_>) -> Vec<Call> {
+        let walkable = source.walkable;
+        let is_covered = |operation: &String| {
+            walkable
+                .partial
+                .as_ref()
+                .is_none_or(|partial| partial.covered.contains(operation))
+        };
+        let missing: BTreeSet<String> = operations
+            .iter()
+            .filter(|operation| !is_covered(operation) && !self.fetched.contains_key(*operation))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            let found = (source.fetch)(&missing).unwrap_or_else(|error| {
+                self.failure.get_or_insert(error);
+                Vec::new()
+            });
+            for operation in &missing {
+                let calls = found
+                    .iter()
+                    .filter(|call| &call.operation == operation)
+                    .cloned()
+                    .collect();
+                self.fetched.insert(operation.clone(), calls);
+            }
+        }
+        let known = walkable
+            .calls
+            .iter()
+            .filter(|call| operations.contains(&call.operation) && is_covered(&call.operation));
+        let fetched = operations
+            .iter()
+            .filter_map(|operation| self.fetched.get(operation))
+            .flatten();
+        known.chain(fetched).cloned().collect()
+    }
 }
 
 /// How tracing reads code: the facts kept between runs, if any, and the

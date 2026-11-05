@@ -151,7 +151,7 @@ For each declared link, cheapest first:
 
 With a change, only problems the change introduced count; what was already there is informational. Without one, every problem counts. The level decides what a problem is: a warning at `audit` (the default), an error at `check`, which exits with 4.
 
-Inferred links are checked by `lemma verify`'s grammar. Its errors are problems; its warnings stay warnings.
+Inferred links are checked by `lemma verify`'s grammar. Its errors are problems; its warnings stay warnings. Inference reads only the code that may call an operation the change touches, with the files it imports and the files the change edits (see `--evaluation` in [verify](verify.md)), so the count of inferred links is of calls to those operations. A trace asks for the callers of each further operation it reaches as it reaches it.
 
 ### What a problem affects
 

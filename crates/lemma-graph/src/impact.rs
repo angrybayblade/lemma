@@ -209,9 +209,24 @@ fn trace(
         &Start::Names(seed.clone()),
         functions,
         routes,
-        calls,
+        &mut known_calls(calls),
     )
     .0
+}
+
+/// Calls of operations a trace reaches, asked for a round at a time: the
+/// operations of every route the round reached.
+pub type CallsOf<'a> = dyn FnMut(&BTreeSet<String>) -> Vec<Call> + 'a;
+
+/// Calls of operations from `calls`, all of which are known.
+pub fn known_calls(calls: &[Call]) -> impl FnMut(&BTreeSet<String>) -> Vec<Call> + '_ {
+    move |operations| {
+        calls
+            .iter()
+            .filter(|call| operations.contains(&call.operation))
+            .cloned()
+            .collect()
+    }
 }
 
 /// As [`trace`], from `start`, with the links between what it reaches:
@@ -223,7 +238,7 @@ pub fn trace_links(
     start: &Start,
     functions: &mut dyn FnMut(&str) -> Vec<Function>,
     routes: &[Route],
-    calls: &[Call],
+    calls: &mut CallsOf<'_>,
 ) -> (Vec<(usize, Affected)>, Vec<Link>) {
     let repositories = &mut tracing.repositories;
     let mut tracer = Tracer::default();
@@ -232,25 +247,36 @@ pub fn trace_links(
         hops: 0,
         via: None,
     });
-    while let Some(step) = tracer.pending.pop_front() {
-        let name = step.repository().to_owned();
-        let repository = repositories
-            .entry(name.clone())
-            .or_insert_with(|| Repository::read(functions(&name), routes, &name));
-        let walked = step.walk(&repository.functions, &repository.names);
-        for (route, handler) in &repository.routes {
-            if let Some(found) = handler.resolve(&repository.functions, &walked) {
-                let handled = Handled {
-                    route,
-                    handler: found,
-                    functions: &repository.functions,
-                    walked: &walked,
-                };
-                tracer.visit(&step, &handled, calls);
-            }
+    // A round walks every pending step, then asks for the calls of the
+    // operations it reached at once; their callers are the next round.
+    loop {
+        while let Some(step) = tracer.pending.pop_front() {
+            let name = step.repository().to_owned();
+            let repository = repositories
+                .entry(name.clone())
+                .or_insert_with(|| Repository::read(functions(&name), routes, &name));
+            tracer.walk(&step, repository);
         }
+        if tracer.awaiting.is_empty() {
+            break;
+        }
+        let awaiting = std::mem::take(&mut tracer.awaiting);
+        let operations: BTreeSet<String> = awaiting
+            .iter()
+            .map(|reached| reached.name.clone())
+            .collect();
+        let found = calls(&operations);
+        tracer.follow(&awaiting, &found);
     }
     tracer.finish()
+}
+
+/// An operation a round reached, waiting for its calls.
+struct Awaiting {
+    operation: Affected,
+    /// Its name, `METHOD /path`.
+    name: String,
+    hops: usize,
 }
 
 /// What traces from several starts share: each repository's functions,
@@ -434,12 +460,31 @@ struct Tracer {
     links: BTreeSet<Link>,
     seen_operations: BTreeSet<String>,
     pending: VecDeque<Step>,
+    /// Operations this round reached, whose callers come next.
+    awaiting: Vec<Awaiting>,
 }
 
 impl Tracer {
     /// Records a route whose handler was reached, and queues the callers of
     /// its operation.
-    fn visit(&mut self, step: &Step, handled: &Handled<'_>, calls: &[Call]) {
+    /// Walks from `step` in `repository`, visiting each route whose handler
+    /// it reaches.
+    fn walk(&mut self, step: &Step, repository: &Repository) {
+        let walked = step.walk(&repository.functions, &repository.names);
+        for (route, handler) in &repository.routes {
+            if let Some(found) = handler.resolve(&repository.functions, &walked) {
+                let handled = Handled {
+                    route,
+                    handler: found,
+                    functions: &repository.functions,
+                    walked: &walked,
+                };
+                self.visit(step, &handled);
+            }
+        }
+    }
+
+    fn visit(&mut self, step: &Step, handled: &Handled<'_>) {
         let route = handled.route;
         let operation = Affected::Operation {
             service: route.service.clone(),
@@ -463,22 +508,33 @@ impl Tracer {
         {
             return;
         }
-        for call in calls
-            .iter()
-            .filter(|call| call.operation == route.operation)
-        {
-            let caller = caller(call);
-            self.affected.entry(caller.clone()).or_insert(step.hops + 1);
-            self.links.insert(Link {
-                user: Node::Affected(caller.clone()),
-                used: Node::Affected(operation.clone()),
-                kind: LinkKind::Call,
-            });
-            self.pending.push_back(Step {
-                start: Start::Names(call_seed(call)),
-                hops: step.hops + 1,
-                via: Some(caller),
-            });
+        self.awaiting.push(Awaiting {
+            operation,
+            name: route.operation.clone(),
+            hops: step.hops,
+        });
+    }
+
+    /// Records the callers among `calls` of the operations a round reached,
+    /// and queues each to be walked from.
+    fn follow(&mut self, awaiting: &[Awaiting], calls: &[Call]) {
+        for reached in awaiting {
+            for call in calls.iter().filter(|call| call.operation == reached.name) {
+                let caller = caller(call);
+                self.affected
+                    .entry(caller.clone())
+                    .or_insert(reached.hops + 1);
+                self.links.insert(Link {
+                    user: Node::Affected(caller.clone()),
+                    used: Node::Affected(reached.operation.clone()),
+                    kind: LinkKind::Call,
+                });
+                self.pending.push_back(Step {
+                    start: Start::Names(call_seed(call)),
+                    hops: reached.hops + 1,
+                    via: Some(caller),
+                });
+            }
         }
     }
 
@@ -1073,7 +1129,7 @@ mod tests {
             &start,
             &mut functions,
             &fixture_routes(),
-            &fixture_calls(),
+            &mut known_calls(&fixture_calls()),
         );
 
         let execute = Node::Affected(Affected::Operation {
