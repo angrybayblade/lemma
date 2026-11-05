@@ -3,8 +3,14 @@
 //! on (the build of Lemma, the producer, the path, the input's contents),
 //! so an unchanged input is never read again. One table of key to value,
 //! read and written in batches.
+//!
+//! A unit may also be indexed by terms, short strings saying what it
+//! mentions (a path a file calls, say), so the units that could matter to a
+//! question are found without reading them all. A unit is recorded as
+//! indexed once its terms are written, so a lookup can tell an index that
+//! covers a set of units from one that does not.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -17,6 +23,14 @@ use crate::StoreError;
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS units (
     key   TEXT PRIMARY KEY,
     value BLOB NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS unit_terms (
+    term TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    PRIMARY KEY (term, unit)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS indexed_units (
+    unit TEXT PRIMARY KEY
 ) WITHOUT ROWID;";
 
 /// Keys looked up per query, under SQLite's limit on parameters.
@@ -45,8 +59,16 @@ pub struct UnitCache {
 /// A thread writing batches of units on its own connection, so a caller
 /// carries on while they are written and synced to disk.
 struct Writer {
-    batches: mpsc::Sender<Vec<(String, Vec<u8>)>>,
+    batches: mpsc::Sender<Batch>,
     thread: JoinHandle<()>,
+}
+
+/// What the writer thread writes, each in one transaction.
+enum Batch {
+    /// Units, by key.
+    Units(Vec<(String, Vec<u8>)>),
+    /// Each unit's terms, marking the unit indexed.
+    Terms(Vec<(String, Vec<String>)>),
 }
 
 impl UnitCache {
@@ -122,11 +144,43 @@ impl UnitCache {
         if entries.is_empty() {
             return;
         }
+        self.send(Batch::Units(entries));
+    }
+
+    /// Indexes each unit by its terms in the background, as
+    /// [`UnitCache::put_later`] keeps units, recording it as indexed even
+    /// with no terms.
+    pub fn put_terms_later(&mut self, terms: Vec<(String, Vec<String>)>) {
+        if terms.is_empty() {
+            return;
+        }
+        self.send(Batch::Terms(terms));
+    }
+
+    fn send(&mut self, batch: Batch) {
         let path = &self.path;
         let writer = self.writer.get_or_insert_with(|| start_writer(path));
         // A writer that has stopped drops what it is sent, as it would
         // fail to write it.
-        let _ = writer.batches.send(entries);
+        let _ = writer.batches.send(batch);
+    }
+
+    /// Those of `units` whose terms are written.
+    pub fn indexed(&self, units: &[String]) -> Result<BTreeSet<String>, StoreError> {
+        select_column(
+            &self.connection,
+            "SELECT unit FROM indexed_units WHERE unit IN",
+            units,
+        )
+    }
+
+    /// The units indexed by any of `terms`.
+    pub fn units_with(&self, terms: &[String]) -> Result<BTreeSet<String>, StoreError> {
+        select_column(
+            &self.connection,
+            "SELECT unit FROM unit_terms WHERE term IN",
+            terms,
+        )
     }
 }
 
@@ -144,7 +198,7 @@ impl Drop for UnitCache {
 
 /// Starts a thread writing the batches it is sent to the cache at `path`.
 fn start_writer(path: &Path) -> Writer {
-    let (batches, received) = mpsc::channel::<Vec<(String, Vec<u8>)>>();
+    let (batches, received) = mpsc::channel::<Batch>();
     let path = path.to_owned();
     let thread = std::thread::spawn(move || {
         let Ok(mut connection) = open_writer(&path) else {
@@ -152,10 +206,54 @@ fn start_writer(path: &Path) -> Writer {
         };
         for batch in received {
             // Best effort, as `put_later` says.
-            let _ = insert_many(&mut connection, &batch);
+            let _ = match batch {
+                Batch::Units(entries) => insert_many(&mut connection, &entries),
+                Batch::Terms(terms) => insert_terms(&mut connection, &terms),
+            };
         }
     });
     Writer { batches, thread }
+}
+
+/// Writes each unit's terms and marks it indexed, in one transaction.
+fn insert_terms(
+    connection: &mut Connection,
+    terms: &[(String, Vec<String>)],
+) -> Result<(), StoreError> {
+    let transaction = connection.transaction()?;
+    {
+        let mut term = transaction
+            .prepare_cached("INSERT OR IGNORE INTO unit_terms (term, unit) VALUES (?1, ?2)")?;
+        let mut indexed =
+            transaction.prepare_cached("INSERT OR IGNORE INTO indexed_units (unit) VALUES (?1)")?;
+        for (unit, unit_terms) in terms {
+            for text in unit_terms {
+                term.execute(params![text, unit])?;
+            }
+            indexed.execute(params![unit])?;
+        }
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+/// The values of a one-column `query` (`SELECT x FROM t WHERE y IN`) over
+/// `values`, a batch of them per statement.
+fn select_column(
+    connection: &Connection,
+    query: &str,
+    values: &[String],
+) -> Result<BTreeSet<String>, StoreError> {
+    let mut found = BTreeSet::new();
+    for batch in values.chunks(KEYS_PER_QUERY) {
+        let placeholders = vec!["?"; batch.len()].join(",");
+        let mut statement = connection.prepare_cached(&format!("{query} ({placeholders})"))?;
+        let rows = statement.query_map(rusqlite::params_from_iter(batch), |row| row.get(0))?;
+        for row in rows {
+            found.insert(row?);
+        }
+    }
+    Ok(found)
 }
 
 /// A second connection to the cache at `path`, for writing.
@@ -236,6 +334,27 @@ mod tests {
             std::env::temp_dir().join(format!("lemma-units-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         directory
+    }
+
+    #[test]
+    fn units_are_found_by_their_terms_once_indexed() {
+        let directory = tempfile_directory("terms");
+        let path = directory.join("units.db");
+        let mut cache = UnitCache::open(&path).unwrap();
+
+        cache.put_terms_later(vec![
+            ("a".to_owned(), vec!["path:/v1/users".to_owned()]),
+            ("b".to_owned(), Vec::new()),
+        ]);
+        drop(cache);
+        let cache = UnitCache::open(&path).unwrap();
+        let keys = ["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        let indexed = cache.indexed(&keys).unwrap();
+        let calling = cache.units_with(&["path:/v1/users".to_owned()]).unwrap();
+
+        assert_eq!(indexed, BTreeSet::from(["a".to_owned(), "b".to_owned()]));
+        assert_eq!(calling, BTreeSet::from(["a".to_owned()]));
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
