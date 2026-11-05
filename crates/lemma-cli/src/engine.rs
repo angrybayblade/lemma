@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
@@ -32,8 +32,9 @@ use lemma_store::{
 
 use crate::addresses;
 use crate::cli::{
-    Cli, Command, DefinitionArgs, GraphArgs, GraphDirection, GraphDrawing, GraphSourceArg,
-    LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget, SymbolsArgs,
+    Cli, Command, DEFAULT_KEEP, DEFAULT_TTL, DefinitionArgs, GraphArgs, GraphDirection,
+    GraphDrawing, GraphSourceArg, LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget,
+    SymbolsArgs,
 };
 use crate::output::{self, Format};
 use crate::selection;
@@ -182,19 +183,65 @@ impl Engine {
                 };
                 self.index(&request, &invocation.resolve(&path), retention, out)
             }
-            Command::Symbols(args) => self.symbols(&request, args, out),
-            Command::Outline { path } => self.outline(&request, &path, out),
-            Command::Refs(args) => self.references(&request, args, out),
-            Command::Definition(args) => self.definition(&request, &args, out),
-            Command::Implementations(args) => self.implementations(&request, args, out),
-            Command::Signature(args) => self.signature(&request, args, out),
-            Command::Graph(args) => self.graph(&request, args, out),
+            Command::Symbols(args) => {
+                self.refresh_index(&request)?;
+                self.symbols(&request, args, out)
+            }
+            Command::Outline { path } => {
+                self.refresh_index(&request)?;
+                self.outline(&request, &path, out)
+            }
+            Command::Refs(args) => {
+                self.refresh_index(&request)?;
+                self.references(&request, args, out)
+            }
+            Command::Definition(args) => {
+                self.refresh_index(&request)?;
+                self.definition(&request, &args, out)
+            }
+            Command::Implementations(args) => {
+                self.refresh_index(&request)?;
+                self.implementations(&request, args, out)
+            }
+            Command::Signature(args) => {
+                self.refresh_index(&request)?;
+                self.signature(&request, args, out)
+            }
+            Command::Graph(args) => {
+                self.refresh_index(&request)?;
+                self.graph(&request, args, out)
+            }
             Command::Providers => self.providers(&request, out),
             Command::Daemon(_) => bail!("`lemma daemon` cannot run inside the daemon"),
             Command::Mcp => bail!("`lemma mcp` cannot run inside the daemon"),
             Command::Verify(_) => bail!("`lemma verify` runs in its own process"),
             Command::Check(_) => bail!("`lemma check` runs in its own process"),
         }
+    }
+
+    /// Brings the index a query reads up to date with its files first, as
+    /// the MCP server does, so a query never answers from, or refuses over,
+    /// a file edited since `lemma index`. Files whose size and times are
+    /// unchanged cost a `stat` each. An index given with `--db` is left as
+    /// it is: what it indexes is not known from its location.
+    fn refresh_index(&mut self, request: &Request<'_>) -> anyhow::Result<()> {
+        if request.db.is_some() {
+            return Ok(());
+        }
+        // Without an index the query reports that itself.
+        let Ok(db_path) = request.find_index() else {
+            return Ok(());
+        };
+        let Some(root) = db_path.parent().and_then(Path::parent) else {
+            return Ok(());
+        };
+        let retention = Retention {
+            keep: DEFAULT_KEEP,
+            ttl: crate::duration::parse_duration(DEFAULT_TTL)?,
+        };
+        let root = root.to_path_buf();
+        self.index(request, &root, retention, &mut io::sink())?;
+        Ok(())
     }
 
     fn index(
