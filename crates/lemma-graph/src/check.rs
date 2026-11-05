@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lemma_logic::Engine;
 use lemma_model::Language;
@@ -175,27 +176,18 @@ pub fn check<E: Engine>(
         .or(repos[SELF].files[HEAD].graph.level)
         .unwrap_or_default();
     let links = collect_links(&repos)?;
-    let mut checker = Checker {
-        repos: &repos,
-        level,
-        cache: &options.cache,
-        extractor: Extractor::new().map_err(|source| GraphError::Syntax { source })?,
-        outputs: BTreeMap::new(),
-        reads: schema::Reads::default(),
-        findings: Vec::new(),
-        has_change: options.change.is_some(),
-    };
-    for link in &links {
-        checker.check_link(link)?;
-    }
-    // Adapters build in the same shared worktree resolvers ran in.
-    checker.reads.release();
-    let mut findings = checker.findings;
-    findings.extend(unsupported_documents(&repos)?);
+    let mut findings = check_declared(&repos, &links, level, options)?;
     let mut seeds = declared_seeds(&findings, &links, &repos);
+    // Verification and tracing read the same repositories; each is listed
+    // once.
+    let listings = Arc::new(lemma_http::Listings::default());
+    let shared = Shared {
+        options,
+        listings: &listings,
+    };
     let inference = match &options.change {
-        Some(change) => infer_change(&repos, change, options, engine, &mut findings)?,
-        None => infer_drift(&repos, level, engine, &mut findings, options)?,
+        Some(change) => infer_change(&repos, change, &shared, engine, &mut findings)?,
+        None => infer_drift(&repos, level, engine, &mut findings, &shared)?,
     };
     let (inferred_links, walkable) = match inference {
         Some((count, walkable)) => (Some(count), walkable),
@@ -203,7 +195,11 @@ pub fn check<E: Engine>(
     };
     seeds.extend(walkable.seeds.iter().cloned());
     let facts = options.facts_cache.as_ref();
-    affects::attach(&mut findings, &seeds, &walkable, &repos, facts)?;
+    let reading = affects::CodeReading {
+        facts,
+        listings: &listings,
+    };
+    affects::attach(&mut findings, &seeds, &walkable, &repos, &reading)?;
     findings.sort_by(|left, right| {
         (left.severity, &left.link, &left.check, &left.message).cmp(&(
             right.severity,
@@ -219,6 +215,33 @@ pub fn check<E: Engine>(
         repositories: resolved(&repos),
         findings,
     })
+}
+
+/// The findings of the declared links, and of documents Lemma cannot read.
+fn check_declared(
+    repos: &BTreeMap<String, Repo>,
+    links: &BTreeSet<Link>,
+    level: Level,
+    options: &CheckOptions,
+) -> Result<Vec<Finding>, GraphError> {
+    let mut checker = Checker {
+        repos,
+        level,
+        cache: &options.cache,
+        extractor: Extractor::new().map_err(|source| GraphError::Syntax { source })?,
+        outputs: BTreeMap::new(),
+        reads: schema::Reads::default(),
+        findings: Vec::new(),
+        has_change: options.change.is_some(),
+    };
+    for link in links {
+        checker.check_link(link)?;
+    }
+    // Adapters build in the same shared worktree resolvers ran in.
+    checker.reads.release();
+    let mut findings = checker.findings;
+    findings.extend(unsupported_documents(repos)?);
+    Ok(findings)
 }
 
 /// Where each declared link's problems start a trace: the link's caller.
@@ -254,16 +277,25 @@ struct Inference<'a> {
     is_drift: bool,
     cache: &'a Path,
     facts_cache: Option<&'a lemma_verify::FactsCache>,
+    listings: &'a Arc<lemma_http::Listings>,
+}
+
+/// What every inference in one check shares: its options, and the
+/// listings verification and tracing both read.
+struct Shared<'a> {
+    options: &'a CheckOptions,
+    listings: &'a Arc<lemma_http::Listings>,
 }
 
 /// What a change to one repository breaks, read at its two commits.
 fn infer_change<E: Engine>(
     repos: &BTreeMap<String, Repo>,
     change: &Change,
-    options: &CheckOptions,
+    shared: &Shared<'_>,
     engine: &E,
     findings: &mut Vec<Finding>,
 ) -> Result<Option<(usize, Walkable)>, GraphError> {
+    let (options, listings) = (shared.options, shared.listings);
     let level = options
         .level
         .or(repos[SELF].files[HEAD].graph.level)
@@ -280,6 +312,7 @@ fn infer_change<E: Engine>(
         is_drift: false,
         cache: &options.cache,
         facts_cache: options.facts_cache.as_ref(),
+        listings,
     };
     infer_links(repos, &run, level, engine, findings)
 }
@@ -293,8 +326,9 @@ fn infer_drift<E: Engine>(
     level: Level,
     engine: &E,
     findings: &mut Vec<Finding>,
-    options: &CheckOptions,
+    shared: &Shared<'_>,
 ) -> Result<Option<(usize, Walkable)>, GraphError> {
+    let (options, listings) = (shared.options, shared.listings);
     let mut inferred = None;
     for (name, repo) in repos {
         let has_adapter = repo.files[HEAD]
@@ -311,6 +345,7 @@ fn infer_drift<E: Engine>(
             is_drift: true,
             cache: &options.cache,
             facts_cache: options.facts_cache.as_ref(),
+            listings,
         };
         if let Some(found) = infer_links(repos, &run, level, engine, findings)? {
             inferred = Some(found);
@@ -366,8 +401,9 @@ fn infer_links<E: Engine>(
         relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
         facts_cache: run.facts_cache.cloned(),
     };
-    let report = lemma_verify::verify(&inferred.manifest, engine, &options)
-        .map_err(|source| GraphError::Inference { source })?;
+    let report =
+        lemma_verify::verify_with_listings(&inferred.manifest, engine, &options, run.listings)
+            .map_err(|source| GraphError::Inference { source })?;
     let mut walkable = affects::walkable(&report.relations, &inferred.repositories);
     for found in &report.findings {
         if let Some(seed) = affects::inferred_seed(&found.values, &inferred.repositories) {

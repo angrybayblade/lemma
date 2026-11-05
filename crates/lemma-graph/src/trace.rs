@@ -84,7 +84,12 @@ pub fn trace_through_system<E: Engine>(
             .map(|function| (in_repository(&function.file), function.line))
             .collect(),
     };
-    let mut code = Code::new(&repos, None);
+    let listings = lemma_http::Listings::default();
+    let reading = affects::CodeReading {
+        facts: None,
+        listings: &listings,
+    };
+    let mut code = Code::new(&repos, &reading);
     let mut functions = |name: &str| code.functions(name);
     let mut tracing = impact::Tracing::default();
     let (_, links) = impact::trace_links(
