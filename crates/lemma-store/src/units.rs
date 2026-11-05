@@ -5,7 +5,7 @@
 //! read and written in batches.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{Connection, params};
@@ -17,9 +17,16 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS units (
     value BLOB NOT NULL
 ) WITHOUT ROWID;";
 
+/// Keys looked up per query, under SQLite's limit on parameters.
+const KEYS_PER_QUERY: usize = 500;
+
+/// Units read and decoded at a time by [`UnitCache::get_decoded`].
+const DECODED_PER_CHUNK: usize = 4096;
+
 /// A cache of units in one SQLite file. Several Lemma processes may use
 /// one at a time: writers wait for each other rather than fail.
 pub struct UnitCache {
+    path: PathBuf,
     connection: Connection,
 }
 
@@ -31,28 +38,49 @@ impl UnitCache {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.execute_batch(SCHEMA)?;
-        Ok(Self { connection })
+        Ok(Self {
+            path: path.to_owned(),
+            connection,
+        })
     }
 
     /// The values kept for those of `keys` the cache holds.
     pub fn get_many(&self, keys: &[String]) -> Result<BTreeMap<String, Vec<u8>>, StoreError> {
-        let mut statement = self
-            .connection
-            .prepare_cached("SELECT value FROM units WHERE key = ?1")?;
-        let mut found = BTreeMap::new();
-        for key in keys {
-            let value: Option<Vec<u8>> = statement
-                .query_row(params![key], |row| row.get(0))
-                .map(Some)
-                .or_else(|error| match error {
-                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                    other => Err(other),
-                })?;
-            if let Some(value) = value {
-                found.insert(key.clone(), value);
-            }
+        select_many(&self.connection, keys)
+    }
+
+    /// The units kept under those of `keys` the cache holds, each turned
+    /// into a value by `decode` in parallel. Read and decoded a chunk at a
+    /// time, so the encoded units of a large repository are never all held
+    /// at once beside the decoded ones. A unit `decode` rejects is left
+    /// out, as if it were not kept.
+    pub fn get_decoded<T: Send>(
+        &self,
+        keys: &[String],
+        decode: impl Fn(&[u8]) -> Option<T> + Sync,
+    ) -> Result<BTreeMap<String, T>, StoreError> {
+        use rayon::prelude::*;
+        // Chunks are read in parallel too, each reader with its own
+        // connection: with the cache's write-ahead log, readers do not wait
+        // for each other.
+        let path = &self.path;
+        let chunks: Vec<Result<Vec<(String, T)>, StoreError>> = keys
+            .par_chunks(DECODED_PER_CHUNK)
+            .map(|chunk| {
+                let connection = Connection::open(path)?;
+                connection.busy_timeout(Duration::from_secs(60))?;
+                let found = select_many(&connection, chunk)?;
+                Ok(found
+                    .into_iter()
+                    .filter_map(|(key, bytes)| Some((key, decode(&bytes)?)))
+                    .collect())
+            })
+            .collect();
+        let mut decoded = BTreeMap::new();
+        for chunk in chunks {
+            decoded.extend(chunk?);
         }
-        Ok(found)
+        Ok(decoded)
     }
 
     /// Keeps `entries`, in one transaction.
@@ -71,6 +99,30 @@ impl UnitCache {
         transaction.commit()?;
         Ok(())
     }
+}
+
+/// The values `connection`'s cache holds under those of `keys`.
+fn select_many(
+    connection: &Connection,
+    keys: &[String],
+) -> Result<BTreeMap<String, Vec<u8>>, StoreError> {
+    let mut found = BTreeMap::new();
+    // One query per batch of keys rather than per key: at 100k files
+    // the round trips, not the lookups, were the cost.
+    for batch in keys.chunks(KEYS_PER_QUERY) {
+        let placeholders = vec!["?"; batch.len()].join(",");
+        let mut statement = connection.prepare_cached(&format!(
+            "SELECT key, value FROM units WHERE key IN ({placeholders})"
+        ))?;
+        let rows = statement.query_map(rusqlite::params_from_iter(batch), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (key, value) = row?;
+            found.insert(key, value);
+        }
+    }
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -93,8 +145,14 @@ mod tests {
         let found = cache
             .get_many(&["a".to_owned(), "missing".to_owned()])
             .unwrap();
+        let decoded = cache
+            .get_decoded(&["a".to_owned(), "b".to_owned()], |bytes| {
+                (bytes != b"two").then_some(bytes.len())
+            })
+            .unwrap();
 
         assert_eq!(found, BTreeMap::from([("a".to_owned(), b"one".to_vec())]));
+        assert_eq!(decoded, BTreeMap::from([("a".to_owned(), 3)]));
         drop(cache);
         let _ = std::fs::remove_dir_all(&directory);
     }

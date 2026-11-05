@@ -11,5 +11,6 @@ workspace = true
 
 [dependencies]
 lemma-model.workspace = true
+rayon.workspace = true
 rusqlite.workspace = true
 thiserror.workspace = true
