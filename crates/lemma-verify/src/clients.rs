@@ -244,7 +244,7 @@ pub(crate) fn starts_locally(call: &MemberCall, imported_names: &[String]) -> bo
 
 /// Letters and digits only, in lower case, so `api_keys`,
 /// `apiKeys` and `api-keys` compare equal.
-fn normalized(text: &str) -> String {
+pub(crate) fn normalized(text: &str) -> String {
     text.chars()
         .filter(char::is_ascii_alphanumeric)
         .map(|character| character.to_ascii_lowercase())

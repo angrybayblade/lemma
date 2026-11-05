@@ -1609,15 +1609,18 @@ impl FactReader {
             .collect();
         let mut parsed = Vec::new();
         let mut new_units = Vec::new();
+        let mut new_terms = Vec::new();
         for ((_, key), result) in files.iter().zip(read) {
             let (facts, encoded) = result?;
             if let Some(encoded) = encoded {
                 new_units.push(((*key).clone(), encoded));
+                new_terms.push(((*key).clone(), crate::terms::code_terms(&facts)));
             }
             parsed.push(((*key).clone(), Rc::new(facts)));
         }
         if let Some((_, units)) = &mut self.kept {
             units.put_later(new_units);
+            units.put_terms_later(new_terms);
         }
         Ok(parsed)
     }
