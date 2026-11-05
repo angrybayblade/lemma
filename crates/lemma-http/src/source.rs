@@ -19,6 +19,19 @@ pub struct SourceFile {
     pub contents: String,
 }
 
+/// A file a listing names, with the Git blob that holds its contents when
+/// the file is known to match it, so what it holds is known without
+/// reading it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedFile {
+    /// Path relative to the repository root, with `/`.
+    pub path: String,
+    /// The blob's object id. `None` for a file Git cannot vouch for:
+    /// untracked, changed since it was staged, reached through a link, or
+    /// written to disk differently from its blob.
+    pub blob: Option<String>,
+}
+
 /// Why files could not be read.
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
@@ -97,65 +110,344 @@ pub fn read_files_where(
 /// build's output (a client generated into an ignored directory) does not
 /// count as part of the repository; outside Git, every file is.
 pub fn list_files(repository: &Path, commit: Option<&str>) -> Result<Vec<String>, SourceError> {
-    let mut paths = match commit {
-        Some(commit) => git_paths(repository, commit, &[])?,
-        None => working_paths(repository)?,
+    let listed = list_with_blobs(repository, commit)?;
+    Ok(listed.into_iter().map(|file| file.path).collect())
+}
+
+/// [`list_files`], with each file's blob where Git knows it: every file of
+/// a commit, and in the working directory each tracked file unchanged
+/// since it was staged. Sorted by path.
+pub fn list_with_blobs(
+    repository: &Path,
+    commit: Option<&str>,
+) -> Result<Vec<ListedFile>, SourceError> {
+    let mut files = match commit {
+        Some(commit) => commit_listing(repository, commit)?,
+        None => working_listing(repository)?,
     };
-    paths.retain(|path| !path.contains("node_modules/"));
-    paths.sort();
-    Ok(paths)
+    files.retain(|file| !file.path.contains("node_modules/"));
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    files.dedup_by(|later, earlier| later.path == earlier.path);
+    Ok(files)
+}
+
+/// Every entry of `commit`'s tree, with its blob. A submodule's commit is
+/// listed too, as a path with no blob.
+fn commit_listing(repository: &Path, commit: &str) -> Result<Vec<ListedFile>, SourceError> {
+    // `-z`: paths as they are, not quoted when they hold non-ASCII bytes.
+    let output = git(repository, &["ls-tree", "-r", "-z", commit])?;
+    let mut files = Vec::new();
+    for entry in String::from_utf8_lossy(&output).split('\0') {
+        // `<mode> <type> <object>\t<path>`.
+        let Some((described, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        let mut fields = described.split(' ').skip(1);
+        let (kind, object) = (fields.next(), fields.next());
+        let blob = object.filter(|_| kind == Some("blob")).map(str::to_owned);
+        files.push(ListedFile {
+            path: path.to_owned(),
+            blob,
+        });
+    }
+    Ok(files)
 }
 
 /// The working directory's files as Git lists them, tracked and untracked
-/// but not ignored, less those deleted from the disk; every file when Git
-/// lists none, as for a directory a parent repository ignores.
-fn working_paths(repository: &Path) -> Result<Vec<String>, SourceError> {
-    let tracked = git_listing(repository, &["ls-files", "-z", "-s", "-t", "--cached"]);
+/// but not ignored, less those deleted from the disk; every file, with no
+/// blobs, when Git lists none, as for a directory a parent repository
+/// ignores.
+fn working_listing(repository: &Path) -> Result<Vec<ListedFile>, SourceError> {
+    let answers = working_state(repository);
+    let tracked = &answers.tracked;
     if tracked.is_empty() {
         return Ok(directory_paths(repository, &[])?
             .into_iter()
-            .map(|(_, relative)| relative)
+            .map(|(_, relative)| unvouched(relative))
             .collect());
     }
-    // Files deleted but not staged are still in the index; Git names them
-    // in one command, cheaper than checking every listed file on disk.
-    let deleted: BTreeSet<String> = git_listing(repository, &["ls-files", "-z", "--deleted"])
-        .into_iter()
-        .collect();
-    let mut paths = Vec::new();
-    for entry in &tracked {
+    let changes = &answers.changes;
+    let mut files = Vec::new();
+    for entry in tracked {
         // `<tag> <mode> <object> <stage>\t<path>`; `S` marks a file outside
         // a sparse checkout, which is not on disk.
         let Some((described, path)) = entry.split_once('\t') else {
             continue;
         };
         let mut fields = described.split(' ');
-        let (tag, mode) = (fields.next(), fields.next());
-        if tag == Some("S") || deleted.contains(path) {
+        let (tag, mode, object, stage) =
+            (fields.next(), fields.next(), fields.next(), fields.next());
+        let is_deleted = changes
+            .as_ref()
+            .is_some_and(|changes| changes.deleted.contains(path));
+        if tag == Some("S") || is_deleted {
             continue;
         }
         match mode {
             // A link is a file only if it reaches one; a link to a
             // directory brings that directory's files.
-            Some("120000") => linked_paths(repository, path, &mut paths),
+            Some("120000") => linked_paths(repository, path, &mut files),
             // Another repository's commit: not this repository's files.
             Some("160000") => {}
-            _ => paths.push(path.to_owned()),
+            _ => {
+                // A conflicted file is staged more than once and matches
+                // none of its blobs.
+                let is_clean = stage == Some("0")
+                    && changes
+                        .as_ref()
+                        .is_some_and(|changes| !changes.modified.contains(path));
+                files.push(ListedFile {
+                    path: path.to_owned(),
+                    blob: object.filter(|_| is_clean).map(str::to_owned),
+                });
+            }
         }
     }
-    let untracked = git_listing(
-        repository,
-        &["ls-files", "-z", "--others", "--exclude-standard"],
-    );
-    for path in untracked {
+    for path in &answers.untracked {
         // A trailing `/` is a nested repository Git does not descend into.
         if !path.ends_with('/') {
-            linked_paths(repository, &path, &mut paths);
+            linked_paths(repository, path, &mut files);
         }
     }
-    paths.sort();
-    paths.dedup();
-    Ok(paths)
+    drop_converted_blobs(repository, &answers, &mut files);
+    Ok(files)
+}
+
+/// What Git says about a working directory, asked all at once: each
+/// question is a process, and one after another they add up across many
+/// repositories.
+struct WorkingState {
+    /// `git ls-files -s -t` entries; none outside a repository.
+    tracked: Vec<String>,
+    changes: Option<WorkingChanges>,
+    /// Untracked files not ignored.
+    untracked: Vec<String>,
+    /// `git config --list`; `None` when Git could not say.
+    configuration: Option<String>,
+    /// The repository's own attributes file.
+    info_attributes: Option<PathBuf>,
+}
+
+fn working_state(repository: &Path) -> WorkingState {
+    std::thread::scope(|scope| {
+        let tracked =
+            scope.spawn(|| git_listing(repository, &["ls-files", "-z", "-s", "-t", "--cached"]));
+        let changes = scope.spawn(|| working_changes(repository));
+        let untracked = scope.spawn(|| {
+            git_listing(
+                repository,
+                &["ls-files", "-z", "--others", "--exclude-standard"],
+            )
+        });
+        let configuration = scope.spawn(|| {
+            let output = git(repository, &["config", "--list"]).ok()?;
+            Some(String::from_utf8_lossy(&output).into_owned())
+        });
+        let info_attributes = scope.spawn(|| {
+            let output = git(repository, &["rev-parse", "--git-path", "info/attributes"]).ok()?;
+            Some(repository.join(String::from_utf8_lossy(&output).trim()))
+        });
+        // A question whose thread failed counts as one Git could not
+        // answer: no listing, and no blob trusted.
+        WorkingState {
+            tracked: tracked.join().unwrap_or_default(),
+            changes: changes.join().ok().flatten(),
+            untracked: untracked.join().unwrap_or_default(),
+            configuration: configuration.join().ok().flatten(),
+            info_attributes: info_attributes.join().ok().flatten(),
+        }
+    })
+}
+
+/// A file listed with no blob.
+fn unvouched(path: String) -> ListedFile {
+    ListedFile { path, blob: None }
+}
+
+/// Tracked files the working directory no longer matches.
+struct WorkingChanges {
+    deleted: BTreeSet<String>,
+    modified: BTreeSet<String>,
+}
+
+/// What `git diff-files` finds changed since files were staged; `None`
+/// when Git cannot say, so no blob is trusted. Git compares each file's
+/// recorded size and times first, so this reads only files whose times
+/// changed, and a file it is unsure of counts as modified.
+fn working_changes(repository: &Path) -> Option<WorkingChanges> {
+    let output = git(repository, &["diff-files", "-z", "--name-status"]).ok()?;
+    let mut changes = WorkingChanges {
+        deleted: BTreeSet::new(),
+        modified: BTreeSet::new(),
+    };
+    let text = String::from_utf8_lossy(&output);
+    let mut fields = text.split('\0');
+    // `<status>\0<path>\0` pairs.
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
+        let kind = if status == "D" {
+            &mut changes.deleted
+        } else {
+            &mut changes.modified
+        };
+        kind.insert(path.to_owned());
+    }
+    Some(changes)
+}
+
+/// Removes the blob of each file Git writes to disk differently from it:
+/// through a filter (such as Git LFS), in another encoding, with `ident`
+/// expanded, or with CRLF line ends. For these the blob does not say what
+/// the file holds. Every blob goes when Git cannot tell.
+fn drop_converted_blobs(repository: &Path, state: &WorkingState, files: &mut [ListedFile]) {
+    let with_blobs: Vec<&str> = files
+        .iter()
+        .filter(|file| file.blob.is_some())
+        .map(|file| file.path.as_str())
+        .collect();
+    let converted = converted_paths(repository, state, &with_blobs);
+    for file in files.iter_mut() {
+        let is_converted = converted
+            .as_ref()
+            .is_none_or(|converted| converted.contains(&file.path));
+        if is_converted {
+            file.blob = None;
+        }
+    }
+}
+
+/// The attribute names that make Git write a file differently from its
+/// blob.
+const CONVERTING_ATTRIBUTES: [&str; 4] = ["filter", "ident", "working-tree-encoding", "eol"];
+
+/// The files attributes can come from: each `.gitattributes` among
+/// `paths`, the repository's own `info/attributes`, and the user's and the
+/// system's attributes files.
+fn attribute_files(
+    repository: &Path,
+    configuration: &str,
+    info_attributes: Option<&Path>,
+    paths: &[&str],
+) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = paths
+        .iter()
+        .filter(|path| path.rsplit('/').next() == Some(".gitattributes"))
+        .map(|path| repository.join(path))
+        .collect();
+    files.extend(info_attributes.map(Path::to_owned));
+    let configured = configuration
+        .lines()
+        .find_map(|line| line.strip_prefix("core.attributesfile="));
+    let user_file = match configured {
+        Some(path) => Some(PathBuf::from(path)),
+        None => std::env::var_os("XDG_CONFIG_HOME")
+            .map(|directory| PathBuf::from(directory).join("git/attributes"))
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| PathBuf::from(home).join(".config/git/attributes"))
+            }),
+    };
+    files.extend(user_file);
+    files.push(PathBuf::from("/etc/gitattributes"));
+    files
+}
+
+/// Whether any of `files` sets an attribute that converts; `None` when one
+/// exists but cannot be read.
+fn any_converting_attributes(files: &[PathBuf]) -> Option<bool> {
+    for file in files {
+        let text = match fs::read_to_string(file) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        if sets_converting_attribute(&text) {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+/// Whether an attributes file sets a converting attribute on any pattern,
+/// or in a macro (`[attr]lfs filter=lfs`). A line is a pattern and then
+/// attributes: `name`, `name=value`, or `-name` and `!name`, which unset.
+fn sets_converting_attribute(text: &str) -> bool {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .flat_map(|line| line.split_whitespace().skip(1))
+        .filter(|attribute| !attribute.starts_with(['-', '!']))
+        .any(|attribute| {
+            let name = attribute.split('=').next().unwrap_or(attribute);
+            CONVERTING_ATTRIBUTES.contains(&name)
+        })
+}
+
+/// Which of `paths` Git converts when writing them out; `None` when every
+/// file may be converted, or Git cannot tell.
+fn converted_paths(
+    repository: &Path,
+    state: &WorkingState,
+    paths: &[&str],
+) -> Option<BTreeSet<String>> {
+    if paths.is_empty() {
+        return Some(BTreeSet::new());
+    }
+    // Windows checks text files out with CRLF line ends by default.
+    if cfg!(windows) {
+        return None;
+    }
+    let configuration = state.configuration.as_deref()?;
+    let converts_line_ends = configuration
+        .lines()
+        .any(|line| line == "core.autocrlf=true" || line == "core.eol=crlf");
+    if converts_line_ends {
+        return None;
+    }
+    // Asking Git about every file is slow in a large repository (seconds
+    // at 75k files), and needless when no attributes file sets anything
+    // that converts.
+    let sources = attribute_files(
+        repository,
+        configuration,
+        state.info_attributes.as_deref(),
+        paths,
+    );
+    if !any_converting_attributes(&sources)? {
+        return Some(BTreeSet::new());
+    }
+    let input = paths.iter().fold(String::new(), |mut input, path| {
+        input.push_str(path);
+        input.push('\0');
+        input
+    });
+    let output = git_with_input(
+        repository,
+        &[
+            &["check-attr", "-z", "--stdin"][..],
+            &CONVERTING_ATTRIBUTES[..],
+        ]
+        .concat(),
+        input.into_bytes(),
+    )
+    .ok()?;
+    let text = String::from_utf8_lossy(&output);
+    let mut fields = text.split('\0');
+    let mut converted = BTreeSet::new();
+    // `<path>\0<attribute>\0<value>\0` triples.
+    while let (Some(path), Some(attribute), Some(value)) =
+        (fields.next(), fields.next(), fields.next())
+    {
+        let is_given = value != "unspecified" && value != "unset";
+        let converts = match attribute {
+            "ident" => value == "set",
+            "eol" => value == "crlf",
+            _ => is_given,
+        };
+        if converts {
+            converted.insert(path.to_owned());
+        }
+    }
+    Some(converted)
 }
 
 /// The NUL-separated paths a `git` listing prints; none when Git fails, as
@@ -173,11 +465,12 @@ fn git_listing(repository: &Path, args: &[&str]) -> Vec<String> {
 }
 
 /// Adds `path` if it is a file, or the files under it, by their paths
-/// through it, if it leads to a directory (a link to shared code).
-fn linked_paths(repository: &Path, path: &str, paths: &mut Vec<String>) {
+/// through it, if it leads to a directory (a link to shared code). Neither
+/// has a blob: Git stores a link's target, not what it reaches.
+fn linked_paths(repository: &Path, path: &str, files: &mut Vec<ListedFile>) {
     let full = repository.join(path);
     if full.is_file() {
-        paths.push(path.to_owned());
+        files.push(unvouched(path.to_owned()));
         return;
     }
     if !full.is_dir() {
@@ -186,7 +479,7 @@ fn linked_paths(repository: &Path, path: &str, paths: &mut Vec<String>) {
     let Ok(found) = directory_paths(repository, &[path.to_owned()]) else {
         return;
     };
-    paths.extend(found.into_iter().map(|(_, relative)| relative));
+    files.extend(found.into_iter().map(|(_, relative)| unvouched(relative)));
 }
 
 /// One file's text, from `commit` or the working directory, or `None` if
@@ -228,14 +521,71 @@ fn git_paths(
         .collect())
 }
 
-/// Every file of the working directory at `repository`, relative to it
-/// with `/`: in a Git repository as Git sees it (tracked and untracked,
-/// not ignored, so a `.venv` or build output is not code), otherwise every
-/// file but dependencies and Git's own. Links to directories are followed.
-pub fn walk_files(repository: &Path) -> Result<Vec<String>, SourceError> {
-    let mut paths = working_paths(repository)?;
-    paths.retain(|path| !path.contains("node_modules/"));
-    Ok(paths)
+/// Whether `path` is one of `prefixes` or under one; every path is when
+/// there are none.
+pub fn is_under_any(path: &str, prefixes: &[String]) -> bool {
+    prefixes.is_empty()
+        || prefixes.iter().any(|prefix| {
+            let prefix = normal_prefix(prefix);
+            prefix.is_empty()
+                || path == prefix
+                || path
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+}
+
+/// A prefix as paths are listed: without a leading `./` or a trailing `/`;
+/// empty for the whole repository (`.`).
+fn normal_prefix(prefix: &str) -> &str {
+    let mut prefix = prefix.trim_end_matches('/');
+    while let Some(rest) = prefix.strip_prefix("./") {
+        prefix = rest;
+    }
+    if prefix == "." { "" } else { prefix }
+}
+
+/// Fails for a prefix the working directory does not have: a directory the
+/// configuration names that is not there is a mistake to report, not an
+/// empty service.
+pub fn require_prefixes(repository: &Path, prefixes: &[String]) -> Result<(), SourceError> {
+    let missing = prefixes
+        .iter()
+        .map(|prefix| normal_prefix(prefix))
+        .find(|prefix| !prefix.is_empty() && !repository.join(prefix).exists());
+    let Some(missing) = missing else {
+        return Ok(());
+    };
+    Err(SourceError::Io {
+        path: repository.join(missing),
+        source: std::io::Error::from(std::io::ErrorKind::NotFound),
+    })
+}
+
+/// What names a listed file's contents in a cache key: its blob when Git
+/// vouches for it, otherwise the contents as `read`. `None` for a file with
+/// neither, one gone before it could be read.
+pub fn contents_key(file: &ListedFile, read: Option<&SourceFile>) -> Option<Vec<u8>> {
+    if let Some(blob) = &file.blob {
+        return Some(format!("blob:{blob}").into_bytes());
+    }
+    let read = read?;
+    let mut key = b"text:".to_vec();
+    key.extend_from_slice(read.contents.as_bytes());
+    Some(key)
+}
+
+/// The files at `paths` in `commit`, or in the working directory; paths
+/// with no file there are left out. In `paths`' order.
+pub fn read_listed(
+    repository: &Path,
+    commit: Option<&str>,
+    paths: &[String],
+) -> Result<Vec<SourceFile>, SourceError> {
+    match commit {
+        Some(commit) => git_contents(repository, commit, paths),
+        None => read_from_disk(repository, paths),
+    }
 }
 
 /// The files at `paths` under the working directory at `repository`;
@@ -433,6 +783,42 @@ fn directory_paths(
     Ok(found)
 }
 
+/// Runs `git` with `input` on its standard input, written from another
+/// thread so a large input and output cannot block each other.
+fn git_with_input(
+    repository: &Path,
+    args: &[&str],
+    input: Vec<u8>,
+) -> Result<Vec<u8>, SourceError> {
+    let io_error = |source| SourceError::Io {
+        path: repository.to_owned(),
+        source,
+    };
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(io_error)?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io_error(std::io::Error::other("no stdin")))?;
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let output = child.wait_with_output().map_err(io_error)?;
+    let _ = writer.join();
+    if !output.status.success() {
+        return Err(SourceError::Git {
+            repository: repository.to_owned(),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    Ok(output.stdout)
+}
+
 fn git(repository: &Path, args: &[&str]) -> Result<Vec<u8>, SourceError> {
     let output = Command::new("git")
         .arg("-C")
@@ -456,6 +842,107 @@ fn git(repository: &Path, args: &[&str]) -> Result<Vec<u8>, SourceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefixes_match_as_git_pathspecs_do() {
+        let prefixes = |list: &[&str]| {
+            list.iter()
+                .map(|prefix| (*prefix).to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        assert!(is_under_any("src/app.ts", &prefixes(&["./src"])));
+        assert!(is_under_any("src/app.ts", &prefixes(&["src/"])));
+        assert!(is_under_any("src/app.ts", &prefixes(&["."])));
+        assert!(is_under_any("src/app.ts", &prefixes(&["src/app.ts"])));
+        assert!(!is_under_any("srcx/app.ts", &prefixes(&["src"])));
+        assert!(!is_under_any("lib/app.ts", &prefixes(&["./src"])));
+    }
+
+    fn git_in(directory: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    fn blobs(listed: &[ListedFile]) -> Vec<(&str, bool)> {
+        listed
+            .iter()
+            .map(|file| (file.path.as_str(), file.blob.is_some()))
+            .collect()
+    }
+
+    #[test]
+    fn the_working_directory_vouches_only_for_files_unchanged_since_staged() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        for name in ["kept.ts", "edited.ts", "deleted.ts"] {
+            fs::write(root.join(name), "export {}\n").unwrap();
+        }
+        git_in(root, &["init", "-q"]);
+        git_in(root, &["add", "."]);
+        git_in(root, &["commit", "-q", "-m", "base"]);
+        fs::write(root.join("edited.ts"), "export const changed = 1\n").unwrap();
+        fs::remove_file(root.join("deleted.ts")).unwrap();
+        fs::write(root.join("new.ts"), "export {}\n").unwrap();
+
+        let working = list_with_blobs(root, None).unwrap();
+        let committed = list_with_blobs(root, Some("HEAD")).unwrap();
+
+        assert_eq!(
+            blobs(&working),
+            [("edited.ts", false), ("kept.ts", true), ("new.ts", false)]
+        );
+        let kept_blob = |listed: &[ListedFile]| {
+            listed
+                .iter()
+                .find(|file| file.path == "kept.ts")
+                .and_then(|file| file.blob.clone())
+        };
+        assert_eq!(kept_blob(&working), kept_blob(&committed));
+    }
+
+    #[test]
+    fn files_git_converts_on_checkout_have_no_blob() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::write(root.join(".gitattributes"), "*.bin filter=lfs\n").unwrap();
+        fs::write(root.join("model.bin"), "pointer\n").unwrap();
+        fs::write(root.join("app.ts"), "export {}\n").unwrap();
+        git_in(root, &["init", "-q"]);
+        git_in(root, &["add", "."]);
+        git_in(root, &["commit", "-q", "-m", "base"]);
+
+        let working = list_with_blobs(root, None).unwrap();
+
+        assert_eq!(
+            blobs(&working),
+            [
+                (".gitattributes", true),
+                ("app.ts", true),
+                ("model.bin", false)
+            ]
+        );
+    }
+
+    #[test]
+    fn only_attributes_that_change_what_is_written_count_as_converting() {
+        let linguist = "gen/** linguist-generated=true\napps/by_filter.py -text\n";
+        let lfs = "*.bin filter=lfs diff=lfs\n";
+        let macro_definition = "[attr]big filter=lfs\n";
+        let unset = "*.ts -eol !filter\n";
+
+        assert!(!sets_converting_attribute(linguist));
+        assert!(sets_converting_attribute(lfs));
+        assert!(sets_converting_attribute(macro_definition));
+        assert!(!sets_converting_attribute(unset));
+    }
 
     #[test]
     fn a_missing_file_is_none_not_an_error() {
