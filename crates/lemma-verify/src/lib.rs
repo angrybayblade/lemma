@@ -235,18 +235,15 @@ fn evaluation_label(evaluability: Option<&demand::Evaluability>) -> String {
 
 /// Which consumer code a run reads: what the change's findings rest on, the
 /// callers of `operations`, or everything.
-fn focus<'a, E>(
+fn focus<'a>(
     evaluability: Option<&'a demand::Evaluability>,
     operations: Option<&'a BTreeSet<String>>,
-    engine: &'a E,
-) -> extract::Focus<'a, E> {
+) -> extract::Focus<'a> {
     match (evaluability, operations) {
         (Some(demand::Evaluability::ChangeDriven(plan)), Some(operations)) => {
             extract::Focus::Operations(operations, plan.import_depth)
         }
-        (Some(demand::Evaluability::ChangeDriven(plan)), None) => {
-            extract::Focus::Change(plan, engine)
-        }
+        (Some(demand::Evaluability::ChangeDriven(plan)), None) => extract::Focus::Change(plan),
         _ => extract::Focus::Everything,
     }
 }
@@ -302,7 +299,7 @@ fn run<E: Engine>(
         Evaluation::Demand => Some(demand::plan(&grammar)),
     };
     let evaluation = evaluation_label(evaluability.as_ref());
-    let focus = focus(evaluability.as_ref(), operations, engine);
+    let focus = focus(evaluability.as_ref(), operations);
     let mut writer = extract::FactWriter::new(&mut grammar);
     let covered = extract::extract_all(
         manifest,

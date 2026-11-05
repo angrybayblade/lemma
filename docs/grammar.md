@@ -137,6 +137,16 @@ A requirement that rests on a name being present (`uses(c, leaf)`) should look n
 
 `--explain` attaches each finding's derivation: the requirement's fact, then the facts and rules supporting it, indented, down to input facts and `not` lines for negations.
 
+### Reading only what a change touches
+
+By default `lemma verify` reads only the consumer code a finding can rest on (see `--evaluation` in [verify](verify.md)). Lemma decides from the rules' structure whether a grammar allows that. Each requirement must be one of these:
+
+- **Complete**: it reads nothing from consumer code, such as a route its spec does not declare.
+- **Anchored**: every call it rests on is a call of an operation held by a relation computed without consumer code (`removed_operation(op)`), and its other consumer facts are about the calling code: its function, its file, and the files that file imports. Imports followed through a recursive rule are not bounded, so such a requirement is not anchored.
+- **Change-local**: each consumer fact it rests on is guarded by the negation of the same row at the base, through a rule that reads only that input at the base, with no conditions, and keeps its calling code (`!called_before(c, m, p)`), so it can hold only for code the change edits. Its other negations may only be such guards, or the service membership of the guarded call's file.
+
+When any requirement is none of these, every consumer file is read and the report's `evaluation` names the requirement.
+
 ## Relations the extractors fill
 
 `lemma verify` writes these input relations, in both snapshots unless noted. A grammar receives the ones it declares and ignores the rest. Operations are named `METHOD /path` with path parameters as `{}`; consumers are `repository:file::Function` (or `repository:file` outside functions); files are `repository:file`.
