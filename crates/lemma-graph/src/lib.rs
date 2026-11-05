@@ -18,6 +18,7 @@ pub mod compare;
 pub mod compose;
 pub mod config;
 pub mod exports;
+mod functions;
 pub mod handlers;
 mod impact;
 mod infer;

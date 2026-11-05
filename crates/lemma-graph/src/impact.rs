@@ -8,9 +8,10 @@
 //! functions in a repository are not followed, since a mention cannot say
 //! which one is meant. Language servers can make this precise later.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
+use crate::functions::{Functions, Kind, NameId};
 use crate::handlers::{Definition, Lookup, RouteSite, helper_called_at, resolve};
 
 /// A function or method in a repository, with the names its body mentions.
@@ -199,7 +200,7 @@ impl LinkKind {
 #[cfg(test)]
 fn trace(
     seed: &Seed,
-    functions: &mut dyn FnMut(&str) -> Vec<Function>,
+    functions: &mut dyn FnMut(&str) -> Functions,
     routes: &[Route],
     calls: &[Call],
 ) -> Vec<(usize, Affected)> {
@@ -236,7 +237,7 @@ pub fn known_calls(calls: &[Call]) -> impl FnMut(&BTreeSet<String>) -> Vec<Call>
 pub fn trace_links(
     tracing: &mut Tracing,
     start: &Start,
-    functions: &mut dyn FnMut(&str) -> Vec<Function>,
+    functions: &mut dyn FnMut(&str) -> Functions,
     routes: &[Route],
     calls: &mut CallsOf<'_>,
 ) -> (Vec<(usize, Affected)>, Vec<Link>) {
@@ -291,16 +292,15 @@ pub struct Tracing {
 /// handlers and the names its functions define and mention worked out
 /// once.
 struct Repository {
-    functions: Vec<Function>,
+    functions: Functions,
     routes: Vec<(Route, Handler)>,
     names: NameIndex,
 }
 
 impl Repository {
-    fn read(functions: Vec<Function>, routes: &[Route], name: &str) -> Self {
-        let defined: BTreeSet<&str> = functions
-            .iter()
-            .map(|function| function.name.as_str())
+    fn read(functions: Functions, routes: &[Route], name: &str) -> Self {
+        let defined: BTreeSet<NameId> = (0..functions.len())
+            .map(|index| functions.name(index))
             .collect();
         let routes: Vec<(Route, Handler)> = routes
             .iter()
@@ -325,97 +325,116 @@ enum Handler {
     /// file's top-level code.
     Definition(usize),
     /// A handler written inline: reached when its code mentions a reached
-    /// function.
-    Inline(BTreeSet<String>),
+    /// function. Holds the mentions the repository's functions are
+    /// reached by, sorted.
+    Inline(Vec<NameId>),
     /// A registration (`r.POST("/x", h.execute)`): the function its line
     /// names after the path.
-    Named(Vec<String>),
+    Named(NameId),
     /// A route declared inside its handler (a file-based route): the
     /// function around its line.
     Enclosing(usize),
     /// A route outside functions: any function in its file, or the file's
-    /// top-level code.
-    File(String),
+    /// top-level code; `None` when no function is in the file.
+    File(Option<NameId>),
 }
 
 impl Handler {
-    fn of(route: &Route, functions: &[Function], defined: &BTreeSet<&str>) -> Self {
+    fn of(route: &Route, functions: &Functions, defined: &BTreeSet<NameId>) -> Self {
         if let Some(mentions) = &route.inline_mentions {
-            return Self::Inline(mentions.clone());
+            let mut known: Vec<NameId> = mentions
+                .iter()
+                .filter_map(|mention| functions.lookup(mention))
+                .collect();
+            known.sort_unstable();
+            return Self::Inline(known);
         }
         if let Some(index) = resolved_handler(route, functions) {
             return Self::Definition(index);
         }
-        let enclosing = functions.iter().position(|function| {
-            function.file == route.file
-                && function.lines.0 <= route.line
-                && route.line <= function.lines.1
+        let file = functions.lookup(&route.file);
+        let enclosing = file.and_then(|file| {
+            (0..functions.len()).find(|index| {
+                let (first, last) = functions.lines(*index);
+                functions.file(*index) == file && first <= route.line && route.line <= last
+            })
         });
-        let enclosing_name = enclosing.map(|index| functions[index].name.as_str());
+        let enclosing_name = enclosing.map(|index| functions.name(index));
         let named = route
             .handler_names
             .iter()
-            .find(|name| defined.contains(name.as_str()) && Some(name.as_str()) != enclosing_name);
+            .filter_map(|name| functions.lookup(name))
+            .find(|name| defined.contains(name) && Some(*name) != enclosing_name);
         if let Some(name) = named {
-            return Self::Named(vec![name.clone()]);
+            return Self::Named(name);
         }
         match enclosing {
             Some(index) => Self::Enclosing(index),
-            None => Self::File(route.file.clone()),
+            None => Self::File(file),
         }
     }
 
     /// The reached function that handles the route, if one does.
-    fn resolve(&self, functions: &[Function], walked: &Walked) -> Option<usize> {
+    fn resolve(&self, functions: &Functions, walked: &Walked) -> Option<usize> {
         match self {
             Self::Definition(index) | Self::Enclosing(index) => {
                 walked.is_reached[*index].then_some(*index)
             }
             Self::Inline(mentions) => walked.order.iter().copied().find(|index| {
-                callable_names(&functions[*index])
+                functions
+                    .callable_names(*index)
                     .iter()
-                    .any(|name| mentions.contains(*name))
+                    .any(|name| mentions.binary_search(name).is_ok())
             }),
-            Self::Named(names) => walked
+            Self::Named(name) => walked
                 .order
                 .iter()
                 .copied()
-                .find(|index| names.contains(&functions[*index].name)),
-            Self::File(file) => walked
-                .order
-                .iter()
-                .copied()
-                .find(|index| &functions[*index].file == file),
+                .find(|index| functions.name(*index) == *name),
+            Self::File(file) => {
+                let file = (*file)?;
+                walked
+                    .order
+                    .iter()
+                    .copied()
+                    .find(|index| functions.file(*index) == file)
+            }
         }
     }
 }
 
 /// The definition a route's registration names, found with the resolver
 /// exports use, over the functions the trace reads.
-fn resolved_handler(route: &Route, functions: &[Function]) -> Option<usize> {
+fn resolved_handler(route: &Route, functions: &Functions) -> Option<usize> {
     let template = route.template.as_deref()?;
-    let definition = |function: &Function| Definition {
-        path: function.file.clone(),
-        qualified: function.qualified_name.clone(),
-        kind: function.kind.clone(),
+    let definition = |index: usize| Definition {
+        path: functions.file_text(index).to_owned(),
+        qualified: functions.qualified_text(index).to_owned(),
+        kind: functions.kind(index).as_str().to_owned(),
     };
     let unique = |name: &str, from: &str| {
-        let mut named = functions
-            .iter()
-            .filter(|function| function.name == name && language(&function.file) == language(from));
+        let name = functions.lookup(name)?;
+        let mut named = (0..functions.len()).filter(|index| {
+            functions.name(*index) == name
+                && language(functions.file_text(*index)) == language(from)
+        });
         let first = named.next()?;
         named.next().is_none().then(|| definition(first))
     };
     let enclosing = |file: &str, line: u32| {
-        functions
-            .iter()
-            .filter(|function| {
-                function.file == file
-                    && !function.kind.is_empty()
-                    && function.lines.0 <= line
-                    && line <= function.lines.1
+        let file = functions.lookup(file)?;
+        (0..functions.len())
+            .filter(|index| {
+                let (first, last) = functions.lines(*index);
+                functions.file(*index) == file
+                    && functions.kind(*index) != Kind::TopLevel
+                    && first <= line
+                    && line <= last
             })
-            .min_by_key(|function| function.lines.1 - function.lines.0)
+            .min_by_key(|index| {
+                let (first, last) = functions.lines(*index);
+                last - first
+            })
             .map(definition)
     };
     let lookup = Lookup {
@@ -434,12 +453,12 @@ fn resolved_handler(route: &Route, functions: &[Function]) -> Option<usize> {
     } else {
         resolve(&site, &lookup)
     };
-    let path = path?;
-    functions.iter().position(|function| {
-        function.file == path
+    let path = functions.lookup(&path?)?;
+    (0..functions.len()).find(|index| {
+        functions.file(*index) == path
             && match &symbol {
-                Some(symbol) => &function.qualified_name == symbol,
-                None => function.kind.is_empty(),
+                Some(symbol) => functions.qualified_text(*index) == symbol,
+                None => functions.kind(*index) == Kind::TopLevel,
             }
     })
 }
@@ -448,7 +467,7 @@ fn resolved_handler(route: &Route, functions: &[Function]) -> Option<usize> {
 struct Handled<'a> {
     route: &'a Route,
     handler: usize,
-    functions: &'a [Function],
+    functions: &'a Functions,
     walked: &'a Walked,
 }
 
@@ -497,7 +516,7 @@ impl Tracer {
             let functions = handled.functions;
             self.links
                 .extend(handled.walked.chain(handled.handler, functions));
-            function_node(&functions[handled.handler])
+            function_node(functions, handled.handler)
         };
         self.links.insert(Link {
             user: Node::Affected(operation.clone()),
@@ -549,12 +568,12 @@ impl Tracer {
     }
 }
 
-fn function_node(function: &Function) -> Node {
+fn function_node(functions: &Functions, index: usize) -> Node {
     Node::Function {
-        file: function.file.clone(),
-        line: function.lines.0,
-        name: function.qualified_name.clone(),
-        kind: function.kind.clone(),
+        file: functions.file_text(index).to_owned(),
+        line: functions.lines(index).0,
+        name: functions.qualified_text(index).to_owned(),
+        kind: functions.kind(index).as_str().to_owned(),
     }
 }
 
@@ -574,17 +593,21 @@ impl Step {
         }
     }
 
-    fn walk(&self, functions: &[Function], lookup: &NameIndex) -> Walked {
+    fn walk(&self, functions: &Functions, lookup: &NameIndex) -> Walked {
         match &self.start {
             Start::Names(seed) => {
-                let seeds = seed.names.iter().map(|name| (name.clone(), None)).collect();
+                // A name no function mentions or defines has no callers.
+                let named: Vec<NameId> = seed
+                    .names
+                    .iter()
+                    .filter_map(|name| functions.lookup(name))
+                    .collect();
+                let seeds = named.iter().map(|name| (*name, None)).collect();
                 let mut walked = Walked::from_names(functions, lookup, seeds, Vec::new());
                 // Functions named by the seed are reached themselves.
-                let named = functions
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, function)| seed.names.contains(&function.name));
-                for (index, _) in named {
+                let reached =
+                    (0..functions.len()).filter(|index| named.contains(&functions.name(*index)));
+                for index in reached {
                     walked.add(index, None, false);
                 }
                 walked
@@ -592,15 +615,15 @@ impl Step {
             Start::Reached {
                 functions: given, ..
             } => {
-                let given: Vec<usize> = functions
+                let given: Vec<(NameId, u32)> = given
                     .iter()
-                    .enumerate()
-                    .filter(|(_, function)| {
-                        given
-                            .iter()
-                            .any(|(file, line)| &function.file == file && function.lines.0 == *line)
+                    .filter_map(|(file, line)| Some((functions.lookup(file)?, *line)))
+                    .collect();
+                let given: Vec<usize> = (0..functions.len())
+                    .filter(|index| {
+                        let at = (functions.file(*index), functions.lines(*index).0);
+                        given.contains(&at)
                     })
-                    .map(|(index, _)| index)
                     .collect();
                 // The walk that found them may stop short of a route's
                 // handler (a constructor registered for a method's type), so
@@ -638,9 +661,9 @@ impl Walked {
     /// Walks upwards from `seeds` (names, each with the function it came
     /// from), after the `given` functions, which are reached already.
     fn from_names(
-        functions: &[Function],
+        functions: &Functions,
         names: &NameIndex,
-        seeds: Vec<(String, Option<usize>)>,
+        seeds: Vec<(NameId, Option<usize>)>,
         given: Vec<usize>,
     ) -> Self {
         let mut walked = Self {
@@ -653,17 +676,19 @@ impl Walked {
         for index in given {
             walked.add(index, None, false);
         }
-        let mut frontier: BTreeMap<String, Option<usize>> = BTreeMap::new();
+        // Ids follow their names' text, so these iterate as the names
+        // would.
+        let mut frontier: BTreeMap<NameId, Option<usize>> = BTreeMap::new();
         for (name, from) in seeds {
             frontier.entry(name).or_insert(from);
         }
-        let mut followed: BTreeSet<String> = BTreeSet::new();
+        let mut followed: BTreeSet<NameId> = BTreeSet::new();
         for _ in 0..MAX_FUNCTION_HOPS {
             let next = walked.callers(functions, names, &frontier);
             if next.is_empty() {
                 break;
             }
-            followed.extend(frontier.keys().cloned());
+            followed.extend(frontier.keys().copied());
             let onward: Vec<(usize, Option<usize>)> = next
                 .iter()
                 .filter(|(index, _, _)| !names.registrations.contains(index))
@@ -683,38 +708,37 @@ impl Walked {
     /// from, and whether the name was that function's type.
     fn callers(
         &self,
-        functions: &[Function],
+        functions: &Functions,
         names: &NameIndex,
-        frontier: &BTreeMap<String, Option<usize>>,
+        frontier: &BTreeMap<NameId, Option<usize>>,
     ) -> Vec<Reached> {
         // Only functions that mention a frontier name can be callers; they
         // are taken in index order, as a scan of every function would.
         let candidates: BTreeSet<usize> = frontier
             .keys()
-            .filter_map(|name| names.mentioners.get(name))
-            .flatten()
-            .copied()
+            .flat_map(|name| names.mentioners(*name))
+            .map(|index| *index as usize)
             .collect();
         let mut found = Vec::new();
         for index in candidates {
-            let function = &functions[index];
             if self.is_reached[index] {
                 continue;
             }
-            let own = callable_names(function);
+            let own = functions.callable_names(index);
+            let file = functions.file_text(index);
             // A call by name stays within one language.
             let same_language = |from: &Option<usize>| {
-                from.is_none_or(|from| language(&functions[from].file) == language(&function.file))
+                from.is_none_or(|from| language(functions.file_text(from)) == language(file))
             };
-            let matched: Vec<(&String, Option<usize>)> = function
-                .mentions
+            let matched: Vec<(NameId, Option<usize>)> = functions
+                .mentions(index)
                 .iter()
-                .filter(|name| !own.contains(&name.as_str()))
-                .filter_map(|name| Some((name, *frontier.get(name)?)))
+                .filter(|name| !own.contains(name))
+                .filter_map(|name| Some((*name, *frontier.get(name)?)))
                 .filter(|(_, from)| same_language(from))
                 .collect();
-            let through_type = |(name, from): &(&String, Option<usize>)| {
-                from.is_some_and(|from| names_only_type(&functions[from], name))
+            let through_type = |(name, from): &(NameId, Option<usize>)| {
+                from.is_some_and(|from| names_only_type(functions, from, *name))
             };
             // A function naming the method itself as well as its type
             // reaches it directly.
@@ -744,7 +768,7 @@ impl Walked {
     }
 
     /// The calls from `handler` down to a given function, as links.
-    fn chain(&self, handler: usize, functions: &[Function]) -> Vec<Link> {
+    fn chain(&self, handler: usize, functions: &Functions) -> Vec<Link> {
         let mut links = Vec::new();
         let mut current = handler;
         while !self.given.contains(&current) {
@@ -757,8 +781,8 @@ impl Walked {
                 LinkKind::Name
             };
             links.push(Link {
-                user: function_node(&functions[current]),
-                used: function_node(&functions[callee]),
+                user: function_node(functions, current),
+                used: function_node(functions, callee),
                 kind,
             });
             current = callee;
@@ -771,24 +795,26 @@ impl Walked {
 /// followed already or shared by several functions, each with the function
 /// it belongs to.
 fn next_names(
-    functions: &[Function],
+    functions: &Functions,
     reached: &[(usize, Option<usize>)],
     lookup: &NameIndex,
-    followed: &BTreeSet<String>,
-) -> BTreeMap<String, Option<usize>> {
+    followed: &BTreeSet<NameId>,
+) -> BTreeMap<NameId, Option<usize>> {
     let mut names = BTreeMap::new();
     for (index, _) in reached {
-        let candidates = callable_names(&functions[*index])
-            .into_iter()
-            .filter(|name| lookup.is_followable(name) && !followed.contains(*name));
+        let candidates = functions
+            .callable_names(*index)
+            .iter()
+            .filter(|name| lookup.is_followable(**name) && !followed.contains(*name));
         for name in candidates {
-            names.entry(name.to_owned()).or_insert(Some(*index));
+            names.entry(*name).or_insert(Some(*index));
         }
     }
     names
 }
 
-/// The functions reached from `names` by following mentions upwards.
+/// The functions reached from `names` by following mentions upwards, by
+/// their position in `index`.
 #[cfg(test)]
 fn reach<'a>(index: &'a [Function], names: &[String]) -> Vec<&'a Function> {
     let seed = Seed {
@@ -800,32 +826,21 @@ fn reach<'a>(index: &'a [Function], names: &[String]) -> Vec<&'a Function> {
         hops: 0,
         via: None,
     };
-    step.walk(index, &NameIndex::of(index))
+    let functions = Functions::from_functions(index);
+    step.walk(&functions, &NameIndex::of(&functions))
         .order
         .into_iter()
         .map(|position| &index[position])
         .collect()
 }
 
-/// The names a function is reached by: its own, and for a method its
-/// type's, since callers often hold the type (a constructor, a handler
-/// object) rather than name the method.
-fn callable_names(function: &Function) -> Vec<&str> {
-    if function.name.is_empty() {
-        return function.binds.iter().map(String::as_str).collect();
-    }
-    let mut names = vec![function.name.as_str()];
-    if let Some((container, _)) = function.qualified_name.rsplit_once('.') {
-        names.push(container.rsplit('.').next().unwrap_or(container));
-    }
-    names
-}
-
 /// Whether `name` is the type `function` is a method of, rather than the
 /// function's own name.
-fn names_only_type(function: &Function, name: &str) -> bool {
-    let names = callable_names(function);
-    !function.name.is_empty() && function.name != name && names.get(1) == Some(&name)
+fn names_only_type(functions: &Functions, function: usize, name: NameId) -> bool {
+    let names = functions.callable_names(function);
+    !functions.is_unnamed(function)
+        && functions.name(function) != name
+        && names.get(1) == Some(&name)
 }
 
 /// A file's language, as far as calls by name go: its extension, with
@@ -838,12 +853,14 @@ fn language(file: &str) -> &str {
 }
 
 /// What a walk looks names up in: which it may follow, and which functions
-/// mention each, by their index. Only looked up, never iterated, so hash
-/// maps keep no order out of the results.
+/// mention each, by their index, all by name id.
 struct NameIndex {
     /// How many functions define each name, or bind it.
-    definitions: HashMap<String, usize>,
-    mentioners: HashMap<String, Vec<usize>>,
+    definitions: Vec<u32>,
+    /// Where each name's mentioners end in `mentioners`.
+    mentioner_ends: Vec<u32>,
+    /// The functions mentioning each name, in index order.
+    mentioners: Vec<u32>,
     /// Functions holding a route's registration, whose names a walk does
     /// not follow on: what mentions a registration (a router collecting
     /// routes, a generator documenting them) reads the route, it does not
@@ -853,23 +870,55 @@ struct NameIndex {
 }
 
 impl NameIndex {
-    fn of(functions: &[Function]) -> Self {
-        let mut definitions: HashMap<String, usize> = HashMap::new();
-        let mut mentioners: HashMap<String, Vec<usize>> = HashMap::new();
-        for (index, function) in functions.iter().enumerate() {
-            let defined = std::iter::once(&function.name).chain(&function.binds);
-            for name in defined {
-                *definitions.entry(name.clone()).or_insert(0) += 1;
+    fn of(functions: &Functions) -> Self {
+        let name_count = functions.name_count();
+        let mut definitions = vec![0u32; name_count];
+        let mut mentioner_ends = vec![0u32; name_count];
+        for index in 0..functions.len() {
+            definitions[functions.name(index) as usize] += 1;
+            for name in functions.binds(index) {
+                definitions[*name as usize] += 1;
             }
-            for name in &function.mentions {
-                mentioners.entry(name.clone()).or_default().push(index);
+            for name in functions.mentions(index) {
+                mentioner_ends[*name as usize] += 1;
+            }
+        }
+        // Counts become ends, then each name's run is filled from its
+        // start, in index order.
+        let mut total = 0u32;
+        for end in &mut mentioner_ends {
+            total += *end;
+            *end = total;
+        }
+        let mut next: Vec<u32> = std::iter::once(0)
+            .chain(mentioner_ends.iter().copied())
+            .take(name_count)
+            .collect();
+        let mut mentioners = vec![0u32; total as usize];
+        for index in 0..functions.len() {
+            for name in functions.mentions(index) {
+                let slot = &mut next[*name as usize];
+                mentioners[*slot as usize] = u32::try_from(index).unwrap_or(u32::MAX);
+                *slot += 1;
             }
         }
         Self {
             definitions,
+            mentioner_ends,
             mentioners,
             registrations: BTreeSet::new(),
         }
+    }
+
+    /// The functions mentioning `name`, in index order.
+    fn mentioners(&self, name: NameId) -> &[u32] {
+        let name = name as usize;
+        let start = if name == 0 {
+            0
+        } else {
+            self.mentioner_ends[name - 1] as usize
+        };
+        &self.mentioners[start..self.mentioner_ends[name] as usize]
     }
 
     /// Whether a walk may follow `name`: defined by few functions, so a
@@ -877,9 +926,9 @@ impl NameIndex {
     /// function through one is evidence (`errorToHTTPException`, which
     /// every handler mentions, is not). A type's name, which no function
     /// defines, is held to the second only.
-    fn is_followable(&self, name: &str) -> bool {
-        let defining = self.definitions.get(name).copied().unwrap_or(0);
-        let mentioning = self.mentioners.get(name).map_or(0, Vec::len);
+    fn is_followable(&self, name: NameId) -> bool {
+        let defining = self.definitions[name as usize] as usize;
+        let mentioning = self.mentioners(name).len();
         defining <= MAX_DEFINITIONS && mentioning <= MAX_MENTIONS
     }
 }
@@ -888,17 +937,18 @@ impl NameIndex {
 /// declaring line, and a handler that is a value rather than a function
 /// (`const send = router.openapi(def, async (c) => ...)`), which code
 /// reads as part of a route table but never calls.
-fn registrations(functions: &[Function], routes: &[(Route, Handler)]) -> BTreeSet<usize> {
+fn registrations(functions: &Functions, routes: &[(Route, Handler)]) -> BTreeSet<usize> {
     let mut found = BTreeSet::new();
     for (route, handler) in routes {
-        let holding = functions.iter().enumerate().filter(|(_, function)| {
-            function.file == route.file
-                && function.lines.0 <= route.line
-                && route.line <= function.lines.1
-        });
-        found.extend(holding.map(|(index, _)| index));
+        if let Some(file) = functions.lookup(&route.file) {
+            let holding = (0..functions.len()).filter(|index| {
+                let (first, last) = functions.lines(*index);
+                functions.file(*index) == file && first <= route.line && route.line <= last
+            });
+            found.extend(holding);
+        }
         if let Handler::Definition(index) | Handler::Enclosing(index) = handler {
-            let is_value = matches!(functions[*index].kind.as_str(), "constant" | "variable");
+            let is_value = matches!(functions.kind(*index), Kind::Constant | Kind::Variable);
             if is_value {
                 found.insert(*index);
             }
@@ -1067,7 +1117,7 @@ mod tests {
 
     #[test]
     fn a_break_reaches_operations_and_callers_across_repositories() {
-        let mut functions = fixture_functions;
+        let mut functions = |name: &str| Functions::from_functions(&fixture_functions(name));
         let routes = fixture_routes();
         let calls = fixture_calls();
         let seed = Seed {
@@ -1098,7 +1148,7 @@ mod tests {
 
     #[test]
     fn a_trace_from_reached_functions_links_handlers_operations_and_callers() {
-        let mut functions = fixture_functions;
+        let mut functions = |name: &str| Functions::from_functions(&fixture_functions(name));
         let start = Start::Reached {
             repository: "tools".to_owned(),
             functions: vec![("handlers/execute.go".to_owned(), 1)],
@@ -1167,13 +1217,14 @@ mod tests {
                 "a := SubmitTask{}; a.Invoke()",
             ),
         ];
-        let names = NameIndex::of(&index);
-        let seeds = vec![
-            ("Invoke".to_owned(), Some(0)),
-            ("SubmitTask".to_owned(), Some(0)),
-        ];
+        let table = Functions::from_functions(&index);
+        let names = NameIndex::of(&table);
+        let seeds = ["Invoke", "SubmitTask"]
+            .iter()
+            .filter_map(|name| Some((table.lookup(name)?, Some(0))))
+            .collect();
 
-        let walked = Walked::from_names(&index, &names, seeds, vec![0]);
+        let walked = Walked::from_names(&table, &names, seeds, vec![0]);
 
         assert_eq!(walked.through_type, BTreeSet::from([1]));
         assert!(walked.is_reached[2] && walked.is_reached[3]);
@@ -1187,8 +1238,9 @@ mod tests {
             function("openapi.ts", "generateDoc", (1, 4), "describe(routes)"),
         ];
         let route = route("api", "POST /tools", "tools.ts", 6, "handler: dispatchTask");
-        let mut names = NameIndex::of(&index);
-        names.registrations = registrations(&index, &[(route, Handler::Definition(0))]);
+        let table = Functions::from_functions(&index);
+        let mut names = NameIndex::of(&table);
+        names.registrations = registrations(&table, &[(route, Handler::Definition(0))]);
         let step = Step {
             start: Start::Names(Seed {
                 repository: String::new(),
@@ -1199,7 +1251,7 @@ mod tests {
         };
 
         let mut reached: Vec<&str> = step
-            .walk(&index, &names)
+            .walk(&table, &names)
             .order
             .into_iter()
             .map(|position| index[position].name.as_str())
