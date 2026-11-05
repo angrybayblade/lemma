@@ -6,6 +6,7 @@
 //! `lemma_logic::Engine`).
 
 mod clients;
+mod demand;
 mod extract;
 mod manifest;
 mod system;
@@ -148,6 +149,9 @@ pub struct Report {
     pub change: String,
     /// The engine that evaluated the rules.
     pub engine: String,
+    /// How much consumer code was read: `full`, `demand`, or `full: <why>`
+    /// when demand was asked for and the grammar does not allow it.
+    pub evaluation: String,
     /// Facts extracted, by relation.
     pub facts: BTreeMap<String, usize>,
     /// Findings, most severe first, then by requirement and message.
@@ -169,6 +173,22 @@ pub struct Options {
     /// Where the facts read from code are kept between runs; `None` keeps
     /// nothing.
     pub facts_cache: Option<FactsCache>,
+    /// How much consumer code to read.
+    pub evaluation: Evaluation,
+}
+
+/// How much consumer code a verification reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Evaluation {
+    /// Every consumer file.
+    #[default]
+    Full,
+    /// Only the consumer files a finding can rest on: those that may call
+    /// an operation the change touches, the files they import, and the
+    /// files the change edits. A grammar whose requirements are not bounded
+    /// by the change is evaluated in full, and the report says why.
+    /// Relations asked for are complete only for those files.
+    Demand,
 }
 
 /// Facts read from code, kept between runs by what they were read from.
@@ -208,12 +228,26 @@ pub fn verify_with_listings<E: Engine>(
     };
     let mut grammar = lemma_grammar::compile(&lemma_grammar::parse_grammar(&grammar_text)?)?;
     check_relations(&grammar, &options.relations)?;
+    let plan = match options.evaluation {
+        Evaluation::Full => None,
+        Evaluation::Demand => Some(demand::plan(&grammar)),
+    };
+    let evaluation = match &plan {
+        None => "full".to_owned(),
+        Some(Ok(_)) => "demand".to_owned(),
+        Some(Err(reason)) => format!("full: {reason}"),
+    };
+    let demand = match &plan {
+        Some(Ok(plan)) => Some((plan, engine)),
+        _ => None,
+    };
     let mut writer = extract::FactWriter::new(&mut grammar);
     extract::extract_all(
         manifest,
         &mut writer,
         options.facts_cache.as_ref(),
         listings,
+        demand,
     )?;
     let facts = writer.counts;
     let derived = evaluate(&grammar, engine, &wanted(&grammar, &options.relations))?;
@@ -231,6 +265,7 @@ pub fn verify_with_listings<E: Engine>(
             change.head_label()
         ),
         engine: engine.name().to_owned(),
+        evaluation,
         facts,
         findings: findings.into_iter().map(|(finding, _)| finding).collect(),
         relations,
@@ -301,7 +336,7 @@ fn evaluate<E: Engine>(
     })
 }
 
-fn describe<E: std::error::Error + 'static>(error: &EvaluationError<E>) -> String {
+pub(crate) fn describe<E: std::error::Error + 'static>(error: &EvaluationError<E>) -> String {
     let mut message = error.to_string();
     let mut source = std::error::Error::source(error);
     while let Some(cause) = source {

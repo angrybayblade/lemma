@@ -164,6 +164,11 @@ pub(crate) struct VerifyArgs {
     /// Repeatable.
     #[arg(long = "relation", value_name = "NAME")]
     pub relations: Vec<String>,
+    /// How much consumer code to read: `full`, `demand` (only what a
+    /// finding can rest on), or `both`, which runs the two and fails if
+    /// their findings differ.
+    #[arg(long, default_value = "full")]
+    pub evaluation: String,
 }
 
 #[derive(Args)]

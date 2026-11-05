@@ -400,6 +400,8 @@ fn infer_links<E: Engine>(
         explain: false,
         relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
         facts_cache: run.facts_cache.cloned(),
+        // Tracing reads every call, not only the change's.
+        evaluation: lemma_verify::Evaluation::Full,
     };
     let report =
         lemma_verify::verify_with_listings(&inferred.manifest, engine, &options, run.listings)

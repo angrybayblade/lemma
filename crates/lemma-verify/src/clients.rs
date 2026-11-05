@@ -128,6 +128,34 @@ impl Clients {
         }
     }
 
+    /// The names a call of the operation `method path` may go by: the
+    /// names of client methods requesting it and of generated functions
+    /// named after it.
+    pub fn names_calling(&self, method: &str, path: &str) -> Vec<String> {
+        let methods = self
+            .methods
+            .iter()
+            .filter(|client| client.method == method && client.path == path)
+            .map(|client| {
+                client
+                    .symbol
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(&client.symbol)
+                    .to_owned()
+            });
+        let generated = self
+            .generated
+            .iter()
+            .filter(|(_, operations)| {
+                operations
+                    .iter()
+                    .any(|operation| operation.method == method && operation.path == path)
+            })
+            .map(|(function, _)| function.clone());
+        methods.chain(generated).collect()
+    }
+
     /// One client's methods.
     pub fn methods_of<'a>(&'a self, client: &'a str) -> impl Iterator<Item = &'a ClientMethod> {
         self.methods

@@ -116,6 +116,8 @@ A string in code counts as a path only if it contains a leading segment some ser
 
 `lemma verify` exits with 4 if any finding is an error, so CI can gate on it. `--json` prints the findings with their values. `--relation calls` also prints every row of a derived relation, here which consumer calls which operation, for inspecting what the rules concluded.
 
+`--evaluation demand` reads only the consumer code a finding can rest on: files that may call an operation the change touches (found through an index of what each file calls, kept with its facts), the files those import, and the files the change edits. A large system's check then reads a few files rather than all of them. Lemma works out from the grammar's requirements whether that is safe; when a requirement could rest on other code, it reads everything and the report's `evaluation` says why. Relations asked for with `--relation` are complete only for the files read. `--evaluation both` runs both ways and fails if their findings differ.
+
 ## Grammars
 
 Requirements live in a grammar, not in Lemma's code. The built-in one is [`grammars/http-contracts.yaml`](../grammars/http-contracts.yaml); copy it and point a manifest's `grammar` at the copy to add or change requirements. See [Grammars](grammar.md).

@@ -48,6 +48,11 @@ impl<'g> FactWriter<'g> {
         }
     }
 
+    /// The grammar facts are written into.
+    pub(crate) fn grammar(&self) -> &CompiledGrammar {
+        self.grammar
+    }
+
     /// Whether the grammar reads `relation` in `snapshot`, so facts for it
     /// there are worth reading.
     fn wants(&self, relation: &str, snapshot: &str) -> bool {
@@ -74,11 +79,12 @@ impl<'g> FactWriter<'g> {
 }
 
 /// Extracts every repository's facts.
-pub fn extract_all(
+pub fn extract_all<E: lemma_logic::Engine>(
     manifest: &Manifest,
     writer: &mut FactWriter<'_>,
     cache: Option<&crate::FactsCache>,
     listings: &Arc<lemma_http::Listings>,
+    demand: Option<(&crate::demand::Plan, &E)>,
 ) -> Result<(), VerifyError> {
     let mut extractor = FactReader::new(cache.cloned());
     check_files(manifest)?;
@@ -89,16 +95,72 @@ pub fn extract_all(
     listings.prefetch(&snapshot_listings(manifest));
     let system = read_system(manifest, &specs)?;
     let clients = read_clients(manifest, &system, &specs, &mut extractor)?;
-    for (name, repository) in &manifest.repositories {
+    // Services and clients first: in change-driven evaluation, their facts
+    // say which operations findings can be about, and so which consumer
+    // files to read.
+    let (consumers, others): (Vec<_>, Vec<_>) = manifest
+        .repositories
+        .iter()
+        .partition(|(_, repository)| repository.role == Role::Consumer);
+    for (name, repository) in others {
         for snapshot in snapshots(manifest, repository, &system, &clients, &specs) {
             match repository.role {
                 Role::Service => service(name, repository, &snapshot, writer, &mut extractor)?,
-                Role::Client => client(name, repository, &snapshot, writer)?,
-                Role::Consumer => consumer(name, repository, &snapshot, writer, &mut extractor)?,
+                _ => client(name, repository, &snapshot, writer)?,
             }
         }
     }
+    let selection = match demand {
+        Some((plan, engine)) => {
+            let operations = crate::demand::operations(writer.grammar(), engine, plan)?;
+            Some(Selection::of(&operations, &clients, writer.grammar(), plan))
+        }
+        None => None,
+    };
+    for (name, repository) in consumers {
+        for mut snapshot in snapshots(manifest, repository, &system, &clients, &specs) {
+            snapshot.selection = selection.as_ref();
+            consumer(name, repository, &snapshot, writer, &mut extractor)?;
+        }
+    }
     Ok(())
+}
+
+/// What change-driven evaluation reads of consumer code: the files that may
+/// call an operation findings can be about (found by the terms their calls
+/// are indexed by), the files those import, and, when a requirement holds
+/// for edited code, the files the change edited.
+pub(crate) struct Selection {
+    terms: BTreeSet<String>,
+    reads_changed_files: bool,
+}
+
+impl Selection {
+    /// The selection for `operations` (`METHOD /path`): their paths, the
+    /// operation-table chains naming them, and the names client methods
+    /// and generated functions give them.
+    fn of(
+        operations: &BTreeSet<String>,
+        clients: &Clients,
+        grammar: &CompiledGrammar,
+        plan: &crate::demand::Plan,
+    ) -> Self {
+        let mut terms = BTreeSet::new();
+        for operation in operations {
+            let Some((method, path)) = operation.split_once(' ') else {
+                continue;
+            };
+            terms.insert(crate::terms::path_term(path));
+            let names = clients.names_calling(method, path);
+            terms.extend(names.iter().map(|name| crate::terms::name_term(name)));
+        }
+        let chains = table_chains(grammar, operations);
+        terms.extend(chains.iter().map(|chain| crate::terms::chain_term(chain)));
+        Self {
+            terms,
+            reads_changed_files: plan.reads_changed_files,
+        }
+    }
 }
 
 /// What the system's services serve, from their specs at every commit they
@@ -386,6 +448,7 @@ fn snapshots<'m>(
             system,
             clients,
             specs,
+            selection: None,
         }];
     }
     vec![
@@ -396,6 +459,7 @@ fn snapshots<'m>(
             system,
             clients,
             specs,
+            selection: None,
         },
         Snapshot {
             commit: manifest.change.head.as_deref(),
@@ -404,6 +468,7 @@ fn snapshots<'m>(
             system,
             clients,
             specs,
+            selection: None,
         },
     ]
 }
@@ -462,6 +527,9 @@ struct Snapshot<'a> {
     clients: &'a Clients,
     /// Specs already read in this run.
     specs: &'a SpecCache,
+    /// The consumer files to read, in change-driven evaluation; `None`
+    /// reads them all.
+    selection: Option<&'a Selection>,
 }
 
 /// A spec as read at one snapshot: the repository, the snapshot's commit
@@ -1028,7 +1096,12 @@ fn consumer(
         reexports: BTreeMap::new(),
         imports: read_import_aliases(repository, snapshot.commit, snapshot.specs)?,
     };
-    let read = extractor.read(&repository.path, snapshot.commit, &files, &scope.options)?;
+    let to_read = if snapshot.selection.is_some() {
+        selected_files(&files, repository, snapshot, &scope, extractor)?
+    } else {
+        files
+    };
+    let read = extractor.read(&repository.path, snapshot.commit, &to_read, &scope.options)?;
     let scope = ConsumerScope {
         reexports: generated_reexports(&scope, &read),
         ..scope
@@ -1037,6 +1110,89 @@ fn consumer(
         consumer_file(&scope, path, facts, writer);
     }
     Ok(())
+}
+
+/// The operation-table chains that request one of `operations`, from the
+/// clients' facts written so far.
+fn table_chains(grammar: &CompiledGrammar, operations: &BTreeSet<String>) -> Vec<String> {
+    let display = |value: &Value| grammar.symbols.display(*value);
+    ["client_operation", "client_operation@base"]
+        .iter()
+        .flat_map(|relation| grammar.facts.rows(relation))
+        .filter_map(|row| {
+            // `client, chain, method, path, file, line`.
+            let [_, chain, method, path, ..] = &row[..] else {
+                return None;
+            };
+            let operation = operation_key(&display(method), &display(path));
+            operations.contains(&operation).then(|| display(chain))
+        })
+        .collect()
+}
+
+/// The consumer files change-driven evaluation reads at `snapshot`: those
+/// that may call an operation findings can be about, those the change
+/// edited when a requirement holds for edited code, and the files these
+/// import, whose declarations their code may use.
+fn selected_files(
+    files: &[ListedFile],
+    repository: &Repository,
+    snapshot: &Snapshot<'_>,
+    scope: &ConsumerScope<'_>,
+    extractor: &mut FactReader,
+) -> Result<Vec<ListedFile>, VerifyError> {
+    let Some(selection) = snapshot.selection else {
+        return Ok(files.to_vec());
+    };
+    let commit = snapshot.commit;
+    let place = (repository.path.as_path(), commit);
+    let mut chosen = extractor.select(place, files, &scope.options, &selection.terms)?;
+    if selection.reads_changed_files {
+        chosen.extend(edited_paths(repository, snapshot)?);
+    }
+    let first: Vec<ListedFile> = files
+        .iter()
+        .filter(|file| chosen.contains(&file.path))
+        .cloned()
+        .collect();
+    for (path, facts) in extractor.read(&repository.path, commit, &first, &scope.options)? {
+        let imported = facts
+            .imports
+            .iter()
+            .filter_map(|specifier| resolve_import(&path, specifier, &scope.known, &scope.imports));
+        chosen.extend(imported);
+    }
+    Ok(files
+        .iter()
+        .filter(|file| chosen.contains(&file.path))
+        .cloned()
+        .collect())
+}
+
+/// The files the change edited in the changed repository: those whose
+/// contents differ between the snapshot and the change's other commit, or
+/// that Git cannot vouch for. None in a repository the change leaves alone.
+fn edited_paths(
+    repository: &Repository,
+    snapshot: &Snapshot<'_>,
+) -> Result<BTreeSet<String>, VerifyError> {
+    let Some(other) = snapshot.other else {
+        return Ok(BTreeSet::new());
+    };
+    let here = snapshot.specs.listing(&repository.path, snapshot.commit)?;
+    let there = snapshot.specs.listing(&repository.path, other)?;
+    let blobs: BTreeMap<&str, Option<&String>> = there
+        .iter()
+        .map(|file| (file.path.as_str(), file.blob.as_ref()))
+        .collect();
+    Ok(here
+        .iter()
+        .filter(|file| {
+            file.blob.is_none()
+                || blobs.get(file.path.as_str()).copied().flatten() != file.blob.as_ref()
+        })
+        .map(|file| file.path.clone())
+        .collect())
 }
 
 fn consumer_file(
@@ -1471,6 +1627,10 @@ fn unit_key(build: &str, path: &str, options: &str, contents: &[u8]) -> String {
     lemma_model::content_hash(&described)
 }
 
+/// Files with their unit keys, and the contents read to key those Git
+/// cannot vouch for.
+type Keyed = (Vec<(ListedFile, String)>, BTreeMap<String, SourceFile>);
+
 /// A parsed file's facts, and their encoding when they should be kept.
 type ReadFacts = (CodeFacts, Option<Vec<u8>>);
 
@@ -1513,36 +1673,11 @@ impl FactReader {
         files: &[ListedFile],
         options: &CodeOptions,
     ) -> Result<Vec<(String, Rc<CodeFacts>)>, VerifyError> {
-        let code: Vec<&ListedFile> = files
-            .iter()
-            .filter(|file| !lemma_http::is_test_file(&file.path))
-            .collect();
-        // A file Git has no blob for is named by its contents, so those are
-        // read first.
-        let unvouched: Vec<String> = code
-            .iter()
-            .filter(|file| file.blob.is_none())
-            .map(|file| file.path.clone())
-            .collect();
-        let mut contents: BTreeMap<String, SourceFile> =
-            lemma_http::read_listed(repository, commit, &unvouched)?
-                .into_iter()
-                .map(|file| (file.path.clone(), file))
-                .collect();
-        let build = self.kept.as_ref().map_or("", |(build, _)| build.as_str());
-        let options_text = format!("{options:?}");
-        let mut keyed = Vec::new();
-        for file in code {
-            // A file gone between listing and reading has no key.
-            let Some(named) = lemma_http::contents_key(file, contents.get(&file.path)) else {
-                continue;
-            };
-            keyed.push((file, unit_key(build, &file.path, &options_text, &named)));
-        }
+        let (keyed, mut contents) = self.keyed(repository, commit, files, options)?;
         let unknown: Vec<(&ListedFile, &String)> = keyed
             .iter()
             .filter(|(_, key)| !self.read.contains_key(key))
-            .map(|(file, key)| (*file, key))
+            .map(|(file, key)| (file, key))
             .collect();
         let kept = self.kept_facts(&unknown);
         let to_read: Vec<String> = unknown
@@ -1565,6 +1700,109 @@ impl FactReader {
             .iter()
             .filter_map(|(file, key)| Some((file.path.clone(), Rc::clone(self.read.get(key)?))))
             .collect())
+    }
+
+    /// `files` less test files and files no longer there, each with its unit
+    /// key, and the contents read to key the files Git cannot vouch for.
+    fn keyed(
+        &self,
+        repository: &Path,
+        commit: Option<&str>,
+        files: &[ListedFile],
+        options: &CodeOptions,
+    ) -> Result<Keyed, VerifyError> {
+        let code: Vec<&ListedFile> = files
+            .iter()
+            .filter(|file| !lemma_http::is_test_file(&file.path))
+            .collect();
+        // A file Git has no blob for is named by its contents, so those are
+        // read first.
+        let unvouched: Vec<String> = code
+            .iter()
+            .filter(|file| file.blob.is_none())
+            .map(|file| file.path.clone())
+            .collect();
+        let contents: BTreeMap<String, SourceFile> =
+            lemma_http::read_listed(repository, commit, &unvouched)?
+                .into_iter()
+                .map(|file| (file.path.clone(), file))
+                .collect();
+        let build = self.kept.as_ref().map_or("", |(build, _)| build.as_str());
+        let options_text = format!("{options:?}");
+        let mut keyed = Vec::new();
+        for file in code {
+            // A file gone between listing and reading has no key.
+            let Some(named) = lemma_http::contents_key(file, contents.get(&file.path)) else {
+                continue;
+            };
+            let key = unit_key(build, &file.path, &options_text, &named);
+            keyed.push((file.clone(), key));
+        }
+        Ok((keyed, contents))
+    }
+
+    /// The paths of those of `files` whose facts may write a call that one
+    /// of `terms` names, or that re-export a module whole, found by their
+    /// indexed terms without reading the others' facts. A file whose terms
+    /// are not indexed yet is read and indexed now; without a cache every
+    /// file is read.
+    fn select(
+        &mut self,
+        (repository, commit): (&Path, Option<&str>),
+        files: &[ListedFile],
+        options: &CodeOptions,
+        terms: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>, VerifyError> {
+        let (keyed, _) = self.keyed(repository, commit, files, options)?;
+        let mut wanted = terms.clone();
+        wanted.insert(crate::terms::REEXPORTS.to_owned());
+        let matches = |facts: &CodeFacts| {
+            crate::terms::code_terms(facts)
+                .iter()
+                .any(|term| wanted.contains(term))
+        };
+        let keys: Vec<String> = keyed.iter().map(|(_, key)| key.clone()).collect();
+        // A cache that cannot be read only means reading every file.
+        let (indexed, hits) = match &self.kept {
+            Some((_, units)) => {
+                let wanted: Vec<String> = wanted.iter().cloned().collect();
+                (
+                    units.indexed(&keys).unwrap_or_default(),
+                    units.units_with(&wanted).unwrap_or_default(),
+                )
+            }
+            None => (BTreeSet::new(), BTreeSet::new()),
+        };
+        let mut chosen: BTreeSet<String> = keyed
+            .iter()
+            .filter(|(_, key)| indexed.contains(key) && hits.contains(key))
+            .map(|(file, _)| file.path.clone())
+            .collect();
+        let unindexed: Vec<ListedFile> = keyed
+            .iter()
+            .filter(|(_, key)| !indexed.contains(key))
+            .map(|(file, _)| file.clone())
+            .collect();
+        if unindexed.is_empty() {
+            return Ok(chosen);
+        }
+        let key_of: BTreeMap<&str, &String> = keyed
+            .iter()
+            .map(|(file, key)| (file.path.as_str(), key))
+            .collect();
+        let mut backfill = Vec::new();
+        for (path, facts) in self.read(repository, commit, &unindexed, options)? {
+            if matches(&facts) {
+                chosen.insert(path.clone());
+            }
+            if let Some(key) = key_of.get(path.as_str()) {
+                backfill.push(((*key).clone(), crate::terms::code_terms(&facts)));
+            }
+        }
+        if let Some((_, units)) = &mut self.kept {
+            units.put_terms_later(backfill);
+        }
+        Ok(chosen)
     }
 
     /// The facts the cache keeps for `files`, decoded in parallel. A cache

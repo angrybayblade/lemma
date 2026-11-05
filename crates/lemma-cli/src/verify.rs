@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use lemma_logic::ReferenceEngine;
 use lemma_souffle::SouffleEngine;
-use lemma_verify::{Manifest, Options, Report, VerifyError};
+use lemma_verify::{Evaluation, Manifest, Options, Report, VerifyError};
 
 use crate::cli::VerifyArgs;
 
@@ -93,21 +93,79 @@ fn verify(args: &VerifyArgs) -> anyhow::Result<Report> {
         explain: args.explain,
         relations: args.relations.clone(),
         facts_cache: facts_cache(),
+        evaluation: Evaluation::Full,
     };
-    let report: Result<Report, VerifyError> = match args.engine.as_deref() {
-        Some("reference") => lemma_verify::verify(&manifest, &ReferenceEngine, &options),
-        Some("souffle") => lemma_verify::verify(&manifest, &SouffleEngine::find()?, &options),
-        Some(other) => anyhow::bail!("unknown engine `{other}`; use `souffle` or `reference`"),
-        None => {
-            if let Ok(souffle) = SouffleEngine::find() {
-                lemma_verify::verify(&manifest, &souffle, &options)
-            } else {
-                eprintln!("souffle is not installed; using the reference engine");
-                lemma_verify::verify(&manifest, &ReferenceEngine, &options)
+    let run = |evaluation: Evaluation| -> anyhow::Result<Report> {
+        let options = Options {
+            evaluation,
+            ..options.clone()
+        };
+        let report: Result<Report, VerifyError> = match args.engine.as_deref() {
+            Some("reference") => lemma_verify::verify(&manifest, &ReferenceEngine, &options),
+            Some("souffle") => lemma_verify::verify(&manifest, &SouffleEngine::find()?, &options),
+            Some(other) => anyhow::bail!("unknown engine `{other}`; use `souffle` or `reference`"),
+            None => {
+                if let Ok(souffle) = SouffleEngine::find() {
+                    lemma_verify::verify(&manifest, &souffle, &options)
+                } else {
+                    eprintln!("souffle is not installed; using the reference engine");
+                    lemma_verify::verify(&manifest, &ReferenceEngine, &options)
+                }
             }
-        }
+        };
+        Ok(report?)
     };
-    Ok(report?)
+    match args.evaluation.as_str() {
+        "full" => run(Evaluation::Full),
+        "demand" => run(Evaluation::Demand),
+        "both" => {
+            let full = run(Evaluation::Full)?;
+            let demand = run(Evaluation::Demand)?;
+            check_same_findings(&full, &demand)?;
+            Ok(demand)
+        }
+        other => anyhow::bail!("unknown evaluation `{other}`; use `full`, `demand` or `both`"),
+    }
+}
+
+/// Fails, listing the differences, when change-driven evaluation found
+/// other findings than evaluating everything: a selection that missed a
+/// file a finding rests on.
+fn check_same_findings(full: &Report, demand: &Report) -> anyhow::Result<()> {
+    let described = |report: &Report| -> std::collections::BTreeSet<String> {
+        report
+            .findings
+            .iter()
+            .map(|finding| {
+                format!(
+                    "{} {} {}{}",
+                    finding.severity,
+                    finding.requirement,
+                    finding.message,
+                    if finding.introduced {
+                        ""
+                    } else {
+                        " (already there)"
+                    }
+                )
+            })
+            .collect()
+    };
+    let (full_findings, demand_findings) = (described(full), described(demand));
+    if full_findings == demand_findings {
+        return Ok(());
+    }
+    let missed = full_findings
+        .difference(&demand_findings)
+        .map(|finding| format!("\n  only in full: {finding}"));
+    let extra = demand_findings
+        .difference(&full_findings)
+        .map(|finding| format!("\n  only in demand: {finding}"));
+    let differences: String = missed.chain(extra).collect();
+    anyhow::bail!(
+        "change-driven evaluation ({}) found other findings than full evaluation:{differences}",
+        demand.evaluation
+    )
 }
 
 fn print_json(out: &mut dyn Write, report: &Report) -> std::io::Result<()> {
