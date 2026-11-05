@@ -299,6 +299,36 @@ facts:
     }
 
     #[test]
+    fn facts_the_grammar_declares_hold_at_the_base_for_a_twin() {
+        let text = r"
+grammar: g
+relations:
+  route:      { args: [Text], attributes: { path: Text } }
+  deprecated: { args: [Text] }
+requirements:
+  serves_deprecated:
+    when: route(s, p), deprecated(p)
+    severity: warning
+facts:
+  - { relation: route, values: [api, /old], snapshot: base }
+  - { relation: route, values: [api, /old] }
+  - { relation: deprecated, values: [/old] }
+";
+        let grammar = compiled(text).unwrap();
+        let base_relation = grammar.requirements[0].base_relation.clone().unwrap();
+
+        let derived = evaluate(
+            &ReferenceEngine,
+            &grammar.program,
+            &grammar.facts,
+            &Request::default(),
+        )
+        .unwrap();
+
+        assert_eq!(derived.rows(&base_relation).count(), 1);
+    }
+
+    #[test]
     fn a_requirement_comparing_snapshots_has_no_base_twin() {
         let grammar = compiled(BREAKING_CHANGE).unwrap();
 

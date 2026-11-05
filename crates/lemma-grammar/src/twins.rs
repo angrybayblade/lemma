@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::compile::RelationInfo;
+use crate::compile::{RelationInfo, literal_atom};
 use crate::rules::{RawAtom, RawLiteral, RawRule};
 
 /// Twin rules to add to a program, and each twinned requirement's twin
@@ -20,6 +20,8 @@ pub(crate) struct Twins {
     /// The relation holding each twinned requirement's base findings, by
     /// requirement relation (`requirement:<name>`).
     pub relations: BTreeMap<String, String>,
+    /// The input relations the twin rules read at the base.
+    pub base_inputs: BTreeSet<String>,
 }
 
 /// Twins for every requirement in `rules` (requirement rules included)
@@ -40,6 +42,7 @@ pub(crate) fn base_twins(
     let mut twins = Twins {
         rules: Vec::new(),
         relations: BTreeMap::new(),
+        base_inputs: BTreeSet::new(),
     };
     let mut twinned: BTreeSet<&str> = BTreeSet::new();
     for requirement in requirements {
@@ -51,9 +54,16 @@ pub(crate) fn base_twins(
                 continue;
             }
             for (text, rule) in &by_head[derived] {
+                let twin = twin_rule(rule, inputs);
+                let read_at_base = twin
+                    .body
+                    .iter()
+                    .filter_map(literal_atom)
+                    .filter(|atom| atom.snapshot.is_some());
                 twins
-                    .rules
-                    .push((format!("{text} (at base)"), twin_rule(rule, inputs)));
+                    .base_inputs
+                    .extend(read_at_base.map(|atom| atom.relation.clone()));
+                twins.rules.push((format!("{text} (at base)"), twin));
             }
         }
         twins
@@ -73,7 +83,7 @@ fn relations_reading_base(rules: &[(String, RawRule)]) -> BTreeSet<String> {
             if reading.contains(&rule.head.relation) {
                 continue;
             }
-            let reads_base = rule.body.iter().filter_map(atom).any(|atom| {
+            let reads_base = rule.body.iter().filter_map(literal_atom).any(|atom| {
                 atom.snapshot.as_deref() == Some("base") || reading.contains(&atom.relation)
             });
             if reads_base {
@@ -105,7 +115,7 @@ fn derived_closure<'a>(
             pending.extend(
                 rule.body
                     .iter()
-                    .filter_map(atom)
+                    .filter_map(literal_atom)
                     .map(|atom| atom.relation.as_str()),
             );
         }
@@ -149,11 +159,4 @@ fn twin_rule(rule: &RawRule, inputs: &BTreeMap<String, RelationInfo>) -> RawRule
 /// A derived relation's twin: `name@base`, as base inputs are named.
 fn base_name(relation: &str) -> String {
     format!("{relation}@base")
-}
-
-fn atom(literal: &RawLiteral) -> Option<&RawAtom> {
-    match literal {
-        RawLiteral::Positive(atom) | RawLiteral::Negative(atom) => Some(atom),
-        RawLiteral::Compare(..) => None,
-    }
 }

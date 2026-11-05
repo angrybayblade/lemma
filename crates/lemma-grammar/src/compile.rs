@@ -134,11 +134,19 @@ pub fn compile(file: &GrammarFile) -> Result<CompiledGrammar, GrammarError> {
     }
     let mut symbols = Symbols::new();
     let mut parsed = parse_all(file)?;
-    // Checked before twins are added, so errors name the rules as written.
-    base_snapshot_inputs(&parsed, &inputs)?;
+    // Read from the rules as written, before twins are added, so errors
+    // name those rules.
+    let mut base_inputs = base_snapshot_inputs(&parsed, &inputs)?;
     let twins = requirement_twins(&parsed, &inputs);
+    // Inputs only twins read at the base: their declared facts hold in both
+    // snapshots, as no rule of the grammar tells the snapshots apart.
+    let twin_only: BTreeSet<String> = twins
+        .base_inputs
+        .difference(&base_inputs)
+        .cloned()
+        .collect();
+    base_inputs.extend(twins.base_inputs.iter().cloned());
     parsed.rules.extend(twins.rules);
-    let base_inputs = base_snapshot_inputs(&parsed, &inputs)?;
     let mut builder = Builder {
         inputs: &inputs,
         types: input_types(&columns, &base_inputs),
@@ -148,7 +156,7 @@ pub fn compile(file: &GrammarFile) -> Result<CompiledGrammar, GrammarError> {
     let requirements = requirements(file, &parsed, &twins.relations)?;
     let relations = relations(&columns, &base_inputs, derived);
     let program = Program::new(relations, rules)?;
-    let facts = declared_facts(&file.facts, &program, &mut symbols)?;
+    let facts = declared_facts(&file.facts, &program, &twin_only, &mut symbols)?;
     Ok(CompiledGrammar {
         name: file.grammar.clone(),
         program,
@@ -365,7 +373,7 @@ fn base_snapshot_inputs(
     Ok(base)
 }
 
-fn literal_atom(literal: &RawLiteral) -> Option<&RawAtom> {
+pub(crate) fn literal_atom(literal: &RawLiteral) -> Option<&RawAtom> {
     match literal {
         RawLiteral::Positive(atom) | RawLiteral::Negative(atom) => Some(atom),
         RawLiteral::Compare(..) => None,
@@ -660,45 +668,69 @@ fn relations(
     relations
 }
 
+/// The grammar's own facts. A fact names its snapshot or is in the head.
+/// For a relation in `twin_only` given no base facts of its own, the head's
+/// are the base's too: the grammar declared it as constant.
 fn declared_facts(
     declared: &[DeclaredFact],
     program: &Program,
+    twin_only: &BTreeSet<String>,
     symbols: &mut Symbols,
 ) -> Result<FactSet, GrammarError> {
+    let with_base: BTreeSet<&str> = declared
+        .iter()
+        .filter(|fact| fact.snapshot.as_deref() == Some("base"))
+        .map(|fact| fact.relation.as_str())
+        .collect();
     let mut facts = FactSet::new();
     for fact in declared {
         let snapshot = fact.snapshot.as_deref().unwrap_or("head");
         let name = snapshot_name(&fact.relation, snapshot);
-        let what = || format!("fact for {}", fact.relation);
-        let relation = program
-            .relation(&name)
-            .filter(|relation| relation.role == RelationRole::Input)
-            .ok_or_else(|| declaration(what(), "no such input relation in this snapshot"))?;
-        if relation.columns.len() != fact.values.len() {
-            return Err(declaration(
-                what(),
-                &format!("needs {} values", relation.columns.len()),
-            ));
+        facts.insert(&name, declared_row(fact, program, &name, symbols)?);
+        let is_constant =
+            twin_only.contains(&fact.relation) && !with_base.contains(fact.relation.as_str());
+        if fact.snapshot.is_none() && is_constant {
+            let base = snapshot_name(&fact.relation, "base");
+            facts.insert(&base, declared_row(fact, program, &base, symbols)?);
         }
-        let row = relation
-            .columns
-            .iter()
-            .zip(&fact.values)
-            .map(|(column, value)| match (column.kind, value) {
-                (ColumnType::Symbol, yaml_serde::Value::String(text)) => Ok(symbols.intern(text)),
-                (ColumnType::Number, yaml_serde::Value::Number(number)) => number
-                    .as_i64()
-                    .map(Value::Number)
-                    .ok_or_else(|| declaration(what(), "numbers must be integers")),
-                _ => Err(declaration(
-                    what(),
-                    &format!("`{}` expects a {:?}", column.name, column.kind),
-                )),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        facts.insert(&name, row);
     }
     Ok(facts)
+}
+
+/// One declared fact as a row of the program relation `name`.
+fn declared_row(
+    fact: &DeclaredFact,
+    program: &Program,
+    name: &str,
+    symbols: &mut Symbols,
+) -> Result<Vec<Value>, GrammarError> {
+    let what = || format!("fact for {}", fact.relation);
+    let relation = program
+        .relation(name)
+        .filter(|relation| relation.role == RelationRole::Input)
+        .ok_or_else(|| declaration(what(), "no such input relation in this snapshot"))?;
+    if relation.columns.len() != fact.values.len() {
+        return Err(declaration(
+            what(),
+            &format!("needs {} values", relation.columns.len()),
+        ));
+    }
+    relation
+        .columns
+        .iter()
+        .zip(&fact.values)
+        .map(|(column, value)| match (column.kind, value) {
+            (ColumnType::Symbol, yaml_serde::Value::String(text)) => Ok(symbols.intern(text)),
+            (ColumnType::Number, yaml_serde::Value::Number(number)) => number
+                .as_i64()
+                .map(Value::Number)
+                .ok_or_else(|| declaration(what(), "numbers must be integers")),
+            _ => Err(declaration(
+                what(),
+                &format!("`{}` expects a {:?}", column.name, column.kind),
+            )),
+        })
+        .collect()
 }
 
 fn mapping_keys(mapping: &yaml_serde::Mapping, what: &str) -> Result<Vec<String>, GrammarError> {
