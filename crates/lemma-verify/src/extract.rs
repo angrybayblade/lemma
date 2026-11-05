@@ -13,7 +13,7 @@ use std::rc::Rc;
 use lemma_grammar::CompiledGrammar;
 use lemma_http::{CodeFacts, CodeOptions, Operation, PathAliases, SourceFile};
 use lemma_logic::Value;
-use lemma_syntax::Extractor;
+use lemma_syntax::ExtractorPool;
 
 use crate::VerifyError;
 use crate::clients::{ClientMethod, Clients, NamedOperation, starts_locally};
@@ -1491,83 +1491,52 @@ fn code_facts(
     extractor.facts(file, options)
 }
 
-/// A file's facts with the key a run keeps them under.
-type KeyedFacts = ((String, u64, String), CodeFacts);
-
-/// A file's facts: kept from an earlier run if the cache holds them,
-/// otherwise extracted (with `extractor`, made on first use) and kept.
-fn kept_or_extracted(
+/// A file's facts, read with this thread's extractor from `extractors`.
+fn extracted(
     file: &SourceFile,
-    options_text: &str,
     options: &CodeOptions,
-    cache: Option<&crate::FactsCache>,
-    extractor: &mut Option<Extractor>,
+    extractors: &ExtractorPool,
 ) -> Result<CodeFacts, VerifyError> {
-    let kept = cache.map(|cache| kept_facts_path(cache, file, options_text));
-    if let Some(facts) = kept.as_deref().and_then(read_kept_facts) {
-        return Ok(facts);
-    }
-    let extractor = match extractor {
-        Some(extractor) => extractor,
-        None => {
-            extractor.insert(Extractor::new().map_err(|source| VerifyError::Syntax { source })?)
-        }
-    };
-    let facts = lemma_http::extract(&file.path, &file.contents, options, extractor)?;
-    if let Some(kept) = &kept {
-        keep_facts(kept, &facts);
-    }
+    let facts = extractors
+        .with(|extractor| lemma_http::extract(&file.path, &file.contents, options, extractor))
+        .map_err(|source| VerifyError::Syntax { source })??;
     Ok(facts)
 }
 
-/// Where the facts of `file`, read with `options` (as their key text gives
-/// them), are kept: named by the build, the path, the options and the
+/// The key a file's facts are kept under between runs: the build of
+/// Lemma, the path, the options (as their key text gives them) and the
 /// contents.
-fn kept_facts_path(cache: &crate::FactsCache, file: &SourceFile, options: &str) -> PathBuf {
-    let mut described = format!("{}\0{}\0{options}\0", cache.build, file.path).into_bytes();
+fn unit_key(build: &str, file: &SourceFile, options: &str) -> String {
+    let mut described = format!("{build}\0facts\0{}\0{options}\0", file.path).into_bytes();
     described.extend_from_slice(file.contents.as_bytes());
-    let digest = lemma_model::content_hash(&described);
-    cache
-        .directory
-        .join(&digest[..2])
-        .join(format!("{}.json", &digest[2..]))
+    lemma_model::content_hash(&described)
 }
 
-/// Facts kept at `path`, if they are there and readable.
-fn read_kept_facts(path: &Path) -> Option<CodeFacts> {
-    let text = std::fs::read(path).ok()?;
-    serde_json::from_slice(&text).ok()
-}
-
-/// Keeps `facts` at `path`. A cache that cannot be written only costs the
-/// next run a parse, so failures are not errors.
-fn keep_facts(path: &Path, facts: &CodeFacts) {
-    let Some(directory) = path.parent() else {
-        return;
-    };
-    let Ok(text) = serde_json::to_vec(facts) else {
-        return;
-    };
-    let partial = path.with_extension(format!("{}.partial", std::process::id()));
-    let _ = std::fs::create_dir_all(directory)
-        .and_then(|()| std::fs::write(&partial, text))
-        .and_then(|()| std::fs::rename(&partial, path));
-}
+/// What a parallel read of one file gives: its facts, and their encoding
+/// when they are new and should be kept.
+type ReadFacts = (CodeFacts, Option<Vec<u8>>);
 
 /// Reads files' code facts, each file once per run for the same contents
 /// and options: a file a change leaves alone is read at both its commits.
 struct FactReader {
-    /// For files read one at a time, made on first use.
-    extractor: Option<Extractor>,
-    cache: Option<crate::FactsCache>,
+    extractors: ExtractorPool,
+    /// The build of Lemma and the units it keeps, when facts are kept.
+    kept: Option<(String, lemma_store::UnitCache)>,
     read: BTreeMap<(String, u64, String), Rc<CodeFacts>>,
 }
 
 impl FactReader {
+    /// A reader keeping facts in `cache`, if given. A cache that cannot be
+    /// opened only means every file is parsed.
     fn new(cache: Option<crate::FactsCache>) -> Self {
+        let kept = cache.and_then(|cache| {
+            std::fs::create_dir_all(&cache.directory).ok()?;
+            let units = lemma_store::UnitCache::open(&cache.directory.join("units.db")).ok()?;
+            Some((cache.build, units))
+        });
         Self {
-            extractor: None,
-            cache,
+            extractors: ExtractorPool::new(),
+            kept,
             read: BTreeMap::new(),
         }
     }
@@ -1578,8 +1547,8 @@ impl FactReader {
         (file.path.clone(), hasher.finish(), format!("{options:?}"))
     }
 
-    /// Reads the facts of every file in `files` not read yet, in parallel
-    /// chunks with an extractor each, so the calls that follow find them.
+    /// Reads the facts of every file in `files` not read yet, in parallel,
+    /// so the calls that follow find them.
     fn prefetch(&mut self, files: &[SourceFile], options: &CodeOptions) -> Result<(), VerifyError> {
         use rayon::prelude::*;
         let wanted: Vec<(&SourceFile, (String, u64, String))> = files
@@ -1588,24 +1557,55 @@ impl FactReader {
             .map(|file| (file, Self::key(file, options)))
             .filter(|(_, key)| !self.read.contains_key(key))
             .collect();
-        let cache = self.cache.as_ref();
-        // One extractor per worker thread, made when it first parses; the
+        let options_text = format!("{options:?}");
+        let unit_keys: Vec<String> = match &self.kept {
+            Some((build, _)) => wanted
+                .iter()
+                .map(|(file, _)| unit_key(build, file, &options_text))
+                .collect(),
+            None => Vec::new(),
+        };
+        // A cache that cannot be read only means parsing.
+        let found = self
+            .kept
+            .as_ref()
+            .and_then(|(_, units)| units.get_many(&unit_keys).ok())
+            .unwrap_or_default();
+        let is_keeping = self.kept.is_some();
+        // Kept facts are decoded and the rest parsed in parallel; the
         // results keep the files' order, so the first failure in that
         // order is the one reported, whatever thread hit it.
-        let parsed: Vec<Result<KeyedFacts, VerifyError>> = wanted
+        let extractors = &self.extractors;
+        let read: Vec<Result<ReadFacts, VerifyError>> = wanted
             .par_iter()
+            .enumerate()
             .with_min_len(8)
-            .map_init(
-                || None,
-                |extractor, (file, key)| {
-                    let facts = kept_or_extracted(file, &key.2, options, cache, extractor)?;
-                    Ok((key.clone(), facts))
-                },
-            )
+            .map(|(position, (file, _))| {
+                let kept = unit_keys.get(position).and_then(|key| found.get(key));
+                if let Some(facts) = kept.and_then(|bytes| serde_json::from_slice(bytes).ok()) {
+                    return Ok((facts, None));
+                }
+                let facts = extracted(file, options, extractors)?;
+                let encoded = if is_keeping {
+                    serde_json::to_vec(&facts).ok()
+                } else {
+                    None
+                };
+                Ok((facts, encoded))
+            })
             .collect();
-        for result in parsed {
-            let (key, facts) = result?;
-            self.read.insert(key, Rc::new(facts));
+        let mut new_units = Vec::new();
+        for (position, result) in read.into_iter().enumerate() {
+            let (facts, encoded) = result?;
+            if let (Some(encoded), Some(key)) = (encoded, unit_keys.get(position)) {
+                new_units.push((key.clone(), encoded));
+            }
+            self.read.insert(wanted[position].1.clone(), Rc::new(facts));
+        }
+        if let Some((_, units)) = &mut self.kept {
+            // Keeping is an optimisation: a failure only costs a later run
+            // a parse.
+            let _ = units.put_many(&new_units);
         }
         Ok(())
     }
@@ -1619,13 +1619,7 @@ impl FactReader {
         if let Some(found) = self.read.get(&key) {
             return Ok(Rc::clone(found));
         }
-        let extractor = match &mut self.extractor {
-            Some(extractor) => extractor,
-            None => self
-                .extractor
-                .insert(Extractor::new().map_err(|source| VerifyError::Syntax { source })?),
-        };
-        let facts = lemma_http::extract(&file.path, &file.contents, options, extractor)?;
+        let facts = extracted(file, options, &self.extractors)?;
         let facts = Rc::new(facts);
         self.read.insert(key, Rc::clone(&facts));
         Ok(facts)

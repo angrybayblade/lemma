@@ -84,7 +84,7 @@ pub fn trace_through_system<E: Engine>(
             .map(|function| (in_repository(&function.file), function.line))
             .collect(),
     };
-    let mut code = Code::new(&repos)?;
+    let mut code = Code::new(&repos, None);
     let mut functions = |name: &str| code.functions(name);
     let mut tracing = impact::Tracing::default();
     let (_, links) = impact::trace_links(
