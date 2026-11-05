@@ -1318,12 +1318,20 @@ fn chosen_paths(
             .collect();
         chosen.extend(frontier.iter().cloned());
     }
+    chosen.extend(
+        candidates
+            .files
+            .iter()
+            .filter(|file| edited.contains(&file.path))
+            .map(|file| file.path.clone()),
+    );
     Ok(chosen)
 }
 
 /// The files the change edited in the changed repository: those whose
-/// contents differ between the snapshot and the change's other commit, or
-/// that Git cannot vouch for. None in a repository the change leaves alone.
+/// contents differ between its two commits, added and deleted ones among
+/// them, or that Git cannot vouch for. The same at either commit, so both
+/// read the same files. None in a repository the change leaves alone.
 fn edited_paths(
     repository: &Repository,
     snapshot: &Snapshot<'_>,
@@ -1333,18 +1341,26 @@ fn edited_paths(
     };
     let here = snapshot.specs.listing(&repository.path, snapshot.commit)?;
     let there = snapshot.specs.listing(&repository.path, other)?;
-    let blobs: BTreeMap<&str, Option<&String>> = there
+    let mut edited = differing_paths(&here, &there);
+    edited.extend(differing_paths(&there, &here));
+    Ok(edited)
+}
+
+/// The paths in `listing` whose contents `other` lacks or holds otherwise,
+/// or that Git cannot vouch for.
+fn differing_paths(listing: &[ListedFile], other: &[ListedFile]) -> BTreeSet<String> {
+    let blobs: BTreeMap<&str, Option<&String>> = other
         .iter()
         .map(|file| (file.path.as_str(), file.blob.as_ref()))
         .collect();
-    Ok(here
+    listing
         .iter()
         .filter(|file| {
             file.blob.is_none()
                 || blobs.get(file.path.as_str()).copied().flatten() != file.blob.as_ref()
         })
         .map(|file| file.path.clone())
-        .collect())
+        .collect()
 }
 
 fn consumer_file(
