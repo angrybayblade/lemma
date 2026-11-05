@@ -12,6 +12,7 @@
 pub mod adapters;
 pub mod address;
 mod affects;
+mod anchors;
 mod check;
 pub mod compare;
 pub mod compose;
@@ -27,6 +28,7 @@ mod trace;
 
 use std::path::PathBuf;
 
+pub use anchors::{References, Uses};
 pub use check::{
     Change, CheckOptions, Finding, Impact, Report, ResolvedRepository, Severity, check,
 };

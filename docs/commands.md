@@ -226,6 +226,7 @@ Checks a change against every repository composed by a parent `lemma.yaml`: decl
 | `--all` | List informational findings too, not just their count. |
 | `--engine <name>` | The rule engine for inferred links: `souffle` or `reference`. Default: Soufflé if installed. |
 | `--evaluation <how>` | `demand` (the default) reads only the consumer code inferred findings can rest on, asking for more callers as traces reach further operations; `full` reads everything. |
+| `--anchors` | Also ask language servers who calls each link's caller anchor, and warn when nothing calls an anchored method while a sibling method is called. Starts a server per repository. |
 
 Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 

@@ -149,6 +149,8 @@ For each declared link, cheapest first:
 1. **The link persists.** Both operations are declared at head, and their code anchors resolve.
 2. **The schemas agree.** For the request, what the caller sends is compared with what the provider accepts; for the response, what the provider sends with what the caller reads. A field the receiver requires and the sender may leave out, a value the receiver does not accept, and a response field the caller expects and the provider dropped are problems.
 
+With `--anchors`, Lemma also asks language servers who calls each link's caller anchor, since that is where traces start. When nothing outside the anchor's type calls it, while another method of the same type in the same file is called, it warns: the anchor probably names the wrong method (a generated client's `Invoke` where the code calls `InvokeWithRuntimeEnv`), and every trace from it is empty. Calls between the type's own methods do not count. The warning never fails a check. A repository whose language has no server installed is reported as not checked. Starting the servers takes seconds per repository, so this is for audits rather than every pull request.
+
 With a change, only problems the change introduced count; what was already there is informational. Without one, every problem counts. The level decides what a problem is: a warning at `audit` (the default), an error at `check`, which exits with 4.
 
 Inferred links are checked by `lemma verify`'s grammar. Its errors are problems; its warnings stay warnings. Inference reads only the code that may call an operation the change touches, with the files it imports and the files the change edits (see `--evaluation` in [verify](verify.md)), so the count of inferred links is of calls to those operations. A trace asks for the callers of each further operation it reaches as it reaches it.
@@ -160,7 +162,7 @@ Each problem lists what it affects further up, nearest first: the operations who
 ## Command
 
 ```sh
-lemma check [lemma.yaml] [--change <#repo> --base <commit> [--head <commit>]] [--level audit|check] [--all] [--engine souffle|reference] [--json]
+lemma check [lemma.yaml] [--change <#repo> --base <commit> [--head <commit>]] [--level audit|check] [--all] [--anchors] [--engine souffle|reference] [--json]
 ```
 
 `--change` names the changed repository as the parent's services name it (`#billing`), or `self` for the parent's own. `--base` is read from Git; `--head` too when given, and otherwise the working directory is the head, uncommitted changes included. Every other repository is read at its `ref`, or its working directory. Without a change, inferred links are checked only where a service reads its operations from code: its committed documents are compared with the code.

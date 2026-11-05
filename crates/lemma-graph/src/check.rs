@@ -161,11 +161,13 @@ pub(crate) struct Repo {
 }
 
 /// Checks the links of the system whose parent `lemma.yaml` is `root_file`,
-/// evaluating inferred links' grammar with `engine`.
+/// evaluating inferred links' grammar with `engine`. With `references`,
+/// also checks that each link's caller is anchored at code that is called.
 pub fn check<E: Engine>(
     root_file: &Path,
     options: &CheckOptions,
     engine: &E,
+    references: Option<&mut dyn crate::anchors::References>,
 ) -> Result<Report, GraphError> {
     let repos = load(root_file, options)?;
     if let Some(change) = &options.change {
@@ -182,6 +184,11 @@ pub fn check<E: Engine>(
     let links = collect_links(&repos)?;
     let mut findings = check_declared(&repos, &links, level, options)?;
     let mut seeds = declared_seeds(&findings, &links, &repos);
+    // After the seeds: a doubtful anchor is no problem to trace from.
+    if let Some(references) = references {
+        let anchored = crate::anchors::check_anchors(&repos, &links, &options.cache, references)?;
+        findings.extend(anchored);
+    }
     // Verification and tracing read the same repositories; each is listed
     // once.
     let listings = Arc::new(lemma_http::Listings::default());
