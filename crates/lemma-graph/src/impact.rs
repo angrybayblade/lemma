@@ -147,6 +147,9 @@ pub enum Node {
         line: u32,
         /// Its qualified name.
         name: String,
+        /// What it is: `function`, `method`, `constant` or `variable`;
+        /// empty for a file's top-level code.
+        kind: String,
     },
     /// An affected operation or caller.
     Affected(Affected),
@@ -160,6 +163,30 @@ pub struct Link {
     pub user: Node,
     /// The node it uses.
     pub used: Node,
+    /// How the link was found.
+    pub kind: LinkKind,
+}
+
+/// How a trace link was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LinkKind {
+    /// An operation reaching the code that serves it, through its route.
+    Route,
+    /// Code calling an operation, read from the requests it sends.
+    Call,
+    /// One function reaching another by naming it in its body.
+    Name,
+}
+
+impl LinkKind {
+    /// Its name in output: `route`, `call` or `name`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Route => "route",
+            Self::Call => "call",
+            Self::Name => "name",
+        }
+    }
 }
 
 /// Everything reachable from `seed`: affected operations and callers, each
@@ -425,6 +452,7 @@ impl Tracer {
         self.links.insert(Link {
             user: Node::Affected(operation.clone()),
             used,
+            kind: LinkKind::Route,
         });
         if step.hops >= MAX_OPERATION_HOPS || !self.seen_operations.insert(route.operation.clone())
         {
@@ -439,6 +467,7 @@ impl Tracer {
             self.links.insert(Link {
                 user: Node::Affected(caller.clone()),
                 used: Node::Affected(operation.clone()),
+                kind: LinkKind::Call,
             });
             self.pending.push_back(Step {
                 start: Start::Names(call_seed(call)),
@@ -464,6 +493,7 @@ fn function_node(function: &Function) -> Node {
         file: function.file.clone(),
         line: function.lines.0,
         name: function.qualified_name.clone(),
+        kind: function.kind.clone(),
     }
 }
 
@@ -638,6 +668,7 @@ impl Walked {
             links.push(Link {
                 user: function_node(&functions[current]),
                 used: function_node(&functions[callee]),
+                kind: LinkKind::Name,
             });
             current = callee;
         }
@@ -982,7 +1013,9 @@ mod tests {
                 file: "handlers/execute.go".to_owned(),
                 line: 1,
                 name: "Execute".to_owned(),
+                kind: "function".to_owned(),
             },
+            kind: LinkKind::Route,
         }));
         let gateway_handler = Node::Affected(Affected::Caller {
             repository: "gateway".to_owned(),
@@ -992,6 +1025,7 @@ mod tests {
         assert!(links.contains(&Link {
             user: gateway_handler.clone(),
             used: execute,
+            kind: LinkKind::Call,
         }));
         assert!(links.contains(&Link {
             user: Node::Affected(Affected::Operation {
@@ -999,6 +1033,7 @@ mod tests {
                 operation: "POST /v1/execute".to_owned(),
             }),
             used: gateway_handler,
+            kind: LinkKind::Route,
         }));
     }
 

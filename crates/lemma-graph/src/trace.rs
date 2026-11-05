@@ -17,6 +17,8 @@ use crate::GraphError;
 use crate::affects::{self, Code, Walkable};
 use crate::check::{self, CheckOptions, HEAD, Repo};
 use crate::config::LemmaFile;
+#[cfg(test)]
+use crate::impact::LinkKind;
 use crate::impact::{self, Affected, Link, Node, Start};
 use crate::infer;
 use crate::repos::resolve_commit;
@@ -207,7 +209,11 @@ fn to_graph(links: &[Link], reached: &BTreeMap<(String, u32), &str>, offset: &st
     for link in links {
         let from = node_id(&link.user, reached, offset, &mut trace);
         let to = node_id(&link.used, reached, offset, &mut trace);
-        trace.relationships.push(Use { from, to });
+        trace.relationships.push(Use {
+            from,
+            to,
+            source: link.kind.as_str().to_owned(),
+        });
     }
     trace.relationships.sort();
     trace.relationships.dedup();
@@ -240,7 +246,13 @@ fn node_id(
 /// A function found on the way to a route's handler, with its path
 /// relative to the index root, as the graph's other functions are.
 fn function_node(node: &Node, offset: &str) -> GraphNode {
-    let Node::Function { file, line, name } = node else {
+    let Node::Function {
+        file,
+        line,
+        name,
+        kind,
+    } = node
+    else {
         unreachable!("function_node is called with functions only");
     };
     let relative = file
@@ -251,7 +263,7 @@ fn function_node(node: &Node, offset: &str) -> GraphNode {
     GraphNode {
         id: format!("function:{file}:{line}"),
         label: name.clone(),
-        kind: "function".to_owned(),
+        kind: if kind.is_empty() { "code" } else { kind }.to_owned(),
         path: Some(relative.to_owned()),
         line: Some(*line),
     }
@@ -279,12 +291,9 @@ fn affected_node(affected: &Affected) -> GraphNode {
             GraphNode {
                 id: format!("code:{repository}:{location}"),
                 label: function.unwrap_or(file).to_owned(),
-                kind: if function.is_some() {
-                    "function"
-                } else {
-                    "file"
-                }
-                .to_owned(),
+                // Code found by the requests it sends: what kind of
+                // definition it is was not read.
+                kind: if function.is_some() { "caller" } else { "file" }.to_owned(),
                 path: Some(format!("{repository}:{file}")),
                 line: None,
             }
@@ -314,11 +323,14 @@ mod tests {
                     file: "api/charges.go".to_owned(),
                     line: 12,
                     name: "Charges.Create".to_owned(),
+                    kind: "method".to_owned(),
                 },
+                kind: LinkKind::Route,
             },
             Link {
                 user: Node::Affected(caller),
                 used: Node::Affected(operation),
+                kind: LinkKind::Call,
             },
         ];
         let reached = BTreeMap::from([(("api/charges.go".to_owned(), 12), "symbol:7")]);

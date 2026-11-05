@@ -139,7 +139,7 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | `--direction <way>` | `callers` (what uses it), `callees` (what it uses), or `both` (the default). |
 | `--depth <n>` | How many uses away to go. Default: 2. |
 | `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Answers are cached in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones. |
-| `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`), `notes` and `truncated`. |
+| `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`, and the `source` it was found by), `notes` and `truncated`. |
 | `--max-nodes <n>` | The most nodes to include. Default: 200. |
 | `--workspace <lemma.yaml>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations, and on up. See below. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
@@ -158,10 +158,12 @@ DispatchTask  (function, lib/tools/execute.go:50)
      └─ DispatchTaskHandler.handle  (method, handlers/tools/execute.go:78)
         └─ NewDispatchTaskHandler  (function, handlers/tools/execute.go:214)
            └─ POST /api/tasks_/{}/execute  (operation, #platform:worker)
-              └─ dispatchTask  (function, #platform:apps/gateway/src/lib/task_dispatch/dispatch_task.ts)
+              └─ dispatchTask  (caller, #platform:apps/gateway/src/lib/task_dispatch/dispatch_task.ts)
                  └─ POST /api/v3/task_router/session/{}/execute  (operation, #platform:gateway)
-                    └─ executeOnce  (function, #dashboard:src/server/clients/task-router/build-session-tasks.ts)
+                    └─ executeOnce  (caller, #dashboard:src/server/clients/task-router/build-session-tasks.ts)
 ```
+
+Code reached in other repositories is a `caller`: it was found by the requests it sends, without reading what kind of definition it is. The last line counts relationships by how they were found when there is more than one way: `lsp` or `names` for the symbol's own repository, `route` from an operation to the code serving it, `call` from code to an operation it requests, `name` from one function to another whose name its body mentions (an approximation, as in [Checking links](check.md#what-a-problem-affects)), and `declared` for links a `lemma.yaml` declares.
 
 - The index's directory must be inside one of the repositories the workspace composes.
 - Within the symbol's repository, callers come from `--source`. From there to a route's handler (a constructor registered for a handler type, say), and within every other repository, they are followed by name: approximate, within one language, skipping names several functions share.

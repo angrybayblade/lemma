@@ -237,7 +237,11 @@ impl Builder {
                 Way::Down => (node_id(symbol), id),
                 Way::Up => (id, node_id(symbol)),
             };
-            self.relationships.insert(Use { from, to });
+            self.relationships.insert(Use {
+                from,
+                to,
+                source: self.source.name().to_owned(),
+            });
             if let Neighbour::Symbol(symbol) = neighbour {
                 next.push(symbol);
             }

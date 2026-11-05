@@ -445,6 +445,10 @@ pub struct Use {
     pub from: String,
     /// The node it uses.
     pub to: String,
+    /// How it was found: `lsp` or `names` for a symbol's own uses, `call`,
+    /// `route` or `name` for a trace across services, `declared` for a
+    /// link a `lemma.yaml` declares.
+    pub source: String,
 }
 
 /// What kind of entry point a service exports.
