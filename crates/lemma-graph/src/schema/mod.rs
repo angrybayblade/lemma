@@ -64,6 +64,15 @@ pub struct Context<'a> {
     pub reads: &'a mut Reads,
 }
 
+/// Prints a Python interpreter's executable, version and installed
+/// distributions, sorted.
+const INTERPRETER_SCRIPT: &str = "import sys, importlib.metadata as m\n\
+print(sys.executable)\nprint(sys.version)\n\
+print(sorted((d.metadata['Name'] or '', d.version) for d in m.distributions()))";
+
+/// Bumped when what keeps resolver outputs, or what they mean, changes.
+const RESOLVER_PROTOCOL: &str = "1";
+
 /// A directory read at a checkout: repository, commit, directory and
 /// extension.
 type DirectoryKey = (PathBuf, Option<String>, String, String);
@@ -80,6 +89,11 @@ pub struct Reads {
     texts: BTreeMap<(PathBuf, Option<String>, String), Option<Rc<str>>>,
     /// A working directory's state (see [`adapters::working_state`]).
     states: BTreeMap<PathBuf, Option<String>>,
+    /// What each Python interpreter reports of itself and its packages.
+    interpreters: BTreeMap<String, String>,
+    /// The shared worktree last checked out, by repository and commit,
+    /// held for the run so resolvers at one commit check it out once.
+    worktree: Option<(PathBuf, String, repos::SharedWorktree)>,
 }
 
 impl Reads {
@@ -96,6 +110,55 @@ impl Reads {
         let found: Option<Rc<str>> = checkout.read(file)?.map(Rc::from);
         self.texts.insert(key, found.clone());
         Ok(found)
+    }
+
+    /// Lets go of the shared worktree, for others (adapters) to use.
+    pub fn release(&mut self) {
+        self.worktree = None;
+    }
+
+    /// The shared worktree of the clone at `root`, checked out at `commit`;
+    /// kept checked out for the next resolver at the same commit.
+    fn worktree_at(
+        &mut self,
+        root: &Path,
+        commit: &str,
+        cache: &Path,
+    ) -> Result<PathBuf, GraphError> {
+        let is_current = self
+            .worktree
+            .as_ref()
+            .is_some_and(|(held_root, held_commit, _)| held_root == root && held_commit == commit);
+        if !is_current {
+            // The lock is per repository: let the last one go first.
+            self.worktree = None;
+            let worktree = repos::SharedWorktree::check_out(root, commit, cache)?;
+            self.worktree = Some((root.to_owned(), commit.to_owned(), worktree));
+        }
+        Ok(self
+            .worktree
+            .as_ref()
+            .map(|(_, _, worktree)| worktree.path().to_owned())
+            .unwrap_or_default())
+    }
+
+    /// What a Python interpreter reports of its version and installed
+    /// packages, asked once per run: a cached schema depends on both.
+    fn interpreter(&mut self, python: &str) -> String {
+        if let Some(found) = self.interpreters.get(python) {
+            return found.clone();
+        }
+        let found = std::process::Command::new(python)
+            .args(["-c", INTERPRETER_SCRIPT])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map_or_else(
+                || format!("{python} (did not report)"),
+                |output| lemma_model::content_hash(&output.stdout),
+            );
+        self.interpreters.insert(python.to_owned(), found.clone());
+        found
     }
 
     fn working_state(&mut self, root: &Path) -> Result<Option<String>, GraphError> {
@@ -256,13 +319,15 @@ fn python_schema(
 ) -> Result<Resolved, GraphError> {
     let python = context.runtime.python.as_deref().unwrap_or("python3");
     let python = absolute_interpreter(python, &context.checkout.root);
+    let interpreter = context.reads.interpreter(&python);
     let described = format!(
-        "pydantic\n{}\n{python}\n{file}\n{symbol}\n{:?}",
+        "pydantic\n{}\n{python}\n{interpreter}\n{file}\n{symbol}\n{:?}",
         python::SCRIPT,
         context.runtime.env
     );
-    let imported = kept_or_run(context, &described, |root| {
-        python::type_schema(root, &python, file, symbol, &context.runtime.env)
+    let env = context.runtime.env.clone();
+    let imported = kept_or_run(context, &described, true, |root| {
+        python::type_schema(root, &python, file, symbol, &env)
     });
     let error = match imported {
         Ok(schema) => {
@@ -272,7 +337,10 @@ fn python_schema(
                 unresolved: Vec::new(),
             });
         }
-        Err(error) => error,
+        // Python could not import it: Tree-sitter reads it instead. Not
+        // being able to get at the code at all is not that, and is reported.
+        Err(error @ (GraphError::Resolver { .. } | GraphError::ResolverOutput { .. })) => error,
+        Err(error) => return Err(error),
     };
     let package = directory_files(context.reads, context.checkout, file, "py", "")?;
     match python_syntax::type_schema(&package, symbol) {
@@ -332,8 +400,20 @@ fn run_resolver(resolver: &Resolver, context: &mut Context<'_>) -> Result<Value,
     let command = expand_runtime(&resolver.command, context.runtime, &context.checkout.root);
     let mut env = context.runtime.env.clone();
     env.extend(resolver.env.clone());
-    let described = format!("command\n{command}\n{env:?}\n{:?}", resolver.output);
-    let document = kept_or_run(context, &described, |root| {
+    let python = absolute_interpreter(
+        context.runtime.python.as_deref().unwrap_or("python3"),
+        &context.checkout.root,
+    );
+    let interpreter = if resolver.command.contains("{python}") {
+        context.reads.interpreter(&python)
+    } else {
+        String::new()
+    };
+    let described = format!(
+        "command\n{command}\n{env:?}\n{:?}\n{interpreter}",
+        resolver.output
+    );
+    let document = kept_or_run(context, &described, resolver.cache, |root| {
         let stdout = repos::run(root, &command, &env)?;
         let text = match &resolver.output {
             Some(output) => {
@@ -361,33 +441,58 @@ fn run_resolver(resolver: &Resolver, context: &mut Context<'_>) -> Result<Value,
 fn kept_or_run(
     context: &mut Context<'_>,
     described: &str,
+    may_keep: bool,
     run: impl FnOnce(&Path) -> Result<Value, GraphError>,
 ) -> Result<Value, GraphError> {
     let checkout = context.checkout;
-    let working = context.reads.working_state(&checkout.root)?;
     let state = match &checkout.commit {
         Some(commit) => Some(adapters::commit_state(&checkout.root, commit)?),
-        None => working.clone(),
+        None => context.reads.working_state(&checkout.root)?,
     };
-    let is_checked_out = checkout.commit.is_none() || (working.is_some() && working == state);
-    let kept = state.map(|state| {
-        let key = lemma_model::content_hash(format!("{described}\n{state}").as_bytes());
-        context.cache.join("resolvers").join(format!("{key}.json"))
+    let kept = state.as_ref().filter(|_| may_keep).map(|state| {
+        let described = format!(
+            "{RESOLVER_PROTOCOL}\n{}\n{described}\n{}\n{state}",
+            env!("CARGO_PKG_VERSION"),
+            inherited_environment()
+        );
+        let key = lemma_model::content_hash(described.as_bytes());
+        context
+            .cache
+            .join("resolvers")
+            .join(&key[..2])
+            .join(format!("{}.json", &key[2..]))
     });
     if let Some(found) = kept.as_deref().and_then(read_kept) {
         return Ok(found);
     }
+    // Only now, on a miss, is the working directory's state worth asking.
+    let is_checked_out = match &checkout.commit {
+        None => true,
+        Some(_) => state.is_some() && context.reads.working_state(&checkout.root)? == state,
+    };
     let output = if is_checked_out {
         run(&checkout.root)?
     } else {
         let commit = checkout.commit.as_deref().unwrap_or("HEAD");
-        let worktree = repos::SharedWorktree::check_out(&checkout.root, commit, context.cache)?;
-        run(worktree.path())?
+        let worktree = context
+            .reads
+            .worktree_at(&checkout.root, commit, context.cache)?;
+        run(&worktree)?
     };
     if let Some(kept) = &kept {
         keep(kept, &output);
     }
     Ok(output)
+}
+
+/// The variables commands inherit that decide which interpreter and
+/// libraries they use.
+fn inherited_environment() -> String {
+    ["PATH", "VIRTUAL_ENV", "PYTHONPATH"]
+        .iter()
+        .map(|name| format!("{name}={}", std::env::var(name).unwrap_or_default()))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn read_kept(path: &Path) -> Option<Value> {

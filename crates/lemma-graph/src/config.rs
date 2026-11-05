@@ -328,6 +328,17 @@ pub struct Resolver {
     /// Extra environment variables.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Whether its output may be kept for the commit it was produced at.
+    /// Lemma keeps it by the code's Git tree, the command, its environment
+    /// and, when it runs Python, the interpreter and its installed packages;
+    /// set `false` for a command whose output depends on anything else (a
+    /// running service, the network, ignored generated files).
+    #[serde(default = "kept_by_default")]
+    pub cache: bool,
+}
+
+fn kept_by_default() -> bool {
+    true
 }
 
 /// Where a schema is.

@@ -373,10 +373,12 @@ pub(crate) fn read_routes(
     let mut routes = Vec::new();
     for site in sites {
         let key = (site.repository.clone(), site.file.clone());
-        let Some((source, lines)) = sources.get(&key) else {
-            continue;
+        // A route whose file is gone (deleted but not committed) is kept,
+        // with no text, as one whose handler cannot be read.
+        let (source, lines): (Arc<str>, &[(usize, usize)]) = match sources.get(&key) {
+            Some((source, lines)) => (Arc::clone(source), lines),
+            None => (Arc::from(""), &[]),
         };
-        let source = Arc::clone(source);
         let index = site.line.saturating_sub(1) as usize;
         let line_text = lines
             .get(index)
