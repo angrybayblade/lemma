@@ -176,6 +176,9 @@ pub enum LinkKind {
     Call,
     /// One function reaching another by naming it in its body.
     Name,
+    /// A function naming a method's type rather than the method: it may
+    /// call another method of that type.
+    Type,
 }
 
 impl LinkKind {
@@ -185,6 +188,7 @@ impl LinkKind {
             Self::Route => "route",
             Self::Call => "call",
             Self::Name => "name",
+            Self::Type => "type",
         }
     }
 }
@@ -525,7 +529,7 @@ impl Step {
                     .enumerate()
                     .filter(|(_, function)| seed.names.contains(&function.name));
                 for (index, _) in named {
-                    walked.add(index, None);
+                    walked.add(index, None, false);
                 }
                 walked
             }
@@ -565,7 +569,14 @@ struct Walked {
     callee: BTreeMap<usize, usize>,
     /// Functions reached before walking, which a chain stops at.
     given: BTreeSet<usize>,
+    /// Functions reached by naming the type of the function they were
+    /// reached through, not the function itself.
+    through_type: BTreeSet<usize>,
 }
+
+/// A function a walk reaches: its index, the function it was reached
+/// through, and whether through that function's type.
+type Reached = (usize, Option<usize>, bool);
 
 impl Walked {
     /// Walks upwards from `seeds` (names, each with the function it came
@@ -581,9 +592,10 @@ impl Walked {
             is_reached: vec![false; functions.len()],
             callee: BTreeMap::new(),
             given: given.iter().copied().collect(),
+            through_type: BTreeSet::new(),
         };
         for index in given {
-            walked.add(index, None);
+            walked.add(index, None, false);
         }
         let followable = &names.followable;
         let mut frontier: BTreeMap<String, Option<usize>> = BTreeMap::new();
@@ -599,12 +611,12 @@ impl Walked {
             followed.extend(frontier.keys().cloned());
             let onward: Vec<(usize, Option<usize>)> = next
                 .iter()
-                .copied()
-                .filter(|(index, _)| !names.registrations.contains(index))
+                .filter(|(index, _, _)| !names.registrations.contains(index))
+                .map(|(index, from, _)| (*index, *from))
                 .collect();
             let next_frontier = next_names(functions, &onward, followable, &followed);
-            for (index, from) in next {
-                walked.add(index, from);
+            for (index, from, through_type) in next {
+                walked.add(index, from, through_type);
             }
             frontier = next_frontier;
         }
@@ -613,13 +625,13 @@ impl Walked {
 
     /// Functions not yet reached that mention a name in `frontier`, other
     /// than their own or their type's: each with the function the name came
-    /// from.
+    /// from, and whether the name was that function's type.
     fn callers(
         &self,
         functions: &[Function],
         names: &NameIndex,
         frontier: &BTreeMap<String, Option<usize>>,
-    ) -> Vec<(usize, Option<usize>)> {
+    ) -> Vec<Reached> {
         // Only functions that mention a frontier name can be callers; they
         // are taken in index order, as a scan of every function would.
         let candidates: BTreeSet<usize> = frontier
@@ -643,21 +655,25 @@ impl Walked {
                 .mentions
                 .iter()
                 .filter(|name| !own.contains(&name.as_str()))
-                .filter_map(|name| frontier.get(name))
-                .find(|from| same_language(from));
-            if let Some(from) = from {
-                found.push((index, *from));
+                .filter_map(|name| Some((name, frontier.get(name)?)))
+                .find(|(_, from)| same_language(from));
+            if let Some((name, from)) = from {
+                let through_type = from.is_some_and(|from| functions[from].name != *name);
+                found.push((index, *from, through_type));
             }
         }
         found
     }
 
-    fn add(&mut self, index: usize, callee: Option<usize>) {
+    fn add(&mut self, index: usize, callee: Option<usize>, through_type: bool) {
         if self.is_reached[index] {
             return;
         }
         self.is_reached[index] = true;
         self.order.push(index);
+        if through_type {
+            self.through_type.insert(index);
+        }
         if let Some(callee) = callee {
             self.callee.insert(index, callee);
         }
@@ -671,10 +687,15 @@ impl Walked {
             let Some(&callee) = self.callee.get(&current) else {
                 break;
             };
+            let kind = if self.through_type.contains(&current) {
+                LinkKind::Type
+            } else {
+                LinkKind::Name
+            };
             links.push(Link {
                 user: function_node(&functions[current]),
                 used: function_node(&functions[callee]),
-                kind: LinkKind::Name,
+                kind,
             });
             current = callee;
         }
@@ -1071,6 +1092,32 @@ mod tests {
             used: gateway_handler,
             kind: LinkKind::Route,
         }));
+    }
+
+    #[test]
+    fn naming_only_a_methods_type_is_marked_as_reaching_it_through_the_type() {
+        let mut invoke = function("action.go", "Invoke", (1, 3), "");
+        invoke.qualified_name = "ExecuteAction.Invoke".to_owned();
+        let index = vec![
+            invoke,
+            function(
+                "tools.go",
+                "ExecuteTool",
+                (1, 5),
+                "ExecuteAction.InvokeWithRuntimeEnv()",
+            ),
+            function("jobs.go", "RunJob", (1, 5), "action.Invoke()"),
+        ];
+        let names = NameIndex::of(&index);
+        let seeds = vec![
+            ("Invoke".to_owned(), Some(0)),
+            ("ExecuteAction".to_owned(), Some(0)),
+        ];
+
+        let walked = Walked::from_names(&index, &names, seeds, vec![0]);
+
+        assert_eq!(walked.through_type, BTreeSet::from([1]));
+        assert!(walked.is_reached[2]);
     }
 
     #[test]

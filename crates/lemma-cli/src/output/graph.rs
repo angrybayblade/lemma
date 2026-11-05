@@ -38,6 +38,7 @@ struct GraphView<'a> {
 struct RelationshipView<'a> {
     from: &'a str,
     to: &'a str,
+    source: &'a str,
 }
 
 /// Prints `graph`: as JSON when asked, otherwise drawn as `drawing` says.
@@ -58,6 +59,7 @@ pub(crate) fn use_graph(
                 .map(|relationship| RelationshipView {
                     from: &relationship.from,
                     to: &relationship.to,
+                    source: &relationship.source,
                 })
                 .collect(),
             notes: &graph.notes,
@@ -95,7 +97,7 @@ fn tree(graph: &UseGraph) -> String {
         let children = printer.children(&root.id);
         if !children.is_empty() {
             let _ = writeln!(printer.text, "  {heading}");
-            printer.branch(&children, "  ");
+            printer.branch(&root.id, &children, "  ");
         }
         text = printer.text;
     }
@@ -113,6 +115,19 @@ struct TreePrinter<'a> {
 }
 
 impl<'a> TreePrinter<'a> {
+    /// Whether `child` uses (or is used by) `parent` only by naming its
+    /// type, not the function itself: shown, as the use is less certain.
+    fn is_through_type(&self, parent: &str, child: &str) -> bool {
+        let (from, to) = if self.upwards {
+            (child, parent)
+        } else {
+            (parent, child)
+        };
+        self.graph.relationships.iter().any(|relationship| {
+            relationship.from == from && relationship.to == to && relationship.source == "type"
+        })
+    }
+
     fn children(&self, id: &str) -> Vec<&'a GraphNode> {
         neighbours(self.graph, id, self.upwards)
             .into_iter()
@@ -120,7 +135,7 @@ impl<'a> TreePrinter<'a> {
             .collect()
     }
 
-    fn branch(&mut self, children: &[&GraphNode], indent: &str) {
+    fn branch(&mut self, parent: &str, children: &[&GraphNode], indent: &str) {
         for (index, child) in children.iter().enumerate() {
             let is_last = index + 1 == children.len();
             let (stem, next_indent) = if is_last {
@@ -132,9 +147,14 @@ impl<'a> TreePrinter<'a> {
                 let _ = writeln!(self.text, "{indent}{stem}{} (shown above)", child.label);
                 continue;
             }
-            let _ = writeln!(self.text, "{indent}{stem}{}", describe(child));
+            let note = if self.is_through_type(parent, &child.id) {
+                "  through its type"
+            } else {
+                ""
+            };
+            let _ = writeln!(self.text, "{indent}{stem}{}{note}", describe(child));
             let grandchildren = self.children(&child.id);
-            self.branch(&grandchildren, &next_indent);
+            self.branch(&child.id, &grandchildren, &next_indent);
         }
     }
 }
