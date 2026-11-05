@@ -4,7 +4,7 @@
 //! Every scope (a symbol now; modules, repositories and services later)
 //! produces the same graph shape, so these work for all of them.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 
@@ -185,12 +185,34 @@ fn describe(node: &GraphNode) -> String {
     format!("{}  ({}{place})", node.label, node.kind)
 }
 
+/// How the relationships were found: one source by name (`lsp`), or how
+/// many came from each when they were found several ways (`12 lsp, 40
+/// name, 3 call`), so a trace by name is not taken for a server's answer.
+fn sources(graph: &UseGraph) -> String {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for relationship in &graph.relationships {
+        *counts.entry(relationship.source.as_str()).or_default() += 1;
+    }
+    if counts.len() <= 1 {
+        return counts
+            .into_keys()
+            .next()
+            .unwrap_or(graph.source.as_str())
+            .to_owned();
+    }
+    let parts: Vec<String> = counts
+        .iter()
+        .map(|(source, count)| format!("{count} {source}"))
+        .collect();
+    parts.join(", ")
+}
+
 fn summary(graph: &UseGraph) -> String {
     let mut text = format!(
         "{} nodes, {} relationships ({}{})\n",
         graph.nodes.len(),
         graph.relationships.len(),
-        graph.source,
+        sources(graph),
         if graph.truncated {
             "; stopped at the node limit, raise --max-nodes for more"
         } else {
@@ -279,6 +301,7 @@ mod tests {
         Use {
             from: from.to_owned(),
             to: to.to_owned(),
+            source: "lsp".to_owned(),
         }
     }
 
@@ -296,6 +319,16 @@ mod tests {
             notes: Vec::new(),
             truncated: false,
         }
+    }
+
+    #[test]
+    fn a_graph_found_several_ways_counts_each_source() {
+        let mut graph = sample();
+        graph.relationships[0].source = "name".to_owned();
+
+        let footer = sources(&graph);
+
+        assert_eq!(footer, "2 lsp, 1 name");
     }
 
     #[test]

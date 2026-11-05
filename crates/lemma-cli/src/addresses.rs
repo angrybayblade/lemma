@@ -7,6 +7,9 @@ use lemma_graph::address::{Address, parse_address};
 use lemma_model::{Export, ExportLink, GraphNode, Use, UseGraph};
 
 use crate::output::Linked;
+
+/// The source of relationships a `lemma.yaml` declares.
+const DECLARED: &str = "declared";
 use lemma_query::{Direction, SymbolResolution};
 use lemma_store::{FactStore, Store, StoredSnapshot, StoredSymbol};
 
@@ -194,11 +197,13 @@ pub(crate) fn add_root_links(graph: &mut UseGraph, linked: &[Linked], direction:
             Use {
                 from: root.clone(),
                 to: id,
+                source: DECLARED.to_owned(),
             }
         } else {
             Use {
                 from: id,
                 to: root.clone(),
+                source: DECLARED.to_owned(),
             }
         };
         graph.relationships.push(relationship);
@@ -234,7 +239,11 @@ pub(crate) fn add_links(graph: &mut UseGraph, exports: &[Export], links: &[Expor
                 line: None,
             });
         }
-        graph.relationships.push(Use { from, to: id });
+        graph.relationships.push(Use {
+            from,
+            to: id,
+            source: DECLARED.to_owned(),
+        });
     }
     graph.relationships.sort();
     graph.relationships.dedup();
@@ -286,6 +295,7 @@ mod tests {
             [Use {
                 from: "symbol:7".to_owned(),
                 to: "export:#functions:services.serverless.execute_action".to_owned(),
+                source: DECLARED.to_owned(),
             }]
         );
         assert_eq!(graph.nodes[1].kind, "linked operation");
