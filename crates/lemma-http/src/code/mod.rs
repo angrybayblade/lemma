@@ -898,7 +898,8 @@ impl Walk<'_> {
     fn collect_strings(&mut self, node: Node<'_>) {
         // A statement that is only a string does nothing: a docstring, or a
         // directive such as "use strict". Its text is prose, never a call.
-        if is_bare_string_statement(node) {
+        // Sample data in an API document is not code calling anything.
+        if is_bare_string_statement(node) || self.is_example_pair(node) {
             return;
         }
         let is_string = is_string_kind(node.kind());
@@ -1142,6 +1143,7 @@ mod tests {
             .map(|item| item.path.as_str())
             .collect();
         assert_eq!(paths, ["/v1/configs/{}"]);
+        assert_eq!(found.path_references, []);
     }
 
     #[test]
