@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use lemma_grammar::CompiledGrammar;
 use lemma_http::{
@@ -71,10 +72,15 @@ pub fn extract_all(
     manifest: &Manifest,
     writer: &mut FactWriter<'_>,
     cache: Option<&crate::FactsCache>,
+    listings: &Arc<lemma_http::Listings>,
 ) -> Result<(), VerifyError> {
     let mut extractor = FactReader::new(cache.cloned());
     check_files(manifest)?;
-    let specs = SpecCache::default();
+    let specs = SpecCache {
+        listings: Arc::clone(listings),
+        ..SpecCache::default()
+    };
+    listings.prefetch(&snapshot_listings(manifest));
     let system = read_system(manifest, &specs)?;
     let clients = read_clients(manifest, &system, &specs, &mut extractor)?;
     for (name, repository) in &manifest.repositories {
@@ -396,6 +402,28 @@ fn snapshots<'m>(
     ]
 }
 
+/// Every repository and commit the snapshots of `manifest` read, to list
+/// them all at once.
+fn snapshot_listings(manifest: &Manifest) -> Vec<(PathBuf, Option<String>)> {
+    let mut wanted = Vec::new();
+    for repository in manifest.repositories.values() {
+        let commits = if is_changed(manifest, repository) {
+            vec![
+                Some(manifest.change.base.clone()),
+                manifest.change.head.clone(),
+            ]
+        } else {
+            vec![repository.commit.clone()]
+        };
+        wanted.extend(
+            commits
+                .into_iter()
+                .map(|commit| (repository.path.clone(), commit)),
+        );
+    }
+    wanted
+}
+
 /// Whether a repository entry is read at the change's commits: the changed
 /// one, and other entries for its clone unless they pin their own commit
 /// (to ask how the change meets code from another time).
@@ -434,17 +462,13 @@ struct Snapshot<'a> {
 /// and the commit it falls back to, and the file read.
 type SpecKey = (PathBuf, Option<String>, Option<Option<String>>, String);
 
-/// File listings, with blobs, by repository and commit (`None` for the
-/// working directory).
-type Listings = BTreeMap<(PathBuf, Option<String>), Rc<Vec<ListedFile>>>;
-
 /// The operations of each spec read in one run, so a spec several passes
 /// read is parsed once.
 #[derive(Default)]
 struct SpecCache {
     read: RefCell<BTreeMap<SpecKey, Vec<Operation>>>,
     /// Each repository's files at a commit or in its working directory.
-    listings: RefCell<Listings>,
+    listings: Arc<lemma_http::Listings>,
     /// Files read at a commit, by repository, commit and path: the entries
     /// and snapshots of one repository read many of the same files.
     blobs: RefCell<BTreeMap<(PathBuf, String, String), Rc<SourceFile>>>,
@@ -459,14 +483,8 @@ impl SpecCache {
         &self,
         repository: &Path,
         commit: Option<&str>,
-    ) -> Result<Rc<Vec<ListedFile>>, VerifyError> {
-        let key = (repository.to_owned(), commit.map(str::to_owned));
-        if let Some(found) = self.listings.borrow().get(&key) {
-            return Ok(Rc::clone(found));
-        }
-        let listed = Rc::new(lemma_http::list_with_blobs(repository, commit)?);
-        self.listings.borrow_mut().insert(key, Rc::clone(&listed));
-        Ok(listed)
+    ) -> Result<Arc<Vec<ListedFile>>, VerifyError> {
+        Ok(self.listings.get(repository, commit)?)
     }
 
     /// The files `wanted` accepts at `commit`, each read from Git once per

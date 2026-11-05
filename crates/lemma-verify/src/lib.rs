@@ -13,6 +13,7 @@ mod system;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use lemma_grammar::{CompiledGrammar, Severity};
 use lemma_logic::{Derivation, Engine, EvaluationError, Fact, Request, Symbols};
@@ -181,6 +182,17 @@ pub fn verify<E: Engine>(
     engine: &E,
     options: &Options,
 ) -> Result<Report, VerifyError> {
+    verify_with_listings(manifest, engine, options, &Arc::default())
+}
+
+/// [`verify`], listing repositories through `listings`, which a caller
+/// reading the same repositories again in one run can share.
+pub fn verify_with_listings<E: Engine>(
+    manifest: &Manifest,
+    engine: &E,
+    options: &Options,
+    listings: &Arc<lemma_http::Listings>,
+) -> Result<Report, VerifyError> {
     let grammar_text = match &manifest.grammar {
         Some(path) => std::fs::read_to_string(path).map_err(|source| VerifyError::Read {
             path: path.clone(),
@@ -191,7 +203,12 @@ pub fn verify<E: Engine>(
     let mut grammar = lemma_grammar::compile(&lemma_grammar::parse_grammar(&grammar_text)?)?;
     check_relations(&grammar, &options.relations)?;
     let mut writer = extract::FactWriter::new(&mut grammar);
-    extract::extract_all(manifest, &mut writer, options.facts_cache.as_ref())?;
+    extract::extract_all(
+        manifest,
+        &mut writer,
+        options.facts_cache.as_ref(),
+        listings,
+    )?;
     let facts = writer.counts;
     let derived = evaluate(&grammar, engine, &wanted(&grammar, &options.relations))?;
     let mut findings = findings(&grammar, &derived);

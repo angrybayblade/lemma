@@ -3,12 +3,13 @@
 //! Reading a commit straight from Git's object store needs no checkout, so
 //! the base and head of a change can be read side by side from one clone.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// A file's path, relative to the repository root, and its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +31,75 @@ pub struct ListedFile {
     /// untracked, changed since it was staged, reached through a link, or
     /// written to disk differently from its blob.
     pub blob: Option<String>,
+}
+
+/// Listings asked for at once by [`Listings::prefetch`]: each runs several
+/// Git processes.
+const PARALLEL_LISTINGS: usize = 8;
+
+/// File listings with blobs ([`list_with_blobs`]), each repository and
+/// commit listed once and shared by everything one run reads.
+#[derive(Default)]
+pub struct Listings {
+    listed: Mutex<Listed>,
+}
+
+/// Listings by repository and commit (`None` for the working directory).
+type Listed = BTreeMap<(PathBuf, Option<String>), Arc<Vec<ListedFile>>>;
+
+impl Listings {
+    /// The files of `repository` at `commit`, or in its working directory,
+    /// listed the first time they are asked for.
+    pub fn get(
+        &self,
+        repository: &Path,
+        commit: Option<&str>,
+    ) -> Result<Arc<Vec<ListedFile>>, SourceError> {
+        let key = (repository.to_owned(), commit.map(str::to_owned));
+        if let Some(found) = self.locked().get(&key) {
+            return Ok(Arc::clone(found));
+        }
+        let listed = Arc::new(list_with_blobs(repository, commit)?);
+        self.locked().insert(key, Arc::clone(&listed));
+        Ok(listed)
+    }
+
+    /// Lists each of `wanted` not listed yet, several at a time, so a run
+    /// over many repositories waits for its slowest listing rather than
+    /// for all of them in turn. A listing that fails is left for
+    /// [`Listings::get`] to report.
+    pub fn prefetch(&self, wanted: &[(PathBuf, Option<String>)]) {
+        let missing: Vec<&(PathBuf, Option<String>)> = {
+            let listed = self.locked();
+            wanted
+                .iter()
+                .filter(|key| !listed.contains_key(*key))
+                .collect()
+        };
+        for batch in missing.chunks(PARALLEL_LISTINGS) {
+            self.list_together(batch);
+        }
+    }
+
+    /// Lists each of `batch`, all at once.
+    fn list_together(&self, batch: &[&(PathBuf, Option<String>)]) {
+        std::thread::scope(|scope| {
+            for wanted in batch {
+                scope.spawn(move || self.list_ahead(wanted));
+            }
+        });
+    }
+
+    /// Lists `wanted` ahead of its use; a failure is reported then.
+    fn list_ahead(&self, (repository, commit): &(PathBuf, Option<String>)) {
+        let _ = self.get(repository, commit.as_deref());
+    }
+
+    // A poisoned lock only means a listing thread panicked; the listings
+    // already kept are whole.
+    fn locked(&self) -> MutexGuard<'_, Listed> {
+        self.listed.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 /// Why files could not be read.
