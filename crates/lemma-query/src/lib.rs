@@ -12,6 +12,7 @@ mod resolve;
 mod search;
 mod sessions;
 mod signature;
+mod uses;
 
 pub use graph::{Direction, GraphOptions, GraphSource, symbol_graph};
 pub use lookup::{Answered, LookupContext, LookupOptions};
@@ -21,8 +22,9 @@ pub use navigation::{
 pub use references::{ReferenceReport, SymbolReport, find_references};
 pub use resolve::{SymbolResolution, SymbolSelector, resolve_symbol, symbols_in_file};
 pub use search::SymbolSearch;
-pub use sessions::{IdlePolicy, ServerState, SessionPool, SessionStatus, WarmUp};
+pub use sessions::{FilesError, IdlePolicy, ServerState, SessionPool, SessionStatus, WarmUp};
 pub use signature::{SignatureReport, signature_of};
+pub use uses::{UnindexedRoot, UsesAnswer, find_uses};
 
 /// Why a query could not be answered.
 #[derive(Debug, thiserror::Error)]
@@ -39,4 +41,11 @@ pub enum QueryError {
     /// The syntax parser could not be set up or gave up on a file.
     #[error("could not parse the source")]
     Syntax(#[from] lemma_syntax::SyntaxError),
+    /// The files under a root that is not indexed could not be listed.
+    #[error("could not list the files a language server serves")]
+    Files {
+        /// Why.
+        #[source]
+        source: FilesError,
+    },
 }

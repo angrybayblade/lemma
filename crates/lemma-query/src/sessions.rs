@@ -22,7 +22,15 @@ pub(crate) enum PoolError {
     Start(ProviderError),
     /// The index could not be read.
     Store(StoreError),
+    /// The files of a root that is not indexed could not be listed.
+    Files(FilesError),
 }
+
+/// Why the files of a root that is not indexed could not be listed.
+pub type FilesError = Box<dyn std::error::Error + Send + Sync>;
+
+/// The content hash of every file under a root, by path.
+pub(crate) type FileHashes = HashMap<String, String>;
 
 /// Started provider sessions, at most one per provider configuration and
 /// workspace root.
@@ -296,7 +304,26 @@ impl SessionPool {
         provider: &InstalledProvider,
         request_timeout: Duration,
     ) -> Result<&mut ProviderSession, PoolError> {
-        let key = session_key(snapshot, provider);
+        let view = RootView {
+            root: Path::new(&snapshot.snapshot.root),
+            fingerprint: &snapshot.snapshot.fingerprint,
+        };
+        let mut files = || file_hashes(store, snapshot);
+        self.session_at(&view, &mut files, provider, request_timeout)
+    }
+
+    /// A running session for the provider on `view`'s root, as
+    /// [`SessionPool::session`] gives for an indexed snapshot. `files` lists
+    /// the root's file hashes, asked for only when the server must be told
+    /// what changed or needs a baseline to compare with later.
+    pub(crate) fn session_at(
+        &mut self,
+        view: &RootView<'_>,
+        files: &mut dyn FnMut() -> Result<FileHashes, PoolError>,
+        provider: &InstalledProvider,
+        request_timeout: Duration,
+    ) -> Result<&mut ProviderSession, PoolError> {
+        let key = root_key(view.root, provider);
         self.collect_arrivals(Some(&key));
         if let Some(error) = self.failed_warm_ups.remove(&key) {
             return Err(PoolError::Start(error));
@@ -306,7 +333,7 @@ impl SessionPool {
             pooled.wake();
         }
         // Syncing may drop a session that could not be told about changes.
-        self.sync(&key, store, snapshot)?;
+        self.sync(&key, view.fingerprint, files)?;
         match self.sessions.entry(key) {
             Entry::Occupied(entry) => {
                 let pooled = entry.into_mut();
@@ -314,13 +341,7 @@ impl SessionPool {
                 Ok(&mut pooled.session)
             }
             Entry::Vacant(entry) => {
-                let pooled = start(
-                    store,
-                    snapshot,
-                    provider,
-                    request_timeout,
-                    self.is_long_lived,
-                )?;
+                let pooled = start(view, files, provider, request_timeout, self.is_long_lived)?;
                 Ok(&mut entry.insert(pooled).session)
             }
         }
@@ -329,7 +350,12 @@ impl SessionPool {
     /// Stops and forgets the provider's session, so the next lookup starts a
     /// fresh server.
     pub(crate) fn discard(&mut self, snapshot: &StoredSnapshot, provider: &InstalledProvider) {
-        if let Some(mut pooled) = self.sessions.remove(&session_key(snapshot, provider)) {
+        self.discard_at(Path::new(&snapshot.snapshot.root), provider);
+    }
+
+    /// Stops and forgets the provider's session on `root`.
+    pub(crate) fn discard_at(&mut self, root: &Path, provider: &InstalledProvider) {
+        if let Some(mut pooled) = self.sessions.remove(&root_key(root, provider)) {
             pooled.wake();
             pooled.session.shutdown();
         }
@@ -338,21 +364,19 @@ impl SessionPool {
     fn sync(
         &mut self,
         key: &SessionKey,
-        store: &dyn FactStore,
-        snapshot: &StoredSnapshot,
+        fingerprint: &str,
+        files: &mut dyn FnMut() -> Result<FileHashes, PoolError>,
     ) -> Result<(), PoolError> {
         let Some(pooled) = self.sessions.get_mut(key) else {
             return Ok(());
         };
-        if pooled.synced_fingerprint == snapshot.snapshot.fingerprint {
+        if pooled.synced_fingerprint == fingerprint {
             return Ok(());
         }
-        let current = file_hashes(store, snapshot)?;
+        let current = files()?;
         let changes = changes_between(&pooled.synced_files, &current);
         if pooled.session.files_changed(&changes).is_ok() {
-            pooled
-                .synced_fingerprint
-                .clone_from(&snapshot.snapshot.fingerprint);
+            fingerprint.clone_into(&mut pooled.synced_fingerprint);
             pooled.synced_files = current;
             return Ok(());
         }
@@ -365,25 +389,31 @@ impl SessionPool {
     }
 }
 
+/// A root a server serves, and a fingerprint of its files: the same
+/// fingerprint means the same files.
+pub(crate) struct RootView<'a> {
+    pub root: &'a Path,
+    pub fingerprint: &'a str,
+}
+
 fn start(
-    store: &dyn FactStore,
-    snapshot: &StoredSnapshot,
+    view: &RootView<'_>,
+    files: &mut dyn FnMut() -> Result<FileHashes, PoolError>,
     provider: &InstalledProvider,
     request_timeout: Duration,
     is_long_lived: bool,
 ) -> Result<PooledSession, PoolError> {
-    let root = PathBuf::from(&snapshot.snapshot.root);
     let session = ProviderSession::start(
         &provider.definition,
         &provider.executable,
-        &root,
+        view.root,
         request_timeout,
     )
     .map_err(PoolError::Start)?;
     // A fresh server reads files from disk itself; only a long-lived one
     // needs a baseline to compare later snapshots against.
     let synced_files = if is_long_lived {
-        file_hashes(store, snapshot)?
+        files()?
     } else {
         HashMap::new()
     };
@@ -391,7 +421,7 @@ fn start(
         session,
         last_used: Instant::now(),
         is_paused: false,
-        synced_fingerprint: snapshot.snapshot.fingerprint.clone(),
+        synced_fingerprint: view.fingerprint.to_owned(),
         synced_files,
     })
 }
@@ -402,9 +432,14 @@ fn warm_session(warm_up: &WarmUp, is_long_lived: bool) -> WarmUpOutcome {
     let Ok(store) = Store::open(&warm_up.db_path) else {
         return WarmUpOutcome::Abandoned;
     };
+    let view = RootView {
+        root: Path::new(&warm_up.snapshot.snapshot.root),
+        fingerprint: &warm_up.snapshot.snapshot.fingerprint,
+    };
+    let mut files = || file_hashes(&store, &warm_up.snapshot);
     let started = start(
-        &store,
-        &warm_up.snapshot,
+        &view,
+        &mut files,
         &warm_up.provider,
         warm_up.request_timeout,
         is_long_lived,
@@ -412,7 +447,7 @@ fn warm_session(warm_up: &WarmUp, is_long_lived: bool) -> WarmUpOutcome {
     let mut pooled = match started {
         Ok(pooled) => pooled,
         Err(PoolError::Start(error)) => return WarmUpOutcome::StartFailed(error),
-        Err(PoolError::Store(_)) => return WarmUpOutcome::Abandoned,
+        Err(PoolError::Store(_) | PoolError::Files(_)) => return WarmUpOutcome::Abandoned,
     };
     let files = store.files(warm_up.snapshot.id).unwrap_or_default();
     let paths = files
@@ -509,17 +544,18 @@ pub struct SessionStatus {
 }
 
 fn session_key(snapshot: &StoredSnapshot, provider: &InstalledProvider) -> SessionKey {
+    root_key(Path::new(&snapshot.snapshot.root), provider)
+}
+
+fn root_key(root: &Path, provider: &InstalledProvider) -> SessionKey {
     SessionKey {
         provider_id: provider.definition.id.clone(),
         config_fingerprint: provider.definition.fingerprint(),
-        root: PathBuf::from(&snapshot.snapshot.root),
+        root: root.to_owned(),
     }
 }
 
-fn file_hashes(
-    store: &dyn FactStore,
-    snapshot: &StoredSnapshot,
-) -> Result<HashMap<String, String>, PoolError> {
+fn file_hashes(store: &dyn FactStore, snapshot: &StoredSnapshot) -> Result<FileHashes, PoolError> {
     let files = store.files(snapshot.id).map_err(PoolError::Store)?;
     Ok(files
         .into_iter()
