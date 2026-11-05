@@ -290,6 +290,9 @@ pub fn attach(
         }
         findings[*index].affects.clone_from(&traces[seed]);
     }
+    // Every repository's functions and name index: freeing them takes a
+    // noticeable part of a large system's check, and nothing waits on it.
+    std::thread::spawn(move || drop(tracing));
     if let Some(error) = known.failure {
         return Err(error);
     }
