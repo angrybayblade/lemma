@@ -194,6 +194,8 @@ fn current_inference<E: Engine>(
             explain: false,
             relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
             facts_cache: None,
+            // Tracing reads every call, not only the change's.
+            evaluation: lemma_verify::Evaluation::Full,
         };
         let report = lemma_verify::verify(&inferred.manifest, engine, &options)
             .map_err(|source| GraphError::Inference { source })?;
