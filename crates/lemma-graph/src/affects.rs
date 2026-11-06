@@ -55,6 +55,9 @@ pub struct Walkable {
     pub calls: Vec<Call>,
     /// Routes services declare.
     pub routes: Vec<RouteSite>,
+    /// The service serving each operation (`METHOD /path`), as inference
+    /// names it (`#platform:gateway`).
+    pub services: BTreeMap<String, String>,
     /// Trace starts for inferred findings, by their index in the findings.
     pub seeds: Vec<(usize, Seed)>,
     /// When inference read only some consumer code, the operations whose
@@ -101,6 +104,16 @@ pub fn walkable(
         .filter_map(|row| route_site(row, owners))
         .collect();
     routes.extend(helper_sites(relations, &routes, owners));
+    // `operation(service, operation, method, path)`; the first service
+    // listed for an operation stands for it.
+    let mut services = BTreeMap::new();
+    for row in rows("operation") {
+        if let [service, operation, ..] = &row[..] {
+            services
+                .entry(operation.clone())
+                .or_insert_with(|| service.clone());
+        }
+    }
     Walkable {
         calls: calls
             .into_iter()
@@ -112,6 +125,7 @@ pub fn walkable(
             })
             .collect(),
         routes,
+        services,
         seeds: Vec::new(),
         partial: None,
     }

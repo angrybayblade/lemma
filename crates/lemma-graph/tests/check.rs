@@ -132,6 +132,7 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
         cache: workspace.path().join("cache"),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
     };
 
     let report = check(
@@ -191,6 +192,7 @@ fn a_caller_anchored_at_a_method_nothing_calls_is_warned_about() {
         cache: workspace.path().join("cache"),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
     };
 
     let report = check(

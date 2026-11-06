@@ -31,7 +31,8 @@ use std::path::PathBuf;
 
 pub use anchors::{References, Uses};
 pub use check::{
-    Change, CheckOptions, Finding, Impact, Report, ResolvedRepository, Severity, check,
+    Change, CheckOptions, Finding, Impact, InferredLink, LinkList, Report, ResolvedRepository,
+    Severity, check,
 };
 pub use trace::{Reached, SystemTrace, trace_through_system};
 

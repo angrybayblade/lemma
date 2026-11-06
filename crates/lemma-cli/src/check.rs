@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use lemma_graph::config::Level;
-use lemma_graph::{Change, CheckOptions, GraphError, Impact, Report, Severity};
+use lemma_graph::{
+    Change, CheckOptions, GraphError, Impact, InferredLink, LinkList, Report, Severity,
+};
 use lemma_logic::ReferenceEngine;
 use lemma_souffle::SouffleEngine;
 
@@ -33,6 +35,7 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
             Some("full") => lemma_verify::Evaluation::Full,
             _ => lemma_verify::Evaluation::Demand,
         },
+        list_links: args.links,
     };
     let report = match check(args, &options, lsp) {
         Ok(report) => report,
@@ -103,6 +106,9 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
         .map_or_else(String::new, |count| format!(", {count} inferred"));
     writeln!(out, "{} links{inferred}, level {level}", report.links)?;
     print_repositories(out, report)?;
+    if let Some(list) = &report.link_list {
+        print_link_list(out, list, all)?;
+    }
     let count = |severity: Severity| {
         report
             .findings
@@ -282,6 +288,64 @@ fn call_path(steps: &[&str]) -> String {
 }
 
 /// `1 operation`, `3 operations`.
+/// How many calls to list per caller and service, unless `--all` asks for
+/// every one.
+const LISTED_CALLS_PER_GROUP: usize = 10;
+
+/// Every link: those declared, then the inferred calls by calling
+/// repository and the service called, each group's count first.
+fn print_link_list(out: &mut dyn Write, list: &LinkList, all: bool) -> std::io::Result<()> {
+    writeln!(out, "declared links: {}", list.declared.len())?;
+    for link in &list.declared {
+        writeln!(out, "  {link}")?;
+    }
+    writeln!(out, "inferred links: {}", list.inferred.len())?;
+    for ((repository, service), calls) in by_caller_and_service(&list.inferred) {
+        let operations: std::collections::BTreeSet<&str> =
+            calls.iter().map(|call| call.operation.as_str()).collect();
+        writeln!(
+            out,
+            "  {repository} -> {service}: {} to {}",
+            plural(calls.len(), "call"),
+            plural(operations.len(), "operation")
+        )?;
+        let shown = if all {
+            calls.len()
+        } else {
+            LISTED_CALLS_PER_GROUP
+        };
+        for call in calls.iter().take(shown) {
+            writeln!(out, "    {} -> {}", call.location, call.operation)?;
+        }
+        if calls.len() > shown {
+            writeln!(
+                out,
+                "    ... {} more (--all lists them)",
+                calls.len() - shown
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Inferred calls grouped by calling repository and the service called,
+/// in that order; a call to an operation no service serves is grouped
+/// under `unknown service`.
+fn by_caller_and_service(
+    calls: &[InferredLink],
+) -> std::collections::BTreeMap<(&str, &str), Vec<&InferredLink>> {
+    let mut groups: std::collections::BTreeMap<(&str, &str), Vec<&InferredLink>> =
+        std::collections::BTreeMap::new();
+    for call in calls {
+        let service = call.service.as_deref().unwrap_or("unknown service");
+        groups
+            .entry((call.repository.as_str(), service))
+            .or_default()
+            .push(call);
+    }
+    groups
+}
+
 fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
         format!("1 {noun}")
@@ -316,6 +380,38 @@ fn print_repositories(out: &mut dyn Write, report: &Report) -> std::io::Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn call(repository: &str, location: &str, operation: &str) -> InferredLink {
+        InferredLink {
+            repository: repository.to_owned(),
+            location: location.to_owned(),
+            operation: operation.to_owned(),
+            service: Some("#api:api".to_owned()),
+        }
+    }
+
+    #[test]
+    fn links_are_listed_by_caller_and_service_with_counts() {
+        let list = LinkList {
+            declared: vec!["#web:services.web.pay -> #api:services.api.pay".to_owned()],
+            inferred: vec![
+                call("#web", "a.ts::one", "GET /a"),
+                call("#web", "b.ts::two", "GET /a"),
+                call("#worker", "c.py", "POST /b"),
+            ],
+        };
+        let mut printed = Vec::new();
+
+        print_link_list(&mut printed, &list, false).unwrap();
+
+        assert_eq!(
+            String::from_utf8(printed).unwrap(),
+            "declared links: 1\n  #web:services.web.pay -> #api:services.api.pay\n\
+             inferred links: 3\n  #web -> #api:api: 2 calls to 1 operation\n\
+             \x20   a.ts::one -> GET /a\n    b.ts::two -> GET /a\n\
+             \x20 #worker -> #api:api: 1 call to 1 operation\n    c.py -> POST /b\n"
+        );
+    }
 
     fn impact(
         distance: usize,
