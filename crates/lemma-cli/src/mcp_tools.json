@@ -386,6 +386,10 @@
           "type": "integer",
           "minimum": 1,
           "description": "With `workspace`, how many calls from other repositories to follow. Default: 1, the code calling the operations."
+        },
+        "only": {
+          "type": "string",
+          "description": "Only symbols of these kinds besides the symbol itself, comma-separated, such as `function,method` for the calls without the fields and types used."
         }
       },
       "required": [
