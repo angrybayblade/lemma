@@ -2,9 +2,10 @@
 //!
 //! A grammar names the kinds of things a system has (entities), the
 //! relations between them, rules deriving new relations, requirements whose
-//! results are findings, and facts declared by hand. It is written in YAML;
-//! `.ls` files with the same meaning come later. See
-//! `.specs/08-relational-grammar-and-verification.md`.
+//! results are findings, and facts declared by hand. It is written in YAML,
+//! or in `.lm` modules, which [`lm`] lowers to the same [`GrammarFile`]. See
+//! `.specs/08-relational-grammar-and-verification.md` and
+//! `.specs/13-lm-grammar.md`.
 //!
 //! ```yaml
 //! grammar: http-contracts
@@ -23,6 +24,7 @@
 //! ```
 
 mod compile;
+pub mod lm;
 mod rules;
 mod twins;
 
