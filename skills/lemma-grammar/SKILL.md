@@ -43,7 +43,7 @@ facts:                                       # by hand; head snapshot unless sna
 
 ## Grammars as `.lm` modules
 
-A grammar can also be a typed `.lm` module that imports the built-in grammar, `lemma.http`, and adds to it; `lemma lm check` catches a misspelled relation or a wrong column count with its line before anything runs:
+A grammar can also be a typed `.lm` module that imports the built-in grammar, `lemma.http`, and adds to it; `lm check` (the `.lm` command installed beside `lemma`) catches a misspelled relation or a wrong column count with its line before anything runs:
 
 ```lm
 module contracts
@@ -62,7 +62,7 @@ check main {
 }
 ```
 
-- Run `lemma lm check contracts.lm` after every edit, then point the manifest at it: `grammar: contracts.lm`.
+- Run `lm check contracts.lm` after every edit (and `lm fmt` to lay it out), then point the manifest at it: `grammar: contracts.lm`.
 - In rules and `when:` bodies, a lowercase bare name is a variable; constants are literals, uppercase names or dotted paths. `x == "*"` compares.
 - Rules declare their columns in place: `rule dropped(op: Text) { (op) :- removed_operation(op) }`.
 - Without a `check main`, every requirement of every loaded module runs, `lemma.http`'s included.

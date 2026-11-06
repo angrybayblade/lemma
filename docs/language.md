@@ -208,15 +208,17 @@ The level (the workspace's `config: { level: ... }` or `lemma check --level`) de
 
 ## Commands
 
-- `lemma lm check [lemma.lm]` loads a module and everything it imports, and lists every problem as `file:line:column`.
-- `lemma lm fmt [paths...] [--check]` rewrites `.lm` files in one canonical layout, keeping line breaks and comments; with `--check`, it lists the files that are not formatted instead. With no paths, it formats the `.lm` files under the current directory.
-- `lemma lm convert [lemma.yaml] [--module name] [--write]` writes a `lemma.yaml` as a root module. With `--write`, it writes `lemma.lm` beside the file.
-- `lemma lm lsp` serves modules to an editor (diagnostics as you type, hovers, go to definition, symbols, completion, formatting).
+`.lm` files have their own command, `lm`, beside `lemma`: it works with modules, and `lemma` checks and verifies what they declare.
+
+- `lm check [lemma.lm]` loads a module and everything it imports, and lists every problem as `file:line:column`.
+- `lm fmt [paths...] [--check]` rewrites `.lm` files in one canonical layout, keeping line breaks and comments; with `--check`, it lists the files that are not formatted instead. With no paths, it formats the `.lm` files under the current directory.
+- `lm convert [lemma.yaml] [--module name] [--write]` writes a `lemma.yaml` as a root module. With `--write`, it writes `lemma.lm` beside the file.
+- `lm lsp` serves modules to an editor (diagnostics as you type, hovers, go to definition, symbols, completion, formatting).
 - `lemma check` reads `lemma.lm` when a repository has no `lemma.yaml`, and takes a `.lm` workspace module as its argument; then it also runs the workspace's requirements, behaviors and allowances (`--select`, `--no-run`, `--level strict`).
 
 ## Editors
 
-`editors/` has a Tree-sitter grammar with highlighting, folding and indentation queries (Neovim, Helix, Zed), and a VS Code extension that highlights `.lm` files and starts `lemma lm lsp`. Setup steps are in [editors/README.md](../editors/README.md).
+`editors/` has a Tree-sitter grammar with highlighting, folding and indentation queries (Neovim, Helix, Zed), and a VS Code extension that highlights `.lm` files and starts `lm lsp`. Setup steps are in [editors/README.md](../editors/README.md).
 
 ## Not built yet
 
