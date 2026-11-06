@@ -340,6 +340,41 @@ fn is_bare_string_statement(node: Node<'_>) -> bool {
         .is_some_and(|child| is_string_kind(child.kind()))
 }
 
+/// Methods that search or compare text, in the languages Lemma reads: a
+/// path passed to one is looked for (`message.includes('/v1/users')`), not
+/// requested. Methods that build text, such as `replace`, are left out.
+const TEXT_SEARCHES: [&str; 22] = [
+    // TypeScript and JavaScript
+    "includes",
+    "startsWith",
+    "endsWith",
+    "indexOf",
+    "lastIndexOf",
+    "match",
+    "matchAll",
+    "search",
+    // Python
+    "startswith",
+    "endswith",
+    "find",
+    "rfind",
+    // Go's strings package
+    "Contains",
+    "HasPrefix",
+    "HasSuffix",
+    "Index",
+    "EqualFold",
+    // Rust
+    "contains",
+    "starts_with",
+    "ends_with",
+    "strip_prefix",
+    "strip_suffix",
+];
+
+/// Operators comparing two values, or testing whether one is in the other.
+const COMPARISONS: [&str; 5] = ["==", "===", "!=", "!==", "in"];
+
 /// Names HTTP clients usually go by, for telling `requests.get(url)` from
 /// `cache.get(url)`.
 const HTTP_CLIENTS: [&str; 13] = [
@@ -461,6 +496,10 @@ impl Walk<'_> {
         }
         self.member_call(function, &parts, node);
         self.client_call(&parts, node);
+        // `message.includes('/v1/x')` looks for a path; it requests nothing.
+        if self.is_text_search(node) {
+            return;
+        }
         if self.dialect == Dialect::Go && self.go_call(&parts, function, arguments) {
             return;
         }
@@ -952,15 +991,12 @@ impl Walk<'_> {
         if is_bare_string_statement(node) || self.is_example_pair(node) {
             return;
         }
-        let is_string = is_string_kind(node.kind());
-        if is_string && !self.consumed.contains(&node.id()) {
-            if let Some(text) = self
-                .string_value(node)
-                .filter(|text| has_marker(text, &self.options.path_markers))
-            {
-                let method = method_before_path(&text, &self.options.path_markers)
-                    .unwrap_or_else(|| "*".to_owned());
-                self.add_reference(&method, &text, node);
+        if is_string_kind(node.kind()) {
+            // A path searched for or compared against (an error message
+            // checked for the path it names, a request routed by its
+            // path) is looked for, not requested.
+            if !self.consumed.contains(&node.id()) && !self.is_matched_text(node) {
+                self.add_path_string(node);
             }
             return;
         }
@@ -968,6 +1004,66 @@ impl Walk<'_> {
         for child in node.named_children(&mut cursor) {
             self.collect_strings(child);
         }
+    }
+
+    /// Reports a string naming an API path as a reference to it, with the
+    /// method written before the path when there is one.
+    fn add_path_string(&mut self, node: Node<'_>) {
+        let Some(text) = self
+            .string_value(node)
+            .filter(|text| has_marker(text, &self.options.path_markers))
+        else {
+            return;
+        };
+        let method =
+            method_before_path(&text, &self.options.path_markers).unwrap_or_else(|| "*".to_owned());
+        self.add_reference(&method, &text, node);
+    }
+
+    /// Whether a string is text being searched for or compared against:
+    /// an argument of a method that searches text (`message.includes(s)`,
+    /// `strings.Contains(m, s)`), or an operand of an equality or `in`
+    /// comparison (`s in message`, `url === s`).
+    fn is_matched_text(&self, node: Node<'_>) -> bool {
+        let Some(parent) = node.parent() else {
+            return false;
+        };
+        match parent.kind() {
+            "arguments" | "argument_list" => parent
+                .parent()
+                .is_some_and(|call| self.is_text_search(call)),
+            "binary_expression" | "comparison_operator" => self.compares(parent),
+            _ => false,
+        }
+    }
+
+    /// Whether `call` calls a method that searches or compares text.
+    fn is_text_search(&self, call: Node<'_>) -> bool {
+        if !matches!(call.kind(), "call_expression" | "call") {
+            return false;
+        }
+        let Some(function) = call.child_by_field_name("function") else {
+            return false;
+        };
+        let name = match function.kind() {
+            "member_expression" => function.child_by_field_name("property"),
+            "attribute" => function.child_by_field_name("attribute"),
+            "selector_expression" | "field_expression" => function.child_by_field_name("field"),
+            _ => None,
+        };
+        name.is_some_and(|name| TEXT_SEARCHES.contains(&self.text(name)))
+    }
+
+    /// Whether an expression compares its operands for equality, or tests
+    /// whether one is in the other.
+    fn compares(&self, expression: Node<'_>) -> bool {
+        let mut cursor = expression.walk();
+        for child in expression.children(&mut cursor) {
+            if !child.is_named() && COMPARISONS.contains(&self.text(child)) {
+                return true;
+            }
+        }
+        false
     }
 
     /// `this.client.invoices.list` as its identifiers.
@@ -1142,6 +1238,42 @@ mod tests {
             path_markers: vec!["/v1/".to_owned()],
         };
         extract(file, source, &options, &mut Extractor::new().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_path_searched_for_in_text_is_not_a_call() {
+        let typescript = "if (error.message.includes('/v1/links')) { throw retired }\n";
+        let python = "if \"/v1/links\" in message:\n    raise Retired()\n";
+        let go = "func f(m string) bool { return strings.HasPrefix(m, \"/v1/links\") }\n";
+
+        let found = [
+            facts("errors.ts", typescript),
+            facts("errors.py", python),
+            facts("errors.go", go),
+        ];
+
+        for facts in found {
+            assert_eq!(facts.path_references, []);
+        }
+    }
+
+    #[test]
+    fn a_path_compared_with_a_request_url_is_not_a_call() {
+        let source = "if (request.url === '/v1/links') { route() }\n";
+
+        let found = facts("router.ts", source);
+
+        assert_eq!(found.path_references, []);
+    }
+
+    #[test]
+    fn a_path_passed_to_a_request_is_still_a_call() {
+        let source = "await fetch(base + '/v1/links', { method: 'POST' })\n";
+
+        let found = facts("client.ts", source);
+
+        assert_eq!(found.path_references.len(), 1);
+        assert_eq!(found.path_references[0].path, "/v1/links");
     }
 
     #[test]
