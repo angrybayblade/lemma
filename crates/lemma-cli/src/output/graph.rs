@@ -115,17 +115,32 @@ struct TreePrinter<'a> {
 }
 
 impl<'a> TreePrinter<'a> {
-    /// Whether `child` uses (or is used by) `parent` only by naming its
-    /// type, not the function itself: shown, as the use is less certain.
-    fn is_through_type(&self, parent: &str, child: &str) -> bool {
+    /// What to say about how `child` uses (or is used by) `parent` when it
+    /// is less certain than a server's answer: found by its name, or only
+    /// by naming its type.
+    fn edge_note(&self, parent: &str, child: &str) -> &'static str {
         let (from, to) = if self.upwards {
             (child, parent)
         } else {
             (parent, child)
         };
-        self.graph.relationships.iter().any(|relationship| {
-            relationship.from == from && relationship.to == to && relationship.source == "type"
-        })
+        let sources: BTreeSet<&str> = self
+            .graph
+            .relationships
+            .iter()
+            .filter(|relationship| relationship.from == from && relationship.to == to)
+            .map(|relationship| relationship.source.as_str())
+            .collect();
+        if sources.contains("lsp") || sources.contains("route") || sources.contains("call") {
+            return "";
+        }
+        if sources.contains("type") {
+            return "  through its type";
+        }
+        if sources.contains("name") {
+            return "  by name";
+        }
+        ""
     }
 
     fn children(&self, id: &str) -> Vec<&'a GraphNode> {
@@ -147,11 +162,7 @@ impl<'a> TreePrinter<'a> {
                 let _ = writeln!(self.text, "{indent}{stem}{} (shown above)", child.label);
                 continue;
             }
-            let note = if self.is_through_type(parent, &child.id) {
-                "  through its type"
-            } else {
-                ""
-            };
+            let note = self.edge_note(parent, &child.id);
             let _ = writeln!(self.text, "{indent}{stem}{}{note}", describe(child));
             let grandchildren = self.children(&child.id);
             self.branch(&child.id, &grandchildren, &next_indent);
@@ -349,6 +360,23 @@ mod tests {
         let footer = sources(&graph);
 
         assert_eq!(footer, "2 lsp, 1 name");
+    }
+
+    #[test]
+    fn a_use_found_by_name_says_so_in_the_tree() {
+        let mut graph = sample();
+        graph.relationships[2].source = "name".to_owned();
+
+        let text = tree(&graph);
+
+        assert!(
+            text.contains("main  (function, main.py:1)  by name"),
+            "{text}"
+        );
+        assert!(
+            text.contains("checkout  (function, checkout.py:1)\n"),
+            "{text}"
+        );
     }
 
     #[test]
