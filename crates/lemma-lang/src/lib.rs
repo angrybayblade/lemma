@@ -30,3 +30,12 @@ pub use span::{LineIndex, Position, Span};
 pub fn check_program(sources: &mut dyn Sources, entry_path: &str) -> Checked {
     check::check(load::load(sources, entry_path))
 }
+
+/// [`check_program`], with `modules` loaded as if the entry imported them.
+pub fn check_program_including(
+    sources: &mut dyn Sources,
+    entry_path: &str,
+    modules: &[&str],
+) -> Checked {
+    check::check(load::load_including(sources, entry_path, modules))
+}
