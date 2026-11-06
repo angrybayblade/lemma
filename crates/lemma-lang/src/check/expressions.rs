@@ -28,6 +28,9 @@ pub(crate) struct Context<'c> {
     pub service: Option<DeclarationId>,
     pub locals: Vec<Local>,
     pub is_behavior: bool,
+    /// Whether known values are recorded for lowering, as in behaviors and
+    /// functions.
+    pub records: bool,
 }
 
 impl<'c> Context<'c> {
@@ -37,6 +40,7 @@ impl<'c> Context<'c> {
             service: None,
             locals: Vec::new(),
             is_behavior: false,
+            records: false,
         }
     }
 
@@ -159,6 +163,15 @@ impl Checker<'_> {
 
     /// The type of `expression` and, when it can be known, its value.
     pub(crate) fn evaluate(&mut self, context: &Context, expression: &Expression) -> Evaluated {
+        let evaluated = self.evaluate_kind(context, expression);
+        if let (true, Some(value)) = (context.records, &evaluated.1) {
+            self.constants
+                .insert((context.module.to_owned(), expression.span), value.clone());
+        }
+        evaluated
+    }
+
+    fn evaluate_kind(&mut self, context: &Context, expression: &Expression) -> Evaluated {
         match &expression.kind {
             ExpressionKind::Integer(value) => (Type::Int, Some(Value::Int(*value))),
             ExpressionKind::Text(text) => (Type::Text, Some(Value::Text(text.clone()))),
@@ -800,6 +813,17 @@ impl Checker<'_> {
             })
         });
         (builtin.signature.returns.clone(), value)
+    }
+
+    /// Checks the arguments a check gives a parameterised behavior.
+    pub(crate) fn check_run_arguments(
+        &mut self,
+        context: &Context,
+        signature: &Signature,
+        arguments: &[Argument],
+        span: Span,
+    ) {
+        self.check_arguments(context, signature, Call { arguments, span });
     }
 
     /// Checks a call's arguments against a signature: positional ones first,

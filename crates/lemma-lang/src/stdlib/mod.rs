@@ -292,6 +292,15 @@ fn languages() -> Vec<Builtin> {
 
 /// A method of a built-in type: its receiver type's name and the method.
 pub fn method(receiver: &Type, name: &str) -> Option<Builtin> {
+    if matches!(receiver, Type::Json) && name == "has" {
+        return Some(builtin(
+            "",
+            "has",
+            vec![required("name", Type::Text)],
+            Type::Bool,
+            "Whether a JSON object has the field, `null` included. Always a `Bool`.",
+        ));
+    }
     let receiver_name = match receiver {
         Type::Builtin(receiver_name) => *receiver_name,
         _ => return None,
