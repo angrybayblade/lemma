@@ -105,6 +105,13 @@ pub struct Loaded {
 /// Loads the program whose entry module is the file `entry_path` of the
 /// entry repository (the one [`Sources`] reads for a source of `None`).
 pub fn load(sources: &mut dyn Sources, entry_path: &str) -> Loaded {
+    load_including(sources, entry_path, &[])
+}
+
+/// [`load`], also loading `modules` (and what they import) as if the entry
+/// imported them, as `lemma check` loads `lemma.http`, whose requirements
+/// it always runs.
+pub fn load_including(sources: &mut dyn Sources, entry_path: &str, modules: &[&str]) -> Loaded {
     let mut loader = Loader {
         sources,
         loaded: Loaded::default(),
@@ -113,6 +120,9 @@ pub fn load(sources: &mut dyn Sources, entry_path: &str) -> Loaded {
         requested: BTreeSet::new(),
     };
     loader.load_entry(entry_path);
+    for module in modules {
+        loader.request((*module).to_owned(), None);
+    }
     loader.run();
     loader.loaded
 }
