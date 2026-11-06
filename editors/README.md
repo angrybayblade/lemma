@@ -81,6 +81,10 @@ cp /path/to/lemma/editors/tree-sitter-lemma/queries/*.scm ~/.config/nvim/queries
 
 The queries use nvim-treesitter's capture names and its precedence, where a later pattern overrides an earlier one for the same node.
 
+**Verified** with Neovim 0.12.6. `neovim/check.lua` runs in a headless Neovim (`nvim --clean --headless -l`) with the parser built by `tree-sitter build` and the queries on its runtime path, and runs the first Lua block above as written. It opens `editors/fixture/lemma.lm` and asserts the highlight capture that wins at eleven positions, among them a keyword, a declared name, a rule variable and a string. Then it asserts that the `lemma` server attaches, rooted at the fixture's directory, and publishes the fixture's one error at the right place. Re-run it with `editors/check.sh neovim`. Set `NVIM_EXECUTABLE` to use a Neovim that is not on `PATH`; the check is skipped when Neovim is missing or older than 0.11.
+
+The nvim-treesitter `main` setup was also followed once in a throwaway configuration, with nvim-treesitter's `main` branch of 2026-11-06: `:TSInstall lemma` compiled the parser and installed the queries, and highlighting, folding, nvim-treesitter's indentation and the diagnostics all worked. The `master` branch setup has not been tried.
+
 ## Helix
 
 Add the language, its server and the grammar to `~/.config/helix/languages.toml`:
