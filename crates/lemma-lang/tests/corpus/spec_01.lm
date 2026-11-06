@@ -1,0 +1,5 @@
+let result = resolve(symbol: target)
+
+fn identity(value: Bool): Bool {
+    return value
+}

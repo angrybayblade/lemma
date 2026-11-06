@@ -1,0 +1,13 @@
+relation DependsOn(source: Service, target: Service)
+
+graph service_dependencies : DependsOn {
+    Worker -> Functions.serverless
+}
+
+export rule reachable : DependsOn {
+    (a, b) :- service_dependencies(a, b)
+
+    (a, c) :-
+        reachable(a, b),
+        service_dependencies(b, c)
+}

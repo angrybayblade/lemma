@@ -1,0 +1,3 @@
+behavior forwards_flag(handler: Operation, link: Fact<Link>, field: Text) {
+    // Shared verification procedure.
+}

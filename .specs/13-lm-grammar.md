@@ -182,9 +182,11 @@ platform.services.gateway::Gateway["GET /api/v3/sessions/{}"]
 Renaming a declaration, or moving it to another module, changes its address. To keep the history, list the old addresses:
 
 ```lm
-export operation setup_webhook {
-    previously: ["functions::Functions.serverless.register_webhook"]
-    // ...
+export service serverless {
+    export operation setup_webhook {
+        previously: ["functions::Functions.serverless.register_webhook"]
+        // ...
+    }
 }
 ```
 

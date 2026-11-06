@@ -1,0 +1,10 @@
+// lemma.http: ported from grammars/http-contracts.yaml
+export require consumer_misses_new_required_field {
+    severity: error
+    when:
+        calls(consumer, operation, site),
+        new_required_request_field(operation, field, leaf),
+        !sends(consumer, leaf)
+    at: site
+    message: "{consumer} calls {operation}, which now requires `{field}`; its code never names `{leaf}`"
+}

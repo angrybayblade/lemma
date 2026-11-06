@@ -1,0 +1,7 @@
+graph serverless_links : Link {
+    Worker.call_setup_webhook -> Functions.serverless.setup_webhook
+}
+
+graph inferred : Link = http.inferred_links(
+    services: [Worker, Functions.serverless]
+)

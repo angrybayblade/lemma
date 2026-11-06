@@ -1,0 +1,12 @@
+// Line comment
+
+/* Block comment */
+
+let name = "worker"
+let enabled = true
+let retries = 3
+let services = [Worker, Functions]
+let config = {
+    timeout_ms: 5000
+    transport: "http"
+}

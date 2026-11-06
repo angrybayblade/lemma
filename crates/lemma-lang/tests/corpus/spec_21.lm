@@ -1,0 +1,7 @@
+// platform/lemma.lm
+module platform
+
+import platform.services.gateway
+import platform.services.worker
+
+repo functions = git(url: "https://git.example.com/functions.git", rev: "3f2a1c9e04")

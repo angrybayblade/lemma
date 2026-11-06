@@ -1,0 +1,20 @@
+// example/lemma.lm: the workspace entry point
+module example
+
+workspace {
+    language: "0.2"
+
+    repo functions = local("../functions")
+    repo platform = local("../platform")
+
+    config: {
+        level: check
+        verification: { timeout_ms: 30000 }
+    }
+}
+
+check main {
+    run lemma.links.*
+    run lemma.http.*
+    run platform.services.worker.forwards_upstream_retriable
+}

@@ -1,0 +1,7 @@
+relation Removed(operation: Operation)
+
+rule removed_operation : Removed {
+    (target) :-
+        operation@base(operation: target),
+        !operation@head(operation: target)
+}

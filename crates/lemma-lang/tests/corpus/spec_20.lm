@@ -1,0 +1,6 @@
+check main {
+    run lemma.links.*
+    run lemma.http.*
+    skip lemma.http.consumer_sends_removed_parameter
+    run platform.services.worker.forwards_upstream_retriable { severity: warning }
+}
