@@ -10,6 +10,8 @@ change: { ... }
 repositories: { ... }
 ```
 
+A grammar may also be a `.lm` module, `grammar: contracts.lm`, which imports the built-in grammar as `lemma.http` and adds to it. See [The `.lm` language](language.md#grammars).
+
 Start a custom grammar by copying the built-in one: Lemma's extractors write facts into the relations it declares (see [Relations the extractors fill](#relations-the-extractors-fill)), so keeping those declarations keeps the facts.
 
 Grammars are YAML for now. A `.ls` syntax with the same meaning is planned.
