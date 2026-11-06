@@ -391,7 +391,10 @@ impl Store {
     }
 
     /// Stores a snapshot and its files, replacing earlier snapshots of the
-    /// same root along with everything derived from them.
+    /// same root along with everything derived from them. A symbol still
+    /// there under the same path, qualified name and kind keeps its id, as
+    /// in [`Store::update_snapshot`], so ids survive a full rebuild such as
+    /// the one a new extractor version makes.
     pub fn replace_snapshot(&mut self, new: &NewSnapshot<'_>) -> Result<i64, StoreError> {
         let NewSnapshot {
             snapshot,
@@ -401,6 +404,7 @@ impl Store {
             uncommitted_paths,
         } = *new;
         let transaction = self.connection.transaction()?;
+        let mut previous = root_ids(&transaction, &snapshot.root)?;
         transaction.execute("DELETE FROM snapshots WHERE root = ?1", [&snapshot.root])?;
         transaction.execute(
             "INSERT INTO snapshots
@@ -416,7 +420,7 @@ impl Store {
             ],
         )?;
         let snapshot_id = transaction.last_insert_rowid();
-        insert_files(&transaction, snapshot_id, files, &mut PreviousIds::new())?;
+        insert_files(&transaction, snapshot_id, files, &mut previous)?;
         replace_uncommitted_paths(&transaction, snapshot_id, uncommitted_paths)?;
         transaction.commit()?;
         Ok(snapshot_id)
@@ -1079,6 +1083,36 @@ impl FactStore for Store {
 /// order.
 type PreviousIds = BTreeMap<(String, String, String), VecDeque<i64>>;
 
+/// The ids of every symbol in the snapshots of `root`, before they are
+/// replaced.
+fn root_ids(transaction: &Transaction<'_>, root: &str) -> Result<PreviousIds, StoreError> {
+    let mut statement = transaction.prepare_cached(
+        "SELECT symbols.id, files.path, symbols.qualified_name, symbols.kind
+         FROM symbols
+         JOIN files ON files.id = symbols.file_id
+         JOIN snapshots ON snapshots.id = files.snapshot_id
+         WHERE snapshots.root = ?1
+         ORDER BY files.path, symbols.start_line, symbols.start_column, symbols.id",
+    )?;
+    let rows = statement.query_map([root], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut previous = PreviousIds::new();
+    for row in rows {
+        let (id, path, qualified_name, kind) = row?;
+        previous
+            .entry((path, qualified_name, kind))
+            .or_default()
+            .push_back(id);
+    }
+    Ok(previous)
+}
+
 /// The ids of the symbols in `paths` of the snapshot, before they are
 /// rewritten.
 fn previous_ids(
@@ -1551,6 +1585,16 @@ mod tests {
                 .unwrap(),
             [] as [StoredSymbol; 0]
         );
+    }
+
+    #[test]
+    fn replacing_a_snapshot_keeps_the_ids_of_symbols_still_there() {
+        let (mut store, first_id) = store_with_sample();
+        let router_before = symbol_id(&store, first_id, "Router");
+
+        let second_id = save(&mut store, &snapshot("/repo", "fp-2"), &sample_files());
+
+        assert_eq!(symbol_id(&store, second_id, "Router"), router_before);
     }
 
     #[test]
