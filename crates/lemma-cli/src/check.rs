@@ -27,6 +27,7 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
         change,
         level: args.level.as_deref().map(|level| match level {
             "check" => Level::Check,
+            "strict" => Level::Strict,
             _ => Level::Audit,
         }),
         cache: lemma_graph::repos::cache_directory(),
@@ -36,6 +37,7 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
             _ => lemma_verify::Evaluation::Demand,
         },
         list_links: args.links,
+        run_checkers: !args.no_run,
     };
     let report = match check(args, &options, lsp) {
         Ok(report) => report,
@@ -124,6 +126,7 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
     let level = match report.level {
         Level::Audit => "audit",
         Level::Check => "check",
+        Level::Strict => "strict",
     };
     let inferred = report
         .inferred_links
@@ -133,6 +136,7 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
     if let Some(list) = &report.link_list {
         print_link_list(out, list, all)?;
     }
+    print_behaviors(out, report)?;
     let count = |severity: Severity| {
         report
             .findings
@@ -174,6 +178,35 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
         count(Severity::Error),
         count(Severity::Warning)
     )
+}
+
+/// Each behavior's outcome and how many of its cases held, then what the
+/// change did to requirements.
+fn print_behaviors(out: &mut dyn Write, report: &Report) -> std::io::Result<()> {
+    for behavior in &report.behaviors {
+        let held = behavior
+            .cases
+            .iter()
+            .filter(|case| case.outcome == "satisfied")
+            .count();
+        let reused = behavior.evidence.iter().filter(|used| used.reused).count();
+        let evidence = if behavior.evidence.is_empty() {
+            String::new()
+        } else {
+            format!(", evidence {} ({reused} kept)", behavior.evidence.len())
+        };
+        writeln!(
+            out,
+            "behavior {}: {} ({held} of {} cases held{evidence})",
+            behavior.identity,
+            behavior.outcome,
+            behavior.cases.len()
+        )?;
+    }
+    for change in &report.requirement_changes {
+        writeln!(out, "requirement {} {}", change.requirement, change.change)?;
+    }
+    Ok(())
 }
 
 /// How many affected items to list per service or repository, unless

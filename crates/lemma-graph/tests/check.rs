@@ -133,6 +133,7 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
+        run_checkers: true,
     };
 
     let report = check(
@@ -193,6 +194,7 @@ fn a_caller_anchored_at_a_method_nothing_calls_is_warned_about() {
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
+        run_checkers: true,
     };
 
     let report = check(
