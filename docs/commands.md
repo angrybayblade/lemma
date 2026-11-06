@@ -142,17 +142,18 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Answers are cached in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones. |
 | `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`, and the `source` it was found by), `notes` and `truncated`. |
 | `--max-nodes <n>` | The most nodes to include. Default: 200. |
-| `--workspace <lemma.yaml>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations, and on up. See below. |
+| `--workspace <lemma.yaml>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations. See below. |
+| `--across <calls>` | Across a workspace, how many calls from other code to follow: `1` (the default) stops at the code calling the operations the handlers serve; each more goes on through that code to its own operations and their callers. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
 
 References from a file's top-level code appear as the file; imports are left out. A symbol implementing an export that `graph.links` links to another operation uses that operation, which appears by address (`linked operation`). Questions the server could not answer, such as a stale file or a missing server, are listed as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
 
 ### Across repositories
 
-Run from a workspace's directory, a graph does this without being asked. With `--workspace`, the callers found in the symbol's repository are followed on to the routes they handle, using the workspace `lemma.yaml` (see [Checking links](check.md)): each route's operation becomes a node, the code in other repositories that calls it comes next, then the operations that code serves, and so on, up to four operations away.
+Run from a workspace's directory, a graph does this without being asked. With `--workspace`, the callers found in the symbol's repository are followed on to the routes they handle, using the workspace `lemma.yaml` (see [Checking links](check.md)): each route's operation becomes a node and the code in other repositories that calls it comes next. There the tree stops; `--across 2` goes on to the operations that code serves and their callers, and so on.
 
 ```text
-$ lemma graph ExecuteTool --direction callers --workspace ../workspace/lemma.yaml
+$ lemma graph ExecuteTool --direction callers --workspace ../workspace/lemma.yaml --across 2
 ExecuteTool  (function, lib/tools/execute.go:50)
   used by
   └─ ExecuteToolHandler.handleToolExecution  (method, handlers/tools/execute.go:98)
@@ -164,7 +165,7 @@ ExecuteTool  (function, lib/tools/execute.go:50)
                     └─ executeOnce  (caller, #dashboard:src/server/clients/tool-router/build-session-tools.ts)
 ```
 
-Code reached in other repositories is a `caller`: it was found by the requests it sends, without reading what kind of definition it is. The last line counts relationships by how they were found when there is more than one way: `lsp` or `names` for the symbol's own repository, `route` from an operation to the code serving it, `call` from code to an operation it requests, `name` from one function to another whose name its body mentions (an approximation, as in [Checking links](check.md#what-a-problem-affects)), `type` when the body names only a method's type (it may call another method of that type; the tree marks these `through its type`), and `declared` for links a `lemma.yaml` declares.
+Code reached in other repositories is a `caller`: it was found by the requests it sends, without reading what kind of definition it is. The last line counts relationships by how they were found when there is more than one way: `lsp` or `names` for the symbol's own repository, `route` from an operation to the code serving it, `call` from code to an operation it requests, `name` from one function to another whose name its body mentions (an approximation, as in [Checking links](check.md#what-a-problem-affects)), `type` when the body names only a method's type (it may call another method of that type; the tree marks these `through its type`, and a use found only by `name` `by name`), and `declared` for links a `lemma.yaml` declares.
 
 - The index's directory must be inside one of the repositories the workspace composes.
 - Within the symbol's repository, callers come from `--source`. From there to a route's handler (a constructor registered for a handler type, say), and within every other repository, they are followed by name: approximate, within one language, skipping names several functions share.

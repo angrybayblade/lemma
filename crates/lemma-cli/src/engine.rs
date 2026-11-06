@@ -714,7 +714,11 @@ impl Engine {
             .or(workspace);
         if let Some(workspace) = &workspace {
             let root = PathBuf::from(&snapshot.snapshot.root);
-            add_system_trace(&mut graph, workspace, &root, graph_options.direction)?;
+            let across = Across {
+                direction: graph_options.direction,
+                calls: args.across,
+            };
+            add_system_trace(&mut graph, workspace, &root, across)?;
         }
         let drawing = match args.format {
             GraphDrawing::Tree => output::Drawing::Tree,
@@ -1555,13 +1559,21 @@ fn qualified_id(text: &str) -> Option<(String, i64)> {
 
 /// Adds to `graph` what its callers reach beyond their repository: the
 /// operations their handlers serve and the code elsewhere calling them.
+/// How far a graph follows callers across a workspace.
+#[derive(Clone, Copy)]
+struct Across {
+    direction: lemma_query::Direction,
+    /// Calls from other code to follow (`--across`).
+    calls: usize,
+}
+
 fn add_system_trace(
     graph: &mut lemma_model::UseGraph,
     workspace: &Path,
     index_root: &Path,
-    direction: lemma_query::Direction,
+    across: Across,
 ) -> anyhow::Result<()> {
-    if direction == lemma_query::Direction::Callees {
+    if across.direction == lemma_query::Direction::Callees {
         graph
             .notes
             .push("--workspace follows callers; it adds nothing to callees".to_owned());
@@ -1592,6 +1604,11 @@ fn add_system_trace(
             &lemma_logic::ReferenceEngine,
         )?,
     };
+    let starts = reached
+        .iter()
+        .map(|function| function.node.clone())
+        .collect();
+    let trace = trace.within_calls(&starts, across.calls);
     for node in trace.nodes {
         if !graph.nodes.iter().any(|existing| existing.id == node.id) {
             graph.nodes.push(node);

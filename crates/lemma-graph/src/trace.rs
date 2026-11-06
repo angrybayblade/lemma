@@ -7,7 +7,7 @@
 //! inference over the system the workspace `lemma.yaml` composes, as
 //! `lemma check` traces what a break affects.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use lemma_logic::Engine;
@@ -46,6 +46,75 @@ pub struct SystemTrace {
     pub relationships: Vec<Use>,
     /// What could not be traced, and why.
     pub notes: Vec<String>,
+}
+
+impl SystemTrace {
+    /// The trace cut after `calls` calls from other code: following uses
+    /// outward from `starts`, the reached functions, a `call` relationship
+    /// (code calling an operation) is the only one that crosses into other
+    /// code. With 1, the trace ends at the code calling the operations the
+    /// starts' handlers serve, instead of climbing through that code to
+    /// its own operations and their callers, and on.
+    #[must_use]
+    pub fn within_calls(self, starts: &BTreeSet<String>, calls: usize) -> SystemTrace {
+        let mut crossed: BTreeMap<String, usize> =
+            starts.iter().map(|start| (start.clone(), 0)).collect();
+        let mut pending: Vec<String> = starts.iter().cloned().collect();
+        let mut kept = Vec::new();
+        while let Some(used) = pending.pop() {
+            let at = crossed[&used];
+            let incoming = self
+                .relationships
+                .iter()
+                .filter(|relationship| relationship.to == used)
+                .filter_map(|relationship| Some((relationship, step(relationship, at, calls)?)));
+            for (relationship, next) in incoming {
+                kept.push(relationship.clone());
+                reach(&mut crossed, &mut pending, &relationship.from, next);
+            }
+        }
+        lemma_model::dedup_uses(&mut kept);
+        let used: BTreeSet<&str> = kept
+            .iter()
+            .flat_map(|relationship| [relationship.from.as_str(), relationship.to.as_str()])
+            .collect();
+        let nodes = self
+            .nodes
+            .into_iter()
+            .filter(|node| used.contains(node.id.as_str()))
+            .collect();
+        SystemTrace {
+            nodes,
+            relationships: kept,
+            notes: self.notes,
+        }
+    }
+}
+
+/// Records that `node` is reached having crossed `crossed_calls` calls,
+/// and queues it to follow, when no shorter way to it is known.
+fn reach(
+    crossed: &mut BTreeMap<String, usize>,
+    pending: &mut Vec<String>,
+    node: &str,
+    crossed_calls: usize,
+) {
+    let is_closer = crossed.get(node).is_none_or(|known| crossed_calls < *known);
+    if is_closer {
+        crossed.insert(node.to_owned(), crossed_calls);
+        pending.push(node.to_owned());
+    }
+}
+
+/// How many calls from other code a trace has crossed after following
+/// `relationship` from a node `at` that many, or `None` past `calls`. Code
+/// reached through its call at the last allowed hop is shown, but nothing
+/// is followed through it.
+fn step(relationship: &Use, at: usize, calls: usize) -> Option<usize> {
+    if relationship.source == "call" {
+        return (at < calls).then_some(at + 1);
+    }
+    (at < calls).then_some(at)
 }
 
 /// Traces from `reached`, functions in the repository indexed at
@@ -359,6 +428,73 @@ mod tests {
         );
         assert_eq!(trace.nodes[1].label, "Checkout.pay");
         assert_eq!(trace.nodes[1].path.as_deref(), Some("#web:src/pay.ts"));
+    }
+
+    fn uses(pairs: &[(&str, &str, &str)]) -> Vec<Use> {
+        pairs
+            .iter()
+            .map(|(from, to, source)| Use {
+                from: (*from).to_owned(),
+                to: (*to).to_owned(),
+                source: (*source).to_owned(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_trace_ends_at_the_code_calling_the_first_operations() {
+        let relationships = uses(&[
+            ("function:handler", "symbol:1", "name"),
+            ("operation:execute", "function:handler", "route"),
+            ("code:apollo:run", "operation:execute", "call"),
+            ("function:apollo:route_handler", "code:apollo:run", "name"),
+            (
+                "operation:apollo route",
+                "function:apollo:route_handler",
+                "route",
+            ),
+            ("code:dashboard:page", "operation:apollo route", "call"),
+        ]);
+        let ids = [
+            "function:handler",
+            "operation:execute",
+            "code:apollo:run",
+            "function:apollo:route_handler",
+            "operation:apollo route",
+            "code:dashboard:page",
+        ];
+        let trace = SystemTrace {
+            nodes: ids
+                .iter()
+                .map(|id| GraphNode {
+                    id: (*id).to_owned(),
+                    label: (*id).to_owned(),
+                    kind: "code".to_owned(),
+                    path: None,
+                    line: None,
+                })
+                .collect(),
+            relationships,
+            notes: Vec::new(),
+        };
+        let starts = BTreeSet::from(["symbol:1".to_owned()]);
+
+        let first = trace.clone().within_calls(&starts, 1);
+        let second = trace.within_calls(&starts, 2);
+
+        let froms = |trace: &SystemTrace| -> Vec<String> {
+            trace
+                .relationships
+                .iter()
+                .map(|relationship| relationship.from.clone())
+                .collect()
+        };
+        assert_eq!(
+            froms(&first),
+            ["code:apollo:run", "function:handler", "operation:execute"]
+        );
+        assert_eq!(first.nodes.len(), 3);
+        assert_eq!(froms(&second).len(), 6);
     }
 
     #[test]

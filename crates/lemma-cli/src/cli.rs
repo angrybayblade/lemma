@@ -333,6 +333,12 @@ pub(crate) struct GraphArgs {
     /// whole system, so it takes as long as `lemma check`.
     #[arg(long)]
     pub workspace: Option<PathBuf>,
+    /// Across a workspace, how many calls from other code to follow: 1
+    /// stops at the code calling the operations the handlers serve; each
+    /// more goes on through that code to its own operations and their
+    /// callers.
+    #[arg(long, default_value_t = 1, value_name = "CALLS")]
+    pub across: usize,
     #[command(flatten)]
     pub lookup: LookupArgs,
 }
