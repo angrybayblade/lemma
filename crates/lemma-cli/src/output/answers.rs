@@ -163,9 +163,13 @@ pub(crate) fn reference_report(
         if !linked.is_empty() {
             value["linked"] = serde_json::to_value(linked).map_err(io::Error::other)?;
         }
+        value["warnings"] = serde_json::to_value(&report.warnings).map_err(io::Error::other)?;
         return print_json(out, &value);
     }
     references_text(out, report, root)?;
+    for warning in &report.warnings {
+        writeln!(out, "warning: {warning}")?;
+    }
     linked_text(out, linked)
 }
 

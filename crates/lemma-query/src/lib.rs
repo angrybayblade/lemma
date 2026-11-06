@@ -12,6 +12,7 @@ mod resolve;
 mod search;
 mod sessions;
 mod signature;
+mod unseen;
 mod uses;
 
 pub use graph::{Direction, GraphOptions, GraphSource, symbol_graph};

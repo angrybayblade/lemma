@@ -1,5 +1,7 @@
 //! Finding where a symbol is referenced, through its language's provider.
 
+use std::path::Path;
+
 use lemma_model::{Location, LocationQuery, Outcome, Reference};
 use lemma_providers::SourcePoint;
 use lemma_store::{FactStore, StoredSymbol};
@@ -7,6 +9,7 @@ use lemma_store::{FactStore, StoredSymbol};
 use crate::QueryError;
 use crate::lookup::{Answered, LookupContext, ask_providers};
 use crate::sessions::SessionPool;
+use crate::unseen::unseen_files;
 
 /// The answer to a question about one symbol, with where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +18,9 @@ pub struct SymbolReport<T> {
     pub symbol: StoredSymbol,
     /// The answer.
     pub answer: Answered<T>,
+    /// Where the answer may be incomplete: indexed files the provider is
+    /// known not to read, such as Go files behind build tags.
+    pub warnings: Vec<String>,
 }
 
 /// Where a symbol is referenced.
@@ -47,7 +53,24 @@ pub fn find_references(
             locations,
         )?))
     })?;
-    Ok(SymbolReport { symbol, answer })
+    let found: &[Reference] = match &answer.outcome {
+        Outcome::Found(references) => references,
+        Outcome::Empty => &[],
+        _ => {
+            return Ok(SymbolReport {
+                symbol,
+                answer,
+                warnings: Vec::new(),
+            });
+        }
+    };
+    let root = Path::new(&context.snapshot.snapshot.root);
+    let warnings = unseen_files(&*store, snapshot_id, root, &symbol, found)?;
+    Ok(SymbolReport {
+        symbol,
+        answer,
+        warnings,
+    })
 }
 
 /// Where providers are asked about a symbol: the start of its name.

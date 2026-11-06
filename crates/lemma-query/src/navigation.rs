@@ -68,7 +68,11 @@ pub fn find_implementations(
     let at = name_of(&symbol);
     let answer = ask_providers(store, context, at, pool, &LocationQuery::Implementations)?;
     let answer = answer.try_map(|locations| to_targets(&*store, context.snapshot.id, locations))?;
-    Ok(SymbolReport { symbol, answer })
+    Ok(SymbolReport {
+        symbol,
+        answer,
+        warnings: Vec::new(),
+    })
 }
 
 /// The language a file is parsed as, from its extension.
