@@ -67,6 +67,23 @@ impl<'m> StatedFacts<'m> {
         }
     }
 
+    /// Whether `body` holds with `values` bound: an allowance's condition
+    /// over one finding's variables. Atoms read stated facts at the head.
+    pub fn holds(&mut self, body: &[Literal], values: &BTreeMap<String, Datum>) -> bool {
+        let clause = Clause {
+            head: Vec::new(),
+            body: body.to_vec(),
+        };
+        let current = BTreeMap::new();
+        let mut reader = Reader {
+            facts: self,
+            snapshot: Snapshot::Head,
+            current: &current,
+            incomplete: None,
+        };
+        !reader.solve_from(&clause, values.clone()).is_empty()
+    }
+
     fn model(&self, snapshot: Snapshot) -> Option<&'m Model> {
         match snapshot {
             Snapshot::Head => Some(self.head),
@@ -171,7 +188,13 @@ type Binding = BTreeMap<String, Datum>;
 
 impl Reader<'_, '_> {
     fn solve_clause(&mut self, clause: &Clause) -> Vec<Vec<Datum>> {
-        let mut bindings = vec![Binding::new()];
+        self.solve_from(clause, Binding::new())
+    }
+
+    /// The clause's head for each way its body holds, starting from
+    /// `start`.
+    fn solve_from(&mut self, clause: &Clause, start: Binding) -> Vec<Vec<Datum>> {
+        let mut bindings = vec![start];
         // Positive atoms bind variables; comparisons and negations test
         // bound ones.
         let ordered = clause

@@ -205,8 +205,12 @@ pub struct Operation {
 /// An allowance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Allowance {
-    /// The requirement it covers.
+    /// The requirement or behavior it covers.
     pub requirement: Address,
+    /// The variables its condition may read, with their types: a
+    /// requirement's message and `at` variables, or a behavior's
+    /// parameters and loop variables.
+    pub variables: Vec<Column>,
     /// Which findings.
     pub body: Vec<Literal>,
     /// Why.

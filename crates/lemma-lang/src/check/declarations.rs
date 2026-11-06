@@ -807,6 +807,13 @@ impl<'a> Checker<'a> {
             .unwrap_or_default();
         self.model.allowances.push(model::Allowance {
             requirement,
+            variables: variables
+                .iter()
+                .map(|(name, variable_type)| Column {
+                    name: name.clone(),
+                    column_type: variable_type.clone(),
+                })
+                .collect(),
             body,
             reason: values
                 .get("reason")
