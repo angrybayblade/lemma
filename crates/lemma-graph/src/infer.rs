@@ -65,6 +65,7 @@ pub fn manifest(sources: &[Source<'_>], changed: &Changed<'_>) -> Option<Inferre
     }
     let manifest = Manifest {
         grammar: None,
+        lowered: None,
         change: VerifyChange {
             repository: changed_entry?,
             base: changed.base.to_owned(),

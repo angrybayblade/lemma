@@ -145,7 +145,7 @@ pub struct GeneratedDocument {
 }
 
 /// A manifest as written.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     /// The grammar file, relative to the manifest; the built-in HTTP
@@ -156,6 +156,10 @@ pub struct Manifest {
     pub change: Change,
     /// Every repository, by name.
     pub repositories: BTreeMap<String, Repository>,
+    /// A grammar already lowered, which wins over `grammar`: `lemma check`
+    /// passes the one its `.lm` program lowers to.
+    #[serde(skip)]
+    pub lowered: Option<lemma_grammar::GrammarFile>,
 }
 
 impl Manifest {
