@@ -238,7 +238,8 @@ fn parent_module(
 /// A program checked at one snapshot, with where its repositories are.
 struct Program {
     checked: Checked,
-    places: BTreeMap<String, Place>,
+    /// Where each repository of the program is read.
+    checkouts: BTreeMap<String, Checkout>,
 }
 
 impl Program {
@@ -272,7 +273,7 @@ impl Program {
         }
         let entry = entry_repository(&checked);
         let roots = sources.roots(&entry);
-        let places = roots
+        let checkouts = roots
             .into_iter()
             .map(|(name, root)| {
                 let checkout = if name == entry {
@@ -282,10 +283,10 @@ impl Program {
                         .cloned()
                         .unwrap_or(Checkout { root, commit: None })
                 };
-                (name, Place::of(&checkout))
+                (name, checkout)
             })
             .collect();
-        Ok(Program { checked, places })
+        Ok(Program { checked, checkouts })
     }
 
     /// Runs the behaviors the selected check (or `check main`) selects;
@@ -305,15 +306,16 @@ impl Program {
             .map(|module| (module.name.clone(), module.repository.clone()))
             .collect();
         let roots: BTreeMap<String, String> = self
-            .places
+            .checkouts
             .iter()
-            .map(|(name, place)| (name.clone(), place.checkout.root.display().to_string()))
+            .map(|(name, checkout)| (name.clone(), checkout.root.display().to_string()))
             .collect();
         let mut world = CheckWorld {
             facts: StatedFacts::new(model, other),
             encoder: Encoder::new(model, repositories),
             store,
-            places: &self.places,
+            checkouts: &self.checkouts,
+            places: BTreeMap::new(),
             roots: &roots,
         };
         let main = selected_check(&self.checked, selected)?;
@@ -326,8 +328,24 @@ struct CheckWorld<'w> {
     facts: StatedFacts<'w>,
     encoder: Encoder<'w>,
     store: &'w Store,
-    places: &'w BTreeMap<String, Place>,
+    checkouts: &'w BTreeMap<String, Checkout>,
+    /// The state of each repository's code, found when a checker first
+    /// needs it: a working directory's costs a `git status` and a digest
+    /// of each changed file, which a check without checkers never pays.
+    places: BTreeMap<String, Place>,
     roots: &'w BTreeMap<String, String>,
+}
+
+impl CheckWorld<'_> {
+    /// Where repository `name` is read, and the state of its code.
+    fn place(&mut self, name: &str) -> Option<Place> {
+        if let Some(found) = self.places.get(name) {
+            return Some(found.clone());
+        }
+        let place = Place::of(self.checkouts.get(name)?);
+        self.places.insert(name.to_owned(), place.clone());
+        Some(place)
+    }
 }
 
 impl World for CheckWorld<'_> {
@@ -337,7 +355,7 @@ impl World for CheckWorld<'_> {
 
     fn evidence(&mut self, demand: &Demand<'_>) -> eval::Evidence {
         let checker = demand.checker;
-        let Some(place) = self.places.get(&checker.repository) else {
+        let Some(place) = self.place(&checker.repository) else {
             return eval::Evidence::Unavailable(format!(
                 "repository `{}`, where the checker runs, is not checked out",
                 checker.repository
@@ -348,16 +366,16 @@ impl World for CheckWorld<'_> {
             .iter()
             .map(|(name, value)| (name.clone(), self.encoder.encode(value)))
             .collect();
-        let read: Vec<&String> = if checker.reads.is_empty() {
-            vec![&checker.repository]
+        let read: Vec<String> = if checker.reads.is_empty() {
+            vec![checker.repository.clone()]
         } else {
-            checker.reads.iter().collect()
+            checker.reads.clone()
         };
         let reads = read
             .into_iter()
             .map(|name| {
-                let state = self.places.get(name).and_then(|place| place.state.clone());
-                (name.clone(), state)
+                let state = self.place(&name).and_then(|place| place.state);
+                (name, state)
             })
             .collect();
         self.store.demand(&Request {
@@ -365,7 +383,7 @@ impl World for CheckWorld<'_> {
             case: demand.case,
             arguments: serde_json::Value::Object(arguments),
             reads,
-            place,
+            place: &place,
             roots: self.roots,
         })
     }
