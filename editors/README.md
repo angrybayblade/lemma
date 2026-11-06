@@ -11,7 +11,7 @@ Syntax highlighting, parsing and a language server client for Lemma's `.lm` lang
 | `fixture/` | The module the editor checks open: valid but for one requirement naming a predicate nothing declares, so the language server has one problem to report |
 | `check.sh` | Regenerates the parser, runs the grammar's tests, parses every example in spec 13 and every `.lm` file in the repository, and runs each editor's check |
 
-`editors/check.sh` runs every section; name sections to run only those, such as `editors/check.sh grammar vscode`. The editor sections run the language server built from this checkout (`$LM`, or `target/release/lm`, which they build with `cargo build --release -p lemma-lm`), and skip an editor that is not installed, saying why.
+`editors/check.sh` runs every section; name sections to run only those, such as `editors/check.sh grammar vscode`. The editor sections run the language server built from this checkout (`$LM`, or `target/release/lm`, which they build with `cargo build --release -p lemma-cli --bin lm`), and skip an editor that is not installed, saying why.
 
 ## The language server
 
