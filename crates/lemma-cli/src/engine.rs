@@ -490,12 +490,53 @@ impl Engine {
         path: &Path,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
-        let db_path = request.find_index()?;
-        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
-        let relative = relative_to_root(&snapshot, &request.invocation.resolve(path))?;
-        let symbols = lemma_query::symbols_in_file(store, snapshot.id, &relative)?;
-        output::outline(out, &relative, &symbols, request.format)?;
+        let file = request.invocation.resolve(path);
+        let found = self.index_of_file(request.find_index()?, &file)?;
+        let store = open_store(&mut self.stores, &found.db_path)?;
+        let mut symbols = lemma_query::symbols_in_file(store, found.snapshot.id, &found.relative)?;
+        let Some(member) = found.member else {
+            output::outline(out, &found.relative, &symbols, request.format)?;
+            return Ok(0);
+        };
+        // Ids are numbered per repository, so in a workspace they name it.
+        for symbol in &mut symbols {
+            symbol.path = format!("{member}:{}", symbol.path);
+        }
+        let shown = format!("{member}:{}", found.relative);
+        output::outline(out, &shown, &symbols, request.format)?;
         Ok(0)
+    }
+
+    /// The index, snapshot and snapshot-relative path to look `file` up
+    /// in. From a workspace that is the index of the member holding it: the
+    /// workspace's own index has no source snapshot.
+    fn index_of_file(&mut self, db_path: PathBuf, file: &Path) -> anyhow::Result<FileIndex> {
+        let members = open_store(&mut self.stores, &db_path)?.workspace_members()?;
+        if let Some((member, relative)) = member_file(&members, file) {
+            let member_db = PathBuf::from(&member.database);
+            let store = open_store(&mut self.stores, &member_db)?;
+            let Some(snapshot) = store.snapshot_for_root(&member.indexed_root)? else {
+                bail!(
+                    "{} has no index of {}; run `lemma index` on the workspace",
+                    member.name,
+                    member.indexed_root
+                );
+            };
+            return Ok(FileIndex {
+                db_path: member_db,
+                snapshot,
+                relative,
+                member: Some(member.name.clone()),
+            });
+        }
+        let (_, snapshot) = index_at(&mut self.stores, &db_path)?;
+        let relative = relative_to_root(&snapshot, file)?;
+        Ok(FileIndex {
+            db_path,
+            snapshot,
+            relative,
+            member: None,
+        })
     }
 
     fn references(
@@ -544,29 +585,13 @@ impl Engine {
     ) -> anyhow::Result<u8> {
         let (path, position) = parse_location(&args.location)?;
         let file = request.invocation.resolve(&path);
-        let db_path = request.find_index()?;
-        let members = open_store(&mut self.stores, &db_path)?.workspace_members()?;
-        // From a workspace, a file is looked up in the index of the member
-        // holding it: the workspace's own index has no source snapshot.
-        let (db_path, relative) = match member_file(&members, &file) {
-            Some((member, relative)) => (PathBuf::from(&member.database), Some((member, relative))),
-            None => (db_path, None),
-        };
-        let (store, snapshot, relative) = if let Some((member, relative)) = relative {
-            let store = open_store(&mut self.stores, &db_path)?;
-            let Some(snapshot) = store.snapshot_for_root(&member.indexed_root)? else {
-                bail!(
-                    "{} has no index of {}; run `lemma index` on the workspace",
-                    member.name,
-                    member.indexed_root
-                );
-            };
-            (store, snapshot, relative)
-        } else {
-            let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
-            let relative = relative_to_root(&snapshot, &file)?;
-            (store, snapshot, relative)
-        };
+        let FileIndex {
+            db_path,
+            snapshot,
+            relative,
+            member: _,
+        } = self.index_of_file(request.find_index()?, &file)?;
+        let store = open_store(&mut self.stores, &db_path)?;
         let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
         let options = lookup_options(&args.lookup);
         let context = LookupContext {
@@ -1677,6 +1702,15 @@ fn exit_code<T>(outcome: &Outcome<T>) -> u8 {
 }
 
 /// A file as the index names it: relative to the snapshot root, with `/`.
+/// Where to look a file up: an index, its snapshot, the file's path in it,
+/// and, from a workspace, the member holding it.
+struct FileIndex {
+    db_path: PathBuf,
+    snapshot: StoredSnapshot,
+    relative: String,
+    member: Option<String>,
+}
+
 /// The workspace member holding `file`, in its clone or in the worktree it
 /// is indexed in, and the file's path inside it. The deepest root wins, as
 /// members can be nested.
