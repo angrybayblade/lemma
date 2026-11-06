@@ -6,13 +6,21 @@
 //! diagnostics follow typing. Hovers, definitions, symbols and completions
 //! come from the last check. See [`analysis`]. Formatting needs no check;
 //! see [`formatting`].
+//!
+//! A thread reads the client's messages into a channel. The server takes
+//! every message already waiting there, applies their changes in order,
+//! and checks once, so a burst of edits costs one check instead of one
+//! each. A request is answered after the changes sent before it have been
+//! checked, so every answer is the one the client would get if the server
+//! had handled the messages one by one.
 
 mod analysis;
 mod formatting;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead, Write};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 
 use lemma_graph::lm::CheckoutSources;
 use lemma_graph::repos::Checkout;
@@ -33,48 +41,65 @@ pub enum ServerError {
     /// Reading from or writing to the client failed.
     #[error("cannot talk to the client")]
     Io(#[from] std::io::Error),
+    /// The thread that reads the client's messages could not start.
+    #[error("cannot start the thread that reads the client's messages")]
+    Reader(#[source] std::io::Error),
 }
 
 /// Serves one client until it exits or its input ends. `cache` holds Lemma's
 /// clones of pinned repositories and the written-out standard library.
 pub fn serve(
-    input: &mut impl BufRead,
+    input: impl BufRead + Send + 'static,
     output: &mut impl Write,
     cache: &Path,
 ) -> Result<(), ServerError> {
+    let messages = read_on_thread(input)?;
     let mut server = Server {
         documents: BTreeMap::new(),
         analyses: BTreeMap::new(),
         published: BTreeMap::new(),
         encoding: PositionEncoding::Utf16,
         cache: cache.to_path_buf(),
+        is_stale: false,
     };
-    while let Some(message) = read_message(input)? {
-        let method = message
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        if method == "exit" {
+    while let Ok(first) = messages.recv() {
+        let waiting: Vec<io::Result<Value>> =
+            std::iter::once(first).chain(messages.try_iter()).collect();
+        if server.handle_batch(waiting, output)? == Flow::Exit {
             return Ok(());
         }
-        let params = message.get("params").cloned().unwrap_or(Value::Null);
-        let Some(id) = message.get("id").cloned() else {
-            server.notify(&method, &params, output)?;
-            continue;
-        };
-        if method.is_empty() {
-            continue;
-        }
-        let response = match server.request(&method, params) {
-            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-            Err((code, error)) => {
-                json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": error } })
-            }
-        };
-        write_message(output, &response)?;
     }
     Ok(())
+}
+
+/// Reads the client's messages on a thread of their own, so the server can
+/// see every message already sent before it checks. The thread ends with
+/// the input, after a read error, or once the server stops listening.
+fn read_on_thread(
+    mut input: impl BufRead + Send + 'static,
+) -> Result<Receiver<io::Result<Value>>, ServerError> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("lemma-lm-reader".to_owned())
+        .spawn(move || {
+            while let Some(message) = read_message(&mut input).transpose() {
+                let is_failure = message.is_err();
+                if sender.send(message).is_err() || is_failure {
+                    return;
+                }
+            }
+        })
+        .map_err(ServerError::Reader)?;
+    Ok(receiver)
+}
+
+/// Whether to keep serving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flow {
+    /// Read the next messages.
+    Continue,
+    /// The client said `exit`.
+    Exit,
 }
 
 /// The JSON-RPC code for a method the server does not know.
@@ -93,9 +118,67 @@ struct Server {
     published: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
     encoding: PositionEncoding,
     cache: PathBuf,
+    /// Whether a document changed since the last check.
+    is_stale: bool,
 }
 
 impl Server {
+    /// Handles messages in order, then checks once if any changed a
+    /// document.
+    fn handle_batch(
+        &mut self,
+        messages: Vec<io::Result<Value>>,
+        output: &mut impl Write,
+    ) -> Result<Flow, ServerError> {
+        for message in messages {
+            if self.handle(&message?, output)? == Flow::Exit {
+                return Ok(Flow::Exit);
+            }
+        }
+        self.check_if_stale(output)?;
+        Ok(Flow::Continue)
+    }
+
+    /// Applies a notification, or answers a request once the changes sent
+    /// before it have been checked.
+    fn handle(&mut self, message: &Value, output: &mut impl Write) -> Result<Flow, ServerError> {
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if method == "exit" {
+            return Ok(Flow::Exit);
+        }
+        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        let Some(id) = message.get("id").cloned() else {
+            self.notify(&method, &params, output)?;
+            return Ok(Flow::Continue);
+        };
+        if method.is_empty() {
+            return Ok(Flow::Continue);
+        }
+        self.check_if_stale(output)?;
+        let response = match self.request(&method, params) {
+            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            Err((code, error)) => {
+                json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": error } })
+            }
+        };
+        write_message(output, &response)?;
+        Ok(Flow::Continue)
+    }
+
+    /// Checks the open documents and publishes, if one changed since the
+    /// last check.
+    fn check_if_stale(&mut self, output: &mut impl Write) -> Result<(), ServerError> {
+        if !self.is_stale {
+            return Ok(());
+        }
+        self.is_stale = false;
+        self.reanalyze(output)
+    }
+
     fn request(&mut self, method: &str, params: Value) -> Result<Value, (i64, String)> {
         match method {
             "initialize" => {
@@ -213,6 +296,8 @@ impl Server {
         Some((analysis, module))
     }
 
+    /// Applies a notification. A change to a document is checked later,
+    /// with every other change waiting by then.
     fn notify(
         &mut self,
         method: &str,
@@ -256,7 +341,8 @@ impl Server {
             }
             _ => return Ok(()),
         }
-        self.reanalyze(output)
+        self.is_stale = true;
+        Ok(())
     }
 
     /// Checks every open document again, since an edit to one may change
