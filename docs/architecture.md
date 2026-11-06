@@ -33,7 +33,7 @@ Provider answers share one shape: an outcome with a `state` (`found`, `empty`, `
 
 ### Consumption
 
-`lemma-cli` turns commands into operations and prints their answers. The daemon (`daemon.rs`) and the MCP server (`mcp.rs`) are ways of delivering the same commands: the daemon keeps state warm between them, and the MCP server exposes each operation as a tool whose result is the command's JSON. Output shapes are defined in `output/`, separately from internal types, so internals can change without breaking scripts or agents.
+`lemma-cli` turns commands into operations and prints their answers. The daemon (`daemon.rs`) and the MCP server (`mcp.rs`) are ways of delivering the same commands: the daemon keeps state warm between them, and the MCP server exposes each operation as a tool whose result is the command's text output, which carries the same facts and ids as its JSON in a fraction of the size. Output shapes are defined in `output/`, separately from internal types, so internals can change without breaking scripts or agents.
 
 ### Query
 

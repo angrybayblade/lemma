@@ -307,5 +307,152 @@
       "idempotentHint": true,
       "openWorldHint": false
     }
+  },
+  {
+    "name": "graph",
+    "description": "The call graph around a symbol: what uses it (callers) and what it uses (callees), to a depth, as a tree with each node's file and line. Use to see how a change spreads or how a request reaches a function. From a workspace, `workspace` follows callers into other repositories through the operations a handler serves.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from lemma.yaml (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "function",
+            "method",
+            "class",
+            "interface",
+            "struct",
+            "enum",
+            "type_alias",
+            "constant",
+            "variable"
+          ],
+          "description": "Only symbols of this kind."
+        },
+        "language": {
+          "type": "string",
+          "enum": [
+            "typescript",
+            "tsx",
+            "python",
+            "go"
+          ],
+          "description": "Only symbols in this language."
+        },
+        "path": {
+          "type": "string",
+          "description": "Only symbols whose file path contains this text."
+        },
+        "refresh": {
+          "type": "boolean",
+          "description": "Ask the language server again instead of using a stored answer."
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "callers",
+            "callees",
+            "both"
+          ],
+          "description": "Which way to follow uses. Default: both."
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many uses away to go. Default: 2."
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "lsp",
+            "names"
+          ],
+          "description": "`lsp` (default) asks the language server: precise. `names` matches names in the indexed files: instant but approximate, and blind to files outside the index."
+        },
+        "max_nodes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The most nodes to include. Default: 200."
+        },
+        "workspace": {
+          "type": "string",
+          "description": "A workspace lemma.yaml or mod.lm: follow callers out of the repository through the operations their handlers serve. Takes as long as a check."
+        },
+        "across": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "With `workspace`, how many calls from other repositories to follow. Default: 1, the code calling the operations."
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "check",
+    "description": "Checks that repositories still agree: callers against the operations they call, with their schemas, and the requirements and behaviors a lemma.yaml or mod.lm declares. With `change`, `base` and `head`, reports only what a change to one repository breaks, such as a client still sending a parameter the server removed. Behaviors may run their checkers, which run code.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "manifest": {
+          "type": "string",
+          "description": "The workspace's lemma.yaml or mod.lm. Default: lemma.yaml in the current directory."
+        },
+        "change": {
+          "type": "string",
+          "description": "The repository that changed, as the workspace names it, such as `billing`. Needs `base`."
+        },
+        "base": {
+          "type": "string",
+          "description": "The commit before the change."
+        },
+        "head": {
+          "type": "string",
+          "description": "The commit with the change. Default: the working directory, uncommitted changes included."
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "audit",
+            "check",
+            "strict"
+          ],
+          "description": "How strict to be; overrides the workspace's level."
+        },
+        "no_run": {
+          "type": "boolean",
+          "description": "Run no checkers: behaviors use kept evidence only."
+        },
+        "select": {
+          "type": "string",
+          "description": "The check of a mod.lm to run instead of `check main`."
+        },
+        "all": {
+          "type": "boolean",
+          "description": "Also list informational findings."
+        },
+        "links": {
+          "type": "boolean",
+          "description": "Also list every link between repositories."
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
   }
 ]

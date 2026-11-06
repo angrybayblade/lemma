@@ -31,7 +31,8 @@ follows imports and aliases. Prefer it to grep or rg for those questions, especi
 names; use text search for strings, configuration and other files.\n\n\
 Workflow: `search_symbols` (or `outline` for a file) gives each definition an id like `#415`, or \
 `#billing:415` in a workspace, where ids are numbered per repository; pass the id as shown to \
-`references`, `implementations` or `signature`. `definition` takes a file, line and column. The \
+`references`, `implementations`, `signature` or `graph`. `definition` takes a file, line and column. \
+`check` reports what a change to one repository breaks in the others. The \
 index refreshes itself before every query; an id keeps naming its definition across edits while \
 the definition keeps its name and kind. \"No references found\" means the server \
 saw nothing, not that the code is unused.";
@@ -231,6 +232,7 @@ fn call_tool(
 
 /// The `lemma` arguments a tool call stands for. Results are the commands'
 /// text output: a fraction of the JSON's size, with the same facts and ids.
+/// A check that finds errors exits with 4, which is still an answer.
 fn command_for(name: &str, arguments: &Map<String, Value>) -> Result<Vec<String>, String> {
     let mut args = Vec::new();
     match name {
@@ -265,6 +267,8 @@ fn command_for(name: &str, arguments: &Map<String, Value>) -> Result<Vec<String>
         }
         "implementations" => push_symbol_command(&mut args, "implementations", arguments)?,
         "signature" => push_symbol_command(&mut args, "signature", arguments)?,
+        "graph" => push_graph_command(&mut args, arguments)?,
+        "check" => push_check_command(&mut args, arguments)?,
         _ => return Err(format!("unknown tool `{name}`")),
     }
     Ok(args)
@@ -278,6 +282,77 @@ fn push_symbol_command(
     args.extend([command.to_owned(), required_string(arguments, "symbol")?]);
     push_filters(args, arguments)?;
     push_refresh(args, arguments)
+}
+
+fn push_graph_command(
+    args: &mut Vec<String>,
+    arguments: &Map<String, Value>,
+) -> Result<(), String> {
+    push_symbol_command(args, "graph", arguments)?;
+    push_options(
+        args,
+        arguments,
+        &[
+            ("direction", "--direction"),
+            ("source", "--source"),
+            ("workspace", "--workspace"),
+        ],
+    )?;
+    for (field, flag) in [
+        ("depth", "--depth"),
+        ("max_nodes", "--max-nodes"),
+        ("across", "--across"),
+    ] {
+        if let Some(count) = optional_count(arguments, field)? {
+            args.extend([flag.to_owned(), count.to_string()]);
+        }
+    }
+    Ok(())
+}
+
+fn push_check_command(
+    args: &mut Vec<String>,
+    arguments: &Map<String, Value>,
+) -> Result<(), String> {
+    args.push("check".to_owned());
+    if let Some(manifest) = optional_string(arguments, "manifest")? {
+        args.push(manifest);
+    }
+    push_options(
+        args,
+        arguments,
+        &[
+            ("change", "--change"),
+            ("base", "--base"),
+            ("head", "--head"),
+            ("level", "--level"),
+            ("select", "--select"),
+        ],
+    )?;
+    for (field, flag) in [
+        ("no_run", "--no-run"),
+        ("all", "--all"),
+        ("links", "--links"),
+    ] {
+        if optional_bool(arguments, field)? {
+            args.push(flag.to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// Each string argument present, as its flag and value.
+fn push_options(
+    args: &mut Vec<String>,
+    arguments: &Map<String, Value>,
+    options: &[(&str, &str)],
+) -> Result<(), String> {
+    for (field, flag) in options {
+        if let Some(value) = optional_string(arguments, field)? {
+            args.extend([(*flag).to_owned(), value]);
+        }
+    }
+    Ok(())
 }
 
 fn push_filters(args: &mut Vec<String>, arguments: &Map<String, Value>) -> Result<(), String> {
@@ -317,6 +392,18 @@ fn optional_bool(arguments: &Map<String, Value>, field: &str) -> Result<bool, St
         None | Some(Value::Null) => Ok(false),
         Some(Value::Bool(flag)) => Ok(*flag),
         Some(_) => Err(format!("`{field}` must be true or false")),
+    }
+}
+
+/// A count from 1, if given.
+fn optional_count(arguments: &Map<String, Value>, field: &str) -> Result<Option<u64>, String> {
+    match arguments.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .filter(|count| *count >= 1)
+            .map(Some)
+            .ok_or_else(|| format!("`{field}` must be an integer from 1")),
     }
 }
 
@@ -369,6 +456,39 @@ mod tests {
                 "python",
                 "--include-declaration"
             ]
+        );
+    }
+
+    #[test]
+    fn a_graph_call_becomes_a_graph_command_with_its_options() {
+        let call = json!({ "symbol": "#7", "direction": "callers", "depth": 3, "source": "names" });
+
+        let args = command_for("graph", &arguments(&call)).unwrap();
+
+        assert_eq!(
+            args,
+            [
+                "graph",
+                "#7",
+                "--direction",
+                "callers",
+                "--source",
+                "names",
+                "--depth",
+                "3"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_check_call_names_the_change_and_its_commits() {
+        let call = json!({ "change": "billing", "base": "HEAD~1", "all": true });
+
+        let args = command_for("check", &arguments(&call)).unwrap();
+
+        assert_eq!(
+            args,
+            ["check", "--change", "billing", "--base", "HEAD~1", "--all"]
         );
     }
 
@@ -436,7 +556,9 @@ mod tests {
                 "references",
                 "definition",
                 "implementations",
-                "signature"
+                "signature",
+                "graph",
+                "check"
             ]
         );
     }
