@@ -5,6 +5,7 @@
 //! Engines are a type parameter, so callers pick one at compile time (see
 //! `lemma_logic::Engine`).
 
+mod allowances;
 mod clients;
 mod demand;
 mod extract;
@@ -158,6 +159,10 @@ pub struct Finding {
     /// Why it holds, as an indented proof, when explanations were asked for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub derivation: Option<String>,
+    /// The reason of the `allow` covering it; an allowed finding is
+    /// informational, whatever its requirement's severity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<String>,
 }
 
 /// The result of verifying a change.
@@ -268,14 +273,18 @@ fn focus<'a>(
     }
 }
 
-/// The grammar `manifest` names, or the built-in one, compiled.
-fn load_grammar(manifest: &Manifest) -> Result<CompiledGrammar, VerifyError> {
+/// The grammar `manifest` names, or the built-in one, compiled; for a
+/// `.lm` grammar, also its program, whose allowances apply.
+fn load_grammar(
+    manifest: &Manifest,
+) -> Result<(CompiledGrammar, Option<allowances::Program>), VerifyError> {
     if let Some(path) = manifest
         .grammar
         .as_ref()
         .filter(|path| path.extension().is_some_and(|extension| extension == "lm"))
     {
-        return load_language_grammar(path);
+        let (grammar, program) = load_language_grammar(path)?;
+        return Ok((grammar, Some(program)));
     }
     let grammar_text = match &manifest.grammar {
         Some(path) => std::fs::read_to_string(path).map_err(|source| VerifyError::Read {
@@ -284,14 +293,15 @@ fn load_grammar(manifest: &Manifest) -> Result<CompiledGrammar, VerifyError> {
         })?,
         None => HTTP_CONTRACTS.to_owned(),
     };
-    Ok(lemma_grammar::compile(&lemma_grammar::parse_grammar(
-        &grammar_text,
-    )?)?)
+    let grammar = lemma_grammar::compile(&lemma_grammar::parse_grammar(&grammar_text)?)?;
+    Ok((grammar, None))
 }
 
 /// A `.lm` grammar module and what it imports, checked, lowered and
 /// compiled. Its `check main`, if it has one, selects the requirements.
-fn load_language_grammar(path: &Path) -> Result<CompiledGrammar, VerifyError> {
+fn load_language_grammar(
+    path: &Path,
+) -> Result<(CompiledGrammar, allowances::Program), VerifyError> {
     let directory = path.parent().unwrap_or(Path::new("."));
     let file = path
         .file_name()
@@ -319,7 +329,11 @@ fn load_language_grammar(path: &Path) -> Result<CompiledGrammar, VerifyError> {
             path: path.to_path_buf(),
             source,
         })?;
-    Ok(lemma_grammar::compile(&grammar)?)
+    let program = allowances::Program {
+        names: lemma_grammar::lm::requirement_names(&checked.model),
+        model: checked.model,
+    };
+    Ok((lemma_grammar::compile(&grammar)?, program))
 }
 
 /// Verifies a manifest's change with `engine`.
@@ -352,7 +366,7 @@ fn run<E: Engine>(
     listings: &Arc<lemma_http::Listings>,
     operations: Option<&BTreeSet<String>>,
 ) -> Result<Report, VerifyError> {
-    let mut grammar = load_grammar(manifest)?;
+    let (mut grammar, program) = load_grammar(manifest)?;
     check_relations(&grammar, &options.relations)?;
     let evaluability = match options.evaluation {
         Evaluation::Full => None,
@@ -387,12 +401,48 @@ fn run<E: Engine>(
         Some(_) => Vec::new(),
         None => findings(&grammar, &derived),
     };
+    let expired = match (&program, operations) {
+        (Some(program), None) => allow(program, manifest, &mut findings),
+        _ => Vec::new(),
+    };
     let relations = relation_rows(&grammar, &derived, &options.relations);
     if options.explain {
         add_derivations(&grammar, engine, &mut findings)?;
     }
+    let described = described(manifest, operations);
+    Ok(Report {
+        change: described,
+        engine: engine.name().to_owned(),
+        evaluation,
+        covered: covered.map(|operations| operations.into_iter().collect()),
+        facts,
+        findings: findings
+            .into_iter()
+            .map(|(finding, _)| finding)
+            .chain(expired)
+            .collect(),
+        relations,
+    })
+}
+
+/// Applies a `.lm` grammar's allowances to its findings; returns a finding
+/// for each expired allowance.
+fn allow(
+    program: &allowances::Program,
+    manifest: &Manifest,
+    findings: &mut [(Finding, Fact)],
+) -> Vec<Finding> {
+    let date = allowances::committer_date(manifest);
+    let covered = findings.iter_mut().map(|(finding, _)| finding);
+    let expired = allowances::apply(program, covered, date);
+    sort_findings(findings);
+    expired
+}
+
+/// What a run checked: the change, or the calls of some operations.
+fn described(manifest: &Manifest, operations: Option<&BTreeSet<String>>) -> String {
     let change = &manifest.change;
-    let described = match operations {
+    match operations {
         Some(operations) => format!("calls of {} operations", operations.len()),
         None => format!(
             "{} {}..{}",
@@ -400,16 +450,7 @@ fn run<E: Engine>(
             change.base,
             change.head_label()
         ),
-    };
-    Ok(Report {
-        change: described,
-        engine: engine.name().to_owned(),
-        evaluation,
-        covered: covered.map(|operations| operations.into_iter().collect()),
-        facts,
-        findings: findings.into_iter().map(|(finding, _)| finding).collect(),
-        relations,
-    })
+    }
 }
 
 fn check_relations(grammar: &CompiledGrammar, names: &[String]) -> Result<(), VerifyError> {
@@ -530,6 +571,7 @@ fn findings(grammar: &CompiledGrammar, derived: &lemma_logic::Derived) -> Vec<(F
                 values,
                 introduced: !at_base.contains(&identity(row)),
                 derivation: None,
+                allowed: None,
             };
             found.push((
                 finding,
@@ -540,6 +582,12 @@ fn findings(grammar: &CompiledGrammar, derived: &lemma_logic::Derived) -> Vec<(F
             ));
         }
     }
+    sort_findings(&mut found);
+    found
+}
+
+/// Most severe first, then by requirement and message.
+fn sort_findings(found: &mut [(Finding, Fact)]) {
     found.sort_by(|(left, _), (right, _)| {
         (
             severity_rank(left.severity),
@@ -552,7 +600,6 @@ fn findings(grammar: &CompiledGrammar, derived: &lemma_logic::Derived) -> Vec<(F
                 &right.message,
             ))
     });
-    found
 }
 
 fn add_derivations<E: Engine>(
@@ -658,7 +705,7 @@ mod tests {
         let built_in =
             lemma_grammar::compile(&lemma_grammar::parse_grammar(HTTP_CONTRACTS).unwrap()).unwrap();
 
-        let grammar = load_language_grammar(&path).unwrap();
+        let (grammar, _) = load_language_grammar(&path).unwrap();
 
         assert_eq!(grammar.requirements, built_in.requirements);
         assert_eq!(grammar.program.rules(), built_in.program.rules());

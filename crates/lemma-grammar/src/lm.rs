@@ -277,6 +277,18 @@ fn unsupported(owner: &Address, what: &str) -> LowerError {
     }
 }
 
+/// The name each requirement's findings carry once lowered: its own, or
+/// qualified with its module where two requirements, relations, rules or
+/// graphs share it.
+pub fn requirement_names(model: &Model) -> BTreeMap<Address, String> {
+    let names = Names::new(model);
+    model
+        .requirements
+        .iter()
+        .map(|requirement| (requirement.address.clone(), names.get(&requirement.address)))
+        .collect()
+}
+
 /// Datalog names for declarations: their own where unique, qualified with
 /// their module where two declare the same one.
 struct Names {
