@@ -1427,6 +1427,28 @@ func SetupToolRoutes(r *mux.Router) {
     }
 
     #[test]
+    fn go_subrouter_prefix_keeps_the_literal_after_a_configured_base() {
+        let source = r#"package shop
+
+func NewRouter(cfg Config) *mux.Router {
+	r := mux.NewRouter()
+	api := r.PathPrefix(cfg.BasePath + "/api" + "/v1").Subrouter()
+	api.HandleFunc("/items", listItems).Methods("GET")
+	return r
+}
+"#;
+
+        let found = facts("router.go", source);
+
+        let paths: Vec<&str> = found
+            .method_paths
+            .iter()
+            .map(|route| route.path.as_str())
+            .collect();
+        assert_eq!(paths, ["/api/v1/items"]);
+    }
+
+    #[test]
     fn go_requests_carry_their_method_and_json_names_are_mentions() {
         let source = r#"package callbacks
 
