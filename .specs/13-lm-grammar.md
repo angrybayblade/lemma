@@ -76,6 +76,17 @@ fn identity(value: Bool): Bool {
 }
 ```
 
+### Layout
+
+Every module has one canonical layout, so a diff shows only what changed. The formatter keeps the author's line breaks, since newlines separate items, and changes only indentation, the spaces within a line and the number of blank lines. It refuses a module with syntax errors. The examples in this document, the standard library and `docs/language.md` are in this layout.
+
+- **Indentation** is four spaces for each bracket open at the start of the line. Brackets opened on the same line count once, so `f({` indents its contents one level. A line starting with a closing bracket lines up with the line that opened it, as in `): Evidence<Json> {`.
+- **Continuation.** Where newlines separate, a line that continues the one before (after a binary operator, a comma, `:`, `=`, `->` or `:-`, or starting with `because`) goes one level further in, and every further continued line stays at that level. This is how a rule's body sits under its head and a `when:` body under its field. A line starting with `else` is not indented. After a comma, a line starting with `name:` is a new field, not a continuation. Inside `(...)`, `[...]` and an import's `{...}`, newlines are whitespace and lines take the bracket's level only.
+- **Spaces.** One space goes around binary operators, `=`, `->` and `:-`, and after `,`, `;` and `:`. Braces get a space inside them when their contents share their line (`{ include: ["src"] }`, `import { Link } from lemma.links`), but an empty pair is `{}`. No space goes inside `(...)` and `[...]`; before `,`, `;`, `:` and `.`; before a call's `(`, an index's `[` or a snapshot; after a prefix `!` or `-`; or around type arguments (`Fact<Link>`). A reserved word keeps its space before a bracket (`in [true, false]`). The `:` naming a graph's or rule's relation has a space on each side (`graph links : Link`), and so does the `*` of `import * as`. The `.*` of `run` is written tight.
+- **Blank lines.** There is at most one blank line in a row, and none at the start or end of the file or of a bracketed block. One follows the `module` line. A top-level declaration whose braced body spans several lines (a service, workspace, rule, requirement, allowance, behavior, function, checker, check, entity, or graph written as rows) has one before and after it. Other blank lines are the author's, so runs of `let`, `relation` and `import` lines can stay grouped.
+- **Comments** are kept as written, except that trailing spaces are dropped from line comments. A comment on its own line is indented like the code line after it, or like the inside of the block when that line closes the block. A comment after code is one space from it.
+- Lines have no trailing spaces, and the file ends with one newline. A `;` stays where it was written, and lines are neither wrapped nor joined.
+
 ## 2. Modules, repositories and workspaces
 
 ### Modules
@@ -948,16 +959,16 @@ Implementation goes in two phases. Each is checked against something that alread
 1. **Lower what exists.** Build the lexer, a lossless parser (comments and layout kept, for a formatter and editor diagnostics), name resolution and type checking for everything except behaviors and checkers. Lower the result into today's manifest and grammar structures. Port `grammars/http-contracts.yaml` to `lemma.http` and the link checks to `lemma.links`. Convert the fixtures' and gate workspaces' `lemma.yaml` files with the converter. *Acceptance:* `lemma check` gives the same findings from `.lm` as from YAML on every gate (verify, mutations, recall, replay, fixtures, scale).
 2. **Behaviors and evidence.** Add `behavior`, `need`, `checker`, the evidence store and the four outcomes, with the replay checker as the first implementation. *Acceptance:* the worked example's behavior is violated on a worker that drops the flag, satisfied on one that forwards it, and unknown when the checker cannot run.
 
-**Status, 2026-11-06.** Phase 1 is implemented except the formatter:
+**Status, 2026-11-06.** Phase 1 is implemented:
 
-- `crates/lemma-lang` parses modules with error recovery, loads programs across repositories, resolves names and type-checks them, and holds the standard library.
+- `crates/lemma-lang` parses modules with error recovery, loads programs across repositories, resolves names and type-checks them, and holds the standard library. Its formatter writes a module in the [canonical layout](#layout), keeping every comment, and checks that the result reads as the same tokens.
 - `lemma-grammar` lowers a program's relations, rules, graphs and requirements; `lemma.http` compiles to the same program as `grammars/http-contracts.yaml`, which a test requires.
 - `lemma-graph` reads `lemma.lm` wherever `lemma check` reads `lemma.yaml`. On five fixture systems and a six-repository workspace, checks from converted modules match the YAML ones line for line.
 - `lemma verify` takes a `.lm` grammar module (`grammar: contracts.lm`), whose `check main` selects requirements.
 - `lemma lm check` and `lemma lm convert` are on the command line, and `lemma lm lsp` serves modules to editors: diagnostics as you type, hovers, definitions across repositories, symbols and completion.
 - `editors/` has a Tree-sitter grammar with highlighting, locals, folds and indents, and a VS Code extension that starts the server. Its checks parse every `.lm` file in the repository, and the two parsers agree on all of them.
 
-Allowances are checked but not yet applied, and there is no formatter yet.
+Allowances are checked but not yet applied.
 
 Still to specify:
 
@@ -965,7 +976,6 @@ Still to specify:
 - The JSON encoding of operations, facts and bindings in `LEMMA_INPUT`.
 - How a module declares the language versions it supports, beyond the workspace's `language`.
 - Where evidence is stored and how it moves between machines, likely as [segments](12-segments-and-shared-storage.md).
-- The formatter's canonical layout.
 
 No `.lm` file in this document is an executable module in any repository, and no replay was run.
 
