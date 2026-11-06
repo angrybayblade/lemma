@@ -113,6 +113,7 @@ Name the module in a `lemma verify` manifest (`grammar: contracts.lm`). A `check
 ## Commands
 
 - `lemma lm check [lemma.lm]` loads a module and everything it imports, and lists every problem as `file:line:column`.
+- `lemma lm fmt [paths...] [--check]` rewrites `.lm` files in one canonical layout, keeping line breaks and comments; with `--check`, it lists the files that are not formatted instead. With no paths, it formats the `.lm` files under the current directory.
 - `lemma lm convert [lemma.yaml] [--module name] [--write]` writes a `lemma.yaml` as a root module. With `--write`, it writes `lemma.lm` beside the file.
 - `lemma lm lsp` serves modules to an editor (diagnostics as you type, hovers, go to definition, symbols, completion).
 - `lemma check` reads `lemma.lm` when a repository has no `lemma.yaml`, and takes a `.lm` workspace module as its argument.
@@ -126,4 +127,3 @@ Name the module in a `lemma verify` manifest (`grammar: contracts.lm`). A `check
 - `behavior` and `checker` declarations are checked but not run, so behaviors give no evidence yet.
 - `allow` declarations are checked but not applied to findings.
 - A link to a discovered operation names it by its `operationId` (`Gateway.listUsers`); naming it by method and path is reported.
-- Formatting (`lemma lm fmt`) is not available.

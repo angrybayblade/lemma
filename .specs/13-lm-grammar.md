@@ -965,7 +965,7 @@ Implementation goes in two phases. Each is checked against something that alread
 - `lemma-grammar` lowers a program's relations, rules, graphs and requirements; `lemma.http` compiles to the same program as `grammars/http-contracts.yaml`, which a test requires.
 - `lemma-graph` reads `lemma.lm` wherever `lemma check` reads `lemma.yaml`. On five fixture systems and a six-repository workspace, checks from converted modules match the YAML ones line for line.
 - `lemma verify` takes a `.lm` grammar module (`grammar: contracts.lm`), whose `check main` selects requirements.
-- `lemma lm check` and `lemma lm convert` are on the command line, and `lemma lm lsp` serves modules to editors: diagnostics as you type, hovers, definitions across repositories, symbols and completion.
+- `lemma lm check`, `lemma lm fmt` and `lemma lm convert` are on the command line, and `lemma lm lsp` serves modules to editors: diagnostics as you type, hovers, definitions across repositories, symbols and completion.
 - `editors/` has a Tree-sitter grammar with highlighting, locals, folds and indents, and a VS Code extension that starts the server. Its checks parse every `.lm` file in the repository, and the two parsers agree on all of them.
 
 Allowances are checked but not yet applied.
