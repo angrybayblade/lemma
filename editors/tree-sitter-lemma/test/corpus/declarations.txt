@@ -1,0 +1,575 @@
+================================================================================
+Module line with a dotted name
+================================================================================
+
+module platform.services.worker
+
+let a = 1
+
+---
+
+(source_file
+  (module_declaration
+    name: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier)))
+  (let_declaration
+    name: (identifier)
+    value: (integer)))
+
+================================================================================
+File without a module line
+================================================================================
+
+let a = 1
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (integer)))
+
+================================================================================
+Contextual words as ordinary names
+================================================================================
+
+let service = config.service
+let check = Worker.check
+let run = tools.type("Request")
+let graph = { check: 1; rule: 2; type: 3 }
+fn require(type: Int, operation: Text): Int { return type }
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (member_expression
+      object: (identifier)
+      member: (identifier)))
+  (let_declaration
+    name: (identifier)
+    value: (member_expression
+      object: (identifier)
+      member: (identifier)))
+  (let_declaration
+    name: (identifier)
+    value: (call_expression
+      function: (member_expression
+        object: (identifier)
+        member: (identifier))
+      arguments: (arguments
+        (string
+          (string_content)))))
+  (let_declaration
+    name: (identifier)
+    value: (record
+      (field
+        name: (identifier)
+        value: (integer))
+      (field
+        name: (identifier)
+        value: (integer))
+      (field
+        name: (identifier)
+        value: (integer))))
+  (function_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier))))
+    return_type: (named_type
+      name: (identifier))
+    body: (block
+      (return_statement
+        value: (identifier)))))
+
+================================================================================
+Service fields named like service members
+================================================================================
+
+export service Client {
+    client: http.generated_client("clients/functions")
+    service: "functions"
+    operation: "setup"
+    client operation call {}
+}
+
+---
+
+(source_file
+  (service_declaration
+    name: (identifier)
+    (field
+      name: (identifier)
+      value: (call_expression
+        function: (member_expression
+          object: (identifier)
+          member: (identifier))
+        arguments: (arguments
+          (string
+            (string_content)))))
+    (field
+      name: (identifier)
+      value: (string
+        (string_content)))
+    (field
+      name: (identifier)
+      value: (string
+        (string_content)))
+    (operation_declaration
+      name: (identifier))))
+
+================================================================================
+Workspace field named repo
+================================================================================
+
+workspace {
+    repo: "functions"
+    repo functions = local("../functions")
+}
+
+---
+
+(source_file
+  (workspace_declaration
+    (field
+      name: (identifier)
+      value: (string
+        (string_content)))
+    (repo_declaration
+      name: (identifier)
+      source: (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (string
+            (string_content)))))))
+
+================================================================================
+Nested services, bindings and operation roles
+================================================================================
+
+export service Worker {
+    let generated = go.package("apps/worker/generated")
+
+    client operation call_setup_webhook {
+        sends: generated.type("SetupWebhookRequest")
+    }
+
+    export client operation call_teardown {}
+
+    export service handlers {
+        export operation setup_monitor {
+            response: generated.type("SetupMonitorResponse")
+        }
+    }
+}
+
+---
+
+(source_file
+  (service_declaration
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (call_expression
+        function: (member_expression
+          object: (identifier)
+          member: (identifier))
+        arguments: (arguments
+          (string
+            (string_content)))))
+    (operation_declaration
+      name: (identifier)
+      (field
+        name: (identifier)
+        value: (call_expression
+          function: (member_expression
+            object: (identifier)
+            member: (identifier))
+          arguments: (arguments
+            (string
+              (string_content))))))
+    (operation_declaration
+      name: (identifier))
+    (service_declaration
+      name: (identifier)
+      (operation_declaration
+        name: (identifier)
+        (field
+          name: (identifier)
+          value: (call_expression
+            function: (member_expression
+              object: (identifier)
+              member: (identifier))
+            arguments: (arguments
+              (string
+                (string_content)))))))))
+
+================================================================================
+Entities, relations and types
+================================================================================
+
+export entity Deployment {
+    environment: Text
+    region: Text
+}
+
+relation Routes(
+    gateway: Service,
+    path: Text,
+    destination: Operation,
+)
+
+type Pair = { left: Int; right: List<Resolution<Symbol>> }
+
+---
+
+(source_file
+  (entity_declaration
+    name: (identifier)
+    (typed_field
+      name: (identifier)
+      type: (named_type
+        name: (identifier)))
+    (typed_field
+      name: (identifier)
+      type: (named_type
+        name: (identifier))))
+  (relation_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))))
+  (type_declaration
+    name: (identifier)
+    value: (record_type
+      (typed_field
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (typed_field
+        name: (identifier)
+        type: (named_type
+          name: (identifier)
+          arguments: (type_arguments
+            (named_type
+              name: (identifier)
+              arguments: (type_arguments
+                (named_type
+                  name: (identifier))))))))))
+
+================================================================================
+Graph rows and a provider graph
+================================================================================
+
+graph routes : Routes {
+    (Gateway, "/monitors/setup", Worker.setup_monitor)
+    Worker.call_setup_webhook ->
+        Functions.serverless.setup_webhook
+}
+
+export graph inferred : Link = http.inferred_links(
+    services: [Worker, Functions.serverless],
+)
+
+---
+
+(source_file
+  (graph_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (graph_row
+      column: (identifier)
+      column: (string
+        (string_content))
+      column: (member_expression
+        object: (identifier)
+        member: (identifier)))
+    (graph_row
+      column: (member_expression
+        object: (identifier)
+        member: (identifier))
+      column: (member_expression
+        object: (member_expression
+          object: (identifier)
+          member: (identifier))
+        member: (identifier))))
+  (graph_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    value: (call_expression
+      function: (member_expression
+        object: (identifier)
+        member: (identifier))
+      arguments: (arguments
+        (named_argument
+          name: (identifier)
+          value: (list
+            (identifier)
+            (member_expression
+              object: (identifier)
+              member: (identifier))))))))
+
+================================================================================
+Checker with fields
+================================================================================
+
+export checker probe(handler: Operation): Evidence<Json> {
+    command: ["go", "run", "./tools/probe"]
+    cache: false
+}
+
+---
+
+(source_file
+  (checker_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier))))
+    return_type: (named_type
+      name: (identifier)
+      arguments: (type_arguments
+        (named_type
+          name: (identifier))))
+    (field
+      name: (identifier)
+      value: (list
+        (string
+          (string_content))
+        (string
+          (string_content))
+        (string
+          (string_content))))
+    (field
+      name: (identifier)
+      value: (false))))
+
+================================================================================
+Check entries
+================================================================================
+
+check nightly {
+    run lemma.links.*
+    run lemma.http.* { severity: warning }
+    skip lemma.http.consumer_sends_removed_parameter
+    run forwards_flag(handler: Worker.setup_monitor, field: "retriable")
+}
+
+---
+
+(source_file
+  (check_declaration
+    name: (identifier)
+    (run
+      requirement: (wildcard
+        module: (qualified_name
+          (identifier)
+          (identifier))))
+    (run
+      requirement: (wildcard
+        module: (qualified_name
+          (identifier)
+          (identifier)))
+      overrides: (record
+        (field
+          name: (identifier)
+          value: (identifier))))
+    (skip
+      requirement: (qualified_name
+        (identifier)
+        (identifier)
+        (identifier)))
+    (run
+      requirement: (qualified_name
+        (identifier))
+      arguments: (arguments
+        (named_argument
+          name: (identifier)
+          value: (member_expression
+            object: (identifier)
+            member: (identifier)))
+        (named_argument
+          name: (identifier)
+          value: (string
+            (string_content)))))))
+
+================================================================================
+Import forms
+================================================================================
+
+import platform.services.gateway
+import * as python from lemma.python
+import {
+    replay_setup_error as replay,
+    Link,
+} from platform.checks.setup_replay
+export { Worker, Functions as Upstream } from platform.services.worker
+
+---
+
+(source_file
+  (import_declaration
+    module: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier)))
+  (import_declaration
+    (namespace_import
+      alias: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)))
+  (import_declaration
+    (import_name
+      name: (identifier)
+      alias: (identifier))
+    (import_name
+      name: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier)))
+  (reexport_declaration
+    (import_name
+      name: (identifier))
+    (import_name
+      name: (identifier)
+      alias: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier))))
+
+================================================================================
+Behavior with parameters and a placeholder body
+================================================================================
+
+behavior forwards_flag(handler: Operation, link: Fact<Link>, field: Text) {
+    // Shared verification procedure.
+}
+
+---
+
+(source_file
+  (behavior_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)
+          arguments: (type_arguments
+            (named_type
+              name: (identifier)))))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier))))
+    body: (block
+      (comment))))
+
+================================================================================
+Function with conditionals and a loop
+================================================================================
+
+fn sign(value: Int): Int {
+    if value > 0 {
+        return 1
+    } else if value < 0 {
+        return -1
+    } else {
+        for item in [1, 2] {
+            let doubled = item * 2
+        }
+        return 0
+    }
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier))))
+    return_type: (named_type
+      name: (identifier))
+    body: (block
+      (if_statement
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer))
+        consequence: (block
+          (return_statement
+            value: (integer)))
+        alternative: (if_statement
+          condition: (binary_expression
+            left: (identifier)
+            right: (integer))
+          consequence: (block
+            (return_statement
+              value: (integer)))
+          alternative: (block
+            (for_statement
+              pattern: (identifier)
+              domain: (list
+                (integer)
+                (integer))
+              body: (block
+                (let_declaration
+                  name: (identifier)
+                  value: (binary_expression
+                    left: (identifier)
+                    right: (integer)))))
+            (return_statement
+              value: (integer))))))))
+
+================================================================================
+Top-level operation, as in the identity example
+================================================================================
+
+export operation setup_webhook {
+    previously: ["functions::Functions.serverless.register_webhook"]
+}
+
+---
+
+(source_file
+  (operation_declaration
+    name: (identifier)
+    (field
+      name: (identifier)
+      value: (list
+        (string
+          (string_content))))))

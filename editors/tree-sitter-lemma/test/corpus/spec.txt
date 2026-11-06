@@ -1,0 +1,1420 @@
+========================================
+Spec 13: 1. Lexical conventions (1 of 2)
+========================================
+
+// Line comment
+
+/* Block comment */
+
+let name = "worker"
+let enabled = true
+let retries = 3
+let services = [Worker, Functions]
+let config = {
+    timeout_ms: 5000
+    transport: "http"
+}
+
+---
+
+(source_file
+  (comment)
+  (comment)
+  (let_declaration
+    name: (identifier)
+    value: (string
+      (string_content)))
+  (let_declaration
+    name: (identifier)
+    value: (true))
+  (let_declaration
+    name: (identifier)
+    value: (integer))
+  (let_declaration
+    name: (identifier)
+    value: (list
+      (identifier)
+      (identifier)))
+  (let_declaration
+    name: (identifier)
+    value: (record
+      (field
+        name: (identifier)
+        value: (integer))
+      (field
+        name: (identifier)
+        value: (string
+          (string_content))))))
+
+========================================
+Spec 13: 1. Lexical conventions (2 of 2)
+========================================
+
+let result = resolve(symbol: target)
+
+fn identity(value: Bool): Bool {
+    return value
+}
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (call_expression
+      function: (identifier)
+      arguments: (arguments
+        (named_argument
+          name: (identifier)
+          value: (identifier)))))
+  (function_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier))))
+    return_type: (named_type
+      name: (identifier))
+    body: (block
+      (return_statement
+        value: (identifier)))))
+
+====================
+Spec 13: Imports
+====================
+
+import { Link } from lemma.links
+import * as python from lemma.python
+import { Functions } from functions
+import { replay_setup_error } from platform.checks.setup_replay
+import platform.services.gateway
+
+export { Worker } from platform.services.worker
+
+---
+
+(source_file
+  (import_declaration
+    (import_name
+      name: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)))
+  (import_declaration
+    (namespace_import
+      alias: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)))
+  (import_declaration
+    (import_name
+      name: (identifier))
+    module: (qualified_name
+      (identifier)))
+  (import_declaration
+    (import_name
+      name: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier)))
+  (import_declaration
+    module: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier)))
+  (reexport_declaration
+    (import_name
+      name: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier))))
+
+=====================
+Spec 13: Repositories
+=====================
+
+repo functions = local("../functions")
+repo functions = git(url: "https://git.example.com/functions.git", rev: "3f2a1c9e04")
+
+---
+
+(source_file
+  (repo_declaration
+    name: (identifier)
+    source: (call_expression
+      function: (identifier)
+      arguments: (arguments
+        (string
+          (string_content)))))
+  (repo_declaration
+    name: (identifier)
+    source: (call_expression
+      function: (identifier)
+      arguments: (arguments
+        (named_argument
+          name: (identifier)
+          value: (string
+            (string_content)))
+        (named_argument
+          name: (identifier)
+          value: (string
+            (string_content)))))))
+
+====================
+Spec 13: Workspace
+====================
+
+// example/lemma.lm: the workspace entry point
+module example
+
+workspace {
+    language: "0.2"
+
+    repo functions = local("../functions")
+    repo platform = local("../platform")
+
+    config: {
+        level: check
+        verification: { timeout_ms: 30000 }
+    }
+}
+
+check main {
+    run lemma.links.*
+    run lemma.http.*
+    run platform.services.worker.forwards_upstream_retriable
+}
+
+---
+
+(source_file
+  (comment)
+  (module_declaration
+    name: (qualified_name
+      (identifier)))
+  (workspace_declaration
+    (field
+      name: (identifier)
+      value: (string
+        (string_content)))
+    (repo_declaration
+      name: (identifier)
+      source: (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (string
+            (string_content)))))
+    (repo_declaration
+      name: (identifier)
+      source: (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (string
+            (string_content)))))
+    (field
+      name: (identifier)
+      value: (record
+        (field
+          name: (identifier)
+          value: (identifier))
+        (field
+          name: (identifier)
+          value: (record
+            (field
+              name: (identifier)
+              value: (integer)))))))
+  (check_declaration
+    name: (identifier)
+    (run
+      requirement: (wildcard
+        module: (qualified_name
+          (identifier)
+          (identifier))))
+    (run
+      requirement: (wildcard
+        module: (qualified_name
+          (identifier)
+          (identifier))))
+    (run
+      requirement: (qualified_name
+        (identifier)
+        (identifier)
+        (identifier)
+        (identifier)))))
+
+====================
+Spec 13: 3. Identity
+====================
+
+export operation setup_webhook {
+    previously: ["functions::Functions.serverless.register_webhook"]
+    // ...
+}
+
+---
+
+(source_file
+  (operation_declaration
+    name: (identifier)
+    (field
+      name: (identifier)
+      value: (list
+        (string
+          (string_content))))
+    (comment)))
+
+===================================
+Spec 13: 4. Services and operations
+===================================
+
+// platform/services/gateway.lm
+module platform.services.gateway
+
+import * as http from lemma.http
+import * as hono from lemma.hono
+
+export service Gateway {
+    index: { include: ["apps/gateway/src"] }
+
+    operations: [
+        http.openapi("apps/gateway/openapi.json"),
+        hono.app(
+            directory: "apps/gateway",
+            entry: ["src/index.ts#app", "src/routes"],
+            setup: ["pnpm", "install", "--frozen-lockfile"],
+        ),
+    ]
+}
+
+---
+
+(source_file
+  (comment)
+  (module_declaration
+    name: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier)))
+  (import_declaration
+    (namespace_import
+      alias: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)))
+  (import_declaration
+    (namespace_import
+      alias: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)))
+  (service_declaration
+    name: (identifier)
+    (field
+      name: (identifier)
+      value: (record
+        (field
+          name: (identifier)
+          value: (list
+            (string
+              (string_content))))))
+    (field
+      name: (identifier)
+      value: (list
+        (call_expression
+          function: (member_expression
+            object: (identifier)
+            member: (identifier))
+          arguments: (arguments
+            (string
+              (string_content))))
+        (call_expression
+          function: (member_expression
+            object: (identifier)
+            member: (identifier))
+          arguments: (arguments
+            (named_argument
+              name: (identifier)
+              value: (string
+                (string_content)))
+            (named_argument
+              name: (identifier)
+              value: (list
+                (string
+                  (string_content))
+                (string
+                  (string_content))))
+            (named_argument
+              name: (identifier)
+              value: (list
+                (string
+                  (string_content))
+                (string
+                  (string_content))
+                (string
+                  (string_content))))))))))
+
+================================
+Spec 13: Hand-written operations
+================================
+
+// functions/lemma.lm
+module functions
+
+import * as python from lemma.python
+
+let tools = python.module("functions.serverless.task_functions")
+
+export service Functions {
+    index: { include: ["functions"] }
+
+    export service serverless {
+        export operation setup_webhook {
+            implementation: tools.symbol("setup_webhook")
+            dispatch: "setup_webhook"
+
+            request: tools.type("setup_webhook.Request")
+            response: tools.type("setup_webhook.Response")
+        }
+    }
+}
+
+---
+
+(source_file
+  (comment)
+  (module_declaration
+    name: (qualified_name
+      (identifier)))
+  (import_declaration
+    (namespace_import
+      alias: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)))
+  (let_declaration
+    name: (identifier)
+    value: (call_expression
+      function: (member_expression
+        object: (identifier)
+        member: (identifier))
+      arguments: (arguments
+        (string
+          (string_content)))))
+  (service_declaration
+    name: (identifier)
+    (field
+      name: (identifier)
+      value: (record
+        (field
+          name: (identifier)
+          value: (list
+            (string
+              (string_content))))))
+    (service_declaration
+      name: (identifier)
+      (operation_declaration
+        name: (identifier)
+        (field
+          name: (identifier)
+          value: (call_expression
+            function: (member_expression
+              object: (identifier)
+              member: (identifier))
+            arguments: (arguments
+              (string
+                (string_content)))))
+        (field
+          name: (identifier)
+          value: (string
+            (string_content)))
+        (field
+          name: (identifier)
+          value: (call_expression
+            function: (member_expression
+              object: (identifier)
+              member: (identifier))
+            arguments: (arguments
+              (string
+                (string_content)))))
+        (field
+          name: (identifier)
+          value: (call_expression
+            function: (member_expression
+              object: (identifier)
+              member: (identifier))
+            arguments: (arguments
+              (string
+                (string_content)))))))))
+
+================================================
+Spec 13: 6. Relations, facts and graphs (1 of 4)
+================================================
+
+// lemma.links: standard library
+export relation Link(
+    caller: ClientOperation,
+    provider: Operation
+)
+
+---
+
+(source_file
+  (comment)
+  (relation_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier))))))
+
+================================================
+Spec 13: 6. Relations, facts and graphs (2 of 4)
+================================================
+
+graph serverless_links : Link {
+    Worker.call_setup_webhook -> Functions.serverless.setup_webhook
+}
+
+graph inferred : Link = http.inferred_links(
+    services: [Worker, Functions.serverless]
+)
+
+---
+
+(source_file
+  (graph_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (graph_row
+      column: (member_expression
+        object: (identifier)
+        member: (identifier))
+      column: (member_expression
+        object: (member_expression
+          object: (identifier)
+          member: (identifier))
+        member: (identifier))))
+  (graph_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    value: (call_expression
+      function: (member_expression
+        object: (identifier)
+        member: (identifier))
+      arguments: (arguments
+        (named_argument
+          name: (identifier)
+          value: (list
+            (identifier)
+            (member_expression
+              object: (identifier)
+              member: (identifier))))))))
+
+================================================
+Spec 13: 6. Relations, facts and graphs (3 of 4)
+================================================
+
+relation Routes(gateway: Service, path: Text, destination: Operation)
+
+graph routes : Routes {
+    (Gateway, "/monitors/setup", Worker.setup_monitor)
+}
+
+---
+
+(source_file
+  (relation_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))))
+  (graph_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (graph_row
+      column: (identifier)
+      column: (string
+        (string_content))
+      column: (member_expression
+        object: (identifier)
+        member: (identifier)))))
+
+================================================
+Spec 13: 6. Relations, facts and graphs (4 of 4)
+================================================
+
+export entity Deployment {
+    environment: Text
+    region: Text
+}
+
+export relation Deployed(service: Service, deployment: Deployment)
+
+let production = Deployment(environment: "production", region: "us-east-1")
+
+graph deployments : Deployed {
+    Worker -> production
+}
+
+---
+
+(source_file
+  (entity_declaration
+    name: (identifier)
+    (typed_field
+      name: (identifier)
+      type: (named_type
+        name: (identifier)))
+    (typed_field
+      name: (identifier)
+      type: (named_type
+        name: (identifier))))
+  (relation_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))))
+  (let_declaration
+    name: (identifier)
+    value: (call_expression
+      function: (identifier)
+      arguments: (arguments
+        (named_argument
+          name: (identifier)
+          value: (string
+            (string_content)))
+        (named_argument
+          name: (identifier)
+          value: (string
+            (string_content))))))
+  (graph_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (graph_row
+      column: (identifier)
+      column: (identifier))))
+
+====================
+Spec 13: 7. Rules
+====================
+
+relation DependsOn(source: Service, target: Service)
+
+graph service_dependencies : DependsOn {
+    Worker -> Functions.serverless
+}
+
+export rule reachable : DependsOn {
+    (a, b) :- service_dependencies(a, b)
+
+    (a, c) :-
+        reachable(a, b),
+        service_dependencies(b, c)
+}
+
+---
+
+(source_file
+  (relation_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))))
+  (graph_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (graph_row
+      column: (identifier)
+      column: (member_expression
+        object: (identifier)
+        member: (identifier))))
+  (rule_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (rule_clause
+      head: (rule_head
+        (term
+          root: (identifier))
+        (term
+          root: (identifier)))
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))))
+    (rule_clause
+      head: (rule_head
+        (term
+          root: (identifier))
+        (term
+          root: (identifier)))
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))))))
+
+====================
+Spec 13: Snapshots
+====================
+
+relation Removed(operation: Operation)
+
+rule removed_operation : Removed {
+    (target) :-
+        operation@base(operation: target),
+        !operation@head(operation: target)
+}
+
+---
+
+(source_file
+  (relation_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))))
+  (rule_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (rule_clause
+      head: (rule_head
+        (term
+          root: (identifier)))
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          snapshot: (snapshot)
+          (named_term
+            name: (identifier)
+            value: (term
+              root: (identifier))))
+        (predicate
+          name: (qualified_name
+            (identifier))
+          snapshot: (snapshot)
+          (named_term
+            name: (identifier)
+            value: (term
+              root: (identifier))))))))
+
+===============================================
+Spec 13: 8. Requirements: `require` and `allow`
+===============================================
+
+// lemma.http: ported from grammars/http-contracts.yaml
+export require consumer_misses_new_required_field {
+    severity: error
+    when:
+        calls(consumer, operation, site),
+        new_required_request_field(operation, field, leaf),
+        !sends(consumer, leaf)
+    at: site
+    message: "{consumer} calls {operation}, which now requires `{field}`; its code never names `{leaf}`"
+}
+
+---
+
+(source_file
+  (comment)
+  (require_declaration
+    name: (identifier)
+    (field
+      name: (identifier)
+      value: (identifier))
+    (when_clause
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))))
+    (field
+      name: (identifier)
+      value: (identifier))
+    (field
+      name: (identifier)
+      value: (string
+        (interpolation
+          name: (identifier))
+        (string_content)
+        (interpolation
+          name: (identifier))
+        (string_content)
+        (interpolation
+          name: (identifier))
+        (string_content)
+        (interpolation
+          name: (identifier))
+        (string_content)))))
+
+====================
+Spec 13: Allowances
+====================
+
+allow lemma.http.consumer_calls_removed_operation {
+    when: consumer.file == "src/legacy/sessions.ts"
+    reason: "the legacy client is removed with the next major version"
+    until: "2027-01-31"
+}
+
+---
+
+(source_file
+  (allow_declaration
+    requirement: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier))
+    (when_clause
+      body: (rule_body
+        (comparison
+          left: (term
+            root: (identifier)
+            member: (identifier))
+          right: (string
+            (string_content)))))
+    (field
+      name: (identifier)
+      value: (string
+        (string_content)))
+    (field
+      name: (identifier)
+      value: (string
+        (string_content)))))
+
+=====================
+Spec 13: 9. Behaviors
+=====================
+
+export behavior forwards_upstream_retriable {
+    severity: error
+
+    let link = serverless_links[
+        Worker.call_setup_webhook,
+        Functions.serverless.setup_webhook
+    ]
+
+    expect link.exists
+
+    for flag in [true, false] {
+        let trace = need replay_setup_error(
+            handler: Worker.setup_monitor,
+            through: link,
+            upstream_retriable: flag
+        )
+
+        expect trace.upstream.dispatch == "setup_webhook"
+        expect trace.upstream.body.result.error != null
+        expect trace.upstream.body.result.retriable == flag
+
+        expect trace.http.status == 200
+        expect trace.http.body.error != null
+        expect trace.http.body.retriable == trace.upstream.body.result.retriable
+            because "the worker passes on the retriable flag the functions service set"
+    }
+}
+
+---
+
+(source_file
+  (behavior_declaration
+    name: (identifier)
+    body: (block
+      (field
+        name: (identifier)
+        value: (identifier))
+      (let_declaration
+        name: (identifier)
+        value: (index_expression
+          object: (identifier)
+          index: (member_expression
+            object: (identifier)
+            member: (identifier))
+          index: (member_expression
+            object: (member_expression
+              object: (identifier)
+              member: (identifier))
+            member: (identifier))))
+      (expect_statement
+        condition: (member_expression
+          object: (identifier)
+          member: (identifier)))
+      (for_statement
+        pattern: (identifier)
+        domain: (list
+          (true)
+          (false))
+        body: (block
+          (let_declaration
+            name: (identifier)
+            value: (need_expression
+              evidence: (call_expression
+                function: (identifier)
+                arguments: (arguments
+                  (named_argument
+                    name: (identifier)
+                    value: (member_expression
+                      object: (identifier)
+                      member: (identifier)))
+                  (named_argument
+                    name: (identifier)
+                    value: (identifier))
+                  (named_argument
+                    name: (identifier)
+                    value: (identifier))))))
+          (expect_statement
+            condition: (binary_expression
+              left: (member_expression
+                object: (member_expression
+                  object: (identifier)
+                  member: (identifier))
+                member: (identifier))
+              right: (string
+                (string_content))))
+          (expect_statement
+            condition: (binary_expression
+              left: (member_expression
+                object: (member_expression
+                  object: (member_expression
+                    object: (member_expression
+                      object: (identifier)
+                      member: (identifier))
+                    member: (identifier))
+                  member: (identifier))
+                member: (identifier))
+              right: (null)))
+          (expect_statement
+            condition: (binary_expression
+              left: (member_expression
+                object: (member_expression
+                  object: (member_expression
+                    object: (member_expression
+                      object: (identifier)
+                      member: (identifier))
+                    member: (identifier))
+                  member: (identifier))
+                member: (identifier))
+              right: (identifier)))
+          (expect_statement
+            condition: (binary_expression
+              left: (member_expression
+                object: (member_expression
+                  object: (identifier)
+                  member: (identifier))
+                member: (identifier))
+              right: (integer)))
+          (expect_statement
+            condition: (binary_expression
+              left: (member_expression
+                object: (member_expression
+                  object: (member_expression
+                    object: (identifier)
+                    member: (identifier))
+                  member: (identifier))
+                member: (identifier))
+              right: (null)))
+          (expect_statement
+            condition: (binary_expression
+              left: (member_expression
+                object: (member_expression
+                  object: (member_expression
+                    object: (identifier)
+                    member: (identifier))
+                  member: (identifier))
+                member: (identifier))
+              right: (member_expression
+                object: (member_expression
+                  object: (member_expression
+                    object: (member_expression
+                      object: (identifier)
+                      member: (identifier))
+                    member: (identifier))
+                  member: (identifier))
+                member: (identifier)))
+            reason: (string
+              (string_content))))))))
+
+====================
+Spec 13: Parameters
+====================
+
+behavior forwards_flag(handler: Operation, link: Fact<Link>, field: Text) {
+    // Shared verification procedure.
+}
+
+---
+
+(source_file
+  (behavior_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)
+          arguments: (type_arguments
+            (named_type
+              name: (identifier)))))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier))))
+    body: (block
+      (comment))))
+
+=======================
+Spec 13: Pure functions
+=======================
+
+fn same_boolean(left: Bool, right: Bool): Bool {
+    return left == right
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier))))
+    return_type: (named_type
+      name: (identifier))
+    body: (block
+      (return_statement
+        value: (binary_expression
+          left: (identifier)
+          right: (identifier))))))
+
+====================
+Spec 13: Checkers
+====================
+
+// platform/checks/setup_replay.lm
+module platform.checks.setup_replay
+
+import { Link } from lemma.links
+
+export checker replay_setup_error(
+    handler: Operation,
+    through: Fact<Link>,
+    upstream_retriable: Bool
+): Evidence<Json> {
+    command: ["go", "run", "./tools/setup-replay"]
+    directory: "apps/worker"
+    setup: ["go", "mod", "download"]
+    reads: ["platform", "functions"]
+    timeout_ms: 120000
+}
+
+---
+
+(source_file
+  (comment)
+  (module_declaration
+    name: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier)))
+  (import_declaration
+    (import_name
+      name: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)))
+  (checker_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)
+          arguments: (type_arguments
+            (named_type
+              name: (identifier)))))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier))))
+    return_type: (named_type
+      name: (identifier)
+      arguments: (type_arguments
+        (named_type
+          name: (identifier))))
+    (field
+      name: (identifier)
+      value: (list
+        (string
+          (string_content))
+        (string
+          (string_content))
+        (string
+          (string_content))))
+    (field
+      name: (identifier)
+      value: (string
+        (string_content)))
+    (field
+      name: (identifier)
+      value: (list
+        (string
+          (string_content))
+        (string
+          (string_content))
+        (string
+          (string_content))))
+    (field
+      name: (identifier)
+      value: (list
+        (string
+          (string_content))
+        (string
+          (string_content))))
+    (field
+      name: (identifier)
+      value: (integer))))
+
+================================
+Spec 13: 11. Checks and outcomes
+================================
+
+check main {
+    run lemma.links.*
+    run lemma.http.*
+    skip lemma.http.consumer_sends_removed_parameter
+    run platform.services.worker.forwards_upstream_retriable { severity: warning }
+}
+
+---
+
+(source_file
+  (check_declaration
+    name: (identifier)
+    (run
+      requirement: (wildcard
+        module: (qualified_name
+          (identifier)
+          (identifier))))
+    (run
+      requirement: (wildcard
+        module: (qualified_name
+          (identifier)
+          (identifier))))
+    (skip
+      requirement: (qualified_name
+        (identifier)
+        (identifier)
+        (identifier)))
+    (run
+      requirement: (qualified_name
+        (identifier)
+        (identifier)
+        (identifier)
+        (identifier))
+      overrides: (record
+        (field
+          name: (identifier)
+          value: (identifier))))))
+
+====================================
+Spec 13: 12. Worked example (1 of 2)
+====================================
+
+// platform/lemma.lm
+module platform
+
+import platform.services.gateway
+import platform.services.worker
+
+repo functions = git(url: "https://git.example.com/functions.git", rev: "3f2a1c9e04")
+
+---
+
+(source_file
+  (comment)
+  (module_declaration
+    name: (qualified_name
+      (identifier)))
+  (import_declaration
+    module: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier)))
+  (import_declaration
+    module: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier)))
+  (repo_declaration
+    name: (identifier)
+    source: (call_expression
+      function: (identifier)
+      arguments: (arguments
+        (named_argument
+          name: (identifier)
+          value: (string
+            (string_content)))
+        (named_argument
+          name: (identifier)
+          value: (string
+            (string_content)))))))
+
+====================================
+Spec 13: 12. Worked example (2 of 2)
+====================================
+
+// platform/services/worker.lm
+module platform.services.worker
+
+import * as go from lemma.go
+import { Link } from lemma.links
+import { Functions } from functions
+import { replay_setup_error } from platform.checks.setup_replay
+
+let client = go.package("apps/worker/core/serverless/generated")
+let monitors = go.package("apps/worker/handlers/monitors")
+
+export service Worker {
+    index: { include: ["apps/worker"] }
+
+    client operation call_setup_webhook {
+        implementation: client.method("SetupWebhook", "Invoke")
+
+        sends: client.type("SetupWebhookRequest")
+        accepts: client.type("SetupWebhookResponse")
+    }
+
+    export operation setup_monitor {
+        implementation: monitors.method("SetupMonitorHandler", "ServeHTTP")
+
+        response: monitors.type("SetupMonitorResponse")
+    }
+}
+
+export graph serverless_links : Link {
+    Worker.call_setup_webhook -> Functions.serverless.setup_webhook
+}
+
+export behavior forwards_upstream_retriable {
+    // as in section 9
+}
+
+---
+
+(source_file
+  (comment)
+  (module_declaration
+    name: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier)))
+  (import_declaration
+    (namespace_import
+      alias: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)))
+  (import_declaration
+    (import_name
+      name: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)))
+  (import_declaration
+    (import_name
+      name: (identifier))
+    module: (qualified_name
+      (identifier)))
+  (import_declaration
+    (import_name
+      name: (identifier))
+    module: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier)))
+  (let_declaration
+    name: (identifier)
+    value: (call_expression
+      function: (member_expression
+        object: (identifier)
+        member: (identifier))
+      arguments: (arguments
+        (string
+          (string_content)))))
+  (let_declaration
+    name: (identifier)
+    value: (call_expression
+      function: (member_expression
+        object: (identifier)
+        member: (identifier))
+      arguments: (arguments
+        (string
+          (string_content)))))
+  (service_declaration
+    name: (identifier)
+    (field
+      name: (identifier)
+      value: (record
+        (field
+          name: (identifier)
+          value: (list
+            (string
+              (string_content))))))
+    (operation_declaration
+      name: (identifier)
+      (field
+        name: (identifier)
+        value: (call_expression
+          function: (member_expression
+            object: (identifier)
+            member: (identifier))
+          arguments: (arguments
+            (string
+              (string_content))
+            (string
+              (string_content)))))
+      (field
+        name: (identifier)
+        value: (call_expression
+          function: (member_expression
+            object: (identifier)
+            member: (identifier))
+          arguments: (arguments
+            (string
+              (string_content)))))
+      (field
+        name: (identifier)
+        value: (call_expression
+          function: (member_expression
+            object: (identifier)
+            member: (identifier))
+          arguments: (arguments
+            (string
+              (string_content))))))
+    (operation_declaration
+      name: (identifier)
+      (field
+        name: (identifier)
+        value: (call_expression
+          function: (member_expression
+            object: (identifier)
+            member: (identifier))
+          arguments: (arguments
+            (string
+              (string_content))
+            (string
+              (string_content)))))
+      (field
+        name: (identifier)
+        value: (call_expression
+          function: (member_expression
+            object: (identifier)
+            member: (identifier))
+          arguments: (arguments
+            (string
+              (string_content)))))))
+  (graph_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (graph_row
+      column: (member_expression
+        object: (identifier)
+        member: (identifier))
+      column: (member_expression
+        object: (member_expression
+          object: (identifier)
+          member: (identifier))
+        member: (identifier))))
+  (behavior_declaration
+    name: (identifier)
+    body: (block
+      (comment))))

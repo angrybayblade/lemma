@@ -1,0 +1,303 @@
+================================================================================
+Precedence follows the table, lowest first
+================================================================================
+
+let a = p || q && r == s + t * -u
+let b = x < y == z >= w
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (binary_expression
+      left: (identifier)
+      right: (binary_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (identifier)
+          right: (binary_expression
+            left: (identifier)
+            right: (binary_expression
+              left: (identifier)
+              right: (unary_expression
+                operand: (identifier))))))))
+  (let_declaration
+    name: (identifier)
+    value: (binary_expression
+      left: (binary_expression
+        left: (identifier)
+        right: (identifier))
+      right: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
+
+================================================================================
+Unary operators and need
+================================================================================
+
+let a = !need probe(handler: Worker.setup_monitor)
+let b = -x
+let c = - 1
+let d = !!flag
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (unary_expression
+      operand: (need_expression
+        evidence: (call_expression
+          function: (identifier)
+          arguments: (arguments
+            (named_argument
+              name: (identifier)
+              value: (member_expression
+                object: (identifier)
+                member: (identifier))))))))
+  (let_declaration
+    name: (identifier)
+    value: (unary_expression
+      operand: (identifier)))
+  (let_declaration
+    name: (identifier)
+    value: (unary_expression
+      operand: (integer)))
+  (let_declaration
+    name: (identifier)
+    value: (unary_expression
+      operand: (unary_expression
+        operand: (identifier)))))
+
+================================================================================
+Postfix chains
+================================================================================
+
+let a = Link@base[caller, provider].exists
+let b = f(x)(y)
+let c = trace.http.body.has("error")
+let d = Gateway["GET /api/v3/sessions/{}"]
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (member_expression
+      object: (index_expression
+        object: (snapshot_expression
+          object: (identifier)
+          snapshot: (snapshot))
+        index: (identifier)
+        index: (identifier))
+      member: (identifier)))
+  (let_declaration
+    name: (identifier)
+    value: (call_expression
+      function: (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (identifier)))
+      arguments: (arguments
+        (identifier))))
+  (let_declaration
+    name: (identifier)
+    value: (call_expression
+      function: (member_expression
+        object: (member_expression
+          object: (member_expression
+            object: (identifier)
+            member: (identifier))
+          member: (identifier))
+        member: (identifier))
+      arguments: (arguments
+        (string
+          (string_content)))))
+  (let_declaration
+    name: (identifier)
+    value: (index_expression
+      object: (identifier)
+      index: (string
+        (string_content)
+        (string_content)
+        (string_content)))))
+
+================================================================================
+Literals
+================================================================================
+
+let a = [1, -2, true, false, null, self.production,]
+let b = []
+let c = {}
+let d = {
+    timeout_ms: 5000; transport: "http"
+    nested: { level: check }
+}
+let e = (a + b) * c
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (list
+      (integer)
+      (integer)
+      (true)
+      (false)
+      (null)
+      (member_expression
+        object: (self)
+        member: (identifier))))
+  (let_declaration
+    name: (identifier)
+    value: (list))
+  (let_declaration
+    name: (identifier)
+    value: (record))
+  (let_declaration
+    name: (identifier)
+    value: (record
+      (field
+        name: (identifier)
+        value: (integer))
+      (field
+        name: (identifier)
+        value: (string
+          (string_content)))
+      (field
+        name: (identifier)
+        value: (record
+          (field
+            name: (identifier)
+            value: (identifier))))))
+  (let_declaration
+    name: (identifier)
+    value: (binary_expression
+      left: (parenthesized_expression
+        (binary_expression
+          left: (identifier)
+          right: (identifier)))
+      right: (identifier))))
+
+================================================================================
+Strings with escapes, interpolation and braces
+================================================================================
+
+let a = "tab\t quote\" slash\\ unicode\u00e9"
+let b = "{consumer} calls {operation.dispatch}"
+let c = "{{literal}} and {} and {not interpolated and {a.b.c}"
+let d = "// not a comment /* nor this */"
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (string
+      (string_content)
+      (escape_sequence)
+      (string_content)
+      (escape_sequence)
+      (string_content)
+      (escape_sequence)
+      (string_content)
+      (escape_sequence)))
+  (let_declaration
+    name: (identifier)
+    value: (string
+      (interpolation
+        name: (identifier))
+      (string_content)
+      (interpolation
+        name: (identifier)
+        member: (identifier))))
+  (let_declaration
+    name: (identifier)
+    value: (string
+      (escape_sequence)
+      (string_content)
+      (escape_sequence)
+      (string_content)
+      (string_content)
+      (string_content)
+      (string_content)
+      (string_content)
+      (string_content)
+      (string_content)
+      (string_content)
+      (string_content)))
+  (let_declaration
+    name: (identifier)
+    value: (string
+      (string_content))))
+
+================================================================================
+Backticked names and reserved words as members
+================================================================================
+
+let `in` = record.`for`
+let tools = python.module("functions.serverless")
+let flag = options.in
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (member_expression
+      object: (identifier)
+      member: (identifier)))
+  (let_declaration
+    name: (identifier)
+    value: (call_expression
+      function: (member_expression
+        object: (identifier)
+        member: (identifier))
+      arguments: (arguments
+        (string
+          (string_content)))))
+  (let_declaration
+    name: (identifier)
+    value: (member_expression
+      object: (identifier)
+      member: (identifier))))
+
+================================================================================
+Record in a conditional header is parenthesised
+================================================================================
+
+fn check_record(): Bool {
+    if ({ a: 1 }).has("a") {
+        return true
+    }
+    return false
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameters)
+    return_type: (named_type
+      name: (identifier))
+    body: (block
+      (if_statement
+        condition: (call_expression
+          function: (member_expression
+            object: (parenthesized_expression
+              (record
+                (field
+                  name: (identifier)
+                  value: (integer))))
+            member: (identifier))
+          arguments: (arguments
+            (string
+              (string_content))))
+        consequence: (block
+          (return_statement
+            value: (true))))
+      (return_statement
+        value: (false)))))

@@ -1,0 +1,326 @@
+================================================================================
+Variables, constants and the anonymous variable
+================================================================================
+
+rule routed : Routes {
+    (Gateway, path, target) :- routes(_, path, target), deployed(target, self.production)
+    (Gateway, "/health", Worker["GET /health"]) :- healthy(Worker, 1, -1, true)
+}
+
+---
+
+(source_file
+  (rule_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (rule_clause
+      head: (rule_head
+        (term
+          root: (identifier))
+        (term
+          root: (identifier))
+        (term
+          root: (identifier)))
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (self)
+            member: (identifier)))))
+    (rule_clause
+      head: (rule_head
+        (term
+          root: (identifier))
+        (string
+          (string_content))
+        (term
+          root: (identifier)
+          key: (string
+            (string_content))))
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (integer)
+          (integer)
+          (true))))))
+
+================================================================================
+Named arguments leave columns out
+================================================================================
+
+rule destinations : Destination {
+    (d) :- Routes(destination: d)
+}
+
+---
+
+(source_file
+  (rule_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (rule_clause
+      head: (rule_head
+        (term
+          root: (identifier)))
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (named_term
+            name: (identifier)
+            value: (term
+              root: (identifier))))))))
+
+================================================================================
+Snapshots and negation
+================================================================================
+
+rule removed_operation : Removed {
+    (target) :-
+        operation@base(operation: target),
+        !operation@head(operation: target)
+}
+
+---
+
+(source_file
+  (rule_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (rule_clause
+      head: (rule_head
+        (term
+          root: (identifier)))
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          snapshot: (snapshot)
+          (named_term
+            name: (identifier)
+            value: (term
+              root: (identifier))))
+        (predicate
+          name: (qualified_name
+            (identifier))
+          snapshot: (snapshot)
+          (named_term
+            name: (identifier)
+            value: (term
+              root: (identifier))))))))
+
+================================================================================
+Comparisons read variable fields
+================================================================================
+
+rule large : Large {
+    (service) :- sized(service, size), size > 100, service.name != "legacy"
+}
+
+---
+
+(source_file
+  (rule_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (rule_clause
+      head: (rule_head
+        (term
+          root: (identifier)))
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))
+        (comparison
+          left: (term
+            root: (identifier))
+          right: (integer))
+        (comparison
+          left: (term
+            root: (identifier)
+            member: (identifier))
+          right: (string
+            (string_content)))))))
+
+================================================================================
+Dotted predicate names
+================================================================================
+
+rule mentioned : Mention {
+    (file, name) :- lemma.code.mentions(file, name), !lemma.code.named(name)
+}
+
+---
+
+(source_file
+  (rule_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (rule_clause
+      head: (rule_head
+        (term
+          root: (identifier))
+        (term
+          root: (identifier)))
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier)
+            (identifier)
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))
+        (predicate
+          name: (qualified_name
+            (identifier)
+            (identifier)
+            (identifier))
+          (term
+            root: (identifier)))))))
+
+================================================================================
+Contextual words as predicates and variables
+================================================================================
+
+rule checked : Checked {
+    (operation, service) :- check(service), service(operation, service)
+}
+
+---
+
+(source_file
+  (rule_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (rule_clause
+      head: (rule_head
+        (term
+          root: (identifier))
+        (term
+          root: (identifier)))
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier)))
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))))))
+
+================================================================================
+Requirement with a site and an interpolated message
+================================================================================
+
+require consumer_calls_removed_operation {
+    severity: warning
+    when: calls(consumer, operation, site), !operation@head(operation: operation)
+    at: site
+    message: "{consumer} calls {operation}, which was removed"
+}
+
+---
+
+(source_file
+  (require_declaration
+    name: (identifier)
+    (field
+      name: (identifier)
+      value: (identifier))
+    (when_clause
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))
+        (predicate
+          name: (qualified_name
+            (identifier))
+          snapshot: (snapshot)
+          (named_term
+            name: (identifier)
+            value: (term
+              root: (identifier))))))
+    (field
+      name: (identifier)
+      value: (identifier))
+    (field
+      name: (identifier)
+      value: (string
+        (interpolation
+          name: (identifier))
+        (string_content)
+        (interpolation
+          name: (identifier))
+        (string_content)))))
+
+================================================================================
+Allowance with a comparison body
+================================================================================
+
+allow lemma.http.consumer_calls_removed_operation {
+    when: consumer.file == "src/legacy/sessions.ts"
+    reason: "removed with the next major version"
+    until: "2027-01-31"
+}
+
+---
+
+(source_file
+  (allow_declaration
+    requirement: (qualified_name
+      (identifier)
+      (identifier)
+      (identifier))
+    (when_clause
+      body: (rule_body
+        (comparison
+          left: (term
+            root: (identifier)
+            member: (identifier))
+          right: (string
+            (string_content)))))
+    (field
+      name: (identifier)
+      value: (string
+        (string_content)))
+    (field
+      name: (identifier)
+      value: (string
+        (string_content)))))
