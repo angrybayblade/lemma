@@ -147,6 +147,10 @@ pub(crate) struct CheckArgs {
     /// unknown, or stale when their inputs changed, without it.
     #[arg(long)]
     pub no_run: bool,
+    /// With `--change`, also run checkers at the base, so a case the change
+    /// fixed is reported as fixed. Without, the base uses kept evidence only.
+    #[arg(long, requires = "change", conflicts_with = "no_run")]
+    pub run_base: bool,
     /// The check of a parent `mod.lm` to run instead of its `check main`.
     #[arg(long, value_name = "CHECK")]
     pub select: Option<String>,

@@ -33,6 +33,7 @@ pub fn members(workspace: &Path, cache: &Path) -> Result<Vec<Member>, GraphError
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: None,
     };
     let repos = check::load_manifests(workspace, &options)?;

@@ -117,6 +117,21 @@ fn step(relationship: &Use, at: usize, calls: usize) -> Option<usize> {
     (at < calls).then_some(at)
 }
 
+/// How a trace reads the system: at the head, all consumer code, no change.
+fn trace_options(cache: &Path) -> CheckOptions {
+    CheckOptions {
+        change: None,
+        level: None,
+        cache: cache.to_path_buf(),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Full,
+        list_links: false,
+        run_checkers: true,
+        runs_base_checkers: false,
+        select: None,
+    }
+}
+
 /// Traces from `reached`, functions in the repository indexed at
 /// `index_root`, through the system `workspace` composes. Inference rules
 /// are evaluated with `engine`; clones and worktrees go in `cache`.
@@ -127,16 +142,7 @@ pub fn trace_through_system<E: Engine>(
     cache: &Path,
     engine: &E,
 ) -> Result<SystemTrace, GraphError> {
-    let options = CheckOptions {
-        change: None,
-        level: None,
-        cache: cache.to_path_buf(),
-        facts_cache: None,
-        evaluation: lemma_verify::Evaluation::Full,
-        list_links: false,
-        run_checkers: true,
-        select: None,
-    };
+    let options = trace_options(cache);
     let repos = check::load(workspace, &options)?;
     let Some((repository, offset)) = owning_repository(&repos, index_root) else {
         let note = format!(

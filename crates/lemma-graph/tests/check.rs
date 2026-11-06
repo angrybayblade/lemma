@@ -134,6 +134,7 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: None,
     };
 
@@ -196,6 +197,7 @@ fn a_caller_anchored_at_a_method_nothing_calls_is_warned_about() {
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: None,
     };
 
@@ -284,6 +286,7 @@ fn link_problems(workspace: &Path) -> Vec<String> {
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: None,
     };
     let report = check(
@@ -364,6 +367,7 @@ fn errors_after_rename(says_previously: bool) -> usize {
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: None,
     };
     let report = check(
@@ -405,6 +409,7 @@ fn select_is_refused_for_a_parent_lemma_yaml() {
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: Some("nightly".to_owned()),
     };
 
