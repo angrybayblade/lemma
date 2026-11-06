@@ -68,7 +68,9 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
-    "check": "tsc -p . --noEmit && eslint . && prettier --check src scripts eslint.config.mjs && node scripts/check-grammar.mjs",
+    "check": "tsc -p . --noEmit && tsc -p test --noEmit && eslint . && prettier --check src test scripts eslint.config.mjs && node scripts/check-grammar.mjs",
+    "compile:test": "tsc -p test",
+    "test:integration": "npm run package && npm run compile:test && node scripts/integration-test.mjs",
     "vscode:prepublish": "npm run compile",
     "package": "vsce package --allow-missing-repository --skip-license"
   },
@@ -76,10 +78,13 @@
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.17.0",
     "@types/vscode": "~1.82.0",
+    "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.2.0",
     "eslint": "^9.17.0",
+    "mocha": "^11.8.0",
     "prettier": "^3.4.0",
     "typescript": "~5.7.0",
     "typescript-eslint": "^8.18.0",

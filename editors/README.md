@@ -6,7 +6,10 @@ Syntax highlighting, parsing and a language server client for Lemma's `.lm` lang
 | --- | --- |
 | `tree-sitter-lemma/` | A Tree-sitter grammar with highlight, locals, fold and indent queries, for Neovim, Helix, Zed and anything else that loads Tree-sitter parsers |
 | `vscode/` | A VS Code extension: a TextMate grammar, language configuration and a client for the language server |
-| `check.sh` | Regenerates the parser, runs the grammar's tests, parses every example in spec 13 and every `.lm` file in the repository, and checks the VS Code extension |
+| `fixture/` | The module the editor checks open: valid but for one requirement naming a predicate nothing declares, so the language server has one problem to report |
+| `check.sh` | Regenerates the parser, runs the grammar's tests, parses every example in spec 13 and every `.lm` file in the repository, and runs each editor's check |
+
+`editors/check.sh` runs every section; name sections to run only those, such as `editors/check.sh grammar vscode`. The editor sections run the language server built from this checkout (`$LEMMA`, or `target/release/lemma`, which they build), and skip an editor that is not installed, saying why.
 
 ## The language server
 
@@ -168,6 +171,15 @@ npm run compile
 Highlighting comes from `syntaxes/lemma.tmLanguage.json`. TextMate grammars match lines with regular expressions, so contextual keywords such as `service` or `check` are recognised where a declaration starts a line, and rule variables inside rule clauses and `when:` bodies.
 
 The extension starts `lemma lm lsp` when it opens a `.lm` file. Set `lemma.path` if `lemma` is not on your `PATH`, and run **Lemma: Restart Language Server** after rebuilding the server. `lemma.trace.server` logs the protocol messages to the output panel.
+
+**Verified** with VS Code 1.145.2 on Linux. `npm run test:integration` packages the extension, installs the `.vsix` into a fresh VS Code profile, points `lemma.path` at the server built from this checkout and opens `editors/fixture`. Its Mocha suite in `test/suite` runs inside VS Code and asserts that:
+
+- the extension runs from the installed package and gives `.lm` files the `lemma` language;
+- the server's diagnostic for the fixture's error arrives, with its message and position;
+- hover on a relation shows its columns, and go-to-definition jumps to its declaration;
+- the TextMate grammar scopes keywords, strings and rule variables.
+
+Re-run it with `editors/check.sh vscode`, which also runs the static checks. The test downloads VS Code into `.vscode-test/` on first use; set `VSCODE_EXECUTABLE` to use an installed one or `VSCODE_VERSION` to pick another release. Without a display it runs itself under `xvfb-run`, and it is skipped when neither is available or VS Code cannot be downloaded.
 
 ## Older runtimes
 

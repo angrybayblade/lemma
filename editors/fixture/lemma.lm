@@ -1,0 +1,21 @@
+module fixture
+
+// The module the editor checks open. It is valid except for the last
+// requirement, whose `when:` names a predicate nothing declares, so the
+// language server has a problem to report.
+
+relation Owns(team: Text, service: Text)
+
+rule owned(service: Text) {
+    (service) :- Owns(_, service)
+}
+
+require owned_twice {
+    severity: warning
+    when: Owns(team, service), Owns(other, service), team != other
+    message: "{service} is owned by {team} and {other}"
+}
+
+require broken {
+    when: missing(service)
+}
