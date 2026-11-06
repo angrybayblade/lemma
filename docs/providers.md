@@ -8,8 +8,8 @@ Lemma calls a language server a *provider*: a source of facts about code that Le
 | --- | --- | --- |
 | `typescript-language-server` | typescript, tsx | `typescript-language-server --stdio` |
 | `typescript-native` | typescript, tsx | `tsc --lsp --stdio` |
-| `ty` | python | `ty server` |
 | `pyright` | python | `pyright-langserver --stdio` |
+| `ty` | python | `ty server` |
 | `basedpyright` | python | `basedpyright-langserver --stdio` |
 | `gopls` | go | `gopls` |
 | `rust-analyzer` | rust | `rust-analyzer` |
@@ -76,7 +76,8 @@ Upgrading a server binary without changing its configuration does not invalidate
 
 ## Notes on specific servers
 
-- **ty** is tried first for Python because it is much faster on large projects: on a 73,000-file repository a cold lookup takes about 2 seconds and a warm one under 20 milliseconds. Like the TypeScript servers, it does not count import statements as references. Install it with `uv tool install ty` or `pip install ty`.
+- **pyright** is tried first for Python. Compared with ty on a large repository, it found every reference ty did plus one ty missed (a classmethod called through an instance of a generic subclass of a metaclass-built class), and it counts import statements and `__all__` entries as references. It used less memory there (2.7 GB against 7.3 GB), but each lookup took seconds where ty took a fraction of one.
+- **ty** comes next: much faster on large projects (on a 73,000-file repository a cold lookup takes about 2 seconds and a warm one under 20 milliseconds), but it reads the whole repository into memory and, like the TypeScript servers, does not count import statements as references. To prefer it, list it in `.lemma/providers.toml`, which is tried before the built-in order. Install it with `uv tool install ty` or `pip install ty`.
 - **pyright and basedpyright** are configured to check only open files (`diagnosticMode = "openFilesOnly"`), which keeps start-up fast. Reference lookups still search the whole project, and pyright re-reads it for every lookup: on very large projects each lookup takes seconds even with a warm server. They count import statements as references. On a repository of a few thousand files, setting `diagnosticMode = "workspace"` makes lookups several times faster after a slower start (about a minute on django); on very large ones it does not help (see [Performance](performance.md#python-servers-measured)). Lemma waits for their "Found N source files" message before asking, since earlier answers miss most of the project. Pyright does not report its version, so output shows `unknown version`.
 - **TypeScript servers** find the project through `tsconfig.json`. Imports from packages need `node_modules`. A TypeScript import statement is not counted as a reference to the imported symbol, only its uses are. Lemma waits for typescript-language-server's "Initializing JS/TS language features" progress to finish before asking.
 - **gopls** works from the module containing the indexed files, so index from inside a directory with a `go.mod`. In a repository with several Go modules and no `go.work`, references from other modules are not found.

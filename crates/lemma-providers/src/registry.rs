@@ -370,7 +370,7 @@ mod tests {
         );
         assert_eq!(
             registry.candidate_ids(Language::Python),
-            ["ty", "pyright", "basedpyright"]
+            ["pyright", "ty", "basedpyright"]
         );
     }
 
