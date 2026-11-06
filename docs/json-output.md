@@ -88,7 +88,8 @@ An array of [symbols](#symbol), possibly empty.
         "enclosing_symbol": "main"
       }
     ]
-  }
+  },
+  "warnings": []
 }
 ```
 
@@ -98,6 +99,7 @@ An array of [symbols](#symbol), possibly empty.
 | `from_cache` | Whether this answer came from the cache. |
 | `skipped_providers` | Servers that failed to start before one did, as `"<id>: <reason>"`. |
 | `outcome.state` | One of the states below. |
+| `warnings` | Where the answer may be incomplete because the server does not read some indexed files: Go files behind custom build tags, or modules that tests and code name in `import()`, `vi.mock()` or `jest.mock()`. Empty when there are none. |
 
 References are sorted by path and position. `enclosing_symbol` is the qualified name of the innermost indexed definition containing the reference, or `null`. `is_external` is `true` for references outside the indexed directory.
 
