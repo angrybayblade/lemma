@@ -181,6 +181,19 @@ Cache invalidation must account for dependency/configuration changes as well as 
 
 Performance targets and server versions remain to be established. This acceptance list is not a claim that the implementation exists.
 
+## Deferred: choosing a provider by name
+
+**Status: deferred, 2026-11-06.** Today a project chooses its servers by writing provider definitions in `.lemma/providers.toml` (tried before the built-in order), or per command with `--providers`. That is per repository, cannot name a choice ("pyright for Python"), and pyrefly has no built-in definition. Python's built-in order is pyright, then ty, then basedpyright: in a comparison on a large repository, pyright found one reference ty missed (a classmethod called through an instance of a generic subclass of a metaclass-built class) and used less memory, while ty answered far faster.
+
+Proposed when this is picked up:
+
+- A preference by name, per language: `[languages] python = "pyright"`, or an ordered list for fallback, in the user's `~/.config/lemma/config.toml` and in a project's `.lemma/providers.toml`. Precedence: `--providers`, then the project, then the user, then the built-in order. The daemon reads its config again when it changes, so a switch applies to the next lookup.
+- pyrefly, and basedpyright, as built-in definitions that are opt-in: available by name, not tried unless chosen. pyrefly once returned references from the open file only (see Performance), which must be checked again before it is offered.
+- `lemma providers` and `lemma daemon lsp` say where each choice came from (`user config`, `project`, `built-in order`).
+- A chosen server that is not installed is reported with its install hint.
+
+Open: whether a chosen server that cannot start falls back to the built-in order with a warning (proposed default) or fails (opt-in, `strict = true`).
+
 ## References
 
 - [LSP 3.17 specification source](https://github.com/Microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/specification.md)
