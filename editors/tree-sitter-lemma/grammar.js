@@ -241,13 +241,19 @@ module.exports = grammar({
     // A row is one value for a one-column relation, `a -> b` for the tuple
     // `(a, b)`, or a tuple. Every column is a `column` field, so a consumer
     // can read each form the same way. A row starting with `(` is a tuple,
-    // so `(a)` is a one-column tuple rather than a parenthesised value.
+    // as the Rust parser reads it, so `(a)` is a one-column tuple and
+    // `(a) -> b` is an error: the tuple's `(` is a token of its own, which
+    // wins over the `(` of a parenthesised expression where both could start.
     graph_row: $ => choice(
       seq(
         field('column', $._expression),
         optional(seq('->', field('column', $._expression))),
       ),
-      prec(1, seq('(', optionalCommaList(field('column', $._expression)), ')')),
+      seq(
+        alias(token(prec(1, '(')), '('),
+        optionalCommaList(field('column', $._expression)),
+        ')',
+      ),
     ),
 
     // Rules

@@ -98,3 +98,14 @@ let b = 2
   (let_declaration
     (identifier)
     (integer)))
+
+================================================================================
+A graph row starting with a parenthesis is a tuple
+:error
+================================================================================
+
+graph g : Link {
+    (a) -> b
+}
+
+---

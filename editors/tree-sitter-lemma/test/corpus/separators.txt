@@ -410,3 +410,25 @@ let typed: Fact<Link,> = key
         (named_type
           name: (identifier))))
     value: (identifier)))
+
+================================================================================
+A graph row starting with a parenthesis is a tuple of any length
+================================================================================
+
+graph g : Link {
+    (a)
+    (Worker, Functions,)
+}
+
+---
+
+(source_file
+  (graph_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (graph_row
+      column: (identifier))
+    (graph_row
+      column: (identifier)
+      column: (identifier))))

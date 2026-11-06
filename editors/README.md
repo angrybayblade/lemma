@@ -224,7 +224,6 @@ The grammar follows the parser in `crates/lemma-lang/src/syntax`. It accepts a l
 
 - the `module` line is optional, since most examples in the spec are fragments;
 - a newline is a separator only where the grammar can end an item, so `fn f(): Int` with its `{` on the next line parses;
-- a graph row `(a) -> b` parses, though a row starting with `(` is a tuple;
 - whether a term is a variable is left to the queries, so a variable with two fields, `x.a.b`, parses.
 
 It is stricter in two places, both following spec 13: reserved words are never names, so `let in = 1` is an error, and a `\u` escape needs four hex digits.
