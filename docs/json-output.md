@@ -32,7 +32,7 @@ Used by `symbols`, `refs`, and ambiguous results.
 }
 ```
 
-`span` covers the whole definition, `name_span` only its name. `kind` is one of `function`, `method`, `class`, `interface`, `struct`, `enum`, `type_alias`, `constant`, `variable`.
+`span` covers the whole definition, `name_span` only its name. `kind` is one of `function`, `method`, `class`, `interface`, `struct`, `enum`, `type_alias`, `constant`, `variable`, `field` (a class attribute, a class field or interface property, a struct field).
 
 ## `lemma --json index`
 

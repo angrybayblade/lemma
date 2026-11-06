@@ -104,11 +104,16 @@ pub enum SymbolKind {
     Constant,
     /// A module-level variable.
     Variable,
+    /// A field of a class, struct or interface: an attribute assigned in a
+    /// Python class body (Pydantic and dataclass fields among them), a
+    /// TypeScript class field or interface property, a Go or Rust struct
+    /// field.
+    Field,
 }
 
 impl SymbolKind {
     /// Every symbol kind, in a stable order.
-    pub const ALL: [SymbolKind; 9] = [
+    pub const ALL: [SymbolKind; 10] = [
         Self::Function,
         Self::Method,
         Self::Class,
@@ -118,6 +123,7 @@ impl SymbolKind {
         Self::TypeAlias,
         Self::Constant,
         Self::Variable,
+        Self::Field,
     ];
 
     /// The `snake_case` name used in storage, configuration, and output.
@@ -132,6 +138,7 @@ impl SymbolKind {
             Self::TypeAlias => "type_alias",
             Self::Constant => "constant",
             Self::Variable => "variable",
+            Self::Field => "field",
         }
     }
 }

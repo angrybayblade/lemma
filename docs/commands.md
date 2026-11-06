@@ -45,7 +45,7 @@ Searches indexed symbols by name or qualified name.
 | Option | Meaning |
 | --- | --- |
 | `--exact` | Match the whole name or qualified name instead of any part of it. |
-| `--kind <kind>` | Only one kind: `function`, `method`, `class`, `interface`, `struct`, `enum`, `type_alias`, `constant`, `variable`. |
+| `--kind <kind>` | Only one kind: `function`, `method`, `class`, `interface`, `struct`, `enum`, `type_alias`, `constant`, `variable`, `field`. |
 | `--language <language>` | Only one language: `typescript`, `tsx`, `python`, `go`, `rust`. |
 | `--path <text>` | Only symbols whose file path contains this text. |
 | `--limit <n>` | At most this many results (default 50). |
