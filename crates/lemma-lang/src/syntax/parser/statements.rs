@@ -50,7 +50,7 @@ impl Parser<'_> {
 
     pub(super) fn binding(&mut self) -> Option<Binding> {
         let start = self.bump().span.start;
-        let name = self.name("the binding's name")?;
+        let name = self.declared_name("the binding's name")?;
         let declared_type = if self.eat(TokenKind::Colon).is_some() {
             Some(self.type_expression()?)
         } else {
@@ -132,10 +132,10 @@ impl Parser<'_> {
 
     fn pattern(&mut self) -> Option<Vec<Name>> {
         if !self.at(TokenKind::LeftParen) {
-            return Some(vec![self.name("a name for each item")?]);
+            return Some(vec![self.declared_name("a name for each item")?]);
         }
         let names = self.delimited(TokenKind::LeftParen, TokenKind::RightParen, false, |p| {
-            p.comma_separated(TokenKind::RightParen, |p| p.name("a name"))
+            p.comma_separated(TokenKind::RightParen, |p| p.declared_name("a name"))
         });
         Some(names)
     }

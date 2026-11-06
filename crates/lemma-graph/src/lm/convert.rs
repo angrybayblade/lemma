@@ -534,13 +534,8 @@ fn binding_name(stem: &str) -> String {
     name
 }
 
-const RESERVED: [&str; 18] = [
-    "module", "import", "export", "from", "as", "let", "fn", "if", "else", "for", "in", "return",
-    "expect", "because", "need", "true", "false", "null",
-];
-
 fn is_reserved(name: &str) -> bool {
-    RESERVED.contains(&name) || name == "self"
+    lemma_lang::syntax::lexer::is_reserved(name)
 }
 
 /// A name as written: bare when it is an identifier, in backticks if not.

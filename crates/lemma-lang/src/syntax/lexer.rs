@@ -8,6 +8,18 @@
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
 
+/// Words no name may be, unless written in backticks. They may still
+/// follow `.` as a member, as in `python.module(...)`.
+pub const RESERVED: [&str; 19] = [
+    "module", "import", "export", "from", "as", "let", "fn", "if", "else", "for", "in", "return",
+    "expect", "because", "need", "true", "false", "null", "self",
+];
+
+/// Whether `word` is reserved.
+pub fn is_reserved(word: &str) -> bool {
+    RESERVED.contains(&word)
+}
+
 /// What a token is. A name's text, and whether it is a keyword, is read
 /// from the source by the parser, since most keywords are contextual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,10 +397,15 @@ pub fn check_escapes(raw: &str, span: Span) -> Vec<Diagnostic> {
             continue;
         }
         let escaped = bytes.get(index + 1).copied().unwrap_or(0);
-        if !matches!(
+        let is_short_unicode = escaped == b'u'
+            && !bytes
+                .get(index + 2..index + 6)
+                .is_some_and(|digits| digits.iter().all(u8::is_ascii_hexdigit));
+        let is_known = matches!(
             escaped,
             b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u'
-        ) {
+        );
+        if !is_known || is_short_unicode {
             let start = span.start as usize + index;
             diagnostics.push(Diagnostic::error(
                 Span::new(start, start + 2),
@@ -458,6 +475,14 @@ mod tests {
     #[test]
     fn strings_decode_json_escapes() {
         assert_eq!(decode_text(r#""a\"b\nA""#), "a\"b\nA");
+    }
+
+    #[test]
+    fn a_unicode_escape_needs_four_hex_digits() {
+        let raw = r#""\u12""#;
+
+        assert_eq!(check_escapes(raw, Span::new(0, raw.len())).len(), 1);
+        assert_eq!(check_escapes(r#""\u0041""#, Span::new(0, 8)), []);
     }
 
     #[test]

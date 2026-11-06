@@ -314,6 +314,21 @@ impl Parser<'_> {
         }
     }
 
+    /// A name being declared or bound, which may not be a reserved word
+    /// unless written in backticks.
+    fn declared_name(&mut self, what: &str) -> Option<Name> {
+        let is_plain = self.at(TokenKind::Name);
+        let name = self.name(what)?;
+        if is_plain && crate::syntax::lexer::is_reserved(&name.text) {
+            let message = format!(
+                "`{}` is a reserved word; write it in backticks to use it as a name",
+                name.text
+            );
+            self.error_at(name.span, message);
+        }
+        Some(name)
+    }
+
     fn at_name(&self) -> bool {
         matches!(self.peek_kind(), TokenKind::Name | TokenKind::EscapedName)
     }

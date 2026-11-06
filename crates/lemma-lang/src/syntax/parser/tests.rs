@@ -226,6 +226,15 @@ fn checks_select_with_wildcards_skips_and_overrides() {
 }
 
 #[test]
+fn a_reserved_word_is_a_name_only_in_backticks() {
+    let reserved = parse("module m\nlet in = 1\n");
+    let escaped = parse("module m\nlet `in` = 1\nlet x = python.module\n");
+
+    assert!(reserved.diagnostics[0].message.contains("reserved word"));
+    assert_eq!(escaped.diagnostics, []);
+}
+
+#[test]
 fn chained_comparisons_are_reported() {
     let parsed = parse("module m\nlet x = a == b == c\n");
 
