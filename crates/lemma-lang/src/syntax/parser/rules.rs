@@ -12,6 +12,7 @@ impl Parser<'_> {
         let start = self.bump().span.start;
         let name = self.declared_name("the rule's name")?;
         let columns = if self.eat(TokenKind::Colon).is_some() {
+            self.skip_newlines();
             RuleColumns::Relation(self.type_expression()?)
         } else {
             RuleColumns::Inline(self.parameters())

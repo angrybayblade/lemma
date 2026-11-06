@@ -287,3 +287,12 @@ fn every_code_block_of_the_specification_parses() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn a_type_may_follow_its_colon_on_the_next_line() {
+    let file = parsed(
+        "module m\nlet x:\n    Int = 1\nfn f(a: Int):\n    Int {\n    return a\n}\nchecker c():\n    Evidence<Json> {\n    command: [\"x\"]\n}\ngraph g :\n    R {}\nrule r :\n    R {}\n",
+    );
+
+    assert_eq!(declarations(&file).len(), 5);
+}

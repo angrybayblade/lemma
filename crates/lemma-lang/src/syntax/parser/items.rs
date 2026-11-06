@@ -338,6 +338,7 @@ impl Parser<'_> {
         let start = self.bump().span.start;
         let name = self.declared_name("the graph's name")?;
         self.expect(TokenKind::Colon, "`:` and the graph's relation")?;
+        self.skip_newlines();
         let relation = self.type_expression()?;
         let body = if self.eat(TokenKind::Equals).is_some() {
             self.skip_newlines();
@@ -423,6 +424,7 @@ impl Parser<'_> {
         let name = self.declared_name("the function's name")?;
         let parameters = self.parameters();
         self.expect(TokenKind::Colon, "`:` and the type it returns")?;
+        self.skip_newlines();
         let returns = self.type_expression()?;
         let body = self.block();
         Some(FunctionDeclaration {
@@ -439,6 +441,7 @@ impl Parser<'_> {
         let name = self.declared_name("the checker's name")?;
         let parameters = self.parameters();
         self.expect(TokenKind::Colon, "`:` and the evidence it produces")?;
+        self.skip_newlines();
         let returns = self.type_expression()?;
         let fields = self.field_block();
         Some(CheckerDeclaration {
