@@ -567,23 +567,96 @@ impl<'a> Checker<'a> {
                 return Vec::new();
             }
             self.refer(module, run.target.span, Target::Module(name.clone()));
+            // A parameterised behavior runs only with arguments, which a
+            // module's `*` cannot give.
             return self
                 .requirements_of(&name)
                 .into_iter()
+                .filter(|requirement| self.behavior_parameters(requirement).is_none())
                 .map(|requirement| Run {
                     requirement,
                     severity,
+                    arguments: Vec::new(),
                 })
                 .collect();
         }
-        self.requirement_named(module, &run.target)
-            .map(|requirement| {
-                vec![Run {
-                    requirement,
-                    severity,
-                }]
-            })
-            .unwrap_or_default()
+        let Some(requirement) = self.requirement_named(module, &run.target) else {
+            return Vec::new();
+        };
+        let arguments = self.run_arguments(module, run, &requirement);
+        vec![Run {
+            requirement,
+            severity,
+            arguments,
+        }]
+    }
+
+    /// The arguments a run gives its behavior, checked against the
+    /// behavior's parameters.
+    fn run_arguments(
+        &mut self,
+        module: &str,
+        run: &ast::RunSelection,
+        requirement: &Address,
+    ) -> Vec<model::CallArgument> {
+        let parameters = self.behavior_parameters(requirement);
+        let (Some(parameters), Some(arguments)) = (&parameters, &run.arguments) else {
+            if parameters.is_some() {
+                self.error(
+                    module,
+                    run.target.span,
+                    format!(
+                        "`{}` takes parameters; give them, as in `run {}(...)`",
+                        requirement.name(),
+                        run.target.dotted()
+                    ),
+                );
+            } else if run.arguments.is_some() {
+                self.error(
+                    module,
+                    run.target.span,
+                    format!("`{}` takes no arguments", requirement.name()),
+                );
+            }
+            return Vec::new();
+        };
+        let mut context = Context::new(module);
+        context.records = true;
+        let signature = crate::types::Signature {
+            parameters: parameters
+                .iter()
+                .map(|column| crate::types::Parameter {
+                    name: column.name.clone(),
+                    parameter_type: column.column_type.clone(),
+                    is_optional: false,
+                })
+                .collect(),
+            returns: Type::Unknown,
+        };
+        self.check_run_arguments(&context, &signature, arguments, run.span);
+        self.lower_arguments(module, arguments)
+    }
+
+    /// A behavior's parameters, if it is a behavior that takes any.
+    fn behavior_parameters(&mut self, requirement: &Address) -> Option<Vec<Column>> {
+        let id = *self.by_address.get(requirement)?;
+        let declared = self.declarations[id].clone();
+        let NodeRef::Top(Node::Behavior(behavior)) = declared.node else {
+            return None;
+        };
+        let parameters = behavior
+            .parameters
+            .as_ref()
+            .filter(|written| !written.is_empty())?;
+        Some(
+            parameters
+                .iter()
+                .map(|parameter| Column {
+                    name: parameter.name.text.clone(),
+                    column_type: self.resolve_type(declared.module, &parameter.field_type),
+                })
+                .collect(),
+        )
     }
 
     /// Every requirement and behavior a module declares, in order.

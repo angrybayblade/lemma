@@ -422,6 +422,7 @@ mod tests {
         let runs = [Run {
             requirement: Address::top("example", "kept"),
             severity: Some(LmSeverity::Warning),
+            arguments: Vec::new(),
         }];
 
         let lowered = grammar_file(&model, "example", Some(&runs)).unwrap();

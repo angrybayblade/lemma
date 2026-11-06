@@ -7,6 +7,7 @@
 
 mod declarations;
 mod expressions;
+mod lower;
 mod rules;
 mod statements;
 
@@ -225,6 +226,13 @@ pub(crate) struct Checker<'a> {
     pub columns: HashMap<DeclarationId, Vec<crate::model::Column>>,
     /// Each requirement's finding variables, for its allowances.
     pub requirement_variables: HashMap<Address, Vec<(String, Type)>>,
+    /// Values of the expressions of behaviors and functions that are known
+    /// without running them, by module and span, for lowering.
+    pub constants: HashMap<(String, Span), Value>,
+    /// The declaration each name names, by module and span.
+    pub declared_at: HashMap<(String, Span), Address>,
+    /// The names the `for` loops of the behavior being checked bind.
+    pub case_variables: Vec<(String, Type)>,
     pub model: Model,
     pub index: SymbolIndex,
     pub diagnostics: Vec<Diagnostic>,
@@ -245,6 +253,9 @@ impl<'a> Checker<'a> {
             evaluating: BTreeSet::new(),
             columns: HashMap::new(),
             requirement_variables: HashMap::new(),
+            constants: HashMap::new(),
+            declared_at: HashMap::new(),
+            case_variables: Vec::new(),
             model: Model::default(),
             index: SymbolIndex::default(),
             diagnostics: Vec::new(),
@@ -262,6 +273,10 @@ impl<'a> Checker<'a> {
     }
 
     pub(crate) fn refer(&mut self, module: &str, span: Span, target: Target) {
+        if let Target::Declaration(address) = &target {
+            self.declared_at
+                .insert((module.to_owned(), span), address.clone());
+        }
         self.index.references.push(Reference {
             module: module.to_owned(),
             span,
@@ -603,6 +618,7 @@ impl<'a> Checker<'a> {
         for id in 0..self.declarations.len() {
             self.check_declaration(id);
         }
+        self.check_function_calls();
         let allowances = self.allowances.clone();
         for (module, allow) in allowances {
             self.check_allow(module, allow);

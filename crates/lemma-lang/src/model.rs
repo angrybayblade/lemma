@@ -4,7 +4,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::syntax::ast::{BinaryOperator, Snapshot};
+use crate::span::Span;
+use crate::syntax::ast::{BinaryOperator, Snapshot, UnaryOperator};
 use crate::types::{Address, Type, Value};
 
 /// Everything a program declares, resolved.
@@ -20,6 +21,12 @@ pub struct Model {
     pub graphs: Vec<Graph>,
     /// Services, nested ones included, outermost first.
     pub services: Vec<Service>,
+    /// Behaviors, in module then declaration order.
+    pub behaviors: Vec<Behavior>,
+    /// Pure functions behaviors call.
+    pub functions: Vec<Function>,
+    /// Checkers behaviors demand evidence from.
+    pub checkers: Vec<Checker>,
     /// Allowances.
     pub allowances: Vec<Allowance>,
     /// Checks.
@@ -224,6 +231,9 @@ pub struct Run {
     pub requirement: Address,
     /// A severity overriding its own.
     pub severity: Option<Severity>,
+    /// A parameterised behavior's arguments, evaluated in the check's
+    /// module; empty for anything else.
+    pub arguments: Vec<CallArgument>,
 }
 
 /// The entry module's workspace.
@@ -233,4 +243,215 @@ pub struct Workspace {
     pub language: Option<String>,
     /// `audit`, `check` or `strict`.
     pub level: Option<String>,
+}
+
+/// A behavior: a requirement checked by running statements that may demand
+/// evidence (spec 13, section 9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Behavior {
+    /// Its address.
+    pub address: Address,
+    /// Its parameters; a behavior with any runs only from a check that
+    /// gives arguments.
+    pub parameters: Vec<Column>,
+    /// How serious a violation is.
+    pub severity: Severity,
+    /// Whether it may pass without running an assertion.
+    pub allows_empty: bool,
+    /// Its statements, after its leading fields.
+    pub body: Vec<Statement>,
+    /// Its declaration as written, which a change compares to tell whether
+    /// it changed.
+    pub text: String,
+}
+
+/// A pure function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Function {
+    /// Its address.
+    pub address: Address,
+    /// Its parameters.
+    pub parameters: Vec<Column>,
+    /// Its statements.
+    pub body: Vec<Statement>,
+}
+
+/// A checker: the command that produces evidence for a behavior (spec 13,
+/// section 10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checker {
+    /// Its address.
+    pub address: Address,
+    /// The repository its module is in, where its command runs.
+    pub repository: String,
+    /// Its parameters.
+    pub parameters: Vec<Column>,
+    /// The type of what it observes: the `T` of its `Evidence<T>`.
+    pub observes: Type,
+    /// The argument list that runs it, without a shell.
+    pub command: Vec<String>,
+    /// Where it runs, relative to its repository's root.
+    pub directory: Option<String>,
+    /// A command run once per tree before the first run.
+    pub setup: Option<Vec<String>>,
+    /// The repositories whose trees its result depends on; its own when
+    /// empty.
+    pub reads: Vec<String>,
+    /// Environment variables, part of its evidence's key.
+    pub env: BTreeMap<String, String>,
+    /// After this, its evidence is unavailable.
+    pub timeout_ms: Option<u64>,
+    /// Whether stored evidence may be reused.
+    pub is_cached: bool,
+    /// Its declaration as written, part of its evidence's key.
+    pub text: String,
+}
+
+/// A statement of a behavior or function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Statement {
+    /// `let name = value`
+    Let {
+        /// The name.
+        name: String,
+        /// Its value.
+        value: Expression,
+    },
+    /// `expect condition [because reason]`
+    Expect {
+        /// The condition.
+        condition: Expression,
+        /// Why it should hold.
+        because: Option<Expression>,
+        /// Where it is.
+        span: Span,
+        /// The condition as written, for reports.
+        text: String,
+    },
+    /// `return value`
+    Return(Expression),
+    /// `if condition { then } else { otherwise }`; `else if` is an `If`
+    /// alone in `otherwise`.
+    If {
+        /// The condition.
+        condition: Expression,
+        /// What runs when it holds.
+        then: Vec<Statement>,
+        /// What runs when it does not.
+        otherwise: Vec<Statement>,
+        /// Where it is.
+        span: Span,
+    },
+    /// `for pattern in domain { body }`
+    For {
+        /// The names each iteration binds.
+        pattern: Vec<String>,
+        /// A list, or a relation's facts.
+        domain: Expression,
+        /// The loop body; each iteration is a case.
+        body: Vec<Statement>,
+        /// Where it is.
+        span: Span,
+    },
+}
+
+/// An expression of a behavior or function, with its names resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expression {
+    /// What it is.
+    pub kind: ExpressionKind,
+    /// Where it is, in its declaration's module.
+    pub span: Span,
+}
+
+/// What an expression is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExpressionKind {
+    /// A value known without running anything.
+    Constant(Value),
+    /// A local variable or parameter.
+    Local(String),
+    /// A relation, graph or rule, read as its facts.
+    Facts(Predicate),
+    /// A function, checker or entity, to be called.
+    Callable(Callable),
+    /// `[a, b]`
+    List(Vec<Expression>),
+    /// `{ name: value }`
+    Record(Vec<(String, Expression)>),
+    /// `target.name`
+    Member {
+        /// What it is read from.
+        target: Box<Expression>,
+        /// The member.
+        name: String,
+    },
+    /// `target[keys]`: a fact lookup, or a list or JSON element.
+    Index {
+        /// What is indexed.
+        target: Box<Expression>,
+        /// The keys.
+        keys: Vec<Expression>,
+    },
+    /// `callee(arguments)`
+    Call {
+        /// What is called.
+        callee: Box<Expression>,
+        /// The arguments, as written.
+        arguments: Vec<CallArgument>,
+    },
+    /// A method evaluated when the behavior runs, such as `x.has("f")`.
+    Method {
+        /// What it is called on.
+        receiver: Box<Expression>,
+        /// The method.
+        name: String,
+        /// The arguments, in order.
+        arguments: Vec<Expression>,
+    },
+    /// `!x`, `-x`, `need x`
+    Unary {
+        /// The operator.
+        operator: UnaryOperator,
+        /// Its operand.
+        operand: Box<Expression>,
+    },
+    /// `left op right`
+    Binary {
+        /// The operator.
+        operator: BinaryOperator,
+        /// The left operand.
+        left: Box<Expression>,
+        /// The right operand.
+        right: Box<Expression>,
+    },
+    /// `target@base`
+    Snapshot {
+        /// What is read.
+        target: Box<Expression>,
+        /// In which snapshot.
+        snapshot: Snapshot,
+    },
+    /// Something checking reported; it evaluates to unknown.
+    Invalid,
+}
+
+/// Something a behavior can call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Callable {
+    /// A pure function.
+    Function(Address),
+    /// A checker, which gives evidence.
+    Checker(Address),
+    /// An entity type, which builds a value.
+    Entity(Address),
+}
+
+/// `[name:] value` in a call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallArgument {
+    /// The parameter's name, for a named argument.
+    pub name: Option<String>,
+    /// The value.
+    pub value: Expression,
 }
