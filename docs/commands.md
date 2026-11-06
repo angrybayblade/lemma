@@ -139,7 +139,7 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | --- | --- |
 | `--direction <way>` | `callers` (what uses it), `callees` (what it uses), or `both` (the default). |
 | `--depth <n>` | How many uses away to go. Default: 2. |
-| `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Answers are cached in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones. |
+| `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Answers are cached in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones, and files outside the snapshot, such as tests left out of `include`, are not read; an empty graph says so. With `lsp`, a caller in a file outside the snapshot is shown as `path (outside the snapshot)`. |
 | `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`, and the `source` it was found by), `notes` and `truncated`. |
 | `--max-nodes <n>` | The most nodes to include. Default: 200. |
 | `--workspace <lemma.yaml>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations. See below. |

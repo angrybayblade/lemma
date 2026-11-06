@@ -91,8 +91,33 @@ pub fn symbol_graph(
             };
             walk(root, options, &mut neighbours)
         }
-        GraphSource::Names => walk(root, options, &mut NameNeighbours::new(catalog)),
+        GraphSource::Names => {
+            let mut graph = walk(root, options, &mut NameNeighbours::new(catalog))?;
+            if graph.relationships.is_empty() {
+                graph
+                    .notes
+                    .push(empty_name_graph_note(root, options.direction));
+            }
+            Ok(graph)
+        }
     }
+}
+
+/// Why a name graph found nothing. Names are read only from the indexed
+/// files, so an empty graph does not mean nothing uses the symbol: tests
+/// outside the index's `include` often do.
+fn empty_name_graph_note(root: &StoredSymbol, direction: Direction) -> String {
+    let name = &root.symbol.name;
+    let unmentioned = format!("no indexed file mentions `{name}`");
+    let names_nothing = format!("`{name}` names no indexed symbol");
+    let found = match direction {
+        Direction::Callers => unmentioned,
+        Direction::Callees => names_nothing,
+        Direction::Both => format!("{unmentioned}, and {names_nothing}"),
+    };
+    format!(
+        "{found}; files outside the snapshot are not read, and `lemma refs` or `--source lsp` may find uses there"
+    )
 }
 
 /// What is next to a symbol.
@@ -107,7 +132,10 @@ struct Found {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Neighbour {
     Symbol(StoredSymbol),
+    /// The top level of an indexed file.
     File(String),
+    /// A file the language server read but the snapshot does not include.
+    Unindexed(String),
 }
 
 /// A source of relationships. There are two: the language server and names.
@@ -281,6 +309,13 @@ fn graph_node(neighbour: &Neighbour) -> GraphNode {
             path: Some(path.clone()),
             line: None,
         },
+        Neighbour::Unindexed(path) => GraphNode {
+            id: format!("file:{path}"),
+            label: format!("{path} (outside the snapshot)"),
+            kind: "file".to_owned(),
+            path: Some(path.clone()),
+            line: None,
+        },
     }
 }
 
@@ -430,6 +465,9 @@ impl Neighbours for ServerNeighbours<'_, '_> {
                     .is_import(&reference.path, reference.span.start.line) =>
                 {
                     continue;
+                }
+                None if !self.catalog.by_file.contains_key(&reference.path) => {
+                    Neighbour::Unindexed(reference.path.clone())
                 }
                 None => Neighbour::File(reference.path.clone()),
             };
@@ -910,6 +948,22 @@ mod tests {
             source: GraphSource::Names,
             max_nodes: 100,
         }
+    }
+
+    #[test]
+    fn an_empty_caller_graph_says_the_indexed_files_do_not_mention_the_symbol() {
+        let root = symbol(1, "Billing.charge", "pay.py", (0, 3));
+
+        let note = empty_name_graph_note(&root, Direction::Callers);
+
+        assert!(note.starts_with("no indexed file mentions `charge`; files outside the snapshot"));
+    }
+
+    #[test]
+    fn a_reference_outside_the_snapshot_is_labelled_so() {
+        let node = graph_node(&Neighbour::Unindexed("tests/test_pay.py".to_owned()));
+
+        assert_eq!(node.label, "tests/test_pay.py (outside the snapshot)");
     }
 
     #[test]
