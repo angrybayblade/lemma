@@ -70,7 +70,7 @@ impl Parser<'_> {
     fn expect_statement(&mut self) -> Statement {
         let start = self.bump().span.start;
         let condition = self.expression();
-        if self.because_follows() {
+        if self.word_on_next_line("because") {
             self.skip_newlines();
         }
         let because = self.eat_word("because").map(|_| self.expression());
@@ -81,20 +81,24 @@ impl Parser<'_> {
         }
     }
 
-    /// Whether the next line starts with `because`, which continues it.
-    fn because_follows(&self) -> bool {
+    /// Whether the next line starts with `word`: `because` continues an
+    /// `expect`, and `else` an `if`.
+    fn word_on_next_line(&self, word: &str) -> bool {
         let mut index = self.position;
         while self.tokens[index].kind == TokenKind::Newline {
             index += 1;
         }
         let token = self.tokens[index];
-        token.kind == TokenKind::Name && self.text(token) == "because"
+        token.kind == TokenKind::Name && self.text(token) == word
     }
 
     fn if_statement(&mut self) -> IfStatement {
         let start = self.bump().span.start;
         let condition = self.expression();
         let then = self.block();
+        if self.word_on_next_line("else") {
+            self.skip_newlines();
+        }
         let otherwise = if self.eat_word("else").is_some() {
             if self.at_word("if") {
                 Some(Else::If(Box::new(self.if_statement())))
