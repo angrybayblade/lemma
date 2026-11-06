@@ -11,6 +11,7 @@
 
 pub mod check;
 pub mod diagnostic;
+pub mod eval;
 pub mod files;
 pub mod load;
 pub mod model;
