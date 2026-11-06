@@ -52,6 +52,7 @@ impl Parser<'_> {
         let start = self.bump().span.start;
         let name = self.declared_name("the binding's name")?;
         let declared_type = if self.eat(TokenKind::Colon).is_some() {
+            self.skip_newlines();
             Some(self.type_expression()?)
         } else {
             None
