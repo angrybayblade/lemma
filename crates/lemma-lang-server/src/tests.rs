@@ -184,3 +184,51 @@ fn a_document_below_the_root_is_its_repositorys() {
     assert_eq!(root, directory.path());
     assert_eq!(entry, "checks/replay.lm");
 }
+
+fn change(text: &str) -> Value {
+    notification(
+        "textDocument/didChange",
+        &json!({ "textDocument": { "uri": "", "version": 2 }, "contentChanges": [{ "text": text }] }),
+    )
+}
+
+fn formatting(id: i64) -> Value {
+    request(
+        id,
+        "textDocument/formatting",
+        &json!({ "textDocument": { "uri": "" }, "options": { "tabSize": 4, "insertSpaces": true } }),
+    )
+}
+
+#[test]
+fn the_server_advertises_formatting() {
+    let (messages, _) = session(&[]);
+
+    assert_eq!(
+        response(&messages, 1)["capabilities"]["documentFormattingProvider"],
+        true
+    );
+}
+
+#[test]
+fn formatting_replaces_a_document_with_its_canonical_layout() {
+    let (messages, _) = session(&[formatting(7)]);
+
+    let edits = response(&messages, 7);
+    assert_eq!(
+        edits[0]["newText"],
+        "module example\n\nrelation Owns(team: Text, service: Text)\n\nrule owned(team: Text) {\n    (team) :- Owns(team, _)\n}\n\nrequire broken {\n    when: missing(x)\n}\n"
+    );
+    assert_eq!(
+        edits[0]["range"]["end"],
+        json!({ "line": 8, "character": 0 })
+    );
+}
+
+#[test]
+fn formatting_a_document_with_syntax_errors_changes_nothing() {
+    let (messages, _) = session(&[change("module example\nlet a =\n"), formatting(8)]);
+
+    let answer = messages.iter().find(|message| message["id"] == 8).unwrap();
+    assert_eq!(answer["result"], Value::Null);
+}

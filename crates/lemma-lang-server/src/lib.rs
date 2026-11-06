@@ -4,9 +4,11 @@
 //! Each open document is checked as the entry module of its program, with
 //! every open document's unsaved text read in place of its file, so
 //! diagnostics follow typing. Hovers, definitions, symbols and completions
-//! come from the last check. See [`analysis`].
+//! come from the last check. See [`analysis`]. Formatting needs no check;
+//! see [`formatting`].
 
 mod analysis;
+mod formatting;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
@@ -16,9 +18,9 @@ use lemma_graph::lm::CheckoutSources;
 use lemma_graph::repos::Checkout;
 use lemma_lang::check_program;
 use lemma_lsp::lsp_types::{
-    self, CompletionOptions, HoverProviderCapability, InitializeParams, InitializeResult, OneOf,
-    PositionEncodingKind, PublishDiagnosticsParams, ServerCapabilities, ServerInfo,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    self, CompletionOptions, DocumentFormattingParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, OneOf, PositionEncodingKind, PublishDiagnosticsParams, ServerCapabilities,
+    ServerInfo, TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use lemma_lsp::{PositionEncoding, read_message, write_message};
 use serde_json::{Value, json};
@@ -79,6 +81,8 @@ pub fn serve(
 const METHOD_NOT_FOUND: i64 = -32601;
 /// The JSON-RPC code for parameters that do not parse.
 const INVALID_PARAMS: i64 = -32602;
+/// The LSP code for a valid request that failed.
+const REQUEST_FAILED: i64 = -32803;
 
 struct Server {
     /// Open documents' texts, by path.
@@ -126,6 +130,10 @@ impl Server {
                     .unwrap_or_default();
                 Ok(serde_json::to_value(symbols).unwrap_or(Value::Null))
             }
+            "textDocument/formatting" => {
+                let params: DocumentFormattingParams = parse(params)?;
+                self.formatting(&params)
+            }
             _ => Err((METHOD_NOT_FOUND, format!("`{method}` is not supported"))),
         }
     }
@@ -153,6 +161,7 @@ impl Server {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![".".to_owned()]),
                     ..CompletionOptions::default()
@@ -165,6 +174,18 @@ impl Server {
             }),
         };
         serde_json::to_value(result).unwrap_or(Value::Null)
+    }
+
+    /// The edits that format an open document; `null` for a document that
+    /// is not open or has syntax errors.
+    fn formatting(&self, params: &DocumentFormattingParams) -> Result<Value, (i64, String)> {
+        let path = file_path(&params.text_document.uri)?;
+        let Some(text) = self.documents.get(&path) else {
+            return Ok(Value::Null);
+        };
+        let edits = formatting::edits(text, self.encoding)
+            .map_err(|error| (REQUEST_FAILED, error.to_string()))?;
+        Ok(serde_json::to_value(edits).unwrap_or(Value::Null))
     }
 
     /// Answers a request at a position with `answer`, from the document's
