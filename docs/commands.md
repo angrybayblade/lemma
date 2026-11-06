@@ -190,8 +190,10 @@ Serves Lemma to agents as an [MCP](https://modelcontextprotocol.io) server over 
 | `definition` | `lemma definition` | `file`, `line`, `column` (from 1), `refresh` |
 | `implementations` | `lemma implementations` | `symbol`, `kind`, `language`, `path`, `refresh` |
 | `signature` | `lemma signature` | `symbol`, `kind`, `language`, `path`, `refresh` |
+| `graph` | `lemma graph` | `symbol`, `kind`, `language`, `path`, `refresh`, `direction`, `depth`, `source`, `max_nodes`, `workspace`, `across` |
+| `check` | `lemma check` | `manifest`, `change`, `base`, `head`, `level`, `no_run`, `select`, `all`, `links` |
 
-Each tool returns the command's [JSON output](json-output.md) as text. A command that ran but found no answer (an ambiguous name, a stale file, no server) is a normal result whose JSON says why; only a command that failed, such as a missing index, is returned as an error.
+Each tool returns the command's text output, as the terminal shows it: the same facts and ids as its [JSON output](json-output.md), in a fraction of the size. A command that ran but found no answer (an ambiguous name, a stale file, no server) is a normal result that says why, and so is a check that found errors; only a command that failed, such as a missing index, is returned as an error. `check` can run behaviors' checkers, which run code, so it is not marked read-only.
 
 To add it to Claude Code for a project:
 
