@@ -12,7 +12,9 @@
 pub mod adapters;
 pub mod address;
 mod affects;
+mod allowances;
 mod anchors;
+mod behaviors;
 mod check;
 pub mod compare;
 pub mod compose;

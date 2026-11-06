@@ -51,6 +51,7 @@ fn level_name(level: Level) -> &'static str {
     match level {
         Level::Audit => "audit",
         Level::Check => "check",
+        Level::Strict => "strict",
     }
 }
 

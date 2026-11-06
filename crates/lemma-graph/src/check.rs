@@ -19,6 +19,7 @@ use crate::GraphError;
 use crate::adapters;
 use crate::address::{Address, Link, parse_link};
 use crate::affects::{self, Walkable};
+use crate::behaviors::{BehaviorReport, RequirementChange};
 use crate::compare::{Difference, compare};
 use crate::config::{LEMMA_FILE, LemmaFile, Level, Operation, SchemaSource, Service, parse};
 use crate::infer;
@@ -27,7 +28,7 @@ use crate::schema::{self, Context, Role};
 
 /// The name of the repository holding the parent `lemma.yaml`.
 pub(crate) const SELF: &str = "self";
-const BASE: usize = 0;
+pub(crate) const BASE: usize = 0;
 pub(crate) const HEAD: usize = 1;
 
 /// The change being checked: a repository and its commits before and with
@@ -64,6 +65,9 @@ pub struct CheckOptions {
     /// to a documented operation. Inference then reads all consumer code,
     /// and runs at head when there is no change.
     pub list_links: bool,
+    /// Whether behaviors may run checkers for evidence not kept yet;
+    /// without, kept evidence is used and the rest is unknown or stale.
+    pub run_checkers: bool,
 }
 
 /// Every link a check found, as [`CheckOptions::list_links`] asks.
@@ -119,6 +123,14 @@ pub struct Finding {
     /// graph by name, so approximate.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub affects: Vec<Impact>,
+    /// The reason of the `allow` covering it; an allowed finding is
+    /// informational, whatever its requirement's severity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<String>,
+    /// A grammar requirement's finding: the value of each variable, which
+    /// allowances read.
+    #[serde(skip)]
+    pub values: BTreeMap<String, String>,
 }
 
 /// Something a problem affects further up.
@@ -180,6 +192,13 @@ pub struct Report {
     /// Every link found, when [`CheckOptions::list_links`] asks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_list: Option<LinkList>,
+    /// The behaviors the parent's `.lm` program ran, and their cases.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub behaviors: Vec<BehaviorReport>,
+    /// The requirements and behaviors the change added, removed or
+    /// changed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub requirement_changes: Vec<RequirementChange>,
 }
 
 /// A repository at both snapshots.
@@ -247,17 +266,52 @@ pub fn check<E: Engine>(
         fetch: &mut fetch,
     };
     affects::attach(&mut findings, &seeds, &mut source, &repos, &reading)?;
+    let (behaviors, requirement_changes) =
+        evaluate_behaviors(root_file, &repos, options, level, &mut findings)?;
     sort_findings(&mut findings);
     log_outcome(&findings, started);
-    let link_list = options.list_links.then(|| link_list(&links, &walkable));
     Ok(Report {
         level,
         links: links.len(),
         inferred_links,
         repositories: resolved(&repos),
         findings,
-        link_list,
+        link_list: options.list_links.then(|| link_list(&links, &walkable)),
+        behaviors,
+        requirement_changes,
     })
+}
+
+/// Runs the behaviors of the parent's `.lm` program and adds what they
+/// found; their reports and what the change did to requirements.
+fn evaluate_behaviors(
+    root_file: &Path,
+    repos: &BTreeMap<String, Repo>,
+    options: &CheckOptions,
+    level: Level,
+    findings: &mut Vec<Finding>,
+) -> Result<(Vec<BehaviorReport>, Vec<RequirementChange>), GraphError> {
+    let manifest = root_file.file_name().map_or_else(
+        || LEMMA_FILE.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let evaluated = crate::behaviors::run(
+        &manifest,
+        repos,
+        &options.cache,
+        options.change.is_some(),
+        options.run_checkers,
+    )?;
+    let Some(mut evaluated) = evaluated else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let date = crate::allowances::committer_date(&repos[SELF].checkouts[HEAD]);
+    let mut allowances = crate::allowances::Allowances::new(&evaluated.head.model, date);
+    allowances.cover_cases(&evaluated.results, &mut evaluated.reports);
+    findings.extend(crate::behaviors::findings(&evaluated.reports, level));
+    allowances.cover_findings(findings);
+    findings.extend(allowances.findings(options.change.is_none()));
+    Ok((evaluated.reports, evaluated.changes))
 }
 
 /// The links inferred from code, as the options ask: for the change, at
@@ -989,6 +1043,8 @@ fn unsupported_documents(repos: &BTreeMap<String, Repo>) -> Result<Vec<Finding>,
             ),
             introduced: false,
             affects: Vec::new(),
+            allowed: None,
+            values: BTreeMap::new(),
         });
     }
     Ok(warnings)
@@ -1024,6 +1080,8 @@ fn adapter_warning(entry: &str, message: String) -> Finding {
         message,
         introduced: false,
         affects: Vec::new(),
+        allowed: None,
+        values: BTreeMap::new(),
     }
 }
 
@@ -1073,7 +1131,7 @@ fn inferred_finding(found: &lemma_verify::Finding, level: Level, has_change: boo
     let counts = found.introduced || !has_change;
     let severity = match (found.severity, level) {
         _ if !counts => Severity::Info,
-        ("error", Level::Check) => Severity::Error,
+        ("error", Level::Check | Level::Strict) => Severity::Error,
         ("error" | "warning", _) => Severity::Warning,
         _ => Severity::Info,
     };
@@ -1088,6 +1146,8 @@ fn inferred_finding(found: &lemma_verify::Finding, level: Level, has_change: boo
         message: found.message.clone(),
         introduced: found.introduced,
         affects: Vec::new(),
+        allowed: None,
+        values: found.values.clone(),
     }
 }
 
@@ -1284,7 +1344,7 @@ fn read_manifest(reading: &Reading, checkout: &Checkout) -> Result<(LemmaFile, b
 /// The manifest to read: `lemma.yaml` falls back to `lemma.lm` for a
 /// repository that has only the latter, at the checkout or in its working
 /// directory.
-fn language_manifest(checkout: &Checkout, manifest: &str) -> Result<String, GraphError> {
+pub(crate) fn language_manifest(checkout: &Checkout, manifest: &str) -> Result<String, GraphError> {
     if manifest != LEMMA_FILE {
         return Ok(manifest.to_owned());
     }
@@ -1649,7 +1709,7 @@ impl Checker<'_> {
         let severity = match (is_problem, self.level) {
             (false, _) => Severity::Info,
             (true, Level::Audit) => Severity::Warning,
-            (true, Level::Check) => Severity::Error,
+            (true, Level::Check | Level::Strict) => Severity::Error,
         };
         let finding = Finding {
             severity,
@@ -1658,6 +1718,8 @@ impl Checker<'_> {
             message,
             introduced,
             affects: Vec::new(),
+            allowed: None,
+            values: BTreeMap::new(),
         };
         if !self.findings.contains(&finding) {
             self.findings.push(finding);

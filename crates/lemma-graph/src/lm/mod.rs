@@ -286,6 +286,11 @@ fn lower_operation(operation: &model::Operation) -> Result<Operation, LowerError
     Ok(Operation { path, schema })
 }
 
+/// `file:Symbol` for an operation's `implementation`, if it names one.
+pub(crate) fn implementation_path(implementation: &Value) -> Option<String> {
+    code_path(implementation, "an implementation").ok()
+}
+
 /// `file:Symbol` for a resolution request.
 fn code_path(implementation: &Value, what: &str) -> Result<String, LowerError> {
     let Value::Request { function, .. } = implementation else {
@@ -572,6 +577,7 @@ fn level(checked: &Checked, repository: &str) -> Option<Level> {
     }
     match checked.model.workspace.as_ref()?.level.as_deref()? {
         "audit" => Some(Level::Audit),
+        "strict" => Some(Level::Strict),
         _ => Some(Level::Check),
     }
 }

@@ -65,6 +65,7 @@ pub fn trace_through_system<E: Engine>(
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Full,
         list_links: false,
+        run_checkers: true,
     };
     let repos = check::load(workspace, &options)?;
     let Some((repository, offset)) = owning_repository(&repos, index_root) else {

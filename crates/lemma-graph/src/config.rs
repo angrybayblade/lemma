@@ -415,8 +415,10 @@ pub enum Level {
     /// Report differences as warnings.
     #[default]
     Audit,
-    /// Fail on differences.
+    /// Fail on differences, and on behaviors violated.
     Check,
+    /// Also fail on error-severity behaviors whose outcome is unknown.
+    Strict,
 }
 
 /// Reads a `lemma.yaml`.

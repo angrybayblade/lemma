@@ -155,6 +155,10 @@ pub(crate) enum LmAction {
 }
 
 #[derive(Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent command-line flags"
+)]
 pub(crate) struct CheckArgs {
     /// The parent lemma.yaml, which composes the repositories to check.
     #[arg(default_value = "lemma.yaml")]
@@ -170,10 +174,15 @@ pub(crate) struct CheckArgs {
     /// changes included, if absent.
     #[arg(long, requires = "change")]
     pub head: Option<String>,
-    /// `audit` reports differences as warnings; `check` fails on them.
-    /// Overrides the graph's level.
-    #[arg(long, value_parser = ["audit", "check"])]
+    /// `audit` reports differences as warnings; `check` fails on them and
+    /// on violated behaviors; `strict` also fails on behaviors whose
+    /// outcome is unknown. Overrides the graph's level.
+    #[arg(long, value_parser = ["audit", "check", "strict"])]
     pub level: Option<String>,
+    /// Run no checkers: behaviors use the evidence already kept, and are
+    /// unknown, or stale when their inputs changed, without it.
+    #[arg(long)]
+    pub no_run: bool,
     /// Also list informational findings, not just their count.
     #[arg(long)]
     pub all: bool,
