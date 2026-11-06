@@ -1141,10 +1141,8 @@ fn read_manifest(
             .ok_or_else(|| GraphError::MissingManifest {
                 name: name.to_owned(),
                 path: manifest.to_owned(),
-                commit: checkout
-                    .commit
-                    .clone()
-                    .unwrap_or_else(|| "the working directory".to_owned()),
+                root: checkout.root.clone(),
+                commit: checkout.commit.clone(),
             })?;
         (text, checkout.commit.is_some())
     };

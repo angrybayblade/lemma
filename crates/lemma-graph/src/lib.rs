@@ -27,7 +27,7 @@ pub mod repos;
 pub mod schema;
 mod trace;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use anchors::{References, Uses};
 pub use check::{
@@ -136,15 +136,18 @@ pub enum GraphError {
         /// Why.
         message: String,
     },
-    /// A repository has no `lemma.yaml` where it should.
-    #[error("{name} has no {path} at {commit}")]
+    /// A repository has no `lemma.yaml` where it should, at the commit
+    /// read nor in its working directory.
+    #[error("{}", missing_manifest(name, path, root, commit.as_deref()))]
     MissingManifest {
         /// The repository's name.
         name: String,
-        /// Where its `lemma.yaml` was looked for.
+        /// Where its `lemma.yaml` was looked for, relative to its root.
         path: String,
-        /// The commit, or the working directory.
-        commit: String,
+        /// The repository's clone.
+        root: PathBuf,
+        /// The commit read, if one was; its working directory was read too.
+        commit: Option<String>,
     },
     /// The change names a repository no `lemma.yaml` declares.
     #[error("the change names `{name}`, which no lemma.yaml declares")]
@@ -175,4 +178,45 @@ pub enum GraphError {
         #[source]
         source: lemma_store::RecordError,
     },
+}
+
+/// What a missing `lemma.yaml` error says: where it was looked for, and
+/// what to do about it.
+fn missing_manifest(name: &str, path: &str, root: &Path, commit: Option<&str>) -> String {
+    let file = root.join(path);
+    let looked = match commit {
+        Some(commit) => format!(
+            "{name} has no {path} at {}, nor in its working directory ({})",
+            commit.chars().take(10).collect::<String>(),
+            file.display()
+        ),
+        None => format!("{name} has no {path} ({})", file.display()),
+    };
+    format!(
+        "{looked}. Add one there saying what the repository serves and calls; \
+         a commit from before it existed reads the working directory's (see \
+         https://github.com/angrybayblade/lemma/blob/main/docs/check.md)"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_manifest_says_where_it_was_looked_for_and_what_to_do() {
+        let error = GraphError::MissingManifest {
+            name: "#billing".to_owned(),
+            path: "lemma.yaml".to_owned(),
+            root: PathBuf::from("/work/billing"),
+            commit: Some("5a4d5fff35cfb1481505".to_owned()),
+        };
+
+        let message = error.to_string();
+
+        assert!(message.starts_with(
+            "#billing has no lemma.yaml at 5a4d5fff35, nor in its working directory \
+             (/work/billing/lemma.yaml). Add one there"
+        ));
+    }
 }
