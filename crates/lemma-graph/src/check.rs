@@ -1121,8 +1121,10 @@ pub(crate) fn load(
             continue;
         }
         let checkouts = checkouts(&name, &root, reference.as_deref(), options)?;
-        let (base_file, base_fallback) = read_manifest(&name, &checkouts[BASE], &manifest)?;
-        let (head_file, head_fallback) = read_manifest(&name, &checkouts[HEAD], &manifest)?;
+        let (base_file, base_fallback) =
+            read_manifest(&name, &checkouts[BASE], &manifest, &options.cache)?;
+        let (head_file, head_fallback) =
+            read_manifest(&name, &checkouts[HEAD], &manifest, &options.cache)?;
         let mut files = [base_file, head_file];
         for (file, checkout) in files.iter_mut().zip(&checkouts) {
             add_documented_operations(file, checkout)?;
@@ -1234,7 +1236,16 @@ fn read_manifest(
     name: &str,
     checkout: &Checkout,
     manifest: &str,
+    cache: &Path,
 ) -> Result<(LemmaFile, bool), GraphError> {
+    let manifest = language_manifest(checkout, manifest)?;
+    let manifest = manifest.as_str();
+    if Path::new(manifest)
+        .extension()
+        .is_some_and(|extension| extension == "lm")
+    {
+        return read_language_manifest(name, checkout, manifest, cache);
+    }
     let (text, fallback) = if let Some(text) = checkout.read(manifest)? {
         (text, false)
     } else {
@@ -1260,6 +1271,53 @@ fn read_manifest(
     file.validate()
         .map_err(|source| GraphError::InvalidService { path, source })?;
     Ok((file, fallback))
+}
+
+/// The manifest to read: `lemma.yaml` falls back to `lemma.lm` for a
+/// repository that has only the latter, at the checkout or in its working
+/// directory.
+fn language_manifest(checkout: &Checkout, manifest: &str) -> Result<String, GraphError> {
+    if manifest != LEMMA_FILE {
+        return Ok(manifest.to_owned());
+    }
+    let working = Checkout {
+        root: checkout.root.clone(),
+        commit: None,
+    };
+    let has_yaml = checkout.read(manifest)?.is_some() || working.read(manifest)?.is_some();
+    let has_language = checkout.read(lemma_lang::load::ROOT_FILE)?.is_some()
+        || working.read(lemma_lang::load::ROOT_FILE)?.is_some();
+    if !has_yaml && has_language {
+        return Ok(lemma_lang::load::ROOT_FILE.to_owned());
+    }
+    Ok(manifest.to_owned())
+}
+
+/// A repository's `.lm` manifest at a checkout, falling back to the working
+/// directory's when the commit has none, as `lemma.yaml` does.
+fn read_language_manifest(
+    name: &str,
+    checkout: &Checkout,
+    manifest: &str,
+    cache: &Path,
+) -> Result<(LemmaFile, bool), GraphError> {
+    if checkout.read(manifest)?.is_some() {
+        return Ok((crate::lm::read_manifest(checkout, manifest, cache)?, false));
+    }
+    let working = Checkout {
+        root: checkout.root.clone(),
+        commit: None,
+    };
+    if working.read(manifest)?.is_none() {
+        return Err(GraphError::MissingManifest {
+            name: name.to_owned(),
+            path: manifest.to_owned(),
+            root: checkout.root.clone(),
+            commit: checkout.commit.clone(),
+        });
+    }
+    let file = crate::lm::read_manifest(&working, manifest, cache)?;
+    Ok((file, checkout.commit.is_some()))
 }
 
 /// Adds every operation a local service's `OpenAPI` documents declare, at

@@ -13,6 +13,7 @@ workspace = true
 log.workspace = true
 json-schema-diff.workspace = true
 lemma-http.workspace = true
+lemma-lang.workspace = true
 lemma-logic.workspace = true
 lemma-model.workspace = true
 lemma-store.workspace = true
