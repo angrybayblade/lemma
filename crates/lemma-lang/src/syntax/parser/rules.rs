@@ -10,7 +10,7 @@ use crate::syntax::lexer::{TokenKind, decode_text};
 impl Parser<'_> {
     pub(super) fn rule(&mut self) -> Option<RuleDeclaration> {
         let start = self.bump().span.start;
-        let name = self.name("the rule's name")?;
+        let name = self.declared_name("the rule's name")?;
         let columns = if self.eat(TokenKind::Colon).is_some() {
             RuleColumns::Relation(self.type_expression()?)
         } else {
@@ -165,7 +165,7 @@ impl Parser<'_> {
             );
         }
         AtomArguments::Named(self.comma_separated(TokenKind::RightParen, |parser| {
-            let name = parser.name("a column name")?;
+            let name = parser.declared_name("a column name")?;
             parser.expect(TokenKind::Colon, "`:` after the column's name")?;
             let term = parser.term()?;
             Some(NamedTerm { name, term })
@@ -222,6 +222,10 @@ impl Parser<'_> {
                     root: None,
                     steps: self.path_steps()?,
                 }));
+            }
+            reserved if crate::syntax::lexer::is_reserved(reserved) => {
+                let message = format!("`{reserved}` is a reserved word, not a variable");
+                self.error_at(name.span, message);
             }
             _ => {}
         }

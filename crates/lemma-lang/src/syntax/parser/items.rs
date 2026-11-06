@@ -45,7 +45,7 @@ impl Parser<'_> {
 
     /// `a.b.c`, stopping before a `.*`.
     pub(super) fn module_name(&mut self, what: &str) -> Option<ModuleName> {
-        let first = self.name(what)?;
+        let first = self.declared_name(what)?;
         let start = first.span.start;
         let mut segments = vec![first];
         while self.at(TokenKind::Dot)
@@ -84,7 +84,7 @@ impl Parser<'_> {
             ImportSelection::Names(names)
         } else if self.eat(TokenKind::Star).is_some() {
             self.expect_word("as")?;
-            let alias = self.name("a name for the module")?;
+            let alias = self.declared_name("a name for the module")?;
             self.expect_word("from")?;
             ImportSelection::Namespace(alias)
         } else {
@@ -108,9 +108,9 @@ impl Parser<'_> {
     }
 
     fn import_name(&mut self) -> Option<ImportName> {
-        let name = self.name("a name to import")?;
+        let name = self.declared_name("a name to import")?;
         let alias = if self.eat_word("as").is_some() {
-            Some(self.name("a new name")?)
+            Some(self.declared_name("a new name")?)
         } else {
             None
         };
@@ -170,7 +170,7 @@ impl Parser<'_> {
 
     fn repo(&mut self) -> Option<Repo> {
         let start = self.bump().span.start;
-        let name = self.name("the repository's name")?;
+        let name = self.declared_name("the repository's name")?;
         self.expect(TokenKind::Equals, "`=`")?;
         self.skip_newlines();
         let source = self.expression();
@@ -221,7 +221,7 @@ impl Parser<'_> {
 
     fn type_declaration(&mut self) -> Option<TypeDeclaration> {
         let start = self.bump().span.start;
-        let name = self.name("the type's name")?;
+        let name = self.declared_name("the type's name")?;
         self.expect(TokenKind::Equals, "`=`")?;
         self.skip_newlines();
         let value = self.type_expression()?;
@@ -234,7 +234,7 @@ impl Parser<'_> {
 
     fn entity(&mut self) -> Option<EntityDeclaration> {
         let start = self.bump().span.start;
-        let name = self.name("the entity's name")?;
+        let name = self.declared_name("the entity's name")?;
         let fields = self.typed_field_block();
         Some(EntityDeclaration {
             name,
@@ -255,7 +255,7 @@ impl Parser<'_> {
 
     fn relation(&mut self) -> Option<RelationDeclaration> {
         let start = self.bump().span.start;
-        let name = self.name("the relation's name")?;
+        let name = self.declared_name("the relation's name")?;
         let columns = self.parameters();
         Some(RelationDeclaration {
             name,
@@ -266,7 +266,7 @@ impl Parser<'_> {
 
     fn service(&mut self) -> Option<ServiceDeclaration> {
         let start = self.bump().span.start;
-        let name = self.name("the service's name")?;
+        let name = self.declared_name("the service's name")?;
         let members = self.delimited(
             TokenKind::LeftBrace,
             TokenKind::RightBrace,
@@ -314,7 +314,7 @@ impl Parser<'_> {
         let start = self.peek().span.start;
         let is_client = self.eat_word("client").is_some();
         self.expect_word("operation")?;
-        let name = self.name("the operation's name")?;
+        let name = self.declared_name("the operation's name")?;
         let fields = self.field_block();
         Some(OperationDeclaration {
             is_client,
@@ -336,7 +336,7 @@ impl Parser<'_> {
 
     fn graph(&mut self) -> Option<GraphDeclaration> {
         let start = self.bump().span.start;
-        let name = self.name("the graph's name")?;
+        let name = self.declared_name("the graph's name")?;
         self.expect(TokenKind::Colon, "`:` and the graph's relation")?;
         let relation = self.type_expression()?;
         let body = if self.eat(TokenKind::Equals).is_some() {
@@ -383,7 +383,7 @@ impl Parser<'_> {
 
     fn require(&mut self) -> Option<RequireDeclaration> {
         let start = self.bump().span.start;
-        let name = self.name("the requirement's name")?;
+        let name = self.declared_name("the requirement's name")?;
         let (when, fields) = self.fields_with_body();
         Some(RequireDeclaration {
             name,
@@ -407,7 +407,7 @@ impl Parser<'_> {
 
     fn behavior(&mut self) -> Option<BehaviorDeclaration> {
         let start = self.bump().span.start;
-        let name = self.name("the behavior's name")?;
+        let name = self.declared_name("the behavior's name")?;
         let parameters = self.at(TokenKind::LeftParen).then(|| self.parameters());
         let body = self.block();
         Some(BehaviorDeclaration {
@@ -420,7 +420,7 @@ impl Parser<'_> {
 
     fn function(&mut self) -> Option<FunctionDeclaration> {
         let start = self.bump().span.start;
-        let name = self.name("the function's name")?;
+        let name = self.declared_name("the function's name")?;
         let parameters = self.parameters();
         self.expect(TokenKind::Colon, "`:` and the type it returns")?;
         let returns = self.type_expression()?;
@@ -436,7 +436,7 @@ impl Parser<'_> {
 
     fn checker(&mut self) -> Option<CheckerDeclaration> {
         let start = self.bump().span.start;
-        let name = self.name("the checker's name")?;
+        let name = self.declared_name("the checker's name")?;
         let parameters = self.parameters();
         self.expect(TokenKind::Colon, "`:` and the evidence it produces")?;
         let returns = self.type_expression()?;
@@ -452,7 +452,7 @@ impl Parser<'_> {
 
     fn check(&mut self) -> Option<CheckDeclaration> {
         let start = self.bump().span.start;
-        let name = self.name("the check's name")?;
+        let name = self.declared_name("the check's name")?;
         let members = self.delimited(
             TokenKind::LeftBrace,
             TokenKind::RightBrace,
@@ -500,7 +500,7 @@ impl Parser<'_> {
 
     /// `name: value`.
     pub(super) fn field(&mut self) -> Option<Field> {
-        let name = self.name("a field name")?;
+        let name = self.declared_name("a field name")?;
         self.expect(TokenKind::Colon, "`:` after the field's name")?;
         self.skip_newlines();
         let value = self.expression();
@@ -510,7 +510,7 @@ impl Parser<'_> {
 
     /// `name: Type`.
     pub(super) fn typed_field(&mut self) -> Option<TypedField> {
-        let name = self.name("a name")?;
+        let name = self.declared_name("a name")?;
         self.expect(TokenKind::Colon, "`:` and a type")?;
         self.skip_newlines();
         let field_type = self.type_expression()?;

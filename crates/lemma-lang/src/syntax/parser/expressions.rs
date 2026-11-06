@@ -256,6 +256,11 @@ impl Parser<'_> {
             "false" => ExpressionKind::Boolean(false),
             "null" => ExpressionKind::Null,
             "self" => ExpressionKind::SelfModule,
+            reserved if crate::syntax::lexer::is_reserved(reserved) => {
+                let message = format!("`{reserved}` is a reserved word, not a value");
+                self.error_at(name.span, message);
+                ExpressionKind::Missing
+            }
             _ => ExpressionKind::Name(name.text),
         }
     }
