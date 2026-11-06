@@ -1565,11 +1565,19 @@ fn select_symbol(
     if let Some(address) = addresses::as_address(symbol) {
         return addresses::resolve_export(store, snapshot, &address);
     }
+    // A member's ids are its own index's, so `#billing:607` copied from
+    // the workspace names the same symbol inside billing.
+    if let Some((_, id)) = qualified_id(symbol) {
+        let found = store
+            .symbol(snapshot.id, id)?
+            .filter(|found| matches_filters(found, &filters));
+        return Ok(found.map_or(SymbolResolution::Unresolved, SymbolResolution::Resolved));
+    }
     if let Some(id) = symbol.strip_prefix('#') {
         let id: i64 = id.parse().with_context(|| {
             format!(
-                "`{symbol}` is not a valid symbol id; in a workspace, qualify it with its \
-                 repository: `#billing:607`"
+                "`{symbol}` is not a symbol id: ids are written `#607`, or `#billing:607` for a \
+                 workspace member"
             )
         })?;
         let found = store
@@ -1644,8 +1652,6 @@ fn qualified_id(text: &str) -> Option<(String, i64)> {
     (!name.is_empty()).then(|| (format!("#{name}"), id))
 }
 
-/// Adds to `graph` what its callers reach beyond their repository: the
-/// operations their handlers serve and the code elsewhere calling them.
 /// How far a graph follows callers across a workspace.
 #[derive(Clone, Copy)]
 struct Across {
@@ -1654,6 +1660,8 @@ struct Across {
     calls: usize,
 }
 
+/// Adds to `graph` what its callers reach beyond their repository: the
+/// operations their handlers serve and the code elsewhere calling them.
 fn add_system_trace(
     graph: &mut lemma_model::UseGraph,
     workspace: &Path,
