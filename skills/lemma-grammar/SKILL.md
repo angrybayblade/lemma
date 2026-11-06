@@ -1,6 +1,6 @@
 ---
 name: lemma-grammar
-description: Write, change and debug Lemma grammars - the YAML files of relations, Datalog rules and requirements that decide what `lemma verify` reports. Use when asked to add, remove, tune or explain a Lemma check, change a finding's severity, allow a known exception, or understand why `lemma verify` reported (or missed) something.
+description: Write, change and debug Lemma grammars - the YAML files or `.lm` modules of relations, Datalog rules and requirements that decide what `lemma verify` reports. Use when asked to add, remove, tune or explain a Lemma check, change a finding's severity, allow a known exception, or understand why `lemma verify` reported (or missed) something.
 ---
 
 # Working with Lemma grammars
@@ -40,6 +40,35 @@ facts:                                       # by hand; head snapshot unless sna
 - `name@base(..)` / `name@head(..)` read one snapshot of an **input** relation; plain `name(..)` is the head.
 - `!name(..)` is negation; comparisons are `= != < <= > >=` (ordering on numbers only).
 - Several rules with one head are alternatives. Recursion is allowed.
+
+## Grammars as `.lm` modules
+
+A grammar can also be a typed `.lm` module that imports the built-in grammar, `lemma.http`, and adds to it; `lemma lm check` catches a misspelled relation or a wrong column count with its line before anything runs:
+
+```lm
+module contracts
+
+import { calls, removed_operation } from lemma.http
+
+export require consumer_calls_removed_endpoint {
+    severity: warning
+    when: calls(c, op, f, l), removed_operation(op)
+    message: "{c} calls {op}, which was removed ({f}:{l})"
+}
+
+check main {
+    run contracts.consumer_calls_removed_endpoint
+    run lemma.http.consumer_calls_unserved_operation
+}
+```
+
+- Run `lemma lm check contracts.lm` after every edit, then point the manifest at it: `grammar: contracts.lm`.
+- In rules and `when:` bodies, a lowercase bare name is a variable; constants are literals, uppercase names or dotted paths. `x == "*"` compares.
+- Rules declare their columns in place: `rule dropped(op: Text) { (op) :- removed_operation(op) }`.
+- Without a `check main`, every requirement of every loaded module runs, `lemma.http`'s included.
+- Keep `lemma.http`'s variable names (`c`, `op`, `f`, `l`) in requirements `lemma check` reads, which looks findings' values up by those names.
+
+The full language is in [The `.lm` language](https://github.com/angrybayblade/lemma/blob/main/docs/language.md).
 
 ## Rules Lemma enforces
 
