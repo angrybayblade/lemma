@@ -36,7 +36,7 @@ Lemma reads definitions itself, but asks a language server where symbols are use
 | --- | --- | --- |
 | TypeScript / TSX, TypeScript 6 or older | `npm install -g typescript typescript-language-server` | `typescript-language-server` |
 | TypeScript / TSX, TypeScript 7 | `npm install -g typescript@7` | `tsc` |
-| Python (fastest) | `uv tool install ty` or `pip install ty` | `ty` |
+| Python | `npm install -g pyright` (or `uv tool install ty`, faster, more memory) | `pyright-langserver` (or `ty`) |
 | Python | `npm install -g pyright` or `pip install basedpyright` | `pyright-langserver` or `basedpyright-langserver` |
 | Go | `go install golang.org/x/tools/gopls@latest` | `gopls` |
 | Rust | `rustup component add rust-analyzer` | `rust-analyzer` |
@@ -47,15 +47,15 @@ The command must be on your `PATH`. Run `lemma providers` to see what Lemma foun
 $ lemma providers
 typescript-language-server   typescript,tsx   /usr/local/bin/typescript-language-server
 typescript-native            typescript,tsx   /usr/local/bin/tsc
-ty                           python           /Users/me/.local/bin/ty
 pyright                      python           /usr/local/bin/pyright-langserver
+ty                           python           /Users/me/.local/bin/ty
 basedpyright                 python           not found: basedpyright-langserver
 gopls                        go               /Users/me/go/bin/gopls
 
 Tried in order for each language:
   typescript   typescript-language-server, then typescript-native
   tsx          typescript-language-server, then typescript-native
-  python       ty, then pyright
+  python       pyright, then ty
   go           gopls
 ```
 
@@ -117,7 +117,7 @@ lemma refs Router.delete
 
 ```text
 #415     method     Router.delete  src/router.py:31:9
-via ty 0.0.94
+via pyright unknown version
 3 references
   src/api/routes.py:22:12  in remove_route
   src/api/routes.py:57:8  in reset

@@ -41,7 +41,7 @@ lemma verify change.yaml                # what a change breaks in the repositori
 
 Add `--json` to any command for machine-readable output. For agents, `lemma mcp` serves the same commands as MCP tools; in Claude Code, `claude mcp add lemma -- lemma mcp` adds it to a project.
 
-Lemma does not bundle language servers. Install the ones you need: `typescript-language-server` or TypeScript 7's `tsc`, `ty` (fastest) or `pyright`, `gopls`, and `rust-analyzer`.
+Lemma does not bundle language servers. Install the ones you need: `typescript-language-server` or TypeScript 7's `tsc`, `pyright` or `ty` (faster, more memory), `gopls`, and `rust-analyzer`.
 
 Lemma is built to be called in a loop by agents. Commands run in a background daemon that watches indexed directories and keeps language servers warm. Across 241 randomly drawn symbols in five repositories, 96% of the lines Lemma reported were real references, against 31% for ripgrep; with Lemma running, a lookup took 19-126 ms the first time a symbol was asked and 1-3 ms once cached. Text search remains better for one-off questions, small repositories, strings and other text, and as a cross-check before a rename. See [the comparison](docs/comparison.md) and [Performance](docs/performance.md).
 

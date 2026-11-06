@@ -41,16 +41,12 @@ command = "tsc"
 args = ["--lsp", "--stdio"]
 project_markers = ["tsconfig.json", "jsconfig.json"]
 
-# ty (from Astral) answers in milliseconds once loaded, even on very large
-# workspaces. Like the TypeScript servers, it does not count import
-# statements as references; pyright does.
-[[provider]]
-id = "ty"
-languages = ["python"]
-command = "ty"
-args = ["server"]
-install = "uv tool install ty"
-
+# Pyright is tried first for Python: compared with ty on one large
+# repository it resolved one more call (a classmethod reached through an
+# instance of a generic subclass of a metaclass-built class), counts
+# imports and `__all__` entries as references, and used less memory; ty
+# was much faster.
+#
 # Pyright answers before it has found the workspace's files, and those
 # answers only cover files it already knows. It logs this once it has.
 [[provider]]
@@ -65,6 +61,16 @@ ready_messages = ["Found * source file*", "No source files found*"]
 [provider.settings.python.analysis]
 diagnosticMode = "openFilesOnly"
 logLevel = "Information"
+
+# ty (from Astral) answers in milliseconds once loaded, even on very large
+# workspaces, but reads the whole repository into memory. Like the TypeScript servers, it does not count import
+# statements as references; pyright does.
+[[provider]]
+id = "ty"
+languages = ["python"]
+command = "ty"
+args = ["server"]
+install = "uv tool install ty"
 
 [[provider]]
 id = "basedpyright"
