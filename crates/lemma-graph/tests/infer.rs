@@ -134,3 +134,116 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
         ]
     );
 }
+
+/// The same system composed by modules, whose parent adds a requirement of
+/// its own and, given `main`, a `check main`.
+fn system_of_modules(workspace: &Path, main: &str) {
+    system(workspace);
+    write(
+        &workspace.join("billing/lemma.lm"),
+        "module billing\nimport * as http from lemma.http\nexport service api {\n    operations: http.openapi(\"openapi.json\")\n}\n",
+    );
+    std::fs::remove_file(workspace.join("billing/lemma.yaml")).unwrap();
+    git(&workspace.join("billing"), &["add", "-A"]);
+    git(
+        &workspace.join("billing"),
+        &["commit", "-q", "--amend", "--no-edit"],
+    );
+    write(
+        &workspace.join("web/lemma.lm"),
+        "module web\nexport service web {}\n",
+    );
+    std::fs::remove_file(workspace.join("web/lemma.yaml")).unwrap();
+    let parent = format!(
+        r#"module system
+
+import {{ calls }} from lemma.http
+
+workspace {{
+    repo billing = local("billing")
+    repo web = local("web")
+}}
+
+require charges_are_called {{
+    severity: warning
+    when: calls(c, op, f, l), op == "POST /v1/charges"
+    message: "{{c}} calls {{op}}"
+}}
+{main}"#
+    );
+    write(&workspace.join("lemma.lm"), &parent);
+}
+
+fn checks_of(workspace: &Path) -> Vec<(Severity, String)> {
+    let options = CheckOptions {
+        change: Some(Change {
+            repository: "#billing".to_owned(),
+            base: "HEAD~1".to_owned(),
+            head: Some("HEAD".to_owned()),
+        }),
+        level: Some(Level::Check),
+        cache: workspace.join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
+        run_checkers: true,
+    };
+    let report = check(
+        &workspace.join("lemma.lm"),
+        &options,
+        &ReferenceEngine,
+        None,
+    )
+    .unwrap();
+    report
+        .findings
+        .iter()
+        .filter(|finding| finding.link.ends_with(" -> POST /v1/charges"))
+        .map(|finding| (finding.severity, finding.check.clone()))
+        .collect()
+}
+
+#[test]
+fn a_parent_module_runs_its_own_requirements_beside_the_http_contracts() {
+    let workspace = tempfile::tempdir().unwrap();
+    system_of_modules(workspace.path(), "");
+
+    let found = checks_of(workspace.path());
+
+    assert_eq!(
+        found,
+        [
+            (
+                Severity::Error,
+                "consumer_misses_new_required_field".to_owned()
+            ),
+            (Severity::Warning, "charges_are_called".to_owned()),
+            (
+                Severity::Warning,
+                "consumer_uses_removed_response_field".to_owned()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_check_main_selects_what_runs() {
+    let workspace = tempfile::tempdir().unwrap();
+    system_of_modules(
+        workspace.path(),
+        "\ncheck main {\n    run charges_are_called\n    run lemma.http.consumer_misses_new_required_field { severity: warning }\n}\n",
+    );
+
+    let found = checks_of(workspace.path());
+
+    assert_eq!(
+        found,
+        [
+            (Severity::Warning, "charges_are_called".to_owned()),
+            (
+                Severity::Warning,
+                "consumer_misses_new_required_field".to_owned()
+            ),
+        ]
+    );
+}

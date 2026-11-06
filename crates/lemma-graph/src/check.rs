@@ -241,10 +241,7 @@ pub fn check<E: Engine>(
     // Verification and tracing read the same repositories; each is listed
     // once.
     let listings = Arc::new(lemma_http::Listings::default());
-    let shared = Shared {
-        options,
-        listings: &listings,
-    };
+    let shared = Shared::new(options, &listings, root_file, &repos)?;
     let (inferred_links, walkable) = infer(&repos, &shared, engine, level, &mut findings)?;
     seeds.extend(walkable.seeds.iter().cloned());
     let facts = options.facts_cache.as_ref();
@@ -442,6 +439,7 @@ fn infer_at_head<E: Engine>(
     for name in repos.keys() {
         let run = Inference {
             changed: name,
+            grammar: shared.grammar.as_ref(),
             base: "HEAD",
             head: Some("HEAD"),
             is_drift: false,
@@ -568,6 +566,9 @@ fn declared_seeds(
 /// directory).
 struct Inference<'a> {
     changed: &'a str,
+    /// The grammar the parent's `.lm` program lowers to; the built-in one
+    /// when `None`.
+    grammar: Option<&'a lemma_grammar::GrammarFile>,
     base: &'a str,
     /// `None` for the working directory.
     head: Option<&'a str>,
@@ -583,6 +584,25 @@ struct Inference<'a> {
 struct Shared<'a> {
     options: &'a CheckOptions,
     listings: &'a Arc<lemma_http::Listings>,
+    /// The grammar the parent's `.lm` program lowers to, if it is one.
+    grammar: Option<lemma_grammar::GrammarFile>,
+}
+
+impl<'a> Shared<'a> {
+    /// What inferences share, with the grammar of the program at
+    /// `root_file` when it is a module.
+    fn new(
+        options: &'a CheckOptions,
+        listings: &'a Arc<lemma_http::Listings>,
+        root_file: &Path,
+        repos: &BTreeMap<String, Repo>,
+    ) -> Result<Self, GraphError> {
+        Ok(Self {
+            options,
+            listings,
+            grammar: crate::behaviors::program_grammar(root_file, repos, &options.cache)?,
+        })
+    }
 }
 
 /// What a change to one repository breaks, read at its two commits.
@@ -605,6 +625,7 @@ fn infer_change<E: Engine>(
     let head = changed.checkouts[HEAD].commit.as_deref();
     let run = Inference {
         changed: &change.repository,
+        grammar: shared.grammar.as_ref(),
         base,
         head,
         is_drift: false,
@@ -648,6 +669,7 @@ fn infer_drift<E: Engine>(
         }
         let run = Inference {
             changed: name,
+            grammar: shared.grammar.as_ref(),
             base: "HEAD",
             head: Some("HEAD"),
             is_drift: true,
@@ -705,6 +727,7 @@ fn infer_links<E: Engine>(
     if run.is_drift && !has_drift && !needs_trace {
         return Ok(None);
     }
+    inferred.manifest.lowered = run.grammar.cloned();
     let report = verify_inferred(&inferred, run, engine)?;
     let mut walkable = affects::walkable(&report.relations, &inferred.repositories);
     walkable.partial = partial_calls(&report, &inferred);

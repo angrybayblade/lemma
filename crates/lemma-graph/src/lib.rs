@@ -77,6 +77,16 @@ pub enum GraphError {
         #[source]
         source: lm::LowerError,
     },
+    /// A `.lm` program's relations, rules or requirements cannot be lowered
+    /// to the grammar inference evaluates.
+    #[error("cannot use the requirements of {}", path.display())]
+    Grammar {
+        /// The entry module's file.
+        path: PathBuf,
+        /// What it cannot express.
+        #[source]
+        source: lemma_grammar::lm::LowerError,
+    },
     /// A service in a `lemma.yaml` contradicts its name.
     #[error("invalid {}", path.display())]
     InvalidService {

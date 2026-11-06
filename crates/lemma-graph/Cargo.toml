@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 log.workspace = true
 json-schema-diff.workspace = true
+lemma-grammar.workspace = true
 lemma-http.workspace = true
 lemma-lang.workspace = true
 lemma-logic.workspace = true
