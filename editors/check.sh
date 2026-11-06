@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks the editor support for Lemma's `.lm` language.
 #
-# Usage: editors/check.sh [grammar] [vscode]
+# Usage: editors/check.sh [grammar] [vscode] [neovim]
 #
 # With no arguments it runs every section:
 #
@@ -16,6 +16,10 @@
 #            checks its TextMate grammar, then packages the extension,
 #            installs the .vsix into a real VS Code and runs its integration
 #            test there (editors/vscode/test).
+#   neovim   builds the parser, then runs editors/neovim/check.lua in a
+#            headless Neovim 0.11 or later with the setup from README.md:
+#            highlight captures at a few positions, and the language server
+#            attaching and publishing diagnostics.
 #
 # Needs node, npm and a C compiler. Each package's pinned tools are installed
 # on the first run. With CI set, a committed parser that is out of date with
@@ -28,6 +32,7 @@
 # to use one that is not on PATH.
 #
 #   VSCODE_EXECUTABLE  a VS Code to use instead of downloading one
+#   NVIM_EXECUTABLE    a Neovim to use instead of `nvim`
 
 set -euo pipefail
 
@@ -86,9 +91,25 @@ find_lemma() {
     echo "No lemma binary: set LEMMA, or install cargo to build one."
     return 1
   fi
-  step "Building the language server"
+  echo "Building the language server: cargo build --release -p lemma-cli"
   cargo build --release --quiet --manifest-path "$repository/Cargo.toml" -p lemma-cli
   lemma="${CARGO_TARGET_DIR:-$repository/target}/release/lemma"
+}
+
+# A directory holding only `lemma`, linked to the server, for editors whose
+# documented setup runs `lemma` from PATH.
+lemma_bin_directory() {
+  local directory="$scratch/bin"
+  if [ ! -e "$directory/lemma" ]; then
+    mkdir -p "$directory"
+    ln -s "$(realpath "$lemma")" "$directory/lemma"
+  fi
+  echo "$directory"
+}
+
+# Whether version $1 is at least version $2, comparing dotted numbers.
+version_at_least() {
+  [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n 1)" = "$2" ]
 }
 
 # Runs a section's editor command, recording status 77 as a skip.
@@ -175,16 +196,50 @@ check_vscode() {
   run_editor vscode env LEMMA="$lemma" npm --prefix "$vscode_directory" run --silent test:integration
 }
 
+check_neovim() {
+  step "Running the Neovim check"
+  local nvim=${NVIM_EXECUTABLE:-nvim}
+  if ! command -v "$nvim" >/dev/null; then
+    skip neovim "Neovim is not installed; set NVIM_EXECUTABLE to use one not on PATH"
+    return
+  fi
+  local version
+  version=$("$nvim" --version | sed -n '1s/^NVIM v\([0-9][0-9.]*\).*/\1/p')
+  if ! version_at_least "$version" 0.11; then
+    skip neovim "Neovim $version is too old; the ABI 15 parser needs 0.11 or later"
+    return
+  fi
+  if ! find_lemma; then
+    skip neovim "no language server to run"
+    return
+  fi
+  install_tree_sitter
+
+  # A runtime directory laid out as Neovim looks for parsers and queries, and
+  # a home of its own so the user's configuration and state stay out of it.
+  local runtime="$scratch/neovim/runtime" home="$scratch/neovim/home"
+  mkdir -p "$runtime/parser" "$runtime/queries/lemma" "$home"
+  # `build` has no --config-path; TREE_SITTER_DIR is where it looks instead.
+  TREE_SITTER_DIR="$scratch" "$tree_sitter" build --output "$runtime/parser/lemma.so" "$grammar_directory"
+  cp "$grammar_directory"/queries/*.scm "$runtime/queries/lemma/"
+  PATH="$(lemma_bin_directory):$PATH" \
+    XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" \
+    XDG_STATE_HOME="$home/state" XDG_CACHE_HOME="$home/cache" \
+    "$nvim" --clean --headless -l "$editors_directory/neovim/check.lua" \
+    "$runtime" "$editors_directory/fixture/lemma.lm" "$editors_directory/README.md"
+}
+
 sections=("$@")
 if [ "${#sections[@]}" -eq 0 ]; then
-  sections=(grammar vscode)
+  sections=(grammar vscode neovim)
 fi
 for section in "${sections[@]}"; do
   case "$section" in
     grammar) check_grammar ;;
     vscode) check_vscode ;;
+    neovim) check_neovim ;;
     *)
-      echo "Unknown section \`$section\`; expected grammar or vscode" >&2
+      echo "Unknown section \`$section\`; expected grammar, vscode or neovim" >&2
       exit 2
       ;;
   esac
