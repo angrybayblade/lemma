@@ -290,3 +290,33 @@ fn select_runs_another_check_and_an_unknown_one_is_refused() {
             .contains("no check `nightly`")
     );
 }
+
+#[test]
+fn a_change_may_name_its_repository_as_a_module_does() {
+    let workspace = tempfile::tempdir().unwrap();
+    system_of_modules(workspace.path(), "");
+    let options = CheckOptions {
+        change: Some(Change {
+            repository: "billing".to_owned(),
+            base: "HEAD~1".to_owned(),
+            head: Some("HEAD".to_owned()),
+        }),
+        level: Some(Level::Check),
+        cache: workspace.path().join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
+        run_checkers: true,
+        select: None,
+    };
+
+    let report = check(
+        &workspace.path().join("mod.lm"),
+        &options,
+        &ReferenceEngine,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(report.inferred_links, Some(1));
+}

@@ -126,8 +126,9 @@ pub(crate) struct CheckArgs {
     /// The parent lemma.yaml, which composes the repositories to check.
     #[arg(default_value = "lemma.yaml")]
     pub manifest: PathBuf,
-    /// The repository that changed: an external service's name (`#billing`),
-    /// or `self` for the parent's own repository. Needs `--base`.
+    /// The repository that changed, as the workspace names it (`billing`;
+    /// `#billing` in a lemma.yaml), or `self` for the workspace's own
+    /// repository. Needs `--base`.
     #[arg(long, requires = "base")]
     pub change: Option<String>,
     /// The commit before the change.
