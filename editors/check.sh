@@ -3,9 +3,10 @@
 #
 #   1. regenerates the Tree-sitter parser from grammar.js;
 #   2. runs the Tree-sitter corpus and highlight tests;
-#   3. parses every ```lm block in .specs/13-lm-grammar.md and fails on any
-#      ERROR or MISSING node;
-#   4. runs every query against those blocks, so a query naming a node type
+#   3. parses every ```lm block in .specs/13-lm-grammar.md and every `.lm`
+#      file in the repository, such as the standard library and the Rust
+#      parser's corpus, and fails on any ERROR or MISSING node;
+#   4. runs every query against those files, so a query naming a node type
 #      the grammar no longer has fails;
 #   5. type-checks, lints and format-checks the VS Code client, and checks its
 #      TextMate grammar.
@@ -17,9 +18,10 @@
 set -euo pipefail
 
 editors_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repository=$(dirname "$editors_directory")
 grammar_directory="$editors_directory/tree-sitter-lemma"
 vscode_directory="$editors_directory/vscode"
-spec="$editors_directory/../.specs/13-lm-grammar.md"
+spec="$repository/.specs/13-lm-grammar.md"
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
@@ -81,9 +83,21 @@ fi
 "$tree_sitter" parse --quiet --config-path "$scratch/config.json" "${blocks[@]}"
 echo "${#blocks[@]} blocks parse without errors"
 
+step "Parsing every .lm file in the repository"
+sources=()
+while IFS= read -r -d '' source; do
+  sources+=("$repository/$source")
+done < <(git -C "$repository" ls-files -z --cached --others --exclude-standard -- '*.lm')
+if [ "${#sources[@]}" -eq 0 ]; then
+  echo "No .lm files found in $repository" >&2
+  exit 1
+fi
+"$tree_sitter" parse --quiet --config-path "$scratch/config.json" "${sources[@]}"
+echo "${#sources[@]} files parse without errors"
+
 step "Running the queries"
 for query in queries/*.scm; do
-  "$tree_sitter" query --config-path "$scratch/config.json" "$query" "${blocks[@]}" >/dev/null
+  "$tree_sitter" query --config-path "$scratch/config.json" "$query" "${blocks[@]}" "${sources[@]}" >/dev/null
   echo "$query"
 done
 
