@@ -2,8 +2,10 @@
 //! root module of every repository it names.
 //!
 //! A module's name is fixed by its file's place in its repository:
-//! `lemma.lm` at the root is named after the repository, and
-//! `checks/replay.lm` in `functions` is `functions.checks.replay`. Imports
+//! `mod.lm` at the root is named after the repository,
+//! `checks/replay.lm` in `functions` is `functions.checks.replay`, and a
+//! directory's `mod.lm` is the directory's module, so `checks/mod.lm` is
+//! `functions.checks`, as `checks.lm` would be. Imports
 //! name modules, so loading turns each name into a repository and a path
 //! and asks [`Sources`] for the text. Repositories come from `repo`
 //! declarations: the entry module's workspace first, then the top of each
@@ -18,8 +20,10 @@ use crate::stdlib;
 use crate::syntax::ast::{Expression, ExpressionKind, File, Item, ModuleName};
 use crate::syntax::parse;
 
-/// The file every repository's root module is in.
-pub const ROOT_FILE: &str = "lemma.lm";
+/// The file a directory's module is in. `mod.lm` at a repository's root
+/// holds the repository's module, named after the repository, and
+/// `checks/mod.lm` holds `<repository>.checks`, as `checks.lm` could.
+pub const MODULE_FILE: &str = "mod.lm";
 
 /// Where a repository comes from, as a `repo` declaration says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,7 +215,7 @@ impl Loader<'_> {
         };
         self.add_workspace_repositories(&parsed.file, declaring);
         // An entry below the root still sees its repository's pins.
-        if entry_path != ROOT_FILE && repository != declared {
+        if entry_path != MODULE_FILE && repository != declared {
             self.request(repository.clone(), None);
         }
         let place = Place {
@@ -273,25 +277,12 @@ impl Loader<'_> {
             self.waiting.push(request);
             return;
         };
-        let path = path_of(&request.module);
-        let text = match self.sources.read(&repository, &path) {
-            Ok(Some(text)) => text,
-            Ok(None) => {
-                let message = format!(
-                    "module `{}` is not there: repository `{repository_name}` has no file `{path}`",
-                    request.module
-                );
-                self.report_at(request.from.as_ref(), message);
-                return;
-            }
-            Err(error) => {
-                self.report_at(request.from.as_ref(), error.to_string());
-                return;
-            }
+        let Some((path, text)) = self.read_module(&repository, &request) else {
+            return;
         };
         let parsed = parse(&text);
         self.check_declared_name(&parsed.file, &request.module, &repository_name, &path);
-        if path == ROOT_FILE {
+        if path == MODULE_FILE {
             let declaring = Declaring {
                 module: &request.module,
                 repository: &repository_name,
@@ -305,6 +296,49 @@ impl Loader<'_> {
             path,
         };
         self.add_module(place, text, parsed);
+    }
+
+    /// The file a requested module is in and its text: `checks.lm` or
+    /// `checks/mod.lm`. Reports, and gives `None` for, a module in neither,
+    /// or in both, which would leave its source ambiguous.
+    fn read_module(
+        &mut self,
+        repository: &Repository,
+        request: &Request,
+    ) -> Option<(String, String)> {
+        let mut found = Vec::new();
+        for path in paths_of(&request.module) {
+            match self.sources.read(repository, &path) {
+                Ok(Some(text)) => found.push((path, text)),
+                Ok(None) => {}
+                Err(error) => {
+                    self.report_at(request.from.as_ref(), error.to_string());
+                    return None;
+                }
+            }
+        }
+        if found.len() == 1 {
+            return found.pop();
+        }
+        let module = &request.module;
+        let paths: Vec<String> = paths_of(module)
+            .iter()
+            .map(|path| format!("`{path}`"))
+            .collect();
+        let message = if found.is_empty() {
+            format!(
+                "module `{module}` is not there: repository `{}` has no file {}",
+                repository.name,
+                paths.join(" or ")
+            )
+        } else {
+            format!(
+                "module `{module}` is in both {}; keep one",
+                paths.join(" and ")
+            )
+        };
+        self.report_at(request.from.as_ref(), message);
+        None
     }
 
     /// Reports a `module` line that does not match the file's place.
@@ -487,18 +521,41 @@ fn first_segment(module: &str) -> String {
     module.split('.').next().unwrap_or(module).to_owned()
 }
 
-/// The file a module is in, relative to its repository's root.
-pub fn path_of(module: &str) -> String {
-    match module.split_once('.') {
-        None => ROOT_FILE.to_owned(),
-        Some((_, rest)) => format!("{}.lm", rest.replace('.', "/")),
+/// The files a module may be in, relative to its repository's root:
+/// `checks.lm` or `checks/mod.lm` for `billing.checks`, and `mod.lm` for
+/// `billing` itself. A module whose last name is `mod` is only ever in a
+/// directory of that name, since `x/mod.lm` is the module `x`.
+pub fn paths_of(module: &str) -> Vec<String> {
+    let Some((_, rest)) = module.split_once('.') else {
+        return vec![MODULE_FILE.to_owned()];
+    };
+    let base = rest.replace('.', "/");
+    let in_directory = format!("{base}/{MODULE_FILE}");
+    if rest.rsplit('.').next() == Some("mod") {
+        return vec![in_directory];
     }
+    vec![format!("{base}.lm"), in_directory]
+}
+
+/// The module the file at `path` of `repository` is: `billing.checks` for
+/// `checks.lm` or `checks/mod.lm`, and `billing` for the root `mod.lm`.
+pub fn module_at(repository: &str, path: &str) -> String {
+    let stem = path.strip_suffix(".lm").unwrap_or(path);
+    let inside = match stem.strip_suffix("mod") {
+        Some("") => "",
+        Some(directory) if directory.ends_with('/') => directory.trim_end_matches('/'),
+        _ => stem,
+    };
+    if inside.is_empty() {
+        return repository.to_owned();
+    }
+    format!("{repository}.{}", inside.replace('/', "."))
 }
 
 /// The repository an entry module declaring `declared` at `path` is in.
 fn repository_of(declared: &str, path: &str) -> String {
     let segments: Vec<&str> = declared.split('.').collect();
-    let is_standalone = segments.len() == 1 && path != ROOT_FILE;
+    let is_standalone = segments.len() == 1 && path != MODULE_FILE;
     if is_standalone {
         return declared.to_owned();
     }
@@ -511,17 +568,16 @@ fn repository_of(declared: &str, path: &str) -> String {
 fn check_name(declared: &str, repository: &str, path: &str) -> Result<(), String> {
     if declared == repository && !path.contains('/') {
         let stem = path.strip_suffix(".lm").unwrap_or(path);
-        if path == ROOT_FILE || stem == declared {
+        if path == MODULE_FILE || stem == declared {
             return Ok(());
         }
     }
-    let expected = path_of(declared);
-    if expected == path {
+    if paths_of(declared).iter().any(|candidate| candidate == path) {
         return Ok(());
     }
     Err(format!(
-        "this file is `{path}`, so its module is named `{repository}.{}`",
-        path.strip_suffix(".lm").unwrap_or(path).replace('/', ".")
+        "this file is `{path}`, so its module is named `{}`",
+        module_at(repository, path)
     ))
 }
 
@@ -566,17 +622,17 @@ mod tests {
         let mut sources = memory(&[
             (
                 "",
-                "lemma.lm",
+                "mod.lm",
                 "module example\nworkspace {\n    repo functions = local(\"../functions\")\n}\nimport { Functions } from functions\nimport lemma.links\n",
             ),
             (
                 "functions",
-                "lemma.lm",
+                "mod.lm",
                 "module functions\nexport service Functions {}\n",
             ),
         ]);
 
-        let loaded = load(&mut sources, "lemma.lm");
+        let loaded = load(&mut sources, "mod.lm");
 
         assert_eq!(loaded.diagnostics, []);
         let names: Vec<&str> = loaded.modules.keys().map(String::as_str).collect();
@@ -589,18 +645,18 @@ mod tests {
         let mut sources = memory(&[
             (
                 "",
-                "lemma.lm",
+                "mod.lm",
                 "module example\nworkspace {\n    repo platform = local(\"../platform\")\n}\n",
             ),
             (
                 "platform",
-                "lemma.lm",
+                "mod.lm",
                 "module platform\nrepo functions = git(url: \"https://git.example.com/f.git\", rev: \"abc\")\nrepo example = local(\"elsewhere\")\n",
             ),
-            ("functions", "lemma.lm", "module functions\n"),
+            ("functions", "mod.lm", "module functions\n"),
         ]);
 
-        let loaded = load(&mut sources, "lemma.lm");
+        let loaded = load(&mut sources, "mod.lm");
 
         assert_eq!(loaded.diagnostics, []);
         assert!(loaded.modules.contains_key("functions"));
@@ -613,7 +669,7 @@ mod tests {
         let mut sources = memory(&[
             (
                 "",
-                "lemma.lm",
+                "mod.lm",
                 "module example\nimport example.checks.replay\n",
             ),
             ("example", "checks/replay.lm", "module example.replay\n"),
@@ -623,7 +679,7 @@ mod tests {
             "module example.replay\n".to_owned(),
         );
 
-        let loaded = load(&mut sources, "lemma.lm");
+        let loaded = load(&mut sources, "mod.lm");
 
         assert_eq!(loaded.diagnostics.len(), 1);
         assert!(
@@ -635,9 +691,9 @@ mod tests {
 
     #[test]
     fn an_undeclared_repository_is_reported_at_the_import() {
-        let mut sources = memory(&[("", "lemma.lm", "module example\nimport functions\n")]);
+        let mut sources = memory(&[("", "mod.lm", "module example\nimport functions\n")]);
 
-        let loaded = load(&mut sources, "lemma.lm");
+        let loaded = load(&mut sources, "mod.lm");
 
         assert!(
             loaded.diagnostics[0]
@@ -652,7 +708,7 @@ mod tests {
         let mut sources = memory(&[
             (
                 "",
-                "lemma.lm",
+                "mod.lm",
                 "module example\nrepo functions = local(\"../functions\")\n",
             ),
             (
@@ -660,7 +716,7 @@ mod tests {
                 "checks/replay.lm",
                 "module example.checks.replay\nimport functions\n",
             ),
-            ("functions", "lemma.lm", "module functions\n"),
+            ("functions", "mod.lm", "module functions\n"),
         ]);
 
         let loaded = load(&mut sources, "checks/replay.lm");
@@ -675,5 +731,55 @@ mod tests {
     fn a_lone_file_stands_as_its_own_root() {
         assert_eq!(check_name("contracts", "contracts", "contracts.lm"), Ok(()));
         assert!(check_name("contracts", "contracts", "grammars/contracts.lm").is_err());
+    }
+
+    #[test]
+    fn a_directorys_mod_file_is_the_directorys_module() {
+        let mut sources = memory(&[
+            ("", "mod.lm", "module example\nimport example.checks\n"),
+            ("", "checks/mod.lm", "module example.checks\n"),
+        ]);
+
+        let loaded = load(&mut sources, "mod.lm");
+
+        assert_eq!(loaded.diagnostics, []);
+        assert_eq!(loaded.modules["example.checks"].path, "checks/mod.lm");
+    }
+
+    #[test]
+    fn a_module_in_both_its_file_and_its_directory_is_reported() {
+        let mut sources = memory(&[
+            ("", "mod.lm", "module example\nimport example.checks\n"),
+            ("", "checks.lm", "module example.checks\n"),
+            ("", "checks/mod.lm", "module example.checks\n"),
+        ]);
+
+        let loaded = load(&mut sources, "mod.lm");
+
+        assert!(
+            loaded.diagnostics[0]
+                .message
+                .contains("is in both `checks.lm` and `checks/mod.lm`"),
+            "{:#?}",
+            loaded.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_directory_module_is_named_for_its_directory() {
+        assert_eq!(
+            check_name("billing.checks", "billing", "checks/mod.lm"),
+            Ok(())
+        );
+        assert_eq!(
+            check_name("billing.checks.mod", "billing", "checks/mod.lm"),
+            Err("this file is `checks/mod.lm`, so its module is named `billing.checks`".to_owned())
+        );
+        assert_eq!(module_at("billing", "mod.lm"), "billing");
+        assert_eq!(
+            module_at("billing", "checks/replay.lm"),
+            "billing.checks.replay"
+        );
+        assert_eq!(paths_of("billing.x.mod"), ["x/mod/mod.lm"]);
     }
 }

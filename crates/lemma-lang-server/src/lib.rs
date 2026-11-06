@@ -402,16 +402,23 @@ impl Server {
     }
 }
 
-/// The repository root a document belongs to (the nearest directory above
-/// it holding `lemma.lm`, or its own directory) and its path from there.
+/// The repository root a document belongs to, and its path from there. The
+/// nearest `mod.lm` above the document says where the root is: it declares
+/// the repository's module there, and a directory's module below it, one
+/// directory down per name after the first (`billing.checks` in
+/// `checks/mod.lm`). Without one, the document's own directory is its root.
 fn entry_of(path: &Path) -> (PathBuf, String) {
     let directory = path.parent().map(Path::to_path_buf).unwrap_or_default();
     let mut candidate = Some(directory.as_path());
     while let Some(current) = candidate {
-        if current.join(lemma_lang::load::ROOT_FILE).is_file() {
-            if let Ok(relative) = path.strip_prefix(current) {
+        let module_file = current.join(lemma_lang::load::MODULE_FILE);
+        if module_file.is_file() {
+            let depth = declared_module(&module_file)
+                .map_or(0, |name| name.split('.').count().saturating_sub(1));
+            let root = current.ancestors().nth(depth).unwrap_or(current);
+            if let Ok(relative) = path.strip_prefix(root) {
                 let entry = relative.to_string_lossy().replace('\\', "/");
-                return (current.to_path_buf(), entry);
+                return (root.to_path_buf(), entry);
             }
         }
         candidate = current.parent();
@@ -421,6 +428,13 @@ fn entry_of(path: &Path) -> (PathBuf, String) {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     (directory, name)
+}
+
+/// The module a file's `module` line declares, if it reads and has one.
+fn declared_module(file: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let parsed = lemma_lang::syntax::parse(&text);
+    parsed.file.module.map(|name| name.dotted())
 }
 
 /// Writes the standard library's modules under `directory`, so a

@@ -228,7 +228,7 @@ fn routed_system(route: &str) -> tempfile::TempDir {
     let workspace = tempfile::tempdir().unwrap();
     let billing = workspace.path().join("billing");
     write(
-        &billing.join("lemma.lm"),
+        &billing.join("mod.lm"),
         "module billing\nimport * as http from lemma.http\nexport service api {\n    operations: http.openapi(\"openapi.json\")\n}\n",
     );
     write(
@@ -241,7 +241,7 @@ fn routed_system(route: &str) -> tempfile::TempDir {
     git(&billing, &["commit", "-q", "-m", "billing"]);
     let web = workspace.path().join("web");
     write(
-        &web.join("lemma.lm"),
+        &web.join("mod.lm"),
         &format!(
             r#"module web
 
@@ -287,7 +287,7 @@ fn link_problems(workspace: &Path) -> Vec<String> {
         select: None,
     };
     let report = check(
-        &workspace.join("web/lemma.lm"),
+        &workspace.join("web/mod.lm"),
         &options,
         &ReferenceEngine,
         None,

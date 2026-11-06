@@ -41,10 +41,10 @@ fn response(messages: &[Value], id: i64) -> Value {
 
 const MODULE: &str = "module example\nrelation Owns(team: Text, service: Text)\nrule owned(team: Text) {\n    (team) :- Owns(team, _)\n}\nrequire broken {\n    when: missing(x)\n}\n";
 
-/// Opens `lemma.lm` holding `MODULE` and sends `requests` after it.
+/// Opens `mod.lm` holding `MODULE` and sends `requests` after it.
 fn session(requests: &[Value]) -> (Vec<Value>, Url) {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("lemma.lm");
+    let path = directory.path().join("mod.lm");
     std::fs::write(&path, MODULE).unwrap();
     let uri = Url::from_file_path(&path).unwrap();
     let mut messages = vec![
@@ -175,8 +175,26 @@ fn an_unknown_request_is_answered_with_an_error() {
 #[test]
 fn a_document_below_the_root_is_its_repositorys() {
     let directory = tempfile::tempdir().unwrap();
-    std::fs::write(directory.path().join("lemma.lm"), "module example\n").unwrap();
+    std::fs::write(directory.path().join("mod.lm"), "module example\n").unwrap();
     std::fs::create_dir(directory.path().join("checks")).unwrap();
+    let nested = directory.path().join("checks").join("replay.lm");
+
+    let (root, entry) = entry_of(&nested);
+
+    assert_eq!(root, directory.path());
+    assert_eq!(entry, "checks/replay.lm");
+}
+
+#[test]
+fn a_document_beside_a_directory_module_is_still_its_repositorys() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("mod.lm"), "module example\n").unwrap();
+    std::fs::create_dir(directory.path().join("checks")).unwrap();
+    std::fs::write(
+        directory.path().join("checks").join("mod.lm"),
+        "module example.checks\n",
+    )
+    .unwrap();
     let nested = directory.path().join("checks").join("replay.lm");
 
     let (root, entry) = entry_of(&nested);

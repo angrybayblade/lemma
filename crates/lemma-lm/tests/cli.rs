@@ -22,7 +22,7 @@ fn text(bytes: &[u8]) -> String {
 fn check_reports_each_problem_with_its_place_and_fails() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(
-        directory.path().join("lemma.lm"),
+        directory.path().join("mod.lm"),
         "module shop\nrelation Owns(team: Text)\nrequire broken {\n    when: missing(x)\n}\n",
     )
     .unwrap();
@@ -31,7 +31,7 @@ fn check_reports_each_problem_with_its_place_and_fails() {
 
     assert_eq!(output.status.code(), Some(1));
     let stdout = text(&output.stdout);
-    assert!(stdout.contains("lemma.lm:4:11: error:"), "{stdout}");
+    assert!(stdout.contains("mod.lm:4:11: error:"), "{stdout}");
     assert!(stdout.contains("1 errors"), "{stdout}");
 }
 
@@ -39,7 +39,7 @@ fn check_reports_each_problem_with_its_place_and_fails() {
 fn a_clean_module_checks_and_formats_quietly() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(
-        directory.path().join("lemma.lm"),
+        directory.path().join("mod.lm"),
         "module shop\n\nrelation Owns(team: Text)\n",
     )
     .unwrap();

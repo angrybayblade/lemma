@@ -161,7 +161,7 @@ mod tests {
             std::fs::create_dir_all(root.join(directory)).unwrap();
         }
         for file in [
-            "lemma.lm",
+            "mod.lm",
             "checks/replay.lm",
             "checks/notes.md",
             ".git/old.lm",
@@ -173,10 +173,7 @@ mod tests {
 
         let found = modules(&[root.to_path_buf()]).unwrap();
 
-        assert_eq!(
-            found,
-            [root.join("checks/replay.lm"), root.join("lemma.lm")]
-        );
+        assert_eq!(found, [root.join("checks/replay.lm"), root.join("mod.lm")]);
     }
 
     #[test]
@@ -193,7 +190,7 @@ mod tests {
     #[test]
     fn formatting_rewrites_a_file_in_place() {
         let temporary = tempfile::tempdir().unwrap();
-        let path = temporary.path().join("lemma.lm");
+        let path = temporary.path().join("mod.lm");
         std::fs::write(&path, "module m\nlet a=1\n").unwrap();
 
         let outcome = format_file(&path, false).unwrap();
@@ -205,7 +202,7 @@ mod tests {
     #[test]
     fn checking_leaves_an_unformatted_file_alone() {
         let temporary = tempfile::tempdir().unwrap();
-        let path = temporary.path().join("lemma.lm");
+        let path = temporary.path().join("mod.lm");
         std::fs::write(&path, "module m\nlet a=1\n").unwrap();
 
         let outcome = format_file(&path, true).unwrap();
@@ -220,7 +217,7 @@ mod tests {
     #[test]
     fn a_formatted_file_is_unchanged() {
         let temporary = tempfile::tempdir().unwrap();
-        let path = temporary.path().join("lemma.lm");
+        let path = temporary.path().join("mod.lm");
         std::fs::write(&path, FORMATTED).unwrap();
 
         assert_eq!(format_file(&path, false).unwrap(), Outcome::Unchanged);
@@ -229,7 +226,7 @@ mod tests {
     #[test]
     fn a_file_with_syntax_errors_is_refused_and_left_alone() {
         let temporary = tempfile::tempdir().unwrap();
-        let path = temporary.path().join("lemma.lm");
+        let path = temporary.path().join("mod.lm");
         let broken = "module m\n\nlet a =\n";
         std::fs::write(&path, broken).unwrap();
 

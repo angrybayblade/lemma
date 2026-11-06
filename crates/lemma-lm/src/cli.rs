@@ -28,7 +28,7 @@ pub(crate) enum Command {
     /// Exits with 1 if there is an error.
     Check {
         /// The entry module.
-        #[arg(default_value = "lemma.lm")]
+        #[arg(default_value = "mod.lm")]
         file: PathBuf,
     },
     /// Rewrite `.lm` files in the canonical layout.
@@ -53,7 +53,7 @@ pub(crate) enum Command {
         /// default.
         #[arg(long)]
         module: Option<String>,
-        /// Write lemma.lm beside the file instead of printing it.
+        /// Write mod.lm beside the file instead of printing it.
         #[arg(long)]
         write: bool,
     },

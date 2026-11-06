@@ -1433,7 +1433,7 @@ fn read_manifest(reading: &Reading, checkout: &Checkout) -> Result<(LemmaFile, b
     Ok((file, fallback))
 }
 
-/// The manifest to read: `lemma.yaml` falls back to `lemma.lm` for a
+/// The manifest to read: `lemma.yaml` falls back to `mod.lm` for a
 /// repository that has only the latter, at the checkout or in its working
 /// directory.
 pub(crate) fn language_manifest(checkout: &Checkout, manifest: &str) -> Result<String, GraphError> {
@@ -1448,10 +1448,10 @@ pub(crate) fn language_manifest(checkout: &Checkout, manifest: &str) -> Result<S
     if checkout.read(manifest)?.is_some() || working.read(manifest)?.is_some() {
         return Ok(manifest.to_owned());
     }
-    let has_language = checkout.read(lemma_lang::load::ROOT_FILE)?.is_some()
-        || working.read(lemma_lang::load::ROOT_FILE)?.is_some();
+    let has_language = checkout.read(lemma_lang::load::MODULE_FILE)?.is_some()
+        || working.read(lemma_lang::load::MODULE_FILE)?.is_some();
     if has_language {
-        return Ok(lemma_lang::load::ROOT_FILE.to_owned());
+        return Ok(lemma_lang::load::MODULE_FILE.to_owned());
     }
     Ok(manifest.to_owned())
 }

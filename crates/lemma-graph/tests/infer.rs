@@ -141,7 +141,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
 fn system_of_modules(workspace: &Path, main: &str) {
     system(workspace);
     write(
-        &workspace.join("billing/lemma.lm"),
+        &workspace.join("billing/mod.lm"),
         "module billing\nimport * as http from lemma.http\nexport service api {\n    operations: http.openapi(\"openapi.json\")\n}\n",
     );
     std::fs::remove_file(workspace.join("billing/lemma.yaml")).unwrap();
@@ -151,7 +151,7 @@ fn system_of_modules(workspace: &Path, main: &str) {
         &["commit", "-q", "--amend", "--no-edit"],
     );
     write(
-        &workspace.join("web/lemma.lm"),
+        &workspace.join("web/mod.lm"),
         "module web\nexport service web {}\n",
     );
     std::fs::remove_file(workspace.join("web/lemma.yaml")).unwrap();
@@ -172,7 +172,7 @@ require charges_are_called {{
 }}
 {main}"#
     );
-    write(&workspace.join("lemma.lm"), &parent);
+    write(&workspace.join("mod.lm"), &parent);
 }
 
 fn checks_of(workspace: &Path) -> Vec<(Severity, String)> {
@@ -190,13 +190,7 @@ fn checks_of(workspace: &Path) -> Vec<(Severity, String)> {
         run_checkers: true,
         select: None,
     };
-    let report = check(
-        &workspace.join("lemma.lm"),
-        &options,
-        &ReferenceEngine,
-        None,
-    )
-    .unwrap();
+    let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
     report
         .findings
         .iter()
@@ -271,7 +265,7 @@ fn select_runs_another_check_and_an_unknown_one_is_refused() {
         run_checkers: true,
         select: Some(select.to_owned()),
     };
-    let entry = workspace.path().join("lemma.lm");
+    let entry = workspace.path().join("mod.lm");
 
     let report = check(&entry, &options("strict_http"), &ReferenceEngine, None).unwrap();
     let unknown = check(&entry, &options("nightly"), &ReferenceEngine, None);

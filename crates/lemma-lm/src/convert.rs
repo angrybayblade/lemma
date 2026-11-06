@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::Context;
 
-/// Converts `file`; prints the module, or with `write` writes `lemma.lm`
+/// Converts `file`; prints the module, or with `write` writes `mod.lm`
 /// beside it, refusing to replace one.
 pub(crate) fn run(file: &Path, module: Option<&str>, write: bool) -> anyhow::Result<()> {
     let text =
@@ -25,7 +25,7 @@ pub(crate) fn run(file: &Path, module: Option<&str>, write: bool) -> anyhow::Res
         print!("{converted}");
         return Ok(());
     }
-    let target = directory.join(lemma_lang::load::ROOT_FILE);
+    let target = directory.join(lemma_lang::load::MODULE_FILE);
     anyhow::ensure!(
         !target.exists(),
         "{} exists; remove it or print instead",

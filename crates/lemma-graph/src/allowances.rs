@@ -131,10 +131,10 @@ mod tests {
 
     fn model(text: &str) -> Model {
         let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("lemma.lm"), text).unwrap();
+        std::fs::write(directory.path().join("mod.lm"), text).unwrap();
         let checked = lemma_lang::check_program(
             &mut lemma_lang::files::WorkingTrees::new(directory.path()),
-            "lemma.lm",
+            "mod.lm",
         );
         assert_eq!(checked.error_lines(), Vec::<String>::new());
         checked.model
