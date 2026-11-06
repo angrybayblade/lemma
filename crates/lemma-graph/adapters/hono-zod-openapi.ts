@@ -89,7 +89,8 @@ const routeDirectories = parsed.filter((entry) => !entry.app).map((entry) => ent
 function registeredAt(stack: string): Place | undefined {
   const frames: Place[] = []
   for (const frame of stack.split('\n').slice(1)) {
-    const match = frame.match(/((?:file:\/\/)?\/.*?):(\d+):\d+\)?\s*$/)
+    // Bun prints a module's top-level frame without a column.
+    const match = frame.match(/((?:file:\/\/)?\/.*?):(\d+)(?::\d+)?\)?\s*$/)
     if (!match) continue
     const file = match[1].startsWith('file://') ? fileURLToPath(match[1]) : match[1]
     if (file.includes('/node_modules/') || file.endsWith('hono-zod-openapi.ts')) continue
