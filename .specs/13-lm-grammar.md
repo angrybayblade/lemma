@@ -1017,7 +1017,7 @@ Phase 1:
 - `lemma check` runs a parent module's own requirements beside `lemma.http`'s, as its `check main` (or `--select`ed check) selects them, and a workspace naming a language version other than 0.2 is refused.
 - `lemma verify` takes a `.lm` grammar module (`grammar: contracts.lm`), whose `check main` selects requirements.
 - `lemma lm check`, `lemma lm fmt` and `lemma lm convert` are on the command line, and `lemma lm lsp` serves modules to editors: diagnostics as you type (one check per burst of edits), hovers, definitions across repositories, symbols, completion and formatting.
-- `editors/` has a Tree-sitter grammar with highlighting, locals, folds and indents, and a VS Code extension that starts the server. Its checks parse every `.lm` file in the repository, and the two parsers agree on all of them.
+- `editors/` has a Tree-sitter grammar with highlighting, locals, folds and indents, a VS Code extension that starts the server, and a Zed extension. `editors/check.sh` parses every `.lm` file in the repository with both parsers, which agree on all of them, and checks each editor for real: VS Code runs the packaged extension against the server under xvfb, headless Neovim and Helix in tmux check captures and diagnostics, and the Zed extension is built for WASM with its queries run by the Tree-sitter CLI. Zed itself has not been run.
 
 Phase 2:
 
