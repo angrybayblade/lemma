@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 log.workspace = true
 lemma-grammar.workspace = true
+lemma-lang.workspace = true
 lemma-http.workspace = true
 lemma-logic.workspace = true
 lemma-model.workspace = true
@@ -22,3 +23,6 @@ serde_json.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
 yaml_serde.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

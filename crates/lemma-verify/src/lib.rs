@@ -15,7 +15,7 @@ mod terms;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lemma_grammar::{CompiledGrammar, Severity};
@@ -57,6 +57,23 @@ pub enum VerifyError {
     /// The grammar does not compile.
     #[error("invalid grammar")]
     Grammar(#[from] lemma_grammar::GrammarError),
+    /// A `.lm` grammar module does not check.
+    #[error("{} has errors:\n  {}", path.display(), errors.join("\n  "))]
+    Language {
+        /// The grammar module.
+        path: PathBuf,
+        /// Each error, as `module:line:column: message`.
+        errors: Vec<String>,
+    },
+    /// A `.lm` grammar module says something verification cannot run yet.
+    #[error("cannot use {}", path.display())]
+    Lower {
+        /// The grammar module.
+        path: PathBuf,
+        /// What it cannot express.
+        #[source]
+        source: lemma_grammar::lm::LowerError,
+    },
     /// Source files could not be read from a repository.
     #[error(transparent)]
     Source(#[from] lemma_http::SourceError),
@@ -253,6 +270,13 @@ fn focus<'a>(
 
 /// The grammar `manifest` names, or the built-in one, compiled.
 fn load_grammar(manifest: &Manifest) -> Result<CompiledGrammar, VerifyError> {
+    if let Some(path) = manifest
+        .grammar
+        .as_ref()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "lm"))
+    {
+        return load_language_grammar(path);
+    }
     let grammar_text = match &manifest.grammar {
         Some(path) => std::fs::read_to_string(path).map_err(|source| VerifyError::Read {
             path: path.clone(),
@@ -263,6 +287,39 @@ fn load_grammar(manifest: &Manifest) -> Result<CompiledGrammar, VerifyError> {
     Ok(lemma_grammar::compile(&lemma_grammar::parse_grammar(
         &grammar_text,
     )?)?)
+}
+
+/// A `.lm` grammar module and what it imports, checked, lowered and
+/// compiled. Its `check main`, if it has one, selects the requirements.
+fn load_language_grammar(path: &Path) -> Result<CompiledGrammar, VerifyError> {
+    let directory = path.parent().unwrap_or(Path::new("."));
+    let file = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut sources = lemma_lang::files::WorkingTrees::new(directory);
+    let checked = lemma_lang::check_program(&mut sources, &file);
+    let errors = checked.error_lines();
+    if !errors.is_empty() {
+        return Err(VerifyError::Language {
+            path: path.to_path_buf(),
+            errors,
+        });
+    }
+    let main = checked
+        .model
+        .checks
+        .iter()
+        .find(|check| {
+            check.address.module == checked.loaded.entry && check.address.name() == "main"
+        })
+        .map(|check| check.runs.as_slice());
+    let grammar = lemma_grammar::lm::grammar_file(&checked.model, &checked.loaded.entry, main)
+        .map_err(|source| VerifyError::Lower {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(lemma_grammar::compile(&grammar)?)
 }
 
 /// Verifies a manifest's change with `engine`.
@@ -591,6 +648,40 @@ mod tests {
                 .any(|requirement| requirement.name == "client_declares_removed_parameter")
         );
         assert!(grammar.input_relation("operation", "base").is_some());
+    }
+
+    #[test]
+    fn a_language_grammar_importing_lemma_http_is_the_built_in_grammar() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("contracts.lm");
+        std::fs::write(&path, "module contracts\nimport lemma.http\n").unwrap();
+        let built_in =
+            lemma_grammar::compile(&lemma_grammar::parse_grammar(HTTP_CONTRACTS).unwrap()).unwrap();
+
+        let grammar = load_language_grammar(&path).unwrap();
+
+        assert_eq!(grammar.requirements, built_in.requirements);
+        assert_eq!(grammar.program.rules(), built_in.program.rules());
+    }
+
+    #[test]
+    fn a_language_grammar_with_errors_lists_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("contracts.lm");
+        std::fs::write(
+            &path,
+            "module contracts\nrequire broken {\n    when: missing(x)\n}\n",
+        )
+        .unwrap();
+
+        let error = load_language_grammar(&path).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("contracts:3:11: there is no relation"),
+            "{error}"
+        );
     }
 
     #[test]
