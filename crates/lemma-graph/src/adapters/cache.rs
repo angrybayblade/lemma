@@ -34,6 +34,10 @@ pub(crate) fn commit_state(root: &Path, commit: &str) -> Result<String, GraphErr
     Ok(format!("tree {}", tree.trim()))
 }
 
+/// Lemma's own index and caches, which change on every query: counted in
+/// the state, an unignored `.lemma/` would make every key new.
+const LEMMA_FILES: &str = ":(exclude,glob)**/.lemma/**";
+
 /// The state of the code in a working directory: its commit's tree, and a
 /// digest of every file that differs from it, untracked ones included;
 /// `None` outside a Git repository or before its first commit, where
@@ -44,7 +48,14 @@ pub(crate) fn working_state(root: &Path) -> Result<Option<String>, GraphError> {
     };
     let status = repos::git(
         root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            LEMMA_FILES,
+        ],
     )?;
     let changed = changed_paths(&status);
     let tree = format!("tree {}", tree.trim());
@@ -97,6 +108,39 @@ mod tests {
         let paths = changed_paths(status);
 
         assert_eq!(paths, ["notes.md", "src/a.ts", "src/new.ts"]);
+    }
+
+    fn run_git(root: &Path, args: &[&str]) {
+        repos::git(root, args).expect("git runs in the test repository");
+    }
+
+    #[test]
+    fn lemma_files_do_not_change_the_working_state() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let root = directory.path();
+        run_git(root, &["init", "-q"]);
+        std::fs::write(root.join("main.go"), "package main\n").expect("writes");
+        run_git(root, &["add", "."]);
+        run_git(
+            root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "one",
+            ],
+        );
+        let before = working_state(root).expect("state");
+
+        std::fs::create_dir(root.join(".lemma")).expect("creates");
+        std::fs::write(root.join(".lemma/index.db"), "changed").expect("writes");
+        let after = working_state(root).expect("state");
+
+        assert_eq!(before, after);
     }
 
     #[test]
