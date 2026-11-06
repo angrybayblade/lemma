@@ -234,7 +234,7 @@ Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
 ## `lemma daemon`
 
-Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground.
+Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground. Language servers start when a lookup needs one, when `lemma index` runs (in the background), or with `lemma daemon lsp start`; there is one per indexed root and language, and idle ones are paused and stopped by the settings below.
 
 | Command | Meaning |
 | --- | --- |
@@ -242,6 +242,9 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 | `lemma daemon stop` | Stop the running daemon. |
 | `lemma daemon install` | Run the daemon as a login service (launchd on macOS, systemd on Linux), so it is already up when an agent asks its first question. It is restarted only if it crashes. |
 | `lemma daemon uninstall` | Remove the login service and stop its daemon. |
+| `lemma daemon lsp [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |
+| `lemma daemon lsp start [path] [--language <l>] [--provider <id>] [--wait]` | Start those servers in the daemon, in the background, or with `--wait` until each has loaded its project, reporting how long it took or why it failed (exit 1). A language's providers are tried in order, as a lookup tries them: when the first cannot start (typescript-language-server without a TypeScript it can use), the next serves. |
+| `lemma daemon lsp stop [path] [--language <l>] [--provider <id>]` | Stop those servers. |
 
 On Linux, `install` uses a systemd user unit. On a server you reach over SSH there may be no user session to run it in; `sudo loginctl enable-linger $USER` gives you one that starts at boot and outlives your logins.
 | `lemma daemon --idle-secs <n>` | Run in the foreground, exiting after this many seconds without a command instead of the configured `idle_exit`. |

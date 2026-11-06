@@ -215,6 +215,57 @@ pub(crate) enum DaemonAction {
     Install,
     /// Remove the login service and stop its daemon.
     Uninstall,
+    /// List, start or stop the daemon's language servers for a repository
+    /// or workspace. Without an action, lists them.
+    Lsp(LspArgs),
+}
+
+/// `lemma daemon lsp`: the daemon's language servers, by hand.
+#[derive(Args)]
+#[command(args_conflicts_with_subcommands = true)]
+pub(crate) struct LspArgs {
+    #[command(subcommand)]
+    pub action: Option<LspAction>,
+    #[command(flatten)]
+    pub target: LspTarget,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum LspAction {
+    /// List the servers each language of the indexed code would use, and
+    /// what each is doing: stopped, starting, running, paused or failed.
+    List(LspTarget),
+    /// Start servers in the daemon, in the background unless `--wait`.
+    Start(LspStartArgs),
+    /// Stop servers.
+    Stop(LspTarget),
+}
+
+/// Which servers: those of the code indexed at a path, narrowed by
+/// language or provider.
+#[derive(Args, Clone, Default)]
+pub(crate) struct LspTarget {
+    /// An indexed repository, or a workspace whose members are indexed.
+    /// Default: the current directory.
+    pub path: Option<PathBuf>,
+    /// Only the servers for these languages: typescript, tsx, python, go,
+    /// rust.
+    #[arg(long = "language", value_name = "LANGUAGE")]
+    pub languages: Vec<String>,
+    /// Only these providers, by id (see `lemma providers`); for starting,
+    /// the provider to use instead of the first installed one.
+    #[arg(long = "provider", value_name = "ID")]
+    pub providers: Vec<String>,
+}
+
+#[derive(Args)]
+pub(crate) struct LspStartArgs {
+    #[command(flatten)]
+    pub target: LspTarget,
+    /// Wait until each server has loaded its project, and report any that
+    /// failed to start.
+    #[arg(long)]
+    pub wait: bool,
 }
 
 #[derive(Args)]

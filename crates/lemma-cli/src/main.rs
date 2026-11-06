@@ -42,6 +42,9 @@ fn main() -> ExitCode {
         executable_name()
     );
     if let Command::Daemon(args) = &cli.command {
+        if matches!(args.action, Some(cli::DaemonAction::Lsp(_))) {
+            return manage_servers(&cli);
+        }
         return run_daemon(args, logger);
     }
     if let Command::Verify(args) = &cli.command {
@@ -77,6 +80,24 @@ fn main() -> ExitCode {
     }
     log::warn!("no daemon could be reached; running in this process");
     run_in_process(cli, cwd)
+}
+
+/// Runs `lemma daemon lsp` in the daemon, whose servers it manages,
+/// starting a daemon if none is running.
+fn manage_servers(cli: &Cli) -> ExitCode {
+    if cli.no_daemon || daemon_disabled_by_environment() {
+        eprintln!("error: `lemma daemon lsp` manages the daemon's servers; it needs the daemon");
+        return ExitCode::FAILURE;
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        eprintln!("error: could not read the current directory");
+        return ExitCode::FAILURE;
+    };
+    if let Some(code) = forward(cwd) {
+        return code;
+    }
+    eprintln!("error: no lemma daemon could be reached or started");
+    ExitCode::FAILURE
 }
 
 /// Why a command runs in this process rather than the daemon, if it does.
@@ -156,6 +177,8 @@ fn run_daemon(args: &cli::DaemonArgs, logger: &'static logging::Logger) -> ExitC
             .and_then(|_| service::install())
             .map(|done| println!("{done}")),
         Some(DaemonAction::Uninstall) => service::uninstall().map(|done| println!("{done}")),
+        // `main` forwards these to the daemon before getting here.
+        Some(DaemonAction::Lsp(_)) => Err(anyhow::anyhow!("`lemma daemon lsp` needs the daemon")),
         Some(DaemonAction::Stop) => daemon::stop().map(|was_running| {
             if !was_running {
                 eprintln!("no lemma daemon is running");
