@@ -33,6 +33,33 @@ pub struct Checked {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+impl Checked {
+    /// Each error as `module:line:column: message`, for a command line.
+    pub fn error_lines(&self) -> Vec<String> {
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == crate::Severity::Error)
+            .map(|diagnostic| {
+                let position = self
+                    .loaded
+                    .modules
+                    .get(&diagnostic.module)
+                    .map(|module| module.lines.position(diagnostic.span.start));
+                match position {
+                    Some(position) => format!(
+                        "{}:{}:{}: {}",
+                        diagnostic.module,
+                        position.line + 1,
+                        position.column + 1,
+                        diagnostic.message
+                    ),
+                    None => diagnostic.message.clone(),
+                }
+            })
+            .collect()
+    }
+}
+
 /// Where each name is defined and used, for hovers and go-to-definition.
 #[derive(Debug, Clone, Default)]
 pub struct SymbolIndex {

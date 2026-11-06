@@ -683,6 +683,7 @@ dependencies = [
 name = "lemma-lang"
 version = "0.1.0-rc0"
 dependencies = [
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -800,6 +801,7 @@ version = "0.1.0-rc0"
 dependencies = [
  "lemma-grammar",
  "lemma-http",
+ "lemma-lang",
  "lemma-logic",
  "lemma-model",
  "lemma-store",
@@ -808,6 +810,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "yaml_serde",
 ]

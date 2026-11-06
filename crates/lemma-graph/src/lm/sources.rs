@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use lemma_lang::check_program;
 use lemma_lang::load::{Repository, RepositorySource, SourceError, Sources};
-use lemma_lang::{Checked, Severity, check_program};
 
 use crate::GraphError;
 use crate::config::LemmaFile;
@@ -142,7 +142,7 @@ pub fn read_manifest(
     let mut sources = CheckoutSources::new(checkout.clone(), cache);
     let checked = check_program(&mut sources, manifest);
     let path = checkout.root.join(manifest);
-    let errors = render_errors(&checked);
+    let errors = checked.error_lines();
     if !errors.is_empty() {
         return Err(GraphError::Language { path, errors });
     }
@@ -154,30 +154,4 @@ pub fn read_manifest(
         .unwrap_or_default();
     super::repository_file(&checked, &repository)
         .map_err(|source| GraphError::Lower { path, source })
-}
-
-/// Error diagnostics as `module:line:column: message`.
-pub fn render_errors(checked: &Checked) -> Vec<String> {
-    checked
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == Severity::Error)
-        .map(|diagnostic| {
-            let position = checked
-                .loaded
-                .modules
-                .get(&diagnostic.module)
-                .map(|module| module.lines.position(diagnostic.span.start));
-            match position {
-                Some(position) => format!(
-                    "{}:{}:{}: {}",
-                    diagnostic.module,
-                    position.line + 1,
-                    position.column + 1,
-                    diagnostic.message
-                ),
-                None => diagnostic.message.clone(),
-            }
-        })
-        .collect()
 }
