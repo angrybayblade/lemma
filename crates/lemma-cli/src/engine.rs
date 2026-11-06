@@ -169,15 +169,7 @@ impl Engine {
         invocation: &Invocation,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
-        let format = if cli.json { Format::Json } else { Format::Text };
-        let db = cli.db.map(|db| invocation.resolve(&db));
-        let providers_file = cli.providers.map(|file| invocation.resolve(&file));
-        let request = Request {
-            invocation,
-            db,
-            providers_file,
-            format,
-        };
+        let request = Request::new(&cli, invocation);
         match cli.command {
             Command::Index { path, keep, ttl } => {
                 let retention = lemma_index::retention::Retention {
@@ -224,10 +216,10 @@ impl Engine {
                 action: Some(DaemonAction::Lsp(args)),
                 ..
             }) => self.lsp(&request, args, out),
-            Command::Daemon(_) => bail!("`lemma daemon` cannot run inside the daemon"),
-            Command::Mcp => bail!("`lemma mcp` cannot run inside the daemon"),
-            Command::Verify(_) => bail!("`lemma verify` runs in its own process"),
-            Command::Check(_) => bail!("`lemma check` runs in its own process"),
+            Command::Daemon(_)
+            | Command::Mcp
+            | Command::Verify(_)
+            | Command::Check(_) => bail!("this command runs in its own process, not in the daemon"),
         }
     }
 
@@ -1447,7 +1439,18 @@ struct Request<'a> {
     format: Format,
 }
 
-impl Request<'_> {
+impl<'a> Request<'a> {
+    /// A request from the command line's global options, with paths
+    /// resolved against the invocation's directory.
+    fn new(cli: &Cli, invocation: &'a Invocation) -> Self {
+        Self {
+            invocation,
+            db: cli.db.as_ref().map(|db| invocation.resolve(db)),
+            providers_file: cli.providers.as_ref().map(|file| invocation.resolve(file)),
+            format: if cli.json { Format::Json } else { Format::Text },
+        }
+    }
+
     /// The given database, or the nearest `.lemma/index.db` from the working
     /// directory upwards.
     fn find_index(&self) -> anyhow::Result<PathBuf> {
