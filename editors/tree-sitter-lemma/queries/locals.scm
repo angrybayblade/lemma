@@ -9,6 +9,7 @@
   (behavior_declaration)
   (checker_declaration)
   (relation_declaration)
+  (rule_declaration)
   (require_declaration)
   (allow_declaration)
   (rule_clause)

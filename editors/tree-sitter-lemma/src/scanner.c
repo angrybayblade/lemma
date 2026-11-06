@@ -6,11 +6,12 @@
  * NEWLINE: `.specs/13-lm-grammar.md` section 1 makes a newline end an item,
  * statement, record field or graph row, except inside `( )` and `[ ]`, after
  * a binary operator, `,`, `:`, `=`, `->`, `:-` or an opening bracket, and
- * before a line starting with `because`. In every one of those exceptions the
- * grammar cannot end an item, so the parser does not ask for a NEWLINE there.
- * The scanner therefore emits one whenever the parser accepts it and the next
- * line does not start with `because`; otherwise the newline is skipped as
- * whitespace.
+ * before a line starting with `because` (continuing an `expect`) or `else`
+ * (continuing an `if`). In the bracket and operator exceptions the grammar
+ * cannot end an item, so the parser does not ask for a NEWLINE there. The
+ * scanner therefore emits one whenever the parser accepts it and the next
+ * line does not start with `because` or `else`; otherwise the newline is
+ * skipped as whitespace.
  *
  * That is slightly more lenient than the spec's rule, which is stated per
  * token: `fn f(): Int` with its `{` on the next line breaks the line where no
@@ -29,6 +30,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 enum TokenType {
   NEWLINE,
@@ -90,7 +92,7 @@ static bool scan_interpolation_start(TSLexer *lexer) {
 /*
  * Moves past whitespace, newlines and comments to the start of the next
  * token. A comment line between an `expect` and its `because` line must not
- * end the statement.
+ * end the statement, nor one between an `if` block and its `else`.
  */
 static void skip_to_next_token(TSLexer *lexer) {
   for (;;) {
@@ -123,13 +125,17 @@ static void skip_to_next_token(TSLexer *lexer) {
   }
 }
 
-static bool at_because(TSLexer *lexer) {
-  const char *word = "because";
-  for (const char *letter = word; *letter; letter++) {
-    if (lexer->lookahead != *letter) return false;
+/* Whether the next word is `because` or `else`, which continue a line. */
+static bool at_continuation_word(TSLexer *lexer) {
+  char word[8];
+  unsigned length = 0;
+  while (is_name_char(lexer->lookahead)) {
+    if (length == sizeof word - 1) return false;
+    word[length++] = (char)lexer->lookahead;
     advance(lexer);
   }
-  return !is_name_char(lexer->lookahead);
+  word[length] = '\0';
+  return strcmp(word, "because") == 0 || strcmp(word, "else") == 0;
 }
 
 static bool scan_newline(TSLexer *lexer) {
@@ -138,7 +144,7 @@ static bool scan_newline(TSLexer *lexer) {
   advance(lexer);
   lexer->mark_end(lexer);
   skip_to_next_token(lexer);
-  if (at_because(lexer)) return false;
+  if (at_continuation_word(lexer)) return false;
   lexer->result_symbol = NEWLINE;
   return true;
 }

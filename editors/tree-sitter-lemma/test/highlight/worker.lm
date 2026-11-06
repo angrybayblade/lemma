@@ -107,7 +107,25 @@ export behavior forwards_upstream_retriable(link: Fact<Link>) {
 //                                          ^ constant.builtin
             because "the worker passes on the flag"
 //          ^ keyword
+        if flag {
+            expect true
+        }
+        else {
+//      ^ keyword.conditional
+            expect false
+        }
     }
+}
+
+rule reachable(source: Text, target: Text) {
+// <- keyword
+//   ^ function
+//             ^ variable.parameter
+//                     ^ type.builtin
+    (a, b) :- depends(a, b), b != -1
+//   ^ variable.parameter
+//            ^ function.call
+//                                ^ number
 }
 
 check main {

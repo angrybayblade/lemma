@@ -57,7 +57,8 @@ rule routed : Routes {
           (term
             root: (identifier))
           (integer)
-          (integer)
+          (negative_integer
+            (integer))
           (true))))))
 
 ================================================================================

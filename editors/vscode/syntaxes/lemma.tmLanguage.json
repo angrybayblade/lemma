@@ -328,7 +328,7 @@
         },
         {
           "name": "meta.function.lemma",
-          "begin": "^\\s*(?:(export)\\s+)?(fn|behavior|checker)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(\\()",
+          "begin": "^\\s*(?:(export)\\s+)?(fn|behavior|checker|rule)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(\\()",
           "beginCaptures": {
             "1": {
               "name": "storage.modifier.export.lemma"
@@ -676,7 +676,7 @@
           "name": "constant.numeric.integer.decimal.lemma"
         },
         {
-          "match": "\\b(severity|level)\\s*(:)\\s*(error|warning|audit|check|strict)\\b",
+          "match": "\\b(severity|level)\\s*(:)\\s*(error|warning|info|audit|check|strict)\\b",
           "captures": {
             "1": {
               "name": "variable.other.property.lemma"
