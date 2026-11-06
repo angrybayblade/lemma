@@ -21,21 +21,6 @@ pub struct Member {
     pub file: LemmaFile,
 }
 
-/// A loaded `lemma.yaml` as written: loading adds each documented operation
-/// to its service's operations (so links can name it), at its document;
-/// those are taken out again.
-fn as_written(file: &LemmaFile) -> LemmaFile {
-    let mut file = file.clone();
-    for service in file.services.values_mut() {
-        let documents = service.exports.openapi.clone();
-        service
-            .exports
-            .operations
-            .retain(|_, operation| !documents.contains(&operation.path));
-    }
-    file
-}
-
 /// Every repository `workspace` composes, directly or through others, in
 /// name order, without the workspace itself. Clones of `git` sources and
 /// worktrees go in `cache`.
@@ -50,7 +35,7 @@ pub fn members(workspace: &Path, cache: &Path) -> Result<Vec<Member>, GraphError
         run_checkers: true,
         select: None,
     };
-    let repos = check::load(workspace, &options)?;
+    let repos = check::load_manifests(workspace, &options)?;
     Ok(repos
         .into_iter()
         .filter(|(name, _)| name != SELF)
@@ -60,7 +45,7 @@ pub fn members(workspace: &Path, cache: &Path) -> Result<Vec<Member>, GraphError
                 name,
                 root: checkout.root.clone(),
                 commit: checkout.commit.clone(),
-                file: as_written(&repo.files[HEAD]),
+                file: repo.files[HEAD].clone(),
             }
         })
         .collect())
