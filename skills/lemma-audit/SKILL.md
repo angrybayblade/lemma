@@ -11,7 +11,7 @@ Work from evidence in the code and in `lemma check` output, not from what a syst
 
 ## 1. Read the system
 
-1. Find the parent `lemma.yaml` (the one composing others with `#name` services) and every repository it reaches. A repository may describe itself in `lemma.lm` instead; run `lm check` on it first, since a link or operation it gets wrong is reported there with its line. Propose edits in the format the repository uses.
+1. Find the parent `lemma.yaml` (the one composing others with `#name` services) and every repository it reaches. A repository may describe itself in `mod.lm` instead; run `lm check` on it first, since a link or operation it gets wrong is reported there with its line. Propose edits in the format the repository uses.
 2. Run the check as it stands:
 
    ```sh

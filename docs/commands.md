@@ -217,7 +217,7 @@ Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
 ## `lemma check [lemma.yaml]`
 
-Checks a change against every repository composed by a parent `lemma.yaml`: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Checking links](check.md). The parent may be a `.lm` workspace module instead, and without an argument, `lemma.lm` is read when there is no `lemma.yaml`; a repository with only `lemma.lm` is read too. A module parent's own requirements run beside the HTTP contracts, its behaviors run (with their checkers), and its allowances apply, as its `check main` selects them. See [The `.lm` language](language.md).
+Checks a change against every repository composed by a parent `lemma.yaml`: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Checking links](check.md). The parent may be a `.lm` workspace module instead, and without an argument, `mod.lm` is read when there is no `lemma.yaml`; a repository with only `mod.lm` is read too. A module parent's own requirements run beside the HTTP contracts, its behaviors run (with their checkers), and its allowances apply, as its `check main` selects them. See [The `.lm` language](language.md).
 
 | Option | Meaning |
 | --- | --- |
@@ -225,7 +225,7 @@ Checks a change against every repository composed by a parent `lemma.yaml`: decl
 | `--base <commit>`, `--head <commit>` | The commits before and with the change. |
 | `--level <level>` | `audit` (problems are warnings), `check` (problems and violated behaviors are errors) or `strict` (error-severity behaviors that are unknown or stale are errors too). Overrides the graph's level. |
 | `--all` | List informational findings too, not just their count. |
-| `--select <check>` | Run this check of a parent `lemma.lm` instead of its `check main`. |
+| `--select <check>` | Run this check of a parent `mod.lm` instead of its `check main`. |
 | `--no-run` | Run no checkers: behaviors use the evidence already kept in Lemma's cache. A case whose inputs changed since is `stale`; one never run is `unknown`. |
 | `--engine <name>` | The rule engine for inferred links: `souffle` or `reference`. Default: Soufflé if installed. |
 | `--evaluation <how>` | `demand` (the default) reads only the consumer code inferred findings can rest on, asking for more callers as traces reach further operations; `full` reads everything. |
@@ -296,7 +296,7 @@ See [The `.lm` language](language.md).
 
 | Command | Meaning |
 | --- | --- |
-| `lm check [lemma.lm]` | Loads a module and everything it imports, and prints every problem as `file:line:column: severity: message`, then a summary. With `--json`, `diagnostics` lists each with its `module`, `path`, `line` and `column`. Exits with 1 if any is an error. |
+| `lm check [mod.lm]` | Loads a module and everything it imports, and prints every problem as `file:line:column: severity: message`, then a summary. With `--json`, `diagnostics` lists each with its `module`, `path`, `line` and `column`. Exits with 1 if any is an error. |
 | `lm fmt [paths...]` | Rewrites `.lm` files in the canonical layout ([spec 13, Layout](../.specs/13-lm-grammar.md#layout)): four-space indentation by brackets and continued lines, one space around operators and after `,` and `:`, at most one blank line in a row. Line breaks and comments are kept. Each path is a file or a directory to search; with none, the current directory is searched, skipping hidden directories, `target` and `node_modules`. A file with syntax errors is left alone and its errors are printed; a fragment without a `module` line is formatted. `--check` lists the files that are not formatted instead of rewriting them. Exits with 1 if a file has syntax errors or, with `--check`, is not formatted. |
-| `lm convert [lemma.yaml]` | Writes a `lemma.yaml` as an `.lm` root module. `--module <name>` names it (the directory's name by default); `--write` writes `lemma.lm` beside the file, refusing to replace one. |
+| `lm convert [lemma.yaml]` | Writes a `lemma.yaml` as an `.lm` root module. `--module <name>` names it (the directory's name by default); `--write` writes `mod.lm` beside the file, refusing to replace one. |
 | `lm lsp` | Serves `.lm` modules to an editor over the Language Server Protocol, on standard input and output. |

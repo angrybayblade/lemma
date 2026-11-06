@@ -93,8 +93,9 @@ Every module has one canonical layout, so a diff shows only what changed. The fo
 
 A module is one `.lm` file. Its first item is `module <name>`, and the name is fixed by where the file is:
 
-- A repository's root module is the file `lemma.lm` at its root. It names the repository, as `module functions`, and that name is one segment.
+- A directory's module is its `mod.lm`. A repository's root module is the `mod.lm` at its root: it names the repository, as `module functions`, and that name is one segment. `checks/mod.lm` in `functions` is `module functions.checks`.
 - Any other file is named by the root's name plus its path, without the extension: `checks/setup_replay.lm` in `functions` is `module functions.checks.setup_replay`.
+- A module is in one place. `functions.checks` may be `checks.lm` or `checks/mod.lm`; an import finding both is a compile error. A module named `mod`, such as `functions.x.mod`, can only be `x/mod/mod.lm`, since `x/mod.lm` is `functions.x`.
 - A name that does not match the file's place is a compile error. So a module name says where its file is, and two repositories cannot define the same module.
 
 ### Imports
@@ -143,7 +144,7 @@ Lemma searches the entry workspace first, then the root modules breadth-first fr
 A `workspace` block holds the authoritative repositories and the evaluation's configuration. Only the entry module's block is read. In any other loaded module the block is ignored, and Lemma says so.
 
 ```lm
-// example/lemma.lm: the workspace entry point
+// example/mod.lm: the workspace entry point
 module example
 
 workspace {
@@ -169,7 +170,7 @@ check main {
 
 ### What an evaluation loads
 
-- The entry module: the file given to `lemma check`, by default `./lemma.lm`.
+- The entry module: the file given to `lemma check`, by default `./mod.lm`.
 - The root module of every repository the evaluation resolves.
 - Every module a loaded module imports. Standard-library modules load only when imported.
 
@@ -248,7 +249,7 @@ A provider that reads only part of the code reports partial coverage, and the se
 A regular `operation` describes behavior a service provides. A `client operation` describes an outbound interaction. Both have type `Operation`, and a client operation also has type `ClientOperation`. `export` controls visibility, separately from the role.
 
 ```lm
-// functions/lemma.lm
+// functions/mod.lm
 module functions
 
 import * as python from lemma.python
@@ -767,7 +768,7 @@ Every outcome is tied to a requirement, the input snapshots, the evidence scope 
 The platform repository's root module loads its services, and pins the functions repository for when it is checked alone:
 
 ```lm
-// platform/lemma.lm
+// platform/mod.lm
 module platform
 
 import platform.services.gateway
@@ -816,7 +817,7 @@ export behavior forwards_upstream_retriable {
 }
 ```
 
-The public handler is a separate operation because verifying propagation requires observing what the worker returns to its caller. With `example/lemma.lm` (section 2) as the entry module, `lemma check` does the following:
+The public handler is a separate operation because verifying propagation requires observing what the worker returns to its caller. With `example/mod.lm` (section 2) as the entry module, `lemma check` does the following:
 - loads `example`, `functions`, `platform` and its imported services, and `platform.checks.setup_replay`;
 - resolves each operation's bindings at the head, and at the base when there is a change;
 - checks the link with `lemma.links` and the HTTP consumers with `lemma.http`;
@@ -1013,7 +1014,7 @@ Phase 1:
 
 - `crates/lemma-lang` parses modules with error recovery, loads programs across repositories, resolves names and type-checks them, and holds the standard library. Its formatter writes a module in the [canonical layout](#layout), keeping every comment, and checks that the result reads as the same tokens.
 - `lemma-grammar` lowers a program's relations, rules, graphs and requirements; `lemma.http` compiles to the same program as `grammars/http-contracts.yaml`, which a test requires.
-- `lemma-graph` reads `lemma.lm` wherever `lemma check` reads `lemma.yaml`. On five fixture systems and a six-repository workspace, checks from converted modules match the YAML ones line for line, and replaying 54 past changes from converted modules gives the reviewed findings.
+- `lemma-graph` reads `mod.lm` wherever `lemma check` reads `lemma.yaml`. On five fixture systems and a six-repository workspace, checks from converted modules match the YAML ones line for line, and replaying 54 past changes from converted modules gives the reviewed findings.
 - `lemma check` runs a parent module's own requirements beside `lemma.http`'s, as its `check main` (or `--select`ed check) selects them, and a workspace naming a language version other than 0.2 is refused.
 - `lemma verify` takes a `.lm` grammar module (`grammar: contracts.lm`), whose `check main` selects requirements.
 - `lm`, a command of its own beside `lemma`, has `lm check`, `lm fmt` and `lm convert`, and `lm lsp` serves modules to editors: diagnostics as you type (one check per burst of edits), hovers, definitions across repositories, symbols, completion and formatting.

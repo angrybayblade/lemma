@@ -1,4 +1,4 @@
-// functions/lemma.lm
+// functions/mod.lm
 module functions
 
 import * as python from lemma.python

@@ -27,7 +27,7 @@ interface Target {
 function fixtureUri(): vscode.Uri {
   const folder = vscode.workspace.workspaceFolders?.[0]
   assert.ok(folder, 'VS Code opened no workspace folder; the runner passes editors/fixture')
-  return vscode.Uri.joinPath(folder.uri, 'lemma.lm')
+  return vscode.Uri.joinPath(folder.uri, 'mod.lm')
 }
 
 /** The position of the `occurrence`-th `text` in `document`. */

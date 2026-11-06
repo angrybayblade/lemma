@@ -21,7 +21,7 @@ Every editor below runs the same command, from Lemma's `lm` binary, which works 
 lm lsp
 ```
 
-It speaks the Language Server Protocol over stdio. A directory holding `lemma.lm`, a repository's root module, is a good project root.
+It speaks the Language Server Protocol over stdio. A directory holding `mod.lm`, a repository's root module, is a good project root.
 
 ## Neovim
 
@@ -57,7 +57,7 @@ vim.api.nvim_create_autocmd('FileType', {
 vim.lsp.config('lemma', {
   cmd = { 'lm', 'lsp' },
   filetypes = { 'lemma' },
-  root_markers = { 'lemma.lm', '.git' },
+  root_markers = { 'mod.lm', '.git' },
 })
 vim.lsp.enable('lemma')
 ```
@@ -83,7 +83,7 @@ cp /path/to/lemma/editors/tree-sitter-lemma/queries/*.scm ~/.config/nvim/queries
 
 The queries use nvim-treesitter's capture names and its precedence, where a later pattern overrides an earlier one for the same node.
 
-**Verified** with Neovim 0.12.6. `neovim/check.lua` runs in a headless Neovim (`nvim --clean --headless -l`) with the parser built by `tree-sitter build` and the queries on its runtime path, and runs the first Lua block above as written. It opens `editors/fixture/lemma.lm` and asserts the highlight capture that wins at eleven positions, among them a keyword, a declared name, a rule variable and a string. Then it asserts that the `lemma` server attaches, rooted at the fixture's directory, and publishes the fixture's one error at the right place. Re-run it with `editors/check.sh neovim`. Set `NVIM_EXECUTABLE` to use a Neovim that is not on `PATH`; the check is skipped when Neovim is missing or older than 0.11.
+**Verified** with Neovim 0.12.6. `neovim/check.lua` runs in a headless Neovim (`nvim --clean --headless -l`) with the parser built by `tree-sitter build` and the queries on its runtime path, and runs the first Lua block above as written. It opens `editors/fixture/mod.lm` and asserts the highlight capture that wins at eleven positions, among them a keyword, a declared name, a rule variable and a string. Then it asserts that the `lemma` server attaches, rooted at the fixture's directory, and publishes the fixture's one error at the right place. Re-run it with `editors/check.sh neovim`. Set `NVIM_EXECUTABLE` to use a Neovim that is not on `PATH`; the check is skipped when Neovim is missing or older than 0.11.
 
 The nvim-treesitter `main` setup was also followed once in a throwaway configuration, with nvim-treesitter's `main` branch of 2026-11-06: `:TSInstall lemma` compiled the parser and installed the queries, and highlighting, folding, nvim-treesitter's indentation and the diagnostics all worked. The `master` branch setup has not been tried.
 
@@ -96,7 +96,7 @@ Add the language and its server to `~/.config/helix/languages.toml`:
 name = "lemma"
 scope = "source.lemma"
 file-types = ["lm"]
-roots = ["lemma.lm"]
+roots = ["mod.lm"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
 indent = { tab-width = 4, unit = "    " }
@@ -154,7 +154,7 @@ The queries need Helix 25.07 or later. Its Tree-sitter loads the ABI 15 parser, 
 
 Helix highlights a reference to a local definition with the scope its `@local.definition.<scope>` capture names. In `locals.scm` only `type`, `function` and `namespace` are Helix scopes, and they agree with the highlights; the others are nvim-treesitter's kinds, so those references keep their highlights from `highlights.scm`.
 
-**Verified** with Helix 25.07.1. `helix/check.sh` follows this section in a throwaway home: it writes the first `languages.toml` block with this checkout's path, runs the shell blocks as written, and asserts that `hx --health lemma` finds the language server, the parser and the highlight queries. It asserts that every capture in the translated `highlights.scm` is a scope Helix's theme documentation lists, and builds the grammar a second time through the `[[grammar]]` entry and `hx --grammar build`. With tmux installed it then opens `editors/fixture/lemma.lm` in Helix in a detached tmux session, with a theme giving each checked scope its own colour, and asserts that a keyword, the declared relation and rule, a rule variable and a string have their colours and that the server's diagnostic marks the gutter. Re-run it with `editors/check.sh helix`; set `HELIX_EXECUTABLE` to use a Helix that is not on `PATH`.
+**Verified** with Helix 25.07.1. `helix/check.sh` follows this section in a throwaway home: it writes the first `languages.toml` block with this checkout's path, runs the shell blocks as written, and asserts that `hx --health lemma` finds the language server, the parser and the highlight queries. It asserts that every capture in the translated `highlights.scm` is a scope Helix's theme documentation lists, and builds the grammar a second time through the `[[grammar]]` entry and `hx --grammar build`. With tmux installed it then opens `editors/fixture/mod.lm` in Helix in a detached tmux session, with a theme giving each checked scope its own colour, and asserts that a keyword, the declared relation and rule, a rule variable and a string have their colours and that the server's diagnostic marks the gutter. Re-run it with `editors/check.sh helix`; set `HELIX_EXECUTABLE` to use a Helix that is not on `PATH`.
 
 ## Zed
 
