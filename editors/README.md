@@ -6,7 +6,7 @@ Syntax highlighting, parsing and a language server client for Lemma's `.lm` lang
 | --- | --- |
 | `tree-sitter-lemma/` | A Tree-sitter grammar with highlight, locals, fold and indent queries, for Neovim, Helix, Zed and anything else that loads Tree-sitter parsers |
 | `vscode/` | A VS Code extension: a TextMate grammar, language configuration and a client for the language server |
-| `check.sh` | Regenerates the parser, runs the grammar's tests, parses every example in spec 13 and checks the VS Code extension |
+| `check.sh` | Regenerates the parser, runs the grammar's tests, parses every example in spec 13 and every `.lm` file in the repository, and checks the VS Code extension |
 
 ## The language server
 
@@ -189,7 +189,7 @@ Edit `tree-sitter-lemma/grammar.js` (and `src/scanner.c` for newlines and string
 editors/check.sh
 ```
 
-It regenerates `src/`, which is committed so editors can build the parser without the Tree-sitter CLI, and fails if any example in spec 13 stops parsing. Commit the regenerated files with the grammar change. When the spec changes, update `test/corpus/spec.txt` to match its examples.
+It regenerates `src/`, which is committed so editors can build the parser without the Tree-sitter CLI, and fails if any example in spec 13 or any `.lm` file in the repository (the standard library in `crates/lemma-lang/src/stdlib`, the parser's corpus) stops parsing. Commit the regenerated files with the grammar change. When the spec changes, update `test/corpus/spec.txt` to match its examples.
 
 The grammar follows the parser in `crates/lemma-lang/src/syntax`. It accepts a little more, so an editor can still highlight a file the compiler rejects:
 

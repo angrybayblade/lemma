@@ -1,10 +1,12 @@
 // Checks the TextMate grammar. VS Code silently drops a pattern whose regex
 // Oniguruma rejects, so every regex is compiled here. Then the ```lm blocks
-// of spec 13 are tokenized, failing on any `invalid` scope, and a few
-// constructs the grammar must tell apart are checked by their scopes.
+// of spec 13 and every `.lm` file in the repository are tokenized, failing on
+// any `invalid` scope or on a rule body that runs past its declaration, and
+// a few constructs the grammar must tell apart are checked by their scopes.
 //
 // Usage: node scripts/check-grammar.mjs
 
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -13,8 +15,9 @@ import oniguruma from 'vscode-oniguruma'
 import textmate from 'vscode-textmate'
 
 const extensionDirectory = join(dirname(fileURLToPath(import.meta.url)), '..')
+const repository = join(extensionDirectory, '..', '..')
 const grammarPath = join(extensionDirectory, 'syntaxes', 'lemma.tmLanguage.json')
-const specPath = join(extensionDirectory, '..', '..', '.specs', '13-lm-grammar.md')
+const specPath = join(repository, '.specs', '13-lm-grammar.md')
 
 // Each case names a token in `source` and a scope it must carry.
 const cases = [
@@ -65,6 +68,19 @@ const cases = [
   },
   { source: 'graph links : Link {', token: 'links', scope: 'entity.name.function' },
   { source: '    Worker.call -> Functions.setup', token: '->', scope: 'keyword.operator.arrow' },
+  {
+    source: 'rule reachable(a: Text, b: Text) {',
+    token: 'reachable',
+    scope: 'entity.name.function',
+  },
+  { source: 'rule reachable(a: Text, b: Text) {', token: 'b', scope: 'variable.parameter' },
+  { source: '    }\n    else {', token: 'else', scope: 'keyword.control' },
+  { source: '    severity: info', token: 'info', scope: 'constant.language.info' },
+  {
+    source: 'let paths = { include: ["src"], exclude: [] }',
+    token: 'exclude',
+    scope: 'variable.other.property',
+  },
 ]
 
 async function loadOniguruma() {
@@ -117,9 +133,58 @@ function tokenize(grammar, source) {
   return tokens
 }
 
-function specBlocks() {
+/** The texts to tokenize, each with a name for messages. */
+function sources() {
   const spec = readFileSync(specPath, 'utf8')
-  return [...spec.matchAll(/^```lm\n([\s\S]*?)^```/gm)].map((match) => match[1])
+  const blocks = [...spec.matchAll(/^```lm\n([\s\S]*?)^```/gm)].map((match, index) => ({
+    name: `spec 13 block ${index + 1}`,
+    text: match[1],
+  }))
+  const listed = execFileSync(
+    'git',
+    [
+      '-C',
+      repository,
+      'ls-files',
+      '-z',
+      '--cached',
+      '--others',
+      '--exclude-standard',
+      '--',
+      '*.lm',
+    ],
+    { encoding: 'utf8' },
+  )
+  const files = listed
+    .split('\0')
+    .filter((path) => path !== '')
+    .map((path) => ({ name: path, text: readFileSync(join(repository, path), 'utf8') }))
+  return [...blocks, ...files]
+}
+
+/** Problems in one tokenized text: invalid tokens, and rule bodies that leak. */
+function problems(name, source) {
+  const found = []
+  let state = textmate.INITIAL
+  source.split('\n').forEach((line, index) => {
+    const result = grammar.tokenizeLine(line, state)
+    state = result.ruleStack
+    for (const token of result.tokens) {
+      const text = line.slice(token.startIndex, token.endIndex)
+      if (token.scopes.some((scope) => scope.startsWith('invalid'))) {
+        found.push(`${name}:${index + 1}: \`${text}\` is ${token.scopes.join(' ')}`)
+      }
+    }
+    // A rule clause or `when:` body ends before its declaration's next field
+    // or closing brace; a scope reaching those means a body never closed.
+    const trimmed = line.trim()
+    const leaks = trimmed === '}' || /^(?!when\b)[a-z_]+:(?!-)/.test(trimmed)
+    const first = result.tokens.find((token) => line.slice(token.startIndex, token.endIndex).trim())
+    if (leaks && first && first.scopes.some((scope) => scope.startsWith('meta.rule'))) {
+      found.push(`${name}:${index + 1}: a rule body runs into \`${trimmed}\``)
+    }
+  })
+  return found
 }
 
 const failures = []
@@ -140,14 +205,10 @@ for (const { path, regex } of collectRegexes(
 
 const grammar = await loadGrammar()
 
-const blocks = specBlocks()
-blocks.forEach((block, index) => {
-  for (const token of tokenize(grammar, block)) {
-    if (token.scopes.some((scope) => scope.startsWith('invalid'))) {
-      failures.push(`spec block ${index + 1}: \`${token.text}\` is ${token.scopes.join(' ')}`)
-    }
-  }
-})
+const texts = sources()
+for (const { name, text } of texts) {
+  failures.push(...problems(name, text))
+}
 
 for (const { source, token, occurrence = 1, scope } of cases) {
   const matches = tokenize(grammar, source).filter((candidate) => candidate.text === token)
@@ -165,4 +226,4 @@ if (failures.length > 0) {
   console.error(failures.join('\n'))
   process.exit(1)
 }
-console.log(`TextMate grammar: ${blocks.length} spec blocks and ${cases.length} cases tokenized`)
+console.log(`TextMate grammar: ${texts.length} sources and ${cases.length} cases tokenized`)
