@@ -143,7 +143,8 @@ let e = (a + b) * c
     name: (identifier)
     value: (list
       (integer)
-      (integer)
+      (unary_expression
+        operand: (integer))
       (true)
       (false)
       (null)

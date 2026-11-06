@@ -126,6 +126,9 @@
 
 (integer) @number
 
+(negative_integer
+  "-" @number)
+
 [
   (true)
   (false)

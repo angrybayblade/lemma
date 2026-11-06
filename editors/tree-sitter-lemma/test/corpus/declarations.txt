@@ -539,7 +539,8 @@ fn sign(value: Int): Int {
             right: (integer))
           consequence: (block
             (return_statement
-              value: (integer)))
+              value: (unary_expression
+                operand: (integer))))
           alternative: (block
             (for_statement
               pattern: (identifier)
@@ -556,20 +557,120 @@ fn sign(value: Int): Int {
               value: (integer))))))))
 
 ================================================================================
-Top-level operation, as in the identity example
+Rule with its own columns
 ================================================================================
 
-export operation setup_webhook {
-    previously: ["functions::Functions.serverless.register_webhook"]
+rule reachable(source: Text, target: Text) {
+    (a, b) :- depends(a, b)
 }
 
 ---
 
 (source_file
-  (operation_declaration
+  (rule_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier)))
+      (parameter
+        name: (identifier)
+        type: (named_type
+          name: (identifier))))
+    (rule_clause
+      head: (rule_head
+        (term
+          root: (identifier))
+        (term
+          root: (identifier)))
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))))))
+
+================================================================================
+Single values, arrows and tuples as graph rows
+================================================================================
+
+graph names : Name {
+    "worker"
+    Worker -> Functions
+    (Gateway, "/health", Worker.health)
+    (Worker)
+    (Worker, Functions,)
+}
+
+---
+
+(source_file
+  (graph_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (graph_row
+      column: (string
+        (string_content)))
+    (graph_row
+      column: (identifier)
+      column: (identifier))
+    (graph_row
+      column: (identifier)
+      column: (string
+        (string_content))
+      column: (member_expression
+        object: (identifier)
+        member: (identifier)))
+    (graph_row
+      column: (identifier))
+    (graph_row
+      column: (identifier)
+      column: (identifier))))
+
+================================================================================
+Severity is a bare name from a fixed set
+================================================================================
+
+require unused_import {
+    severity: info
+    when: imports(f, g), !uses(f, g)
+    message: "{f} imports {g} and never uses it"
+}
+
+---
+
+(source_file
+  (require_declaration
     name: (identifier)
     (field
       name: (identifier)
-      value: (list
-        (string
-          (string_content))))))
+      value: (identifier))
+    (when_clause
+      body: (rule_body
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))
+        (predicate
+          name: (qualified_name
+            (identifier))
+          (term
+            root: (identifier))
+          (term
+            root: (identifier)))))
+    (field
+      name: (identifier)
+      value: (string
+        (interpolation
+          name: (identifier))
+        (string_content)
+        (interpolation
+          name: (identifier))
+        (string_content)))))

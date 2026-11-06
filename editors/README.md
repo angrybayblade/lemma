@@ -191,9 +191,11 @@ editors/check.sh
 
 It regenerates `src/`, which is committed so editors can build the parser without the Tree-sitter CLI, and fails if any example in spec 13 stops parsing. Commit the regenerated files with the grammar change. When the spec changes, update `test/corpus/spec.txt` to match its examples.
 
-The grammar accepts a little more than spec 13's EBNF, so an editor can still highlight a file the compiler rejects:
+The grammar follows the parser in `crates/lemma-lang/src/syntax`. It accepts a little more, so an editor can still highlight a file the compiler rejects:
 
 - the `module` line is optional, since most examples in the spec are fragments;
-- an `operation` may appear at the top level, as in the spec's identity example;
-- a reserved word may follow `.` as a member name, as in the spec's `python.module(...)`;
-- a newline is a separator only where the grammar can end an item, so `fn f(): Int` with its `{` on the next line parses.
+- a newline is a separator only where the grammar can end an item, so `fn f(): Int` with its `{` on the next line parses;
+- a graph row `(a) -> b` parses, though a row starting with `(` is a tuple;
+- whether a term is a variable is left to the queries, so a variable with two fields, `x.a.b`, parses.
+
+It is stricter in two places, both following spec 13: reserved words are never names, so `let in = 1` is an error, and a `\u` escape needs four hex digits.

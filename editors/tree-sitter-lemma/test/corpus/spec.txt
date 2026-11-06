@@ -249,22 +249,26 @@ check main {
 Spec 13: 3. Identity
 ====================
 
-export operation setup_webhook {
-    previously: ["functions::Functions.serverless.register_webhook"]
-    // ...
+export service serverless {
+    export operation setup_webhook {
+        previously: ["functions::Functions.serverless.register_webhook"]
+        // ...
+    }
 }
 
 ---
 
 (source_file
-  (operation_declaration
+  (service_declaration
     name: (identifier)
-    (field
+    (operation_declaration
       name: (identifier)
-      value: (list
-        (string
-          (string_content))))
-    (comment)))
+      (field
+        name: (identifier)
+        value: (list
+          (string
+            (string_content))))
+      (comment))))
 
 ===================================
 Spec 13: 4. Services and operations

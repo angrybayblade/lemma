@@ -2,20 +2,19 @@
  * @file Tree-sitter grammar for Lemma's `.lm` language.
  *
  * The syntax contract is `.specs/13-lm-grammar.md`, section 1 (lexical
- * conventions) and section 14 (EBNF and precedence). Rule names follow the
- * EBNF where they can, so the two are easy to compare.
+ * conventions) and section 14 (EBNF and precedence), as the parser in
+ * `crates/lemma-lang/src/syntax` reads it. Rule names follow the EBNF where
+ * they can, so the two are easy to compare.
  *
- * Where this grammar accepts more than the EBNF, it does so on purpose, so an
- * editor can still highlight a file the compiler will reject:
+ * Where this grammar accepts more than that parser, it does so on purpose, so
+ * an editor can still highlight a file the compiler will reject:
  *
  * - The `module` line is optional, because most examples in the spec are
  *   fragments without one.
- * - An `operation` may appear at the top level, as in the spec's identity
- *   example; the compiler reports it as misplaced.
- * - A reserved word may follow `.` as a member name, as in the spec's own
- *   `python.module(...)`.
  * - A newline is only a separator where the grammar can end an item there
  *   (see `src/scanner.c`). Elsewhere it is whitespace.
+ *
+ * editors/README.md lists every difference from that parser.
  */
 
 /// <reference types="tree-sitter-cli/dsl" />
@@ -66,13 +65,21 @@ module.exports = grammar({
   ],
 
   rules: {
+    // The `module` line, when there is one, ends with a separator like any
+    // other item.
     source_file: $ => seq(
-      optional(seq($.module_declaration, optional($._separators))),
-      ...lines($, $._item),
+      optional($._separators),
+      choice(
+        seq(optional(seq($.module_declaration, $._separators)), ...lines($._separators, $._item)),
+        $.module_declaration,
+      ),
     ),
 
-    _separator: $ => choice($._newline, ';'),
-    _separators: $ => repeat1($._separator),
+    _separators: $ => repeat1(choice($._newline, ';')),
+
+    // In field and typed-field blocks a comma separates too:
+    // `{ include: ["src"], exclude: ["vendor"] }`.
+    _field_separators: $ => repeat1(choice($._newline, ';', ',')),
 
     module_declaration: $ => seq('module', field('name', $.qualified_name)),
 
@@ -86,7 +93,6 @@ module.exports = grammar({
       $.entity_declaration,
       $.relation_declaration,
       $.service_declaration,
-      $.operation_declaration,
       $.graph_declaration,
       $.rule_declaration,
       $.require_declaration,
@@ -117,7 +123,7 @@ module.exports = grammar({
 
     // No separator can occur in this comma list, so newlines inside the
     // braces are whitespace, as they are inside `( )` and `[ ]`.
-    _import_list: $ => seq('{', commaSeparated($.import_name), optional(','), '}'),
+    _import_list: $ => seq('{', optionalCommaList($.import_name), '}'),
 
     import_name: $ => seq(
       field('name', $.identifier),
@@ -176,7 +182,7 @@ module.exports = grammar({
       optional('export'),
       'entity',
       field('name', $.identifier),
-      braced($, $.typed_field),
+      bracedFields($, $.typed_field),
     ),
 
     relation_declaration: $ => seq(
@@ -217,7 +223,7 @@ module.exports = grammar({
       optional('client'),
       'operation',
       field('name', $.identifier),
-      braced($, $.field),
+      bracedFields($, $.field),
     ),
 
     graph_declaration: $ => seq(
@@ -232,26 +238,30 @@ module.exports = grammar({
       ),
     ),
 
-    // `a -> b` is the tuple `(a, b)`. Every column is a `column` field, so a
-    // consumer can read either form the same way.
+    // A row is one value for a one-column relation, `a -> b` for the tuple
+    // `(a, b)`, or a tuple. Every column is a `column` field, so a consumer
+    // can read each form the same way. A row starting with `(` is a tuple,
+    // so `(a)` is a one-column tuple rather than a parenthesised value.
     graph_row: $ => choice(
-      seq(field('column', $._expression), '->', field('column', $._expression)),
       seq(
-        '(',
         field('column', $._expression),
-        repeat1(seq(',', field('column', $._expression))),
-        ')',
+        optional(seq('->', field('column', $._expression))),
       ),
+      prec(1, seq('(', optionalCommaList(field('column', $._expression)), ')')),
     ),
 
     // Rules
 
+    // A rule borrows a relation's columns, `rule r : Relation`, or names its
+    // own, `rule r(a: Text, b: Int)`.
     rule_declaration: $ => seq(
       optional('export'),
       'rule',
       field('name', $.identifier),
-      ':',
-      field('relation', $._type),
+      choice(
+        seq(':', field('relation', $._type)),
+        field('parameters', $.parameters),
+      ),
       braced($, $.rule_clause),
     ),
 
@@ -261,7 +271,7 @@ module.exports = grammar({
       field('body', $.rule_body),
     ),
 
-    rule_head: $ => seq('(', commaSeparated($._term), ')'),
+    rule_head: $ => seq('(', optionalCommaList($._term), ')'),
 
     rule_body: $ => commaSeparated($._literal),
 
@@ -272,10 +282,10 @@ module.exports = grammar({
       field('name', $.qualified_name),
       optional(field('snapshot', $.snapshot)),
       '(',
-      optional(choice(
-        commaSeparated($._term),
-        commaSeparated($.named_term),
-      )),
+      choice(
+        optionalCommaList($._term),
+        seq(commaSeparated($.named_term), optional(',')),
+      ),
       ')',
     ),
 
@@ -287,7 +297,18 @@ module.exports = grammar({
       field('right', $._term),
     ),
 
-    _term: $ => choice($.term, $.string, $.integer, $.true, $.false, $.null),
+    _term: $ => choice(
+      $.term,
+      $.string,
+      $.integer,
+      $.negative_integer,
+      $.true,
+      $.false,
+      $.null,
+    ),
+
+    // Rule terms have no unary minus, so a negative constant is read here.
+    negative_integer: $ => seq('-', $.integer),
 
     // Whether a term is a variable depends only on its spelling: a bare name
     // starting with a lowercase letter or `_` is a variable (and `x.field`
@@ -346,7 +367,7 @@ module.exports = grammar({
       field('parameters', $.parameters),
       ':',
       field('return_type', $._type),
-      braced($, $.field),
+      bracedFields($, $.field),
     ),
 
     check_declaration: $ => seq(
@@ -385,7 +406,7 @@ module.exports = grammar({
     expect_statement: $ => seq(
       'expect',
       field('condition', $._expression),
-      optional(seq('because', field('reason', $.string))),
+      optional(seq('because', field('reason', $._expression))),
     ),
 
     return_statement: $ => seq('return', field('value', $._expression)),
@@ -405,12 +426,7 @@ module.exports = grammar({
       field('body', $.block),
     ),
 
-    tuple_pattern: $ => seq(
-      '(',
-      $.identifier,
-      repeat1(seq(',', $.identifier)),
-      ')',
-    ),
+    tuple_pattern: $ => seq('(', optionalCommaList($.identifier), ')'),
 
     // Fields, parameters and types
 
@@ -418,7 +434,7 @@ module.exports = grammar({
 
     parameters: $ => seq(
       '(',
-      optional(seq(commaSeparated($.parameter), optional(','))),
+      optionalCommaList($.parameter),
       ')',
     ),
 
@@ -433,9 +449,9 @@ module.exports = grammar({
       optional(field('arguments', $.type_arguments)),
     ),
 
-    type_arguments: $ => seq('<', commaSeparated($._type), '>'),
+    type_arguments: $ => seq('<', optionalCommaList($._type), '>'),
 
-    record_type: $ => braced($, $.typed_field),
+    record_type: $ => bracedFields($, $.typed_field),
 
     // Expressions. One level per row of the precedence table, lowest first,
     // as in the EBNF. Equality and comparison take operands from the level
@@ -493,7 +509,7 @@ module.exports = grammar({
     index_expression: $ => seq(
       field('object', $._postfix),
       '[',
-      commaSeparated(field('index', $._expression)),
+      optionalCommaList(field('index', $._expression)),
       ']',
     ),
 
@@ -504,7 +520,7 @@ module.exports = grammar({
 
     arguments: $ => seq(
       '(',
-      optional(seq(commaSeparated(choice($._expression, $.named_argument)), optional(','))),
+      optionalCommaList(choice($._expression, $.named_argument)),
       ')',
     ),
 
@@ -529,13 +545,9 @@ module.exports = grammar({
 
     parenthesized_expression: $ => seq('(', $._expression, ')'),
 
-    list: $ => seq(
-      '[',
-      optional(seq(commaSeparated($._expression), optional(','))),
-      ']',
-    ),
+    list: $ => seq('[', optionalCommaList($._expression), ']'),
 
-    record: $ => braced($, $.field),
+    record: $ => bracedFields($, $.field),
 
     // Lexical
 
@@ -547,9 +559,9 @@ module.exports = grammar({
     // a newline, such as a field called `in`.
     identifier: _ => /[A-Za-z_][A-Za-z0-9_]*|`[^`\n]+`/,
 
-    // 64-bit signed integers. The sign belongs to the literal so a rule term
-    // can be negative; in an expression `-x` is a unary minus.
-    integer: _ => /-?[0-9]+/,
+    // 64-bit signed integers. A minus sign is its own token: `-1` in an
+    // expression is a unary minus, and in a rule term a `negative_integer`.
+    integer: _ => /[0-9]+/,
 
     true: _ => 'true',
     false: _ => 'false',
@@ -600,26 +612,44 @@ module.exports = grammar({
 });
 
 /**
- * Zero or more `rule`, each ended by one or more separators, except that the
- * last may stand without one: a closing `}` or the end of the file ends it.
+ * Zero or more `rule`, each ended by `separators`, except that the last may
+ * stand without one: a closing `}` or the end of the file ends it.
  *
- * @param {GrammarSymbols<string>} $
+ * @param {RuleOrLiteral} separators
  * @param {RuleOrLiteral} rule
  * @returns {RuleOrLiteral[]}
  */
-function lines($, rule) {
-  return [repeat(seq(rule, $._separators)), optional(rule)];
+function lines(separators, rule) {
+  return [repeat(seq(rule, separators)), optional(rule)];
 }
 
 /**
- * A `{ ... }` body of separator-delimited members.
+ * A `{ ... }` body of members separated by newlines or `;`. Separators may
+ * also lead, so a body can open with a blank line or a `;`.
  *
  * @param {GrammarSymbols<string>} $
  * @param {RuleOrLiteral} member
  * @returns {SeqRule}
  */
 function braced($, member) {
-  return seq('{', ...lines($, member), '}');
+  return seq('{', optional($._separators), ...lines($._separators, member), '}');
+}
+
+/**
+ * A `{ ... }` body of fields or typed fields, separated by newlines, `;` or
+ * commas.
+ *
+ * @param {GrammarSymbols<string>} $
+ * @param {RuleOrLiteral} member
+ * @returns {SeqRule}
+ */
+function bracedFields($, member) {
+  return seq(
+    '{',
+    optional($._field_separators),
+    ...lines($._field_separators, member),
+    '}',
+  );
 }
 
 /**
@@ -630,6 +660,16 @@ function braced($, member) {
  */
 function commaSeparated(rule) {
   return seq(rule, repeat(seq(',', rule)));
+}
+
+/**
+ * Zero or more `rule`, separated by commas, with an optional trailing comma.
+ *
+ * @param {RuleOrLiteral} rule
+ * @returns {ChoiceRule}
+ */
+function optionalCommaList(rule) {
+  return optional(seq(commaSeparated(rule), optional(',')));
 }
 
 /**
