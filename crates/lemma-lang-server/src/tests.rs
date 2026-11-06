@@ -71,7 +71,7 @@ fn session(requests: &[Value]) -> (Vec<Value>, Url) {
     messages.push(request(99, "shutdown", &Value::Null));
     messages.push(notification("exit", &Value::Null));
     let mut written = Vec::new();
-    serve(&mut input(&messages), &mut written, directory.path()).unwrap();
+    serve(input(&messages), &mut written, directory.path()).unwrap();
     (output(written), uri)
 }
 
@@ -201,6 +201,29 @@ fn formatting(id: i64) -> Value {
 }
 
 #[test]
+fn a_request_after_a_change_is_answered_from_the_changed_text() {
+    let changed = format!("{MODULE}relation Added(name: Text)\n");
+
+    let (messages, _) = session(&[
+        change(&changed),
+        request(
+            4,
+            "textDocument/documentSymbol",
+            &json!({ "textDocument": { "uri": "" } }),
+        ),
+    ]);
+
+    let symbols = response(&messages, 4);
+    let names: Vec<&str> = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|symbol| symbol["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Owns", "owned", "broken", "Added"]);
+}
+
+#[test]
 fn the_server_advertises_formatting() {
     let (messages, _) = session(&[]);
 
@@ -232,3 +255,5 @@ fn formatting_a_document_with_syntax_errors_changes_nothing() {
     let answer = messages.iter().find(|message| message["id"] == 8).unwrap();
     assert_eq!(answer["result"], Value::Null);
 }
+
+mod burst;

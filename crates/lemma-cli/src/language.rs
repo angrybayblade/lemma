@@ -33,9 +33,9 @@ pub(crate) fn run(args: &LmArgs, json: bool) -> ExitCode {
 
 /// Serves an editor on standard input and output until it exits.
 fn serve() -> anyhow::Result<()> {
-    let stdin = std::io::stdin();
+    let input = std::io::BufReader::new(std::io::stdin());
     let stdout = std::io::stdout();
-    lemma_lang_server::serve(&mut stdin.lock(), &mut stdout.lock(), &cache_directory())?;
+    lemma_lang_server::serve(input, &mut stdout.lock(), &cache_directory())?;
     Ok(())
 }
 
