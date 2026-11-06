@@ -296,6 +296,11 @@ pub struct Operation {
     /// Where its request and response schemas come from.
     #[serde(default)]
     pub schema: Option<Schemas>,
+    /// Where it was before a rename, each `<service>.<operation>` in the
+    /// same repository, so a change that renames it compares it with its
+    /// old self instead of finding it new.
+    #[serde(default)]
+    pub previously: Vec<String>,
 }
 
 /// An operation's schemas.

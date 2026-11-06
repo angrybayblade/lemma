@@ -85,6 +85,7 @@ fn declared(file: &str, operation: &Value, at: &str) -> Operation {
     let response = success_status(operation)
         .map(|status| format!("{at}.responses[\"{status}\"].content[\"application/json\"].schema"));
     Operation {
+        previously: Vec::new(),
         path: file.to_owned(),
         schema: Some(Schemas {
             resolver: None,
