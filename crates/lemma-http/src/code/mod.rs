@@ -446,6 +446,7 @@ impl Walk<'_> {
         let mut path = None;
         let mut request = None;
         let mut names_a_host = false;
+        let mut names_a_version = false;
         let mut cursor = node.walk();
         for pair in node
             .named_children(&mut cursor)
@@ -461,8 +462,16 @@ impl Walk<'_> {
                 "method" => method = self.string_value(value),
                 "path" | "url" => path = Some(value),
                 "request" => request = Some(value),
+                "version" | "apiVersion" | "api_version" => names_a_version = true,
                 key => names_a_host |= HOST_KEYS.contains(&key),
             }
+        }
+        // `{ method, version: 'v3', path: '/tools' }` is a path relative to a
+        // versioned base this object does not spell, as in a table of routes
+        // an API key may call: recorded as a route, it would never match
+        // the spec.
+        if names_a_version {
+            return;
         }
         let Some(path_node) = path else { return };
         let Some(template) = self.string_value(path_node) else {
@@ -1288,6 +1297,15 @@ mod tests {
             ("GET", "/v1/users")
         );
         assert_eq!(found.path_references, []);
+    }
+
+    #[test]
+    fn a_path_beside_an_api_version_is_not_a_route() {
+        let source = "export const EXTRA = [\n  { method: 'POST', version: 'v3', path: '/tools/execute/proxy' },\n]\n";
+
+        let found = facts("restrictions.ts", source);
+
+        assert_eq!(found.method_paths, []);
     }
 
     #[test]
