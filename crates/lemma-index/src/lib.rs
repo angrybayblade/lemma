@@ -280,7 +280,13 @@ impl LiveIndex {
                     Some(&self.root.join(".lemma")),
                 )
             }
-            _ => WalkScope::Full,
+            (previous, observed) => {
+                log::debug!(
+                    "full walk: {}",
+                    full_walk_reason(previous.is_some(), is_remembered, observed.as_ref())
+                );
+                WalkScope::Full
+            }
         };
         let known_head = self.known_head(&walk_scope);
         let is_quiet = matches!(&walk_scope, WalkScope::Partial(dirty) if dirty.is_empty());
@@ -424,6 +430,24 @@ fn log_changes(changes: &ChangeSet) {
 }
 
 /// Logs what an indexing run looks at.
+/// Why a run cannot trust the watcher and must walk the whole tree.
+fn full_walk_reason(
+    has_previous: bool,
+    is_remembered: bool,
+    observed: Option<&watch::Observed>,
+) -> &'static str {
+    if !has_previous {
+        return "nothing indexed yet";
+    }
+    if !is_remembered {
+        return "the stored snapshot is not the one this process last wrote";
+    }
+    match observed {
+        None => "no watcher on this directory",
+        Some(_) => "the watcher could not confirm it saw every change",
+    }
+}
+
 fn log_scan(root: &str, walk_scope: &WalkScope) {
     match walk_scope {
         WalkScope::Full => log::info!("indexing {root}: checking every file for changes"),

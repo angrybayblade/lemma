@@ -53,6 +53,7 @@ pub(crate) fn walk_scope<'a>(
         };
         if relative == ".git" || relative.starts_with(".git/") {
             if relative == ".git/info/exclude" {
+                log::debug!("full walk: {relative} changed");
                 return WalkScope::Full;
             }
             scope.git_changed = true;
@@ -60,6 +61,7 @@ pub(crate) fn walk_scope<'a>(
         }
         let name = relative.rsplit('/').next().unwrap_or_default();
         if IGNORE_FILES.contains(&name) {
+            log::debug!("full walk: {relative} changed");
             return WalkScope::Full;
         }
         // Discovery never indexes these, so their churn (a virtual

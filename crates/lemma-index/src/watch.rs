@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::event::{AccessKind, AccessMode};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 /// How long to wait for the marker's event before giving up and walking
 /// the whole tree instead.
@@ -133,7 +134,12 @@ fn record(shared: &Shared, barrier_dir: &Path, event: notify::Result<Event>) {
             if event.need_rescan() {
                 state.observed.needs_full_walk = true;
             }
-            for path in event.paths {
+            let paths = if is_change(event.kind) {
+                event.paths
+            } else {
+                Vec::new()
+            };
+            for path in paths {
                 match barrier_number(barrier_dir, &path) {
                     Some(number) => state.barrier_seen = state.barrier_seen.max(number),
                     None => {
@@ -144,6 +150,19 @@ fn record(shared: &Shared, barrier_dir: &Path, event: notify::Result<Event>) {
         }
     }
     shared.changed.notify_all();
+}
+
+/// Whether an event can mean a file's contents or presence changed.
+///
+/// Opening or reading a file is reported too, and Git reads files such as
+/// `.git/info/exclude` on every `git status`, including Lemma's own: counted
+/// as changes, those reads would force a full walk on every run.
+fn is_change(kind: EventKind) -> bool {
+    match kind {
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) => false,
+        _ => true,
+    }
 }
 
 /// The marker number, if `path` is one of this watcher's markers.
@@ -168,4 +187,31 @@ fn barrier_directory() -> Option<PathBuf> {
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use notify::event::{CreateKind, ModifyKind};
+
+    use super::*;
+
+    #[test]
+    fn reading_a_file_is_not_a_change() {
+        let read = EventKind::Access(AccessKind::Close(AccessMode::Read));
+        let opened = EventKind::Access(AccessKind::Open(AccessMode::Any));
+
+        assert!(!is_change(read));
+        assert!(!is_change(opened));
+    }
+
+    #[test]
+    fn writing_creating_and_modifying_are_changes() {
+        let written = EventKind::Access(AccessKind::Close(AccessMode::Write));
+        let created = EventKind::Create(CreateKind::File);
+        let modified = EventKind::Modify(ModifyKind::Any);
+
+        assert!(is_change(written));
+        assert!(is_change(created));
+        assert!(is_change(modified));
+    }
 }
