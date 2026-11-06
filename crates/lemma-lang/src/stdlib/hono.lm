@@ -1,0 +1,4 @@
+module lemma.hono
+
+// Reads a service's operations from its code with Lemma's built-in
+// `hono` adapter: `app(entry: [...])`. See docs/adapters.md.

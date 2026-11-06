@@ -1,0 +1,4 @@
+module lemma.json
+
+// Schemas inside JSON documents: a committed file, `document(file)`, or a
+// command's output, `command(...)`, each read with `.at("$.json.path")`.
