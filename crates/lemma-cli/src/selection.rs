@@ -8,12 +8,6 @@ use lemma_graph::config::{LEMMA_FILE, LemmaFile, Service};
 use lemma_index::{RuleSpec, Selection};
 use lemma_model::Language;
 
-/// A `lemma.yaml` as read: its text and what it says.
-pub(crate) struct LemmaSource {
-    pub text: String,
-    pub file: LemmaFile,
-}
-
 /// Where `lemma index` reads from: `path` itself if it is a file, else the
 /// `lemma.yaml` in it if there is one; and the directory indexed.
 pub(crate) fn locate(path: &Path) -> anyhow::Result<(PathBuf, Option<PathBuf>)> {
@@ -42,14 +36,14 @@ pub(crate) fn is_workspace(file: &LemmaFile) -> bool {
 }
 
 /// The `lemma.yaml` at `path`, read and checked.
-pub(crate) fn read_lemma_file(path: &Path) -> anyhow::Result<LemmaSource> {
+pub(crate) fn read_lemma_file(path: &Path) -> anyhow::Result<LemmaFile> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("could not read {}", path.display()))?;
     let file =
         lemma_graph::config::parse(&text).with_context(|| format!("invalid {}", path.display()))?;
     file.validate()
         .with_context(|| format!("invalid {}", path.display()))?;
-    Ok(LemmaSource { text, file })
+    Ok(file)
 }
 
 /// The files a repository's index covers: those any of its services
