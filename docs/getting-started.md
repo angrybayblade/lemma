@@ -18,6 +18,7 @@ To build from source instead, you need a Rust toolchain, 1.85 or newer ([rustup]
 git clone https://github.com/angrybayblade/lemma.git
 cd lemma
 cargo install --path crates/lemma-cli --locked
+cargo install --path crates/lemma-lm --locked   # lm, for .lm modules
 ```
 
 This puts `lemma` in `~/.cargo/bin`. Check it works:

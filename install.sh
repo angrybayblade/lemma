@@ -1,11 +1,11 @@
 #!/bin/sh
-# Installs lemma from a GitHub release.
+# Installs lemma, and lm for .lm modules, from a GitHub release.
 #
 #   curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
 #
 # Settings, all optional:
 #   LEMMA_VERSION      release tag to install, such as v0.1.0-rc0 (default: the newest, pre-releases included)
-#   LEMMA_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
+#   LEMMA_INSTALL_DIR  where to put the binaries (default: ~/.local/bin)
 #   LEMMA_SKILLS       1 to also install the agent skills (default: 0)
 #   LEMMA_SKILLS_DIR   where skills go (default: ~/.claude/skills)
 #   GITHUB_TOKEN       raises GitHub's API rate limit when looking up the newest release
@@ -84,6 +84,11 @@ main() {
   mkdir -p "$INSTALL_DIR"
   install -m 755 "$work/lemma-$tag-$platform/lemma" "$INSTALL_DIR/lemma"
   say "installed $INSTALL_DIR/lemma"
+  # Releases before lm had only lemma.
+  if [ -f "$work/lemma-$tag-$platform/lm" ]; then
+    install -m 755 "$work/lemma-$tag-$platform/lm" "$INSTALL_DIR/lm"
+    say "installed $INSTALL_DIR/lm"
+  fi
 
   if [ "${LEMMA_SKILLS:-0}" = "1" ]; then
     skills="lemma-skills-$tag.tar.gz"
