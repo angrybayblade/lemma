@@ -382,3 +382,42 @@ fn an_allowance_for_a_requirement_no_check_evaluated_is_not_called_stale() {
         .collect();
     assert_eq!(about_allowances, Vec::<&str>::new());
 }
+
+#[test]
+fn a_change_that_breaks_the_worker_introduces_its_violations_and_lists_new_behaviors() {
+    let workspace = system(FORWARDING_HANDLER);
+    let platform = workspace.path().join("platform");
+    write(&platform.join("worker/handlers.py"), DROPPING_HANDLER);
+    let module = format!("{PLATFORM}\nbehavior always {{\n    expect true\n}}\n");
+    write(&platform.join("lemma.lm"), &module);
+    git(&platform, &["commit", "-q", "-am", "drop the flag"]);
+    let options = CheckOptions {
+        change: Some(lemma_graph::Change {
+            repository: "self".to_owned(),
+            base: "HEAD~1".to_owned(),
+            head: Some("HEAD".to_owned()),
+        }),
+        level: Some(Level::Check),
+        cache: workspace.path().join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Full,
+        list_links: false,
+        run_checkers: true,
+        select: None,
+    };
+
+    let report = check(&platform.join("lemma.lm"), &options, &ReferenceEngine, None).unwrap();
+
+    let forwards = &report.behaviors[0];
+    assert_eq!(forwards.outcome, "violated");
+    assert!(
+        forwards.cases[1..].iter().all(|case| case.introduced),
+        "{forwards:#?}"
+    );
+    let changes: Vec<(&str, &str)> = report
+        .requirement_changes
+        .iter()
+        .map(|change| (change.requirement.as_str(), change.change))
+        .collect();
+    assert_eq!(changes, [("platform::always", "added")]);
+}
