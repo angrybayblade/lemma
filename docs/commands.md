@@ -173,7 +173,7 @@ Render a drawing with Graphviz (`lemma graph X --format dot | dot -Tsvg > graph.
 
 ## `lemma providers`
 
-Lists every configured language server, whether its command was found, and the order they are tried in for each language. It reads the configuration of the indexed project if there is one, otherwise `.lemma/providers.toml` in the current directory.
+Lists every configured language server, whether its command was found, and the order they are tried in for each language. It reads the configuration of the indexed project if there is one, otherwise `.lemma/providers.toml` in the current directory. A server that is not found says how to install it; one installed where `PATH` does not reach (`~/go/bin`, `~/.cargo/bin`, `~/.local/bin`, `~/.bun/bin`, `~/.npm-global/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) says where, and which directory to add to `PATH`. A project's own providers can give `install` too.
 
 ## `lemma mcp`
 

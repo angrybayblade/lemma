@@ -231,6 +231,12 @@ struct ProviderView<'a> {
     languages: &'a [Language],
     command: &'a str,
     executable: Option<String>,
+    /// Where it is installed off `PATH`, when it is not on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    off_path: Option<String>,
+    /// How to install it, when it is not found anywhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install: Option<&'a str>,
 }
 
 impl<'a> IndexView<'a> {
@@ -364,18 +370,34 @@ pub(crate) fn ambiguous(
 pub(crate) fn providers(
     out: &mut dyn Write,
     registry: &ProviderRegistry,
+    home: Option<&Path>,
     format: Format,
 ) -> io::Result<()> {
     let installed = |command: &str| registry.resolve_executable(command);
+    let off_path = |command: &str| {
+        installed(command).map_or_else(
+            || home.and_then(|home| registry.installed_off_path(command, home)),
+            |_| None,
+        )
+    };
     if format == Format::Json {
         let views: Vec<_> = registry
             .definitions()
             .iter()
-            .map(|definition| ProviderView {
-                id: &definition.id,
-                languages: &definition.languages,
-                command: &definition.command,
-                executable: installed(&definition.command).map(|path| path.display().to_string()),
+            .map(|definition| {
+                let executable = installed(&definition.command);
+                let off_path = off_path(&definition.command);
+                let is_missing = executable.is_none() && off_path.is_none();
+                ProviderView {
+                    id: &definition.id,
+                    languages: &definition.languages,
+                    command: &definition.command,
+                    executable: executable.map(|path| path.display().to_string()),
+                    off_path: off_path.map(|path| path.display().to_string()),
+                    install: is_missing
+                        .then_some(definition.install.as_deref())
+                        .flatten(),
+                }
             })
             .collect();
         return print_json(out, &views);
@@ -387,10 +409,14 @@ pub(crate) fn providers(
             .iter()
             .map(|language| language.as_str())
             .collect();
-        let status = installed(&definition.command).map_or_else(
-            || format!("not found: {}", definition.command),
-            |path| path.display().to_string(),
-        );
+        let status = match (
+            installed(&definition.command),
+            off_path(&definition.command),
+        ) {
+            (Some(path), _) => path.display().to_string(),
+            (None, Some(path)) => off_path_status(&path),
+            (None, None) => missing_status(definition),
+        };
         writeln!(
             out,
             "{:<28} {:<16} {status}",
@@ -399,6 +425,11 @@ pub(crate) fn providers(
         )?;
     }
     writeln!(out)?;
+    print_provider_order(out, registry)
+}
+
+/// The installed providers each language tries, in order.
+fn print_provider_order(out: &mut dyn Write, registry: &ProviderRegistry) -> io::Result<()> {
     writeln!(out, "Tried in order for each language:")?;
     for language in Language::ALL {
         let installed = registry.installed(language);
@@ -414,6 +445,24 @@ pub(crate) fn providers(
         writeln!(out, "  {language:<12} {chosen}")?;
     }
     Ok(())
+}
+
+/// A provider installed where `PATH` does not reach, and the fix.
+fn off_path_status(path: &Path) -> String {
+    let directory = path.parent().unwrap_or(path);
+    format!(
+        "not on PATH: installed at {}; add {} to PATH",
+        path.display(),
+        directory.display()
+    )
+}
+
+/// A provider found nowhere, and how to install it when that is known.
+fn missing_status(definition: &lemma_providers::ProviderDefinition) -> String {
+    match &definition.install {
+        Some(install) => format!("not found: {} (install: {install})", definition.command),
+        None => format!("not found: {}", definition.command),
+    }
 }
 
 /// How a symbol's id is written for passing back: `#607`, or, for a symbol
