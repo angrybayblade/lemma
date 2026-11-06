@@ -100,7 +100,7 @@ Lines starting with `skipped` name servers that could not start before one did.
 
 ## `lemma definition <file:line:column>`
 
-Finds where the symbol used at a position is defined, such as the function a call goes to. Lines and columns count from 1, as editors show them: `lemma definition src/app.py:12:5`.
+Finds where the symbol used at a position is defined, such as the function a call goes to. Lines and columns count from 1, as editors show them: `lemma definition src/app.py:12:5`. From a workspace's directory, a file inside a member (`repos/platform/apps/api/handler.go:229:43`) is looked up in that member's index, at its pin when it has one.
 
 Each definition shows its location and, when it is an indexed symbol, its qualified name and id, so you can ask about it next (`lemma refs '#415'`). It takes `--refresh` and `--timeout-secs` like `refs`, and exits with 3 when no server could answer.
 

@@ -547,9 +547,30 @@ impl Engine {
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
         let (path, position) = parse_location(&args.location)?;
+        let file = request.invocation.resolve(&path);
         let db_path = request.find_index()?;
-        let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
-        let relative = relative_to_root(&snapshot, &request.invocation.resolve(&path))?;
+        let members = open_store(&mut self.stores, &db_path)?.workspace_members()?;
+        // From a workspace, a file is looked up in the index of the member
+        // holding it: the workspace's own index has no source snapshot.
+        let (db_path, relative) = match member_file(&members, &file) {
+            Some((member, relative)) => (PathBuf::from(&member.database), Some((member, relative))),
+            None => (db_path, None),
+        };
+        let (store, snapshot, relative) = if let Some((member, relative)) = relative {
+            let store = open_store(&mut self.stores, &db_path)?;
+            let Some(snapshot) = store.snapshot_for_root(&member.indexed_root)? else {
+                bail!(
+                    "{} has no index of {}; run `lemma index` on the workspace",
+                    member.name,
+                    member.indexed_root
+                );
+            };
+            (store, snapshot, relative)
+        } else {
+            let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
+            let relative = relative_to_root(&snapshot, &file)?;
+            (store, snapshot, relative)
+        };
         let registry = request.registry(Path::new(&snapshot.snapshot.root))?;
         let options = lookup_options(&args.lookup);
         let context = LookupContext {
@@ -1658,6 +1679,27 @@ fn exit_code<T>(outcome: &Outcome<T>) -> u8 {
 }
 
 /// A file as the index names it: relative to the snapshot root, with `/`.
+/// The workspace member holding `file`, in its clone or in the worktree it
+/// is indexed in, and the file's path inside it. The deepest root wins, as
+/// members can be nested.
+fn member_file<'m>(members: &'m [StoredMember], file: &Path) -> Option<(&'m StoredMember, String)> {
+    let file = file.canonicalize().ok()?;
+    members
+        .iter()
+        .flat_map(|member| [(member, &member.indexed_root), (member, &member.root)])
+        .filter_map(|(member, root)| {
+            let root = Path::new(root).canonicalize().ok()?;
+            let inside = file.strip_prefix(&root).ok()?;
+            let parts: Vec<String> = inside
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            Some((root.components().count(), member, parts.join("/")))
+        })
+        .max_by_key(|(depth, _, _)| *depth)
+        .map(|(_, member, relative)| (member, relative))
+}
+
 fn relative_to_root(snapshot: &StoredSnapshot, file: &Path) -> anyhow::Result<String> {
     let file = file
         .canonicalize()
@@ -1754,6 +1796,38 @@ mod tests {
         );
         assert_eq!(qualified_id("#607"), None);
         assert_eq!(qualified_id("#billing:services.api.create"), None);
+    }
+
+    #[test]
+    fn a_workspace_path_maps_onto_the_member_holding_it() {
+        let workspace = tempfile::tempdir().unwrap();
+        let platform = workspace.path().join("repos/platform");
+        let worktree = workspace.path().join("worktrees/platform");
+        std::fs::create_dir_all(platform.join("apps/worker")).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        let file = platform.join("apps/worker/execute.go");
+        std::fs::write(&file, "package worker\n").unwrap();
+        let member = |name: &str, root: &Path, indexed: &Path| StoredMember {
+            name: name.to_owned(),
+            root: root.display().to_string(),
+            revision: None,
+            indexed_root: indexed.display().to_string(),
+            database: String::new(),
+        };
+        let members = [
+            member(
+                "#web",
+                &workspace.path().join("repos/web"),
+                &workspace.path().join("repos/web"),
+            ),
+            member("#platform", &platform, &worktree),
+        ];
+
+        let (found, relative) = member_file(&members, &file).unwrap();
+
+        assert_eq!(found.name, "#platform");
+        assert_eq!(relative, "apps/worker/execute.go");
+        assert!(member_file(&members, workspace.path()).is_none());
     }
 
     #[test]
