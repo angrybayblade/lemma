@@ -402,10 +402,21 @@ fn connect_or_start(socket: &Path) -> anyhow::Result<UnixStream> {
 }
 
 /// The daemon is never waited for: it outlives this command on purpose.
+/// An installed service starts it; otherwise it is started here, with the
+/// environment the service would give it.
 fn start_daemon() -> anyhow::Result<()> {
+    match crate::service::start() {
+        Ok(true) => return Ok(()),
+        Ok(false) => {}
+        Err(error) => {
+            log::info!("could not start the daemon's service, so starting it here: {error:#}");
+        }
+    }
     let executable = std::env::current_exe().context("could not find the lemma executable")?;
     Command::new(executable)
         .arg("daemon")
+        .env_clear()
+        .envs(daemon_environment(std::env::vars_os()))
         .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -416,6 +427,46 @@ fn start_daemon() -> anyhow::Result<()> {
         .spawn()
         .context("could not start the lemma daemon")?;
     Ok(())
+}
+
+/// The variables a daemon keeps from the command that starts it.
+///
+/// The daemon outlives that command and serves every later one, so it must
+/// not keep what one shell set for itself: a sandbox's `GOCACHE`, a
+/// temporary `XDG_CACHE_HOME` or `TMPDIR` would redirect every later build
+/// and cache, and break them once removed. Kept are who the user is, where
+/// programs are, the locale, how to reach the network and Lemma's own
+/// settings.
+fn daemon_environment(
+    variables: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    const KEPT: [&str; 13] = [
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "LANG",
+        "LANGUAGE",
+        "XDG_CONFIG_HOME",
+        "XDG_RUNTIME_DIR",
+        "SSH_AUTH_SOCK",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+    ];
+    let mut kept: Vec<(OsString, OsString)> = variables
+        .into_iter()
+        .filter(|(name, _)| {
+            let Some(name) = name.to_str() else {
+                return false;
+            };
+            let upper = name.to_ascii_uppercase();
+            KEPT.contains(&upper.as_str()) || name.starts_with("LC_") || name.starts_with("LEMMA_")
+        })
+        .collect();
+    kept.sort();
+    kept
 }
 
 /// Listens on the socket, or returns `None` if a live daemon already does.
@@ -505,6 +556,31 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_daemon_keeps_who_and_where_but_not_a_shells_caches() {
+        let variables = [
+            ("PATH", "/usr/bin"),
+            ("HOME", "/home/me"),
+            ("LEMMA_CONFIG", "/etc/lemma.toml"),
+            ("https_proxy", "http://proxy"),
+            ("LC_ALL", "C.UTF-8"),
+            ("GOCACHE", "/tmp/sandbox/go"),
+            ("XDG_CACHE_HOME", "/tmp/sandbox/cache"),
+            ("TMPDIR", "/tmp/sandbox"),
+        ]
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)));
+
+        let kept: Vec<String> = daemon_environment(variables)
+            .into_iter()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            kept,
+            ["HOME", "LC_ALL", "LEMMA_CONFIG", "PATH", "https_proxy"]
+        );
+    }
 
     #[test]
     fn requests_round_trip_as_one_json_line() {
