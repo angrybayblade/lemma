@@ -120,12 +120,15 @@ fn print_text(out: &mut impl Write, checked: &Checked, root: &Path) -> anyhow::R
     let model = &checked.model;
     writeln!(
         out,
-        "{modules} modules: {} services, {} relations, {} rules, {} requirements, {} graphs; {errors} errors",
+        "{modules} modules: {} services, {} relations, {} rules, {} requirements, {} graphs, {} behaviors, {} checkers, {} allowances; {errors} errors",
         model.services.len(),
         model.relations.len(),
         model.rules.len(),
         model.requirements.len(),
-        model.graphs.len()
+        model.graphs.len(),
+        model.behaviors.len(),
+        model.checkers.len(),
+        model.allowances.len()
     )?;
     Ok(())
 }
