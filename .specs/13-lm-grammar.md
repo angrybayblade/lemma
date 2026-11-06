@@ -1041,6 +1041,16 @@ Still open:
 - Finding roles (`at:` with a `Site` from the standard library's relations) in place of the variable names `lemma check` reads.
 - Allowances for `lemma check`'s built-in link checks.
 
+Before release (each is marked `TODO(release)` in the code):
+
+- **Checkers from pinned repositories run.** `lemma check` runs a checker declared in any loaded module, so a repository the workspace only pins can add a command that runs on the checking machine. Decide whether checkers outside the entry repository need the workspace's consent; until then, use `--no-run` on untrusted input.
+- **Equal loop values share a case identity.** `for x in [1, 1]` gives two cases one identity, which reports, allowances and change comparison cannot tell apart.
+- **`allow` and `run` need an import for `lemma.http`.** `lemma check` always runs its requirements, but `lemma.http.<name>` resolves only in a module that imports it.
+- **Evidence is keyed on whole repositories.** Any commit changes a repository's state, so every checker reading it runs again; key on the files a checker read.
+- **Checkers run one at a time.** Run independent behaviors' demands in parallel.
+- **The parent's program is checked up to four times per `lemma check`.** Check it once per snapshot and share it.
+- **Rules in behaviors are evaluated naively.** Each round derives every row again and finds new ones by scanning; evaluate semi-naively before behaviors read facts from code.
+
 ## 16. Changes from draft 0.1
 
 - **Examples:** they use a generic platform (`functions`, `worker`, `gateway`) and no organisation's names.
