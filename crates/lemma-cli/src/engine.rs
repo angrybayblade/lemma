@@ -740,7 +740,13 @@ impl Engine {
             registry: &registry,
             options: &options,
         };
-        let graph_options = graph_options(args.direction, args.depth, args.source, args.max_nodes);
+        let graph_options = graph_options(
+            args.direction,
+            args.depth,
+            args.source,
+            args.max_nodes,
+            args.only.clone(),
+        );
         let mut graph =
             lemma_query::symbol_graph(store, &context, &target, &graph_options, &mut self.pool)?;
         addresses::add_root_links(&mut graph, &linked, graph_options.direction);
@@ -1706,6 +1712,7 @@ fn graph_options(
     depth: usize,
     source: GraphSourceArg,
     max_nodes: usize,
+    only: Vec<SymbolKind>,
 ) -> lemma_query::GraphOptions {
     lemma_query::GraphOptions {
         direction: match direction {
@@ -1719,6 +1726,7 @@ fn graph_options(
             GraphSourceArg::Names => lemma_query::GraphSource::Names,
         },
         max_nodes,
+        only,
     }
 }
 

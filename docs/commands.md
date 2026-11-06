@@ -142,6 +142,7 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Answers are cached in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones, and files outside the snapshot, such as tests left out of `include`, are not read; an empty graph says so. With `lsp`, a caller in a file outside the snapshot is shown as `path (outside the snapshot)`. |
 | `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`, and the `source` it was found by), `notes` and `truncated`. |
 | `--max-nodes <n>` | The most nodes to include. Default: 200. |
+| `--only <kinds>` | Only symbols of these kinds besides the symbol itself, comma-separated: `--only function,method` shows the calls without the fields, types and constants a body uses. The top level of a file always counts as a caller. |
 | `--workspace <lemma.yaml>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations. See below. |
 | `--across <calls>` | Across a workspace, how many calls from other code to follow: `1` (the default) stops at the code calling the operations the handlers serve; each more goes on through that code to its own operations and their callers. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
@@ -190,7 +191,7 @@ Serves Lemma to agents as an [MCP](https://modelcontextprotocol.io) server over 
 | `definition` | `lemma definition` | `file`, `line`, `column` (from 1), `refresh` |
 | `implementations` | `lemma implementations` | `symbol`, `kind`, `language`, `path`, `refresh` |
 | `signature` | `lemma signature` | `symbol`, `kind`, `language`, `path`, `refresh` |
-| `graph` | `lemma graph` | `symbol`, `kind`, `language`, `path`, `refresh`, `direction`, `depth`, `source`, `max_nodes`, `workspace`, `across` |
+| `graph` | `lemma graph` | `symbol`, `kind`, `language`, `path`, `refresh`, `direction`, `depth`, `source`, `max_nodes`, `only`, `workspace`, `across` |
 | `check` | `lemma check` | `manifest`, `change`, `base`, `head`, `level`, `no_run`, `select`, `all`, `links` |
 
 Each tool returns the command's text output, as the terminal shows it: the same facts and ids as its [JSON output](json-output.md), in a fraction of the size. A command that ran but found no answer (an ambiguous name, a stale file, no server) is a normal result that says why, and so is a check that found errors; only a command that failed, such as a missing index, is returned as an error. `check` can run behaviors' checkers, which run code, so it is not marked read-only.

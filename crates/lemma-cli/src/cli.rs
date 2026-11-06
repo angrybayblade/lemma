@@ -327,6 +327,10 @@ pub(crate) struct GraphArgs {
     /// The most nodes to include.
     #[arg(long, default_value_t = 200)]
     pub max_nodes: usize,
+    /// Only symbols of these kinds besides the symbol itself, such as
+    /// `function,method` for the calls without the fields and types used.
+    #[arg(long, value_delimiter = ',', value_name = "KINDS")]
+    pub only: Vec<SymbolKind>,
     /// A workspace lemma.yaml: follow callers out of the repository too,
     /// through the operations their handlers serve to the code in other
     /// repositories that calls them, and on up. Runs inference over the

@@ -50,7 +50,7 @@ impl GraphSource {
 }
 
 /// How far and how to follow uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphOptions {
     /// Which way.
     pub direction: Direction,
@@ -61,6 +61,9 @@ pub struct GraphOptions {
     pub source: GraphSource,
     /// The most nodes to include.
     pub max_nodes: usize,
+    /// The only kinds of symbol to include besides the root, such as
+    /// functions and methods for the calls alone; empty for every kind.
+    pub only: Vec<SymbolKind>,
 }
 
 /// Symbols defined by more than this many symbols are not matched by name.
@@ -214,6 +217,7 @@ struct Builder {
     max_nodes: usize,
     root: String,
     source: GraphSource,
+    only: Vec<SymbolKind>,
 }
 
 impl Builder {
@@ -227,6 +231,7 @@ impl Builder {
             max_nodes: options.max_nodes.max(1),
             root: node_id(root),
             source: options.source,
+            only: options.only.clone(),
         };
         builder.add(&Neighbour::Symbol(root.clone()));
         builder
@@ -249,6 +254,17 @@ impl Builder {
         Some(id)
     }
 
+    /// Whether `neighbour` is of a kind the graph shows. The top level of a
+    /// file is code that runs, so it counts as a caller of any kind.
+    fn includes(&self, neighbour: &Neighbour) -> bool {
+        match neighbour {
+            Neighbour::Symbol(symbol) => {
+                self.only.is_empty() || self.only.contains(&symbol.symbol.kind)
+            }
+            Neighbour::File(_) | Neighbour::Unindexed(_) => true,
+        }
+    }
+
     /// Adds what was found next to `symbol`; the symbols to follow on.
     fn record(&mut self, way: Way, symbol: &StoredSymbol, found: Found) -> Vec<StoredSymbol> {
         if let Some(note) = found.note {
@@ -258,6 +274,9 @@ impl Builder {
         }
         let mut next = Vec::new();
         for neighbour in found.neighbours {
+            if !self.includes(&neighbour) {
+                continue;
+            }
             let Some(id) = self.add(&neighbour) else {
                 continue;
             };
@@ -947,6 +966,7 @@ mod tests {
             depth,
             source: GraphSource::Names,
             max_nodes: 100,
+            only: Vec::new(),
         }
     }
 
@@ -964,6 +984,19 @@ mod tests {
         let node = graph_node(&Neighbour::Unindexed("tests/test_pay.py".to_owned()));
 
         assert_eq!(node.label, "tests/test_pay.py (outside the snapshot)");
+    }
+
+    #[test]
+    fn only_the_kinds_asked_for_are_shown() {
+        let mut neighbours = fixed();
+        neighbours.symbols[3].symbol.kind = SymbolKind::Field;
+        let root = neighbours.symbols[0].clone();
+        let mut only_calls = options(Direction::Callees, 1);
+        only_calls.only = vec![SymbolKind::Function, SymbolKind::Method];
+
+        let graph = walk(&root, &only_calls, &mut neighbours).unwrap();
+
+        assert_eq!(graph.nodes.len(), 1);
     }
 
     #[test]

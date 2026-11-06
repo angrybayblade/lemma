@@ -296,6 +296,7 @@ fn push_graph_command(
             ("direction", "--direction"),
             ("source", "--source"),
             ("workspace", "--workspace"),
+            ("only", "--only"),
         ],
     )?;
     for (field, flag) in [
