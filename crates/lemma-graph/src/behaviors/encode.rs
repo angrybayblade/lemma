@@ -3,34 +3,30 @@
 //! from `LEMMA_OUTPUT`, as values a behavior reads.
 //!
 //! Operations go out as their address plus what binds them to code: the
-//! service, the repository and its checkout, and the implementation's file
-//! and symbol. Facts go out as their relation, their values by column and
-//! whether they hold.
+//! service, the repository, and the implementation's file and symbol,
+//! relative to the repository. Facts go out as their relation, their
+//! values by column and whether they hold. Nothing names a path on this
+//! machine, since arguments are part of the evidence's key; the input
+//! gives each repository's checkout beside them.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 
 use lemma_lang::eval::{Datum, Evidence};
 use lemma_lang::model::{Model, Operation};
 use lemma_lang::types::{Address, Value};
 use serde_json::{Map, Value as Json, json};
 
-/// What encoding operations needs: where each is declared, the repository
-/// each module is in, and where each repository is checked out.
+/// What encoding operations needs: where each is declared, and the
+/// repository each module is in.
 pub(crate) struct Encoder<'m> {
     operations: HashMap<&'m Address, &'m Operation>,
     repositories: BTreeMap<String, String>,
-    roots: BTreeMap<String, PathBuf>,
 }
 
 impl<'m> Encoder<'m> {
     /// An encoder for `model`, whose modules are in `repositories` (module
-    /// name to repository name), checked out at `roots`.
-    pub(crate) fn new(
-        model: &'m Model,
-        repositories: BTreeMap<String, String>,
-        roots: BTreeMap<String, PathBuf>,
-    ) -> Self {
+    /// name to repository name).
+    pub(crate) fn new(model: &'m Model, repositories: BTreeMap<String, String>) -> Self {
         let operations = model
             .services
             .iter()
@@ -40,7 +36,6 @@ impl<'m> Encoder<'m> {
         Self {
             operations,
             repositories,
-            roots,
         }
     }
 
@@ -88,14 +83,12 @@ impl<'m> Encoder<'m> {
                 "service": address.to_string(),
                 "name": address.dotted_path(),
                 "repository": self.repository_of(address),
-                "root": self.root_of(address),
             }),
             Value::Discovered { service, key } => json!({
                 "operation": key,
                 "discovered": true,
                 "service": service.to_string(),
                 "repository": self.repository_of(service),
-                "root": self.root_of(service),
             }),
             Value::Entity { entity, fields } => {
                 let mut object: Map<String, Json> = fields
@@ -126,20 +119,12 @@ impl<'m> Encoder<'m> {
             "client": declared.is_some_and(|operation| operation.is_client),
             "service": service.to_string(),
             "repository": self.repository_of(address),
-            "root": self.root_of(address),
             "implementation": implementation,
         })
     }
 
     fn repository_of(&self, address: &Address) -> Option<&String> {
         self.repositories.get(&address.module)
-    }
-
-    fn root_of(&self, address: &Address) -> Option<String> {
-        let repository = self.repository_of(address)?;
-        self.roots
-            .get(repository)
-            .map(|root| root.display().to_string())
     }
 }
 
