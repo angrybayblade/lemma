@@ -303,7 +303,12 @@ fn evaluate_behaviors(
     allowances.cover_cases(&evaluated.results, &mut evaluated.reports);
     findings.extend(crate::behaviors::findings(&evaluated.reports, level));
     allowances.cover_findings(findings);
-    findings.extend(allowances.findings(options.change.is_none()));
+    let ran = evaluated
+        .results
+        .iter()
+        .map(|result| result.address.clone())
+        .collect();
+    findings.extend(allowances.findings(&ran));
     Ok((evaluated.reports, evaluated.changes))
 }
 
