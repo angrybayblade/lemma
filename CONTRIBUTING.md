@@ -130,6 +130,12 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | covered operations | The operations whose calls a change-driven run read in full | scope, focus, subset |
 | unit record | One file's parse in Lemma's binary format, kept under a key naming its contents | blob, entry, row |
 | segment | An immutable object built from many unit records at once, such as a repository's functions, named by a digest of its inputs | pack, bundle, snapshot |
+| module | One `.lm` file, named by its place in its repository | package, file, library |
+| graph | A named set of facts of one relation, written as rows, supplied by a provider or derived by a rule | edge list, table |
+| fact | One tuple of a relation, with the provenance of each support | edge, row, triple |
+| behavior | A requirement checked by running statements that may demand evidence | test, scenario, spec |
+| case | One run of a behavior's statements for one set of loop values | iteration, example |
+| check | A named entry point selecting the requirements to evaluate | suite, target |
 
 Extend this table when a new domain concept appears, in the same change that introduces it.
 
