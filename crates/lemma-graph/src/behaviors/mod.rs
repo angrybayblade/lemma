@@ -195,6 +195,9 @@ pub(crate) fn run(
 /// and requirements of every module it loads, `lemma.http` always among
 /// them, as its `check main` selects them. `None` when the parent's
 /// manifest is not a module, and the built-in grammar runs.
+// TODO(release): lemma check checks the parent's program up to four times:
+// lowering each repository at both snapshots, here, and for behaviors at
+// head and base. Check it once per snapshot and share it.
 pub(crate) fn program_grammar(
     root_file: &Path,
     repos: &BTreeMap<String, Repo>,
@@ -353,6 +356,11 @@ impl World for CheckWorld<'_> {
         self.facts.facts(predicate, snapshot)
     }
 
+    // TODO(release): a checker declared in any loaded module runs, including
+    // modules of repositories the workspace only pins, so a pinned
+    // repository can add a command that runs on the machine checking it.
+    // Decide whether checkers outside the entry repository need the
+    // workspace's consent; until then, `--no-run` is the guard.
     fn evidence(&mut self, demand: &Demand<'_>) -> eval::Evidence {
         let checker = demand.checker;
         let Some(place) = self.place(&checker.repository) else {

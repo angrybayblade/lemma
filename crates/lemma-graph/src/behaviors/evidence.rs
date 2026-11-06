@@ -246,6 +246,9 @@ impl Store {
 }
 
 /// The key of a demand's evidence: everything its result depends on.
+// TODO(release): the key holds the whole state of each repository in
+// `reads`, so any commit makes every checker run again; key on the files a
+// checker read (reported, or declared as paths) instead.
 fn evidence_key(request: &Request<'_>) -> String {
     let checker = request.checker;
     let described = json!({

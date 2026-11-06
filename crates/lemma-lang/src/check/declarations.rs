@@ -676,6 +676,10 @@ impl<'a> Checker<'a> {
 
     /// The requirement or behavior `target` names: a name in scope, or a
     /// module and a name joined by dots.
+    // TODO(release): `lemma check` always runs `lemma.http`, but `allow` and
+    // `run` resolve `lemma.http.<name>` only in a module that imports it;
+    // resolve standard-library requirements by their dotted name without an
+    // import.
     pub(crate) fn requirement_named(
         &mut self,
         module: &str,

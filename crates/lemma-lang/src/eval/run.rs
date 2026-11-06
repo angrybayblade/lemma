@@ -19,6 +19,8 @@ const CALL_DEPTH: usize = 64;
 
 /// Runs the behaviors `check` selects, or, without one, every behavior that
 /// takes no parameters, in the model's order.
+// TODO(release): behaviors, and so their checkers, run one at a time; run
+// independent behaviors' demands in parallel, keeping reports in order.
 pub fn run_check(
     model: &Model,
     check: Option<&Check>,
@@ -839,6 +841,9 @@ fn operand_label(expression: &Expression) -> String {
     }
 }
 
+// TODO(release): iterations over equal values (`for x in [1, 1]`) get one
+// identity, so reports, allowances and a change's comparison cannot tell
+// them apart; number repeated values or refuse them.
 fn case_identity(enclosing: &str, bindings: &[(String, Datum)]) -> String {
     let written: Vec<String> = bindings
         .iter()

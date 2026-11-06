@@ -107,6 +107,10 @@ impl<'m> StatedFacts<'m> {
 
     /// Derives the rules of one stratum, which may call each other, until
     /// nothing new is derived. Rules they negate are in earlier strata.
+    // TODO(release): each round derives every row again and finds new ones
+    // by scanning, quadratic in a rule's facts. Fine for stated graphs;
+    // evaluate semi-naively, with hashed rows, before behaviors read facts
+    // from code.
     fn derive_component(&mut self, component: &[&Rule], snapshot: Snapshot) {
         let mut rows: BTreeMap<Address, Vec<Vec<Datum>>> = BTreeMap::new();
         let mut incomplete: BTreeMap<Address, Option<String>> = BTreeMap::new();
