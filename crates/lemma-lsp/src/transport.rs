@@ -7,7 +7,7 @@ use serde_json::Value;
 
 /// Reads one message. Returns `None` when the stream ends cleanly between
 /// messages.
-pub(crate) fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
+pub fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
     let Some(content_length) = read_content_length(reader)? else {
         return Ok(None);
     };
@@ -18,7 +18,7 @@ pub(crate) fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value
 }
 
 /// Writes one message with its header.
-pub(crate) fn write_message(writer: &mut impl Write, message: &Value) -> io::Result<()> {
+pub fn write_message(writer: &mut impl Write, message: &Value) -> io::Result<()> {
     let body = serde_json::to_vec(message).map_err(|error| invalid_data(error.to_string()))?;
     write!(writer, "Content-Length: {}\r\n\r\n", body.len())?;
     writer.write_all(&body)?;

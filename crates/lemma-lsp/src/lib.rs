@@ -18,6 +18,7 @@ use std::time::Duration;
 pub use activity::Readiness;
 pub use client::{LaunchConfig, LspClient, ServerDetails};
 pub use encoding::{PositionEncoding, line_text};
+pub use transport::{read_message, write_message};
 
 /// Resident memory, in bytes, of each server process and the processes it
 /// started, by process id. Servers that are not running are left out.
