@@ -11,6 +11,7 @@
 
 pub mod check;
 pub mod diagnostic;
+pub mod files;
 pub mod load;
 pub mod model;
 pub mod span;
