@@ -88,7 +88,7 @@ The document may carry three extensions:
 | `x-lemma-complete` | the document | `true` when the adapter read every route the code registers, so an operation it does not describe is gone. Any unread module makes a reading incomplete. |
 | `x-lemma-schemas` | the document | `false` when the adapter describes routes only, without parameters, bodies or responses: matched operations keep their committed definitions. |
 
-The document is cached by the adapter's configuration, its script, the runtime it runs with and Lemma's version, so changing any of them reads the code again.
+The document is cached by the adapter's configuration, its script, the runtime it runs with and Lemma's version, so changing any of them reads the code again. A failure is kept under the same key, in a `.failed` file beside where the document would go, holding the adapter's whole output: the same code and adapter would fail the same way, so they are not run again, and the warning shows the output's first and last lines and names the file. Delete it to try again after changing something the key does not cover, such as an installed toolchain.
 
 ## Adding a built-in adapter
 

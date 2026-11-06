@@ -152,7 +152,7 @@ impl<'a> Adapter<'a> {
             "adapter: reading {} in its working directory",
             root.display()
         );
-        self.run(root, root, &output)?;
+        remembering_failure(&output, || self.run(root, root, &output))?;
         read_generated(&output)
     }
 
@@ -176,7 +176,7 @@ impl<'a> Adapter<'a> {
                 "adapter: {} at {short}: working directory is that commit; reading it there",
                 root.display()
             );
-            self.run(root, root, &output)?;
+            remembering_failure(&output, || self.run(root, root, &output))?;
             return read_generated(&output).map(Some);
         }
         if build == Build::KeptOnly {
@@ -192,8 +192,10 @@ impl<'a> Adapter<'a> {
             root.display()
         );
         let worktree = repos::SharedWorktree::check_out(root, commit, cache)?;
-        self.set_up(worktree.path())?;
-        self.run(root, worktree.path(), &output)?;
+        remembering_failure(&output, || {
+            self.set_up(worktree.path())?;
+            self.run(root, worktree.path(), &output)
+        })?;
         read_generated(&output).map(Some)
     }
 
@@ -555,11 +557,108 @@ pub fn contract(
     })
 }
 
+/// How many of a failure's last lines are shown; the rest stay in its log.
+const FAILURE_TAIL_LINES: usize = 6;
+
+/// Runs `attempt`, which writes the document kept at `output`, unless it
+/// already failed for that same key, and remembers a failure beside where
+/// the document would go.
+///
+/// The key names the code and the adapter, so running again would only fail
+/// again, costing a build each time: the failure stands until the code or
+/// the adapter changes, or its log is deleted (after fixing a toolchain,
+/// say).
+fn remembering_failure(
+    output: &Path,
+    attempt: impl FnOnce() -> Result<(), GraphError>,
+) -> Result<(), GraphError> {
+    let log = output.with_extension("failed");
+    if let Ok(earlier) = std::fs::read_to_string(&log) {
+        return Err(GraphError::AdapterFailedBefore {
+            summary: abbreviate(&earlier, FAILURE_TAIL_LINES),
+            log,
+        });
+    }
+    let Err(error) = attempt() else {
+        return Ok(());
+    };
+    let full = error.to_string();
+    if let Err(source) = std::fs::write(&log, &full) {
+        // Without a log the failure is not remembered and the next run
+        // tries again; the failure itself is still reported in full.
+        log::warn!(
+            "could not keep the adapter's failure at {}: {source}",
+            log.display()
+        );
+        return Err(error);
+    }
+    Err(GraphError::AdapterFailed {
+        summary: abbreviate(&full, FAILURE_TAIL_LINES),
+        log,
+    })
+}
+
+/// `text`'s first line, which says what failed, and its last `tail` lines,
+/// which usually say why; the lines between are counted, not shown.
+fn abbreviate(text: &str, tail: usize) -> String {
+    let lines: Vec<&str> = text.trim_end().lines().collect();
+    if lines.len() <= tail + 2 {
+        return lines.join("\n");
+    }
+    let hidden = lines.len() - 1 - tail;
+    let last = &lines[lines.len() - tail..];
+    format!(
+        "{}\n... {hidden} more lines ...\n{}",
+        lines[0],
+        last.join("\n")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_long_failure_keeps_its_first_and_last_lines() {
+        let text = (1..=20)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let short = abbreviate(&text, 3);
+
+        assert_eq!(
+            short,
+            "line 1\n... 16 more lines ...\nline 18\nline 19\nline 20"
+        );
+    }
+
+    #[test]
+    fn a_failure_is_not_run_again_for_the_same_key() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let output = directory.path().join("key.json");
+        let failing = || {
+            Err(GraphError::Adapter {
+                message: "build failed".to_owned(),
+            })
+        };
+        let first = remembering_failure(&output, failing);
+        let mut ran_again = false;
+
+        let second = remembering_failure(&output, || {
+            ran_again = true;
+            Ok(())
+        });
+
+        assert!(matches!(first, Err(GraphError::AdapterFailed { .. })));
+        assert!(matches!(
+            second,
+            Err(GraphError::AdapterFailedBefore { .. })
+        ));
+        assert!(!ran_again);
+    }
 
     #[test]
     fn an_unread_module_makes_a_reading_incomplete_whatever_it_claims() {
