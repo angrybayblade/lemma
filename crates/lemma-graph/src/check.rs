@@ -1116,15 +1116,22 @@ pub(crate) fn load(
     );
     let mut repos = BTreeMap::new();
     let mut pending = VecDeque::from([(SELF.to_owned(), directory, None, manifest)]);
+    // Where each repository a file named first is, so a `.lm` module that
+    // imports it resolves it as the composition pins it.
+    let mut pins: BTreeMap<String, Checkout> = BTreeMap::new();
     while let Some((name, root, reference, manifest)) = pending.pop_front() {
         if repos.contains_key(&name) {
             continue;
         }
         let checkouts = checkouts(&name, &root, reference.as_deref(), options)?;
-        let (base_file, base_fallback) =
-            read_manifest(&name, &checkouts[BASE], &manifest, &options.cache)?;
-        let (head_file, head_fallback) =
-            read_manifest(&name, &checkouts[HEAD], &manifest, &options.cache)?;
+        let reading = Reading {
+            name: &name,
+            manifest: &manifest,
+            cache: &options.cache,
+            pins: &pins,
+        };
+        let (base_file, base_fallback) = read_manifest(&reading, &checkouts[BASE])?;
+        let (head_file, head_fallback) = read_manifest(&reading, &checkouts[HEAD])?;
         let mut files = [base_file, head_file];
         for (file, checkout) in files.iter_mut().zip(&checkouts) {
             add_documented_operations(file, checkout)?;
@@ -1135,6 +1142,11 @@ pub(crate) fn load(
             for (external, service) in file.services.iter().filter(|(key, _)| key.starts_with('#'))
             {
                 let source = external_root(service, &base_directory, &options.cache)?;
+                let pinned = crate::lm::repository_name(external.trim_start_matches('#'));
+                pins.entry(pinned).or_insert_with(|| Checkout {
+                    root: source.root.clone(),
+                    commit: source.reference.clone(),
+                });
                 pending.push_back(source.with_name(external));
             }
         }
@@ -1232,19 +1244,15 @@ fn checkouts(
 
 /// A repository's `lemma.yaml` at a checkout, falling back to the working
 /// directory's when the commit has none; the flag says whether it did.
-fn read_manifest(
-    name: &str,
-    checkout: &Checkout,
-    manifest: &str,
-    cache: &Path,
-) -> Result<(LemmaFile, bool), GraphError> {
-    let manifest = language_manifest(checkout, manifest)?;
+fn read_manifest(reading: &Reading, checkout: &Checkout) -> Result<(LemmaFile, bool), GraphError> {
+    let name = reading.name;
+    let manifest = language_manifest(checkout, reading.manifest)?;
     let manifest = manifest.as_str();
     if Path::new(manifest)
         .extension()
         .is_some_and(|extension| extension == "lm")
     {
-        return read_language_manifest(name, checkout, manifest, cache);
+        return read_language_manifest(reading, checkout, manifest);
     }
     let (text, fallback) = if let Some(text) = checkout.read(manifest)? {
         (text, false)
@@ -1296,16 +1304,28 @@ fn language_manifest(checkout: &Checkout, manifest: &str) -> Result<String, Grap
     Ok(manifest.to_owned())
 }
 
+/// What reading one repository's manifest needs: its name, the manifest's
+/// file, the cache, and the repositories the composition pinned so far.
+struct Reading<'r> {
+    name: &'r str,
+    manifest: &'r str,
+    cache: &'r Path,
+    pins: &'r BTreeMap<String, Checkout>,
+}
+
 /// A repository's `.lm` manifest at a checkout, falling back to the working
 /// directory's when the commit has none, as `lemma.yaml` does.
 fn read_language_manifest(
-    name: &str,
+    reading: &Reading,
     checkout: &Checkout,
     manifest: &str,
-    cache: &Path,
 ) -> Result<(LemmaFile, bool), GraphError> {
+    let (name, cache, pins) = (reading.name, reading.cache, reading.pins);
     if checkout.read(manifest)?.is_some() {
-        return Ok((crate::lm::read_manifest(checkout, manifest, cache)?, false));
+        return Ok((
+            crate::lm::read_manifest(checkout, manifest, cache, pins)?,
+            false,
+        ));
     }
     let working = Checkout {
         root: checkout.root.clone(),
@@ -1319,7 +1339,7 @@ fn read_language_manifest(
             commit: checkout.commit.clone(),
         });
     }
-    let file = crate::lm::read_manifest(&working, manifest, cache)?;
+    let file = crate::lm::read_manifest(&working, manifest, cache, pins)?;
     Ok((file, checkout.commit.is_some()))
 }
 
