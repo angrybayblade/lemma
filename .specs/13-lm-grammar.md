@@ -698,7 +698,7 @@ The input:
 - An operation is its address, its name in its module, whether it is a client operation, its service, its repository and its `implementation`'s file and symbol (`null` when it has none). A discovered operation is `{ "operation": <key>, "discovered": true, "service", "repository" }`, a service `{ "service", "name", "repository" }`.
 - A fact is its relation, its values by column, whether it holds (`null` when unknown) and where it was stated.
 - Entities are their fields plus `"entity"`; booleans, integers, text, lists and records are themselves.
-- Arguments name repositories, never paths on the machine, since they are part of the evidence's key; `roots` gives each repository's checkout. A file is relative to its repository.
+- Arguments name repositories, never paths on the machine, since they are part of the evidence's key. `roots` gives where the checker's own repository and each one it `reads` have their files at the snapshot checked: the clone for a working directory, a worktree for a commit. A file is relative to its repository.
 
 **Evidence** is the value plus its provenance. Its key is a digest of the protocol version, the checker's address and declaration as written, the argument values, the state of the code in each repository of `reads` (its Git tree, plus a digest of each changed file for a working directory), and `env`. The reported toolchain, artifacts and coverage are kept with the evidence but are not part of the key, since they are only known after running. Kept evidence with an equal key is reused without running.
 

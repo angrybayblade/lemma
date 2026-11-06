@@ -421,3 +421,51 @@ fn a_change_that_breaks_the_worker_introduces_its_violations_and_lists_new_behav
         .collect();
     assert_eq!(changes, [("platform::always", "added")]);
 }
+
+#[test]
+fn a_checker_reads_other_repositories_at_the_commit_checked() {
+    let workspace = system(FORWARDING_HANDLER);
+    let functions = workspace.path().join("functions");
+    let marked = |text: &str| {
+        write(&functions.join("marker.txt"), text);
+        git(&functions, &["add", "."]);
+        git(&functions, &["commit", "-q", "-m", text.trim()]);
+    };
+    marked("base\n");
+    marked("head\n");
+    write(&functions.join("marker.txt"), "working tree\n");
+    let platform = workspace.path().join("platform");
+    write(
+        &platform.join("tools/marker.py"),
+        "import json, os\ngiven = json.load(open(os.environ[\"LEMMA_INPUT\"]))\nmarker = open(os.path.join(given[\"roots\"][\"functions\"], \"marker.txt\")).read()\njson.dump({\"observed\": marker}, open(os.environ[\"LEMMA_OUTPUT\"], \"w\"))\n",
+    );
+    let module = format!(
+        "{PLATFORM}\nchecker marker(): Evidence<Text> {{\n    command: [\"python3\", \"tools/marker.py\"]\n    reads: [\"functions\"]\n}}\n\nbehavior reads_the_head {{\n    expect need marker() == \"head\\n\"\n}}\n"
+    );
+    write(&platform.join("mod.lm"), &module);
+    git(&platform, &["add", "."]);
+    git(&platform, &["commit", "-q", "-m", "marker"]);
+    let options = CheckOptions {
+        change: Some(lemma_graph::Change {
+            repository: "functions".to_owned(),
+            base: "HEAD~1".to_owned(),
+            head: Some("HEAD".to_owned()),
+        }),
+        level: Some(Level::Check),
+        cache: workspace.path().join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Full,
+        list_links: false,
+        run_checkers: true,
+        select: None,
+    };
+
+    let report = check(&platform.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
+
+    let reads = report
+        .behaviors
+        .iter()
+        .find(|behavior| behavior.behavior == "platform::reads_the_head")
+        .unwrap();
+    assert_eq!(reads.outcome, "satisfied", "{reads:#?}");
+}
