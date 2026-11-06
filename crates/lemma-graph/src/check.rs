@@ -306,7 +306,7 @@ fn evaluate_behaviors(
         return Ok((Vec::new(), Vec::new()));
     };
     let date = crate::allowances::committer_date(&repos[SELF].checkouts[HEAD]);
-    let mut allowances = crate::allowances::Allowances::new(&evaluated.head.model, date);
+    let mut allowances = crate::allowances::Allowed::new(&evaluated.head.model, date);
     allowances.cover_cases(&evaluated.results, &mut evaluated.reports);
     findings.extend(crate::behaviors::findings(&evaluated.reports, level));
     allowances.cover_findings(findings);

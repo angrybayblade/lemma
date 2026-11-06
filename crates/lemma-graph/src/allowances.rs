@@ -8,37 +8,23 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use lemma_lang::eval::{BehaviorResult, Datum, Outcome, StatedFacts};
-use lemma_lang::model::{Allowance, Model};
-use lemma_lang::types::{Address, Type};
+use lemma_lang::eval::{Allowances, BehaviorResult, Datum, Outcome, Values};
+use lemma_lang::model::Model;
 
 use crate::behaviors::BehaviorReport;
 use crate::check::{Finding, Severity};
 
-/// A program's allowances, and how many findings each covered.
-pub(crate) struct Allowances<'m> {
-    declared: &'m [Allowance],
-    facts: StatedFacts<'m>,
-    date: Option<String>,
-    covered: Vec<usize>,
+/// Applies a program's allowances to `lemma check`'s findings.
+pub(crate) struct Allowed<'m> {
+    allowances: Allowances<'m>,
 }
 
-/// A finding's variables: typed, for a behavior's case, or as text, for a
-/// grammar requirement's finding.
-enum Values<'v> {
-    Typed(&'v BTreeMap<String, Datum>),
-    Text(&'v BTreeMap<String, String>),
-}
-
-impl<'m> Allowances<'m> {
+impl<'m> Allowed<'m> {
     /// `model`'s allowances, dated by `date` (`YYYY-MM-DD`), the head
     /// commit's committer date.
     pub(crate) fn new(model: &'m Model, date: Option<String>) -> Self {
         Self {
-            declared: &model.allowances,
-            facts: StatedFacts::new(model, None),
-            date,
-            covered: vec![0; model.allowances.len()],
+            allowances: Allowances::new(model, date),
         }
     }
 
@@ -53,7 +39,9 @@ impl<'m> Allowances<'m> {
             let cases = result.cases.iter().zip(&mut report.cases);
             for (case, reported) in cases.filter(|(case, _)| case.outcome != Outcome::Satisfied) {
                 let values: BTreeMap<String, Datum> = case.values.iter().cloned().collect();
-                reported.allowed = self.covering(&result.address, &Values::Typed(&values));
+                reported.allowed = self
+                    .allowances
+                    .covering(|address| *address == result.address, Values::Typed(&values));
             }
         }
     }
@@ -66,10 +54,11 @@ impl<'m> Allowances<'m> {
             .iter_mut()
             .filter(|finding| !finding.values.is_empty())
         {
-            let values = std::mem::take(&mut finding.values);
-            let requirement = finding.check.clone();
-            let reason = self.covering_named(&requirement, &Values::Text(&values));
-            finding.values = values;
+            let requirement = finding.check.as_str();
+            let reason = self.allowances.covering(
+                |address| address.name() == requirement,
+                Values::Text(&finding.values),
+            );
             let Some(reason) = reason else {
                 continue;
             };
@@ -82,26 +71,29 @@ impl<'m> Allowances<'m> {
     /// Findings about the allowances themselves: expired ones, and, when
     /// `whole_system`, those that covered nothing.
     pub(crate) fn findings(&self, whole_system: bool) -> Vec<Finding> {
-        let mut found = Vec::new();
-        for (allowance, covered) in self.declared.iter().zip(&self.covered) {
-            let message = if let Some(until) = allowance
-                .until
-                .as_ref()
-                .filter(|_| self.is_expired(allowance))
-            {
-                format!(
-                    "the allowance for {} expired on {until}; the findings it covered count again",
-                    allowance.requirement
-                )
-            } else if whole_system && *covered == 0 {
-                format!(
+        let expired = self.allowances.expired().into_iter().map(|allowance| {
+            let until = allowance.until.as_deref().unwrap_or_default();
+            let message = format!(
+                "the allowance for {} expired on {until}; the findings it covered count again",
+                allowance.requirement
+            );
+            (allowance, message)
+        });
+        let unused = self
+            .allowances
+            .unused()
+            .into_iter()
+            .filter(|_| whole_system)
+            .map(|allowance| {
+                let message = format!(
                     "the allowance for {} covers no finding; remove it",
                     allowance.requirement
-                )
-            } else {
-                continue;
-            };
-            found.push(Finding {
+                );
+                (allowance, message)
+            });
+        expired
+            .chain(unused)
+            .map(|(allowance, message)| Finding {
                 severity: Severity::Warning,
                 link: allowance.requirement.to_string(),
                 check: "allow".to_owned(),
@@ -110,88 +102,9 @@ impl<'m> Allowances<'m> {
                 affects: Vec::new(),
                 allowed: None,
                 values: BTreeMap::new(),
-            });
-        }
-        found
+            })
+            .collect()
     }
-
-    fn covering(&mut self, requirement: &Address, values: &Values<'_>) -> Option<String> {
-        self.first_covering(|allowance| allowance.requirement == *requirement, values)
-    }
-
-    fn covering_named(&mut self, requirement: &str, values: &Values<'_>) -> Option<String> {
-        self.first_covering(
-            |allowance| allowance.requirement.name() == requirement,
-            values,
-        )
-    }
-
-    /// The reason of the first allowance in force that `applies` to the
-    /// finding and whose condition holds for its values. An expired one
-    /// still counts as covering, so it is reported as expired, not unused.
-    fn first_covering(
-        &mut self,
-        applies: impl Fn(&Allowance) -> bool,
-        values: &Values<'_>,
-    ) -> Option<String> {
-        for (index, allowance) in self.declared.iter().enumerate() {
-            if !applies(allowance) {
-                continue;
-            }
-            let bound = typed(values, allowance);
-            if !self.facts.holds(&allowance.body, &bound) {
-                continue;
-            }
-            self.covered[index] += 1;
-            if self.is_expired(allowance) {
-                continue;
-            }
-            return Some(
-                allowance
-                    .reason
-                    .clone()
-                    .unwrap_or_else(|| "allowed".to_owned()),
-            );
-        }
-        None
-    }
-
-    fn is_expired(&self, allowance: &Allowance) -> bool {
-        match (&allowance.until, &self.date) {
-            (Some(until), Some(date)) => date.as_str() > until.as_str(),
-            _ => false,
-        }
-    }
-}
-
-/// A finding's values as the allowance's condition reads them: text
-/// values of integer or boolean variables are read as those.
-fn typed(values: &Values<'_>, allowance: &Allowance) -> BTreeMap<String, Datum> {
-    let Values::Text(texts) = values else {
-        let Values::Typed(typed) = values else {
-            return BTreeMap::new();
-        };
-        return (*typed).clone();
-    };
-    texts
-        .iter()
-        .map(|(name, text)| {
-            let column = allowance
-                .variables
-                .iter()
-                .find(|column| column.name == *name);
-            let value = match column.map(|column| &column.column_type) {
-                Some(Type::Int) => text
-                    .parse()
-                    .map_or_else(|_| Datum::Text(text.clone()), Datum::Int),
-                Some(Type::Bool) => text
-                    .parse()
-                    .map_or_else(|_| Datum::Text(text.clone()), Datum::Bool),
-                _ => Datum::Text(text.clone()),
-            };
-            (name.clone(), value)
-        })
-        .collect()
 }
 
 /// The committer date of the commit a checkout reads, `YYYY-MM-DD`: of
@@ -253,7 +166,7 @@ allow lemma.http.consumer_calls_removed_operation {
     #[test]
     fn a_grammar_finding_the_condition_selects_is_allowed_and_informational() {
         let model = model(ALLOWING);
-        let mut allowances = Allowances::new(&model, Some("2026-11-06".to_owned()));
+        let mut allowances = Allowed::new(&model, Some("2026-11-06".to_owned()));
         let mut findings = vec![
             finding("src/legacy/sessions.ts", "12"),
             finding("src/legacy/sessions.ts", "120"),
@@ -277,7 +190,7 @@ allow lemma.http.consumer_calls_removed_operation {
     #[test]
     fn past_its_date_the_allowance_covers_nothing() {
         let model = model(ALLOWING);
-        let mut allowances = Allowances::new(&model, Some("2027-02-01".to_owned()));
+        let mut allowances = Allowed::new(&model, Some("2027-02-01".to_owned()));
         let mut findings = vec![finding("src/legacy/sessions.ts", "12")];
 
         allowances.cover_findings(&mut findings);
