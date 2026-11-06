@@ -75,6 +75,9 @@ enum Reply {
         stdout: String,
         stderr: String,
         exit_code: u8,
+        /// The command's log lines, at the level it asked for.
+        #[serde(default)]
+        logs: String,
     },
     /// The answer to a `Uses` request.
     Uses {
@@ -92,6 +95,13 @@ pub(crate) struct Finished {
     pub exit_code: u8,
 }
 
+/// Prints log lines the daemon kept for this caller, as they would have
+/// appeared had the command run here.
+fn print_logs(logs: &str) {
+    // Lines that cannot be written (a closed pipe) are not worth reporting.
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), logs.as_bytes());
+}
+
 /// Runs the command in the daemon, starting one if needed. `None` means no
 /// daemon could be reached, and the caller should run the command itself.
 pub(crate) fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
@@ -102,8 +112,10 @@ pub(crate) fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
         cwd,
         path_env: std::env::var_os("PATH").map(OsString::into_vec),
     };
+    log::debug!("forwarding to the daemon at {}", socket.display());
     let mut reply = exchange(&socket, &request).ok()?;
     if matches!(reply, Reply::Restart) {
+        log::info!("the running daemon is another build; replacing it");
         wait_until_gone(&socket);
         reply = exchange(&socket, &request).ok()?;
     }
@@ -112,11 +124,16 @@ pub(crate) fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
             stdout,
             stderr,
             exit_code,
-        } => Some(Finished {
-            stdout,
-            stderr,
-            exit_code,
-        }),
+            logs,
+        } => {
+            print_logs(&logs);
+            log::info!("ran in the daemon, exit code {exit_code}");
+            Some(Finished {
+                stdout,
+                stderr,
+                exit_code,
+            })
+        }
         Reply::Uses { .. } | Reply::Restart | Reply::Stopping => None,
     }
 }
@@ -167,7 +184,10 @@ pub(crate) fn stop() -> anyhow::Result<bool> {
 
 /// Serves commands until idle for the configured time, or `idle_override`.
 /// The config file is read again whenever it changes.
-pub(crate) fn serve(idle_override: Option<Duration>) -> anyhow::Result<()> {
+pub(crate) fn serve(
+    idle_override: Option<Duration>,
+    logger: &'static crate::logging::Logger,
+) -> anyhow::Result<()> {
     let socket = socket_path()?;
     let Some(listener) = bind(&socket)? else {
         // Another daemon won the race to start.
@@ -189,7 +209,7 @@ pub(crate) fn serve(idle_override: Option<Duration>) -> anyhow::Result<()> {
         let Ok(request) = receive::<Request>(&mut stream) else {
             continue;
         };
-        let reply = reply_to(request, &mut engine, &mut settings, &last_request);
+        let reply = reply_to(request, &mut engine, &mut settings, &last_request, logger);
         let is_exiting = matches!(reply, Reply::Stopping | Reply::Restart);
         // A caller that gave up is not a reason to stop serving others.
         let _ = send(&mut stream, &reply);
@@ -209,6 +229,7 @@ fn reply_to(
     engine: &mut Engine,
     settings: &mut Settings,
     last_request: &Mutex<Instant>,
+    logger: &crate::logging::Logger,
 ) -> Reply {
     match request {
         Request::Shutdown => Reply::Stopping,
@@ -242,7 +263,7 @@ fn reply_to(
             ..
         } => {
             let invocation = invocation(cwd, path_env);
-            busy(last_request, || run(engine, args, &invocation))
+            busy(last_request, || run(engine, args, &invocation, logger))
         }
     }
 }
@@ -297,6 +318,7 @@ fn done(stdout: String) -> Reply {
         stdout,
         stderr: String::new(),
         exit_code: 0,
+        logs: String::new(),
     }
 }
 
@@ -318,24 +340,39 @@ fn send_maintenance_ticks(socket: PathBuf) {
     });
 }
 
-/// Runs one forwarded command the way `main` would, capturing its output.
-fn run(engine: &mut Engine, args: Vec<String>, invocation: &Invocation) -> Reply {
+/// Runs one forwarded command the way `main` would, capturing its output
+/// and, at the level it asks for, its log lines, which go before its own
+/// error output.
+fn run(
+    engine: &mut Engine,
+    args: Vec<String>,
+    invocation: &Invocation,
+    logger: &crate::logging::Logger,
+) -> Reply {
     let mut stdout = Vec::new();
     let arguments = std::iter::once("lemma".to_owned()).chain(args);
-    let (stderr, exit_code) = match Cli::try_parse_from(arguments) {
+    let (stderr, exit_code, logs) = match Cli::try_parse_from(arguments) {
         Err(error) => (
             error.render().to_string(),
             u8::try_from(error.exit_code()).unwrap_or(1),
+            String::new(),
         ),
-        Ok(cli) => match engine.execute(cli, invocation, &mut stdout) {
-            Ok(code) => (String::new(), code),
-            Err(error) => (format!("error: {error:#}\n"), 1),
-        },
+        Ok(cli) => {
+            logger.start_capture(cli.logging);
+            log::info!("running in the daemon (pid {})", std::process::id());
+            let result = engine.execute(cli, invocation, &mut stdout);
+            let logs = logger.finish_capture(None);
+            match result {
+                Ok(code) => (String::new(), code, logs),
+                Err(error) => (format!("error: {error:#}\n"), 1, logs),
+            }
+        }
     };
     Reply::Done {
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr,
         exit_code,
+        logs,
     }
 }
 
@@ -350,6 +387,7 @@ fn connect_or_start(socket: &Path) -> anyhow::Result<UnixStream> {
     if let Ok(stream) = UnixStream::connect(socket) {
         return Ok(stream);
     }
+    log::info!("no daemon is running; starting one");
     start_daemon()?;
     let deadline = Instant::now() + STARTUP_LIMIT;
     loop {
@@ -495,8 +533,14 @@ mod tests {
             cwd: PathBuf::from("/"),
             path_env: None,
         };
+        let logger = crate::logging::Logger::new();
 
-        let reply = run(&mut engine, vec!["no-such-command".to_owned()], &invocation);
+        let reply = run(
+            &mut engine,
+            vec!["no-such-command".to_owned()],
+            &invocation,
+            &logger,
+        );
 
         let Reply::Done {
             stderr, exit_code, ..

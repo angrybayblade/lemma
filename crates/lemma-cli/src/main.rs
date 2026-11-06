@@ -15,6 +15,7 @@ mod config;
 mod daemon;
 mod duration;
 mod engine;
+mod logging;
 mod mcp;
 mod output;
 mod selection;
@@ -34,13 +35,21 @@ use crate::engine::{Engine, Invocation};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let logger = logging::init(cli.logging);
+    log::info!(
+        "lemma {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        executable_name()
+    );
     if let Command::Daemon(args) = &cli.command {
-        return run_daemon(args);
+        return run_daemon(args, logger);
     }
     if let Command::Verify(args) = &cli.command {
+        log::info!("running in this process: verify always does");
         return verify::run(args, cli.json);
     }
     if let Command::Check(args) = &cli.command {
+        log::info!("running in this process: check always does");
         let lsp = check::LanguageServers {
             asks_daemon: !cli.no_daemon && !daemon_disabled_by_environment(),
             providers_file: cli.providers.clone(),
@@ -48,7 +57,9 @@ fn main() -> ExitCode {
         return check::run(args, &lsp, cli.json);
     }
     if matches!(cli.command, Command::Mcp) {
-        return run_mcp(!cli.no_daemon && !daemon_disabled_by_environment());
+        let uses_daemon = !cli.no_daemon && !daemon_disabled_by_environment();
+        log::info!("serving MCP on stdin and stdout; daemon: {uses_daemon}");
+        return run_mcp(uses_daemon);
     }
     let Ok(cwd) = std::env::current_dir() else {
         eprintln!("error: could not read the current directory");
@@ -57,12 +68,37 @@ fn main() -> ExitCode {
     // Tracing through a workspace runs inference over every repository,
     // which runs in its own process, as `lemma check` does.
     let traces_workspace = matches!(&cli.command, Command::Graph(args) if args.workspace.is_some());
-    if !cli.no_daemon && !daemon_disabled_by_environment() && !traces_workspace {
-        if let Some(code) = forward(cwd.clone()) {
-            return code;
-        }
+    if let Some(reason) = in_process_reason(&cli, traces_workspace) {
+        log::info!("running in this process: {reason}");
+        return run_in_process(cli, cwd);
     }
+    if let Some(code) = forward(cwd.clone()) {
+        return code;
+    }
+    log::warn!("no daemon could be reached; running in this process");
     run_in_process(cli, cwd)
+}
+
+/// Why a command runs in this process rather than the daemon, if it does.
+fn in_process_reason(cli: &Cli, traces_workspace: bool) -> Option<&'static str> {
+    if cli.no_daemon {
+        return Some("--no-daemon");
+    }
+    if daemon_disabled_by_environment() {
+        return Some("LEMMA_NO_DAEMON is set");
+    }
+    if traces_workspace {
+        return Some("graph --workspace runs inference over every repository");
+    }
+    None
+}
+
+/// The running executable, so a log says which `lemma` ran.
+fn executable_name() -> String {
+    std::env::current_exe().map_or_else(
+        |_| "unknown executable".to_owned(),
+        |path| path.display().to_string(),
+    )
 }
 
 fn run_mcp(uses_daemon: bool) -> ExitCode {
@@ -113,7 +149,7 @@ fn forward(_cwd: std::path::PathBuf) -> Option<ExitCode> {
 }
 
 #[cfg(unix)]
-fn run_daemon(args: &cli::DaemonArgs) -> ExitCode {
+fn run_daemon(args: &cli::DaemonArgs, logger: &'static logging::Logger) -> ExitCode {
     let result = match args.action {
         // A daemon started on demand would otherwise keep the socket.
         Some(DaemonAction::Install) => daemon::stop()
@@ -132,7 +168,7 @@ fn run_daemon(args: &cli::DaemonArgs) -> ExitCode {
                 None => println!("no lemma daemon is running"),
             }
         }),
-        None => daemon::serve(args.idle_secs.map(std::time::Duration::from_secs)),
+        None => daemon::serve(args.idle_secs.map(std::time::Duration::from_secs), logger),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -144,7 +180,7 @@ fn run_daemon(args: &cli::DaemonArgs) -> ExitCode {
 }
 
 #[cfg(not(unix))]
-fn run_daemon(_args: &cli::DaemonArgs) -> ExitCode {
+fn run_daemon(_args: &cli::DaemonArgs, _logger: &'static logging::Logger) -> ExitCode {
     eprintln!("error: the lemma daemon needs Unix sockets");
     ExitCode::FAILURE
 }
