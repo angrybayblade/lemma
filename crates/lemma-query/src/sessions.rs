@@ -336,12 +336,29 @@ impl SessionPool {
         self.sync(&key, view.fingerprint, files)?;
         match self.sessions.entry(key) {
             Entry::Occupied(entry) => {
+                log::debug!(
+                    "reusing the running {} on {}",
+                    provider.definition.id,
+                    view.root.display()
+                );
                 let pooled = entry.into_mut();
                 pooled.last_used = Instant::now();
                 Ok(&mut pooled.session)
             }
             Entry::Vacant(entry) => {
+                log::info!(
+                    "starting {} ({}) on {}",
+                    provider.definition.id,
+                    provider.executable.display(),
+                    view.root.display()
+                );
+                let started = Instant::now();
                 let pooled = start(view, files, provider, request_timeout, self.is_long_lived)?;
+                log::info!(
+                    "{} started in {:.1}s",
+                    provider.definition.id,
+                    started.elapsed().as_secs_f64()
+                );
                 Ok(&mut entry.insert(pooled).session)
             }
         }
