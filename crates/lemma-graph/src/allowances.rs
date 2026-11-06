@@ -5,7 +5,7 @@
 //! nothing and is reported as expired. An allowance that covers no finding
 //! of a check of the whole system is reported, so stale ones get removed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use lemma_lang::eval::{Allowances, BehaviorResult, Datum, Outcome, Values};
@@ -72,9 +72,13 @@ impl<'m> Allowed<'m> {
         }
     }
 
-    /// Findings about the allowances themselves: expired ones, and, when
-    /// `whole_system`, those that covered nothing.
-    pub(crate) fn findings(&self, whole_system: bool) -> Vec<Finding> {
+    /// Findings about the allowances themselves: expired ones, and those
+    /// for a behavior in `ran` that covered none of its cases. A behavior
+    /// runs whole, so an allowance for one that ran and covered nothing is
+    /// stale. A grammar's requirements are evaluated only over what a
+    /// change touches, or not at all without one, so covering nothing says
+    /// nothing about allowances for them.
+    pub(crate) fn findings(&self, ran: &BTreeSet<Address>) -> Vec<Finding> {
         let expired = self.allowances.expired().into_iter().map(|allowance| {
             let until = allowance.until.as_deref().unwrap_or_default();
             let message = format!(
@@ -87,7 +91,7 @@ impl<'m> Allowed<'m> {
             .allowances
             .unused()
             .into_iter()
-            .filter(|_| whole_system)
+            .filter(|allowance| ran.contains(&allowance.requirement))
             .map(|allowance| {
                 let message = format!(
                     "the allowance for {} covers no finding; remove it",
@@ -188,7 +192,7 @@ allow lemma.http.consumer_calls_removed_operation {
             findings[0].allowed.as_deref(),
             Some("the legacy client goes with the next major version")
         );
-        assert_eq!(allowances.findings(true), []);
+        assert_eq!(allowances.findings(&BTreeSet::new()), []);
     }
 
     #[test]
@@ -200,7 +204,7 @@ allow lemma.http.consumer_calls_removed_operation {
         allowances.cover_findings(&mut findings);
 
         assert_eq!(findings[0].severity, Severity::Error);
-        let reported = allowances.findings(true);
+        let reported = allowances.findings(&BTreeSet::new());
         assert!(reported[0].message.contains("expired on 2027-01-31"));
     }
 }

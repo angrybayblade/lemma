@@ -364,3 +364,21 @@ fn an_allowance_that_covers_nothing_is_reported() {
         unused.message
     );
 }
+
+#[test]
+fn an_allowance_for_a_requirement_no_check_evaluated_is_not_called_stale() {
+    let workspace = allowing(
+        FORWARDING_HANDLER,
+        "import lemma.http\n\nallow lemma.http.consumer_calls_removed_operation {\n    when: f == \"legacy.py\"\n}\n",
+    );
+
+    let report = run(workspace.path(), Level::Check, true);
+
+    let about_allowances: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.check == "allow")
+        .map(|finding| finding.message.as_str())
+        .collect();
+    assert_eq!(about_allowances, Vec::<&str>::new());
+}

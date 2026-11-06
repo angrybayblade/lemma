@@ -83,7 +83,7 @@ allow lemma.http.consumer_calls_removed_operation {
 
 - `when` reads the requirement's message variables (for a behavior, its parameters and loop variables, such as `flag == false`). Values are compared by type: `l < 100` reads a line as an integer.
 - A covered finding is informational and ends with `(allowed: <reason>)`. `until` is compared with the head commit's committer date; past it the findings count again and the allowance is reported as expired.
-- `lemma check` without a change reports allowances that cover nothing; remove them.
+- `lemma check` reports an allowance for a behavior that ran and covered none of its cases; remove it. Allowances for requirements are not reported as unused, since a check evaluates requirements only over what a change touches.
 
 ### Behaviors
 
