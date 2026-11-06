@@ -20,7 +20,7 @@ export relation required_request_field(operation: Text, field: Text, leaf: Text)
 export relation response_field(operation: Text, field: Text, leaf: Text)
 export relation route(service: Text, method: Text, path: Text, file: Text, line: Int)
 export relation client_operation(client: Text, chain: Text, method: Text, path: Text, file: Text, line: Int)
-export relation client_parameter(client: Text, method: Text, path: Text, name: Text, location: Text)
+export relation client_parameter(client: Text, method: Text, path: Text, name: Text, location: Text, file: Text, line: Int)
 export relation calls_path(consumer: Text, method: Text, path: Text, file: Text, line: Int)
 export relation calls_client(consumer: Text, chain: Text, file: Text, line: Int)
 // The function a name is mentioned in, or the file outside functions.
@@ -361,10 +361,10 @@ export require consumer_calls_changed_operation {
 export require client_declares_removed_parameter {
     severity: error
     when:
-        client_parameter(cl, m, p, n, loc),
+        client_parameter(cl, m, p, n, loc, f, l),
         operation@base(_, op, m, p),
         removed_parameter(op, n, loc)
-    message: "{cl} still declares {loc} parameter `{n}` on {op}, which the service removed"
+    message: "{cl} still declares {loc} parameter `{n}` on {op}, which the service removed ({f}:{l})"
 }
 
 export require client_calls_removed_operation {

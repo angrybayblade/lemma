@@ -1071,8 +1071,13 @@ fn client(
             }
         }
     }
+    let methods: Vec<&ClientMethod> = snapshot.clients.methods_of(name).collect();
     for spec in &repository.specs {
         for operation in spec_operations(repository, snapshot, spec)? {
+            let (file, line) = declaring_method(&methods, &operation.method, &operation.path)
+                .map_or((spec.as_str(), 0), |method| {
+                    (method.file.as_str(), method.line)
+                });
             for parameter in &operation.parameters {
                 let args = [
                     Arg::Text(name),
@@ -1080,12 +1085,27 @@ fn client(
                     Arg::Text(&operation.path),
                     Arg::Text(&parameter.name),
                     Arg::Text(&parameter.location),
+                    Arg::Text(file),
+                    Arg::Number(i64::from(line)),
                 ];
                 writer.add("client_parameter", both, &args);
             }
         }
     }
     Ok(())
+}
+
+/// The client method that sends `method` `path`, where a parameter it
+/// declares is written; without one, a finding points at the client's spec.
+fn declaring_method<'m>(
+    methods: &[&'m ClientMethod],
+    method: &str,
+    path: &str,
+) -> Option<&'m ClientMethod> {
+    methods
+        .iter()
+        .find(|candidate| candidate.method == method && candidate.path == path)
+        .copied()
 }
 
 /// What every file of one consumer shares.
@@ -2476,6 +2496,25 @@ fn join(directory: &Path, specifier: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_parameter_is_placed_at_the_client_method_sending_its_operation() {
+        let method = |http: &str, path: &str, line: u32| ClientMethod {
+            client: "client".to_owned(),
+            symbol: "SessionConfigs.list".to_owned(),
+            method: http.to_owned(),
+            path: path.to_owned(),
+            file: "resources/session_configs.py".to_owned(),
+            line,
+        };
+        let get = method("GET", "/v3/session_configs", 96);
+        let post = method("POST", "/v3/session_configs", 140);
+        let methods = [&post, &get];
+
+        let found = declaring_method(&methods, "GET", "/v3/session_configs");
+
+        assert_eq!(found.map(|method| method.line), Some(96));
+    }
 
     fn http_contracts() -> CompiledGrammar {
         let grammar = lemma_grammar::parse_grammar(crate::HTTP_CONTRACTS).unwrap();
