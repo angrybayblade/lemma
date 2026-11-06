@@ -5,6 +5,11 @@
 //! daemon at login and restart it only after a crash, so `lemma daemon
 //! stop`, the configured `idle_exit`, and upgrades still stop it normally;
 //! the next command starts it again either way.
+//!
+//! When the service is installed, a command that finds no daemon starts it
+//! through the service manager rather than as its own child, so the daemon
+//! always runs with the service's environment: the `PATH` saved at install,
+//! not whatever the first command's shell had set.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -62,9 +67,12 @@ pub(crate) fn install() -> anyhow::Result<String> {
     let manager = Manager::current()?;
     let executable = std::env::current_exe().context("could not find the lemma executable")?;
     let file = manager.file()?;
+    // The service manager starts the daemon with a bare `PATH`, which would
+    // miss the toolchains adapters build with; the installing shell's is kept.
+    let path = std::env::var("PATH").unwrap_or_default();
     let contents = match manager {
-        Manager::Launchd => launchd_plist(&executable),
-        Manager::Systemd => systemd_unit(&executable),
+        Manager::Launchd => launchd_plist(&executable, &path),
+        Manager::Systemd => systemd_unit(&executable, &path),
     };
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)
@@ -118,6 +126,20 @@ pub(crate) fn uninstall() -> anyhow::Result<String> {
     Ok(format!("removed the lemma {} service", manager.name()))
 }
 
+/// Starts the installed service's daemon. `false` when no service is
+/// installed, so the caller starts the daemon itself.
+pub(crate) fn start() -> anyhow::Result<bool> {
+    let manager = Manager::current()?;
+    if !manager.file()?.exists() {
+        return Ok(false);
+    }
+    match manager {
+        Manager::Launchd => run("launchctl", &["kickstart", &launchd_target()?])?,
+        Manager::Systemd => run("systemctl", &["--user", "start", SYSTEMD_UNIT])?,
+    }
+    Ok(true)
+}
+
 /// Whether the service is installed, for status reports.
 pub(crate) fn describe() -> String {
     let Ok(manager) = Manager::current() else {
@@ -135,8 +157,9 @@ pub(crate) fn describe() -> String {
 
 /// A launchd agent that runs the daemon at login and restarts it only if
 /// it crashes.
-fn launchd_plist(executable: &Path) -> String {
+fn launchd_plist(executable: &Path, path: &str) -> String {
     let executable = xml_escape(&executable.display().to_string());
+    let path = xml_escape(path);
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -149,6 +172,11 @@ fn launchd_plist(executable: &Path) -> String {
         <string>{executable}</string>
         <string>daemon</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{path}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -166,13 +194,16 @@ fn launchd_plist(executable: &Path) -> String {
 
 /// A systemd user unit that runs the daemon at login and restarts it only
 /// if it crashes.
-fn systemd_unit(executable: &Path) -> String {
+fn systemd_unit(executable: &Path, path: &str) -> String {
+    // systemd expands `%` specifiers and `$` variables in these values.
+    let path = path.replace('%', "%%").replace('$', "$$");
     format!(
         "[Unit]\n\
          Description=Lemma daemon: warm index and language servers\n\
          \n\
          [Service]\n\
          ExecStart=\"{}\" daemon\n\
+         Environment=\"PATH={path}\"\n\
          Restart=on-failure\n\
          \n\
          [Install]\n\
@@ -221,7 +252,7 @@ mod tests {
 
     #[test]
     fn the_launchd_agent_runs_the_daemon_and_restarts_only_after_a_crash() {
-        let plist = launchd_plist(Path::new("/opt/lemma & co/bin/lemma"));
+        let plist = launchd_plist(Path::new("/opt/lemma & co/bin/lemma"), "/usr/bin");
 
         assert!(plist.contains("<string>/opt/lemma &amp; co/bin/lemma</string>"));
         assert!(plist.contains("<string>daemon</string>"));
@@ -230,10 +261,19 @@ mod tests {
 
     #[test]
     fn the_systemd_unit_runs_the_daemon_and_restarts_only_after_a_crash() {
-        let unit = systemd_unit(Path::new("/home/me/.cargo/bin/lemma"));
+        let unit = systemd_unit(Path::new("/home/me/.cargo/bin/lemma"), "/usr/bin");
 
         assert!(unit.contains("ExecStart=\"/home/me/.cargo/bin/lemma\" daemon"));
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn the_service_keeps_the_installing_shells_path() {
+        let unit = systemd_unit(Path::new("/usr/bin/lemma"), "/home/me/go/bin:/usr/bin");
+        let plist = launchd_plist(Path::new("/usr/bin/lemma"), "/home/me/go/bin:/usr/bin");
+
+        assert!(unit.contains("Environment=\"PATH=/home/me/go/bin:/usr/bin\""));
+        assert!(plist.contains("<string>/home/me/go/bin:/usr/bin</string>"));
     }
 }
