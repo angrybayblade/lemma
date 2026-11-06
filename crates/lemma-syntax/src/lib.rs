@@ -20,7 +20,7 @@ pub use crate::repair::parse as parse_source;
 
 /// Changes whenever extraction output could change, so snapshots built by an
 /// older extractor get a different fingerprint.
-pub const EXTRACTOR_VERSION: &str = "2";
+pub const EXTRACTOR_VERSION: &str = "3";
 
 /// Why the extractor could not be set up or could not parse a file.
 #[derive(Debug, thiserror::Error)]
@@ -266,6 +266,7 @@ function helper() { const local = 1; }
                 ("deleteSession", SymbolKind::Function),
                 ("RETRIES", SymbolKind::Constant),
                 ("Options", SymbolKind::Interface),
+                ("Options.id", SymbolKind::Field),
                 ("Id", SymbolKind::TypeAlias),
                 ("Mode", SymbolKind::Enum),
                 ("helper", SymbolKind::Function),
@@ -311,6 +312,50 @@ def delete_task_router_session(client, session_id):
     }
 
     #[test]
+    fn python_class_attributes_are_fields_of_their_class() {
+        let source = r#"
+class AuthSchemaField(BaseModel):
+    name: str
+    required: bool = False
+    KIND = "field"
+
+    def describe(self):
+        local = 1
+"#;
+
+        let found = extract(Language::Python, source);
+
+        assert_eq!(
+            found,
+            named(&[
+                ("AuthSchemaField", SymbolKind::Class),
+                ("AuthSchemaField.name", SymbolKind::Field),
+                ("AuthSchemaField.required", SymbolKind::Field),
+                ("AuthSchemaField.KIND", SymbolKind::Field),
+                ("AuthSchemaField.describe", SymbolKind::Method),
+            ])
+        );
+    }
+
+    #[test]
+    fn go_struct_fields_and_typescript_class_fields_are_fields() {
+        let go = "package p\ntype Item struct {\n\tName string\n}\n";
+        let typescript =
+            "class Item {\n  name: string = ''\n}\nfunction f(p: { inline: string }) {}\n";
+
+        let go_found = extract(Language::Go, go);
+        let typescript_found = extract(Language::TypeScript, typescript);
+
+        assert!(go_found.contains(&("Item.Name".to_owned(), SymbolKind::Field)));
+        assert!(typescript_found.contains(&("Item.name".to_owned(), SymbolKind::Field)));
+        assert!(
+            !typescript_found
+                .iter()
+                .any(|(name, _)| name.ends_with("inline"))
+        );
+    }
+
+    #[test]
     fn rust_methods_are_qualified_by_their_impl_type() {
         let source = r"
 pub struct Router { routes: Vec<Route> }
@@ -326,6 +371,7 @@ pub fn start() {}
             extract(Language::Rust, source),
             named(&[
                 ("Router", SymbolKind::Struct),
+                ("Router.routes", SymbolKind::Field),
                 ("Service", SymbolKind::Interface),
                 ("Service.call", SymbolKind::Method),
                 ("Router.call", SymbolKind::Method),

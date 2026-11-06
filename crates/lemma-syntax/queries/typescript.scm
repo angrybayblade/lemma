@@ -14,6 +14,12 @@
 (type_alias_declaration name: (type_identifier) @name) @definition
 (enum_declaration name: (identifier) @name) @definition
 
+; Fields: class fields, and properties of interfaces and object type
+; aliases. Object types written inline (a parameter's type) are left out.
+(public_field_definition name: (property_identifier) @name) @definition
+(interface_body (property_signature name: (property_identifier) @name) @definition)
+(type_alias_declaration value: (object_type (property_signature name: (property_identifier) @name) @definition))
+
 ; Module-level variables only; locals inside functions are not symbols.
 (program (lexical_declaration (variable_declarator name: (identifier) @name) @definition))
 (program (variable_declaration (variable_declarator name: (identifier) @name) @definition))

@@ -29,6 +29,7 @@ pub(crate) fn kind_of(definition: Node<'_>, source: &str) -> Option<SymbolKind> 
         "type_spec" => go_type_kind(definition),
         "const_spec" | "const_item" | "static_item" => SymbolKind::Constant,
         "var_spec" => SymbolKind::Variable,
+        "public_field_definition" | "property_signature" | "field_declaration" => SymbolKind::Field,
         "variable_declarator" => typescript_variable_kind(definition, source),
         "assignment" => python_assignment_kind(definition, source),
         _ => return None,
@@ -104,6 +105,9 @@ fn typescript_variable_kind(declarator: Node<'_>, source: &str) -> SymbolKind {
 /// Python has no `const`, so `UPPER_CASE` names are treated as constants by
 /// convention.
 fn python_assignment_kind(assignment: Node<'_>, source: &str) -> SymbolKind {
+    if is_in_class_body(assignment) {
+        return SymbolKind::Field;
+    }
     let name = assignment
         .child_by_field_name("left")
         .map_or("", |node| &source[node.byte_range()]);
@@ -111,6 +115,16 @@ fn python_assignment_kind(assignment: Node<'_>, source: &str) -> SymbolKind {
         return SymbolKind::Constant;
     }
     SymbolKind::Variable
+}
+
+/// Whether a Python assignment is a statement of a class body: an
+/// attribute of the class, not a module-level name.
+fn is_in_class_body(assignment: Node<'_>) -> bool {
+    assignment
+        .parent()
+        .and_then(|statement| statement.parent())
+        .and_then(|block| block.parent())
+        .is_some_and(|owner| owner.kind() == "class_definition")
 }
 
 fn is_constant_name(name: &str) -> bool {

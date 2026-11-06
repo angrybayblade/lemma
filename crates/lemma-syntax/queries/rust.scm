@@ -12,3 +12,5 @@
 (const_item name: (identifier) @name) @definition
 (static_item name: (identifier) @name) @definition
 (macro_definition name: (identifier) @name) @definition
+; Struct fields.
+(struct_item body: (field_declaration_list (field_declaration name: (field_identifier) @name) @definition))
