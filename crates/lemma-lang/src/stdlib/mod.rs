@@ -6,6 +6,10 @@
 
 use crate::types::{Parameter, RecordField, Signature, Type};
 
+mod reference;
+
+pub use reference::reference;
+
 /// The standard library's module sources, by name.
 const MODULES: [(&str, &str); 9] = [
     ("lemma.http", include_str!("http.lm")),
