@@ -84,15 +84,18 @@ const MAX_PROJECTS_PER_QUESTION: usize = 48;
 const MAX_OPEN_DOCUMENTS: usize = 64;
 
 impl ProviderSession {
-    /// Starts the provider's server on a workspace root.
+    /// Starts the provider's server on a workspace root, with `search_path`
+    /// as its `PATH` when given.
     pub fn start(
         definition: &ProviderDefinition,
         executable: &Path,
+        search_path: Option<&std::ffi::OsStr>,
         root: &Path,
         request_timeout: Duration,
     ) -> Result<Self, ProviderError> {
         let config = LaunchConfig {
             command: executable.to_owned(),
+            path: search_path.map(std::ffi::OsStr::to_owned),
             args: definition.args.clone(),
             root: root.to_owned(),
             initialization_options: definition.initialization_options.clone(),

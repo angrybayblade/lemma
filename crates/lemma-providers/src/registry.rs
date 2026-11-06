@@ -80,6 +80,9 @@ pub struct InstalledProvider {
     pub definition: ProviderDefinition,
     /// Where its executable lives.
     pub executable: PathBuf,
+    /// The `PATH` it was found on, when not this process's own: its server
+    /// runs with it, so what the executable starts by name is found too.
+    pub search_path: Option<OsString>,
 }
 
 /// Every configured provider, in the order they are tried.
@@ -198,6 +201,7 @@ impl ProviderRegistry {
                 Some(InstalledProvider {
                     definition: definition.clone(),
                     executable,
+                    search_path: self.search.as_ref().map(|search| search.path.clone()),
                 })
             })
             .collect()
@@ -276,6 +280,20 @@ mod tests {
             ["typescript-language-server", "typescript-native"]
         );
         assert_eq!(providers[1].executable, PathBuf::from("/bin/tsc"));
+    }
+
+    #[test]
+    fn installed_providers_keep_the_path_they_were_found_on() {
+        let registry = ProviderRegistry::builtin()
+            .unwrap()
+            .with_search_path(OsString::from("/opt/node/bin:/bin"), PathBuf::from("/"));
+
+        let providers = registry.installed_with(Language::Go, installed(&["gopls"]));
+
+        assert_eq!(
+            providers[0].search_path,
+            Some(OsString::from("/opt/node/bin:/bin"))
+        );
     }
 
     #[test]
