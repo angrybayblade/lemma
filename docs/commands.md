@@ -217,7 +217,7 @@ Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
 ## `lemma check [lemma.yaml]`
 
-Checks a change against every repository composed by a parent `lemma.yaml`: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Checking links](check.md).
+Checks a change against every repository composed by a parent `lemma.yaml`: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Checking links](check.md). The parent may be a `.lm` workspace module instead, and without an argument, `lemma.lm` is read when there is no `lemma.yaml`; a repository with only `lemma.lm` is read too. See [The `.lm` language](language.md).
 
 | Option | Meaning |
 | --- | --- |
@@ -231,6 +231,16 @@ Checks a change against every repository composed by a parent `lemma.yaml`: decl
 | `--anchors` | Also ask language servers who calls each link's caller anchor, and warn when nothing calls an anchored method while a sibling method is called. Uses the running daemon's warm servers, or starts its own without one. |
 
 Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
+
+## `lemma lm`
+
+Works with `.lm` modules. See [The `.lm` language](language.md).
+
+| Command | Meaning |
+| --- | --- |
+| `lemma lm check [lemma.lm]` | Loads a module and everything it imports, and prints every problem as `file:line:column: severity: message`, then a summary. With `--json`, `diagnostics` lists each with its `module`, `path`, `line` and `column`. Exits with 1 if any is an error. |
+| `lemma lm convert [lemma.yaml]` | Writes a `lemma.yaml` as an `.lm` root module. `--module <name>` names it (the directory's name by default); `--write` writes `lemma.lm` beside the file, refusing to replace one. |
+| `lemma lm lsp` | Serves `.lm` modules to an editor over the Language Server Protocol, on standard input and output. |
 
 ## `lemma daemon`
 
