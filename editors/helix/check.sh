@@ -10,7 +10,7 @@
 #      scope Helix documents for themes;
 #   4. builds the grammar again through the section's [[grammar]] entry and
 #      `hx --grammar build`;
-#   5. with tmux installed, opens editors/fixture/lemma.lm in Helix inside a
+#   5. with tmux installed, opens editors/fixture/mod.lm in Helix inside a
 #      detached tmux session, with a theme giving each checked scope its own
 #      colour, and asserts that a keyword, declared names, a rule variable
 #      and a string have their colours and that the server's diagnostic
@@ -32,7 +32,7 @@ helix_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 editors_directory=$(dirname "$helix_directory")
 repository=$(dirname "$editors_directory")
 readme="$editors_directory/README.md"
-fixture="$editors_directory/fixture/lemma.lm"
+fixture="$editors_directory/fixture/mod.lm"
 lm=$(realpath "$1")
 
 hx=${HELIX_EXECUTABLE:-hx}

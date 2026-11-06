@@ -1,4 +1,4 @@
-// platform/lemma.lm
+// platform/mod.lm
 module platform
 
 import platform.services.gateway

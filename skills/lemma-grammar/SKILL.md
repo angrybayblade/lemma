@@ -67,7 +67,7 @@ check main {
 - Rules declare their columns in place: `rule dropped(op: Text) { (op) :- removed_operation(op) }`.
 - Without a `check main`, every requirement of every loaded module runs, `lemma.http`'s included.
 - Keep `lemma.http`'s variable names (`c`, `op`, `f`, `l`) in requirements `lemma check` reads, which looks findings' values up by those names.
-- The same requirements in a workspace's root `lemma.lm` run in `lemma check`, beside `lemma.http`'s, which it always loads. A `check main` there selects what runs (requirements and behaviors); one that names only behaviors runs no HTTP check, so add `run lemma.http.*`. `lemma check --select <name>` runs another check.
+- The same requirements in a workspace's root `mod.lm` run in `lemma check`, beside `lemma.http`'s, which it always loads. A `check main` there selects what runs (requirements and behaviors); one that names only behaviors runs no HTTP check, so add `run lemma.http.*`. `lemma check --select <name>` runs another check.
 
 ### Allowing a known finding
 

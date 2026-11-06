@@ -1,4 +1,4 @@
-// example/lemma.lm: the workspace entry point
+// example/mod.lm: the workspace entry point
 module example
 
 workspace {

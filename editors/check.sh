@@ -254,7 +254,7 @@ check_neovim() {
     XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" \
     XDG_STATE_HOME="$home/state" XDG_CACHE_HOME="$home/cache" \
     "$nvim" --clean --headless -l "$editors_directory/neovim/check.lua" \
-    "$runtime" "$editors_directory/fixture/lemma.lm" "$editors_directory/README.md"
+    "$runtime" "$editors_directory/fixture/mod.lm" "$editors_directory/README.md"
 }
 
 check_helix() {

@@ -167,7 +167,7 @@ repo functions = git(url: "https://git.example.com/functions.git", rev: "3f2a1c9
 Spec 13: Workspace
 ====================
 
-// example/lemma.lm: the workspace entry point
+// example/mod.lm: the workspace entry point
 module example
 
 workspace {
@@ -364,7 +364,7 @@ export service Gateway {
 Spec 13: Hand-written operations
 ================================
 
-// functions/lemma.lm
+// functions/mod.lm
 module functions
 
 import * as python from lemma.python
@@ -1212,7 +1212,7 @@ check main {
 Spec 13: 12. Worked example (1 of 2)
 ====================================
 
-// platform/lemma.lm
+// platform/mod.lm
 module platform
 
 import platform.services.gateway

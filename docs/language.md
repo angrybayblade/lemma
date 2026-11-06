@@ -6,7 +6,7 @@
 
 ## A repository's module
 
-Each repository has a root module, `lemma.lm`, named after the repository:
+Each repository has a root module, `mod.lm`, named after the repository:
 
 ```lm
 module billing
@@ -87,7 +87,7 @@ workspace {
 | an operation's `previously: [api.cancel]` | `previously: ["billing::api.cancel"]` on the renamed operation |
 | `graph.level` | `config: { level: check }` in the workspace |
 
-Names are bound, not matched as text. An import names a module (`import { api } from billing`), a module's name is fixed by its file's place in its repository (`checks/replay.lm` in `billing` is `billing.checks.replay`), and a repository's name is its root module's. A service that only groups other services passes its fields down to them.
+Names are bound, not matched as text. An import names a module (`import { api } from billing`), a module's name is fixed by its file's place in its repository (`checks/replay.lm` in `billing` is `billing.checks.replay`), a directory's module is its `mod.lm` (`checks/mod.lm` is `billing.checks`), and a repository's name is its root module's, the `mod.lm` at its root. A service that only groups other services passes its fields down to them.
 
 ## Grammars
 
@@ -210,11 +210,11 @@ The level (the workspace's `config: { level: ... }` or `lemma check --level`) de
 
 `.lm` files have their own command, `lm`, beside `lemma`: it works with modules, and `lemma` checks and verifies what they declare.
 
-- `lm check [lemma.lm]` loads a module and everything it imports, and lists every problem as `file:line:column`.
+- `lm check [mod.lm]` loads a module and everything it imports, and lists every problem as `file:line:column`.
 - `lm fmt [paths...] [--check]` rewrites `.lm` files in one canonical layout, keeping line breaks and comments; with `--check`, it lists the files that are not formatted instead. With no paths, it formats the `.lm` files under the current directory.
-- `lm convert [lemma.yaml] [--module name] [--write]` writes a `lemma.yaml` as a root module. With `--write`, it writes `lemma.lm` beside the file.
+- `lm convert [lemma.yaml] [--module name] [--write]` writes a `lemma.yaml` as a root module. With `--write`, it writes `mod.lm` beside the file.
 - `lm lsp` serves modules to an editor (diagnostics as you type, hovers, go to definition, symbols, completion, formatting).
-- `lemma check` reads `lemma.lm` when a repository has no `lemma.yaml`, and takes a `.lm` workspace module as its argument; then it also runs the workspace's requirements, behaviors and allowances (`--select`, `--no-run`, `--level strict`).
+- `lemma check` reads `mod.lm` when a repository has no `lemma.yaml`, and takes a `.lm` workspace module as its argument; then it also runs the workspace's requirements, behaviors and allowances (`--select`, `--no-run`, `--level strict`).
 
 ## Editors
 
