@@ -1,0 +1,12 @@
+export entity Deployment {
+    environment: Text
+    region: Text
+}
+
+export relation Deployed(service: Service, deployment: Deployment)
+
+let production = Deployment(environment: "production", region: "us-east-1")
+
+graph deployments : Deployed {
+    Worker -> production
+}

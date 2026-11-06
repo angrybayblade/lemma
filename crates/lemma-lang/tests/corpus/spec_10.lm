@@ -1,0 +1,5 @@
+relation Routes(gateway: Service, path: Text, destination: Operation)
+
+graph routes : Routes {
+    (Gateway, "/triggers/setup", Worker.setup_trigger)
+}

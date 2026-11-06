@@ -12,6 +12,7 @@ publish = false
 lemma-grammar = { path = "crates/lemma-grammar" }
 lemma-http = { path = "crates/lemma-http" }
 lemma-index = { path = "crates/lemma-index" }
+lemma-lang = { path = "crates/lemma-lang" }
 lemma-logic = { path = "crates/lemma-logic" }
 lemma-lsp = { path = "crates/lemma-lsp" }
 lemma-model = { path = "crates/lemma-model" }

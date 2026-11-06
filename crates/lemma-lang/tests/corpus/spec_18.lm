@@ -1,0 +1,3 @@
+fn same_boolean(left: Bool, right: Bool): Bool {
+    return left == right
+}

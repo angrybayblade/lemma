@@ -1,0 +1,20 @@
+// functions/lemma.lm
+module functions
+
+import * as python from lemma.python
+
+let tools = python.module("functions.serverless.tool_functions")
+
+export service Functions {
+    index: { include: ["functions"] }
+
+    export service serverless {
+        export operation setup_webhook {
+            implementation: tools.symbol("setup_webhook")
+            dispatch: "setup_webhook"
+
+            request: tools.type("setup_webhook.Request")
+            response: tools.type("setup_webhook.Response")
+        }
+    }
+}

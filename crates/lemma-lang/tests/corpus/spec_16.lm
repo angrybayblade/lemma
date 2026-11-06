@@ -1,0 +1,27 @@
+export behavior forwards_upstream_retriable {
+    severity: error
+
+    let link = serverless_links[
+        Worker.call_setup_webhook,
+        Functions.serverless.setup_webhook
+    ]
+
+    expect link.exists
+
+    for flag in [true, false] {
+        let trace = need replay_setup_error(
+            handler: Worker.setup_trigger,
+            through: link,
+            upstream_retriable: flag
+        )
+
+        expect trace.upstream.dispatch == "setup_webhook"
+        expect trace.upstream.body.result.error != null
+        expect trace.upstream.body.result.retriable == flag
+
+        expect trace.http.status == 200
+        expect trace.http.body.error != null
+        expect trace.http.body.retriable == trace.upstream.body.result.retriable
+            because "the worker passes on the retriable flag the functions service set"
+    }
+}

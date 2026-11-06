@@ -1,0 +1,16 @@
+// platform/checks/setup_replay.lm
+module platform.checks.setup_replay
+
+import { Link } from lemma.links
+
+export checker replay_setup_error(
+    handler: Operation,
+    through: Fact<Link>,
+    upstream_retriable: Bool
+): Evidence<Json> {
+    command: ["go", "run", "./tools/setup-replay"]
+    directory: "apps/worker"
+    setup: ["go", "mod", "download"]
+    reads: ["platform", "functions"]
+    timeout_ms: 120000
+}

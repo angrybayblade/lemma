@@ -1,0 +1,35 @@
+// platform/services/worker.lm
+module platform.services.worker
+
+import * as go from lemma.go
+import { Link } from lemma.links
+import { Functions } from functions
+import { replay_setup_error } from platform.checks.setup_replay
+
+let client = go.package("apps/worker/core/serverless/generated")
+let triggers = go.package("apps/worker/handlers/triggers")
+
+export service Worker {
+    index: { include: ["apps/worker"] }
+
+    client operation call_setup_webhook {
+        implementation: client.method("SetupWebhook", "Invoke")
+
+        sends: client.type("SetupWebhookRequest")
+        accepts: client.type("SetupWebhookResponse")
+    }
+
+    export operation setup_trigger {
+        implementation: triggers.method("SetupTriggerHandler", "ServeHTTP")
+
+        response: triggers.type("SetupTriggerResponse")
+    }
+}
+
+export graph serverless_links : Link {
+    Worker.call_setup_webhook -> Functions.serverless.setup_webhook
+}
+
+export behavior forwards_upstream_retriable {
+    // as in section 9
+}

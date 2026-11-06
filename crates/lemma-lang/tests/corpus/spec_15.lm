@@ -1,0 +1,5 @@
+allow lemma.http.consumer_calls_removed_operation {
+    when: consumer.file == "src/legacy/sessions.ts"
+    reason: "the legacy client is removed with the next major version"
+    until: "2027-01-31"
+}

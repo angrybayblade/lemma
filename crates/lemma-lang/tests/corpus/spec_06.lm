@@ -1,0 +1,18 @@
+// platform/services/gateway.lm
+module platform.services.gateway
+
+import * as http from lemma.http
+import * as hono from lemma.hono
+
+export service Gateway {
+    index: { include: ["apps/gateway/src"] }
+
+    operations: [
+        http.openapi("apps/gateway/openapi.json"),
+        hono.app(
+            directory: "apps/gateway",
+            entry: ["src/index.ts#app", "src/routes"],
+            setup: ["pnpm", "install", "--frozen-lockfile"],
+        ),
+    ]
+}

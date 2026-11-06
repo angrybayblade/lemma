@@ -1,0 +1,5 @@
+// lemma.links: standard library
+export relation Link(
+    caller: ClientOperation,
+    provider: Operation
+)
