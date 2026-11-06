@@ -277,6 +277,16 @@ impl<'a> Checker<'a> {
         }
         values.retain(|_, value| !matches!(value, Value::Null));
         let repository = self.loaded.modules[declared.module].repository.clone();
+        let existing = self
+            .model
+            .services
+            .iter_mut()
+            .find(|entry| entry.address == declared.address);
+        if let Some(entry) = existing {
+            entry.repository = repository;
+            entry.fields = values;
+            return;
+        }
         self.model.services.push(model::Service {
             address: declared.address,
             repository,

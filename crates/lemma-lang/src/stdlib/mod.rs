@@ -49,6 +49,38 @@ pub struct Builtin {
     pub documentation: &'static str,
 }
 
+/// The built-in adapters `http.adapter` names; `lemma-graph` keeps its
+/// registry equal to this.
+pub const ADAPTERS: [&str; 5] = [
+    "hono-zod-openapi",
+    "fastapi",
+    "express-routes",
+    "flask-routes",
+    "go-http-routes",
+];
+
+/// A problem with a built-in function's known arguments, beyond their
+/// types: an adapter name Lemma does not have.
+pub fn argument_problem(
+    function: &str,
+    arguments: &[(String, crate::types::Value)],
+) -> Option<String> {
+    if function != "lemma.http.adapter" {
+        return None;
+    }
+    let name = arguments
+        .iter()
+        .find(|(parameter, _)| parameter == "name")
+        .and_then(|(_, value)| value.as_text())?;
+    if ADAPTERS.contains(&name) {
+        return None;
+    }
+    Some(format!(
+        "there is no built-in adapter `{name}`; there are {}",
+        ADAPTERS.join(", ")
+    ))
+}
+
 /// The type of a command: a shell string or an argument list.
 pub const COMMAND: Type = Type::Builtin("Command");
 /// Operations a provider discovers.
@@ -169,6 +201,13 @@ fn http() -> Vec<Builtin> {
         ),
         builtin(
             "lemma.http",
+            "adapter",
+            [vec![required("name", Type::Text)], adapter_parameters()].concat(),
+            OPERATIONS,
+            "Operations one of Lemma's built-in adapters reads from the service's code, by its name.",
+        ),
+        builtin(
+            "lemma.http",
             "adapter_command",
             [vec![required("command", COMMAND)], adapter_parameters()].concat(),
             OPERATIONS,
@@ -220,6 +259,7 @@ fn json() -> Vec<Builtin> {
                 optional("output", Type::Text),
                 optional("env", Type::Json),
                 optional("cache", Type::Bool),
+                optional("format", Type::Text),
             ],
             DOCUMENT,
             "A command's JSON output, produced at each snapshot and kept by the code's Git tree.",
