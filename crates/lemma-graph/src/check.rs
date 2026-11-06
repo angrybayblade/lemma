@@ -72,6 +72,22 @@ pub struct CheckOptions {
     pub select: Option<String>,
 }
 
+impl CheckOptions {
+    /// These options with the changed repository named as loading names
+    /// it: a module's workspace writes `repo billing`, a `lemma.yaml` writes
+    /// `#billing`, and either is the external service `#billing`.
+    fn with_change_named_as_loaded(&self) -> CheckOptions {
+        let mut options = self.clone();
+        if let Some(change) = &mut options.change {
+            let is_loaded_name = change.repository == SELF || change.repository.starts_with('#');
+            if !is_loaded_name {
+                change.repository = format!("#{}", change.repository);
+            }
+        }
+        options
+    }
+}
+
 /// Every link a check found, as [`CheckOptions::list_links`] asks.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LinkList {
@@ -220,6 +236,7 @@ pub fn check<E: Engine>(
     references: Option<&mut dyn crate::anchors::References>,
 ) -> Result<Report, GraphError> {
     let started = std::time::Instant::now();
+    let options = &options.with_change_named_as_loaded();
     let repos = load(root_file, options)?;
     check_change_names_a_repository(&repos, options)?;
     log_repositories(&repos);

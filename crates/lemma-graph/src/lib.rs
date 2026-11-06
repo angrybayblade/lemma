@@ -188,8 +188,8 @@ pub enum GraphError {
         /// The commit read, if one was; its working directory was read too.
         commit: Option<String>,
     },
-    /// The change names a repository no `lemma.yaml` declares.
-    #[error("the change names `{name}`, which no lemma.yaml declares")]
+    /// The change names a repository the workspace does not compose.
+    #[error("the change names `{name}`, which the workspace does not compose")]
     UnknownRepository {
         /// The name.
         name: String,

@@ -221,7 +221,7 @@ Checks a change against every repository composed by a parent `lemma.yaml`: decl
 
 | Option | Meaning |
 | --- | --- |
-| `--change <name>` | The changed repository, as the parent's services name it (`#billing`), or `self`. Needs `--base` and `--head`. |
+| `--change <name>` | The changed repository, as the workspace names it (`billing`, or `#billing` as a `lemma.yaml` writes it), or `self`. Needs `--base` and `--head`. |
 | `--base <commit>`, `--head <commit>` | The commits before and with the change. |
 | `--level <level>` | `audit` (problems are warnings), `check` (problems and violated behaviors are errors) or `strict` (error-severity behaviors that are unknown or stale are errors too). Overrides the graph's level. |
 | `--all` | List informational findings too, not just their count. |
