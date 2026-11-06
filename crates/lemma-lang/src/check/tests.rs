@@ -399,6 +399,18 @@ fn a_row_of_the_wrong_width_is_reported() {
 }
 
 #[test]
+fn a_misspelled_operation_in_a_row_is_reported_once() {
+    let result = single(
+        "module example\nimport { Link } from lemma.links\nservice Web {\n    client operation list { }\n}\nservice Api {\n    operation list { }\n}\ngraph links : Link {\n    Web.list -> Api.lst\n}\n",
+    );
+
+    assert_eq!(
+        errors(&result),
+        ["example: service `Api` has no `lst`; it discovers no operations either"]
+    );
+}
+
+#[test]
 fn importing_an_unexported_name_is_reported() {
     let result = checked(&[
         (

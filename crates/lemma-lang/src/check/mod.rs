@@ -40,6 +40,8 @@ pub struct SymbolIndex {
     pub definitions: BTreeMap<Address, Definition>,
     /// Uses of names, in module then source order.
     pub references: Vec<Reference>,
+    /// The names each module sees, with what each is, for completion.
+    pub scopes: BTreeMap<String, Vec<(String, String)>>,
 }
 
 /// A declaration, for editors.
@@ -96,6 +98,7 @@ pub fn check(loaded: Loaded) -> Checked {
     checker.collect();
     checker.build_scopes();
     checker.check_all();
+    checker.export_scopes();
     let Checker {
         model,
         index,
@@ -520,6 +523,36 @@ impl<'a> Checker<'a> {
                     "importing `{imported}` makes a cycle: it imports this module, directly or not"
                 ),
             );
+        }
+    }
+
+    /// Records each module's visible names for completion: its scope, then
+    /// the prelude.
+    fn export_scopes(&mut self) {
+        let mut scopes = BTreeMap::new();
+        for (module, scope) in &self.scopes {
+            let mut names: Vec<(String, String)> = scope
+                .entries
+                .iter()
+                .map(|(name, entry)| (name.clone(), self.entry_kind(entry)))
+                .collect();
+            let prelude = self
+                .builtins
+                .iter()
+                .filter(|builtin| builtin.module.is_empty());
+            names.extend(prelude.map(|builtin| (builtin.name.to_owned(), "function".to_owned())));
+            scopes.insert((*module).to_owned(), names);
+        }
+        self.index.scopes = scopes;
+    }
+
+    /// What a name in scope is; a namespace names its module, as in
+    /// `module lemma.python`.
+    fn entry_kind(&self, entry: &Entry) -> String {
+        match entry {
+            Entry::Declaration(id) => self.declarations[*id].node.kind().to_owned(),
+            Entry::Namespace(module) => format!("module {module}"),
+            Entry::Builtin(_) => "function".to_owned(),
         }
     }
 
