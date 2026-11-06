@@ -545,13 +545,7 @@ fn operation_address(
             service.path.pop();
             (service, address.name().to_owned())
         }
-        Value::Discovered { service, key } if !key.contains(' ') => (service.clone(), key.clone()),
-        Value::Discovered { service, key } => {
-            return Err(unsupported(&format!(
-                "naming `{}[\"{key}\"]` by its method and path (name it by its operationId instead)",
-                service.name()
-            )));
-        }
+        Value::Discovered { service, key } => (service.clone(), key.clone()),
         _ => return Err(shape("a link's end", "operation")),
     };
     let owner = checked

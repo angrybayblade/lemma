@@ -1242,7 +1242,68 @@ pub(crate) fn load(
             },
         );
     }
+    for (owner, service, route) in routes_named(&repos) {
+        if let Some(repo) = repos.get_mut(&owner) {
+            add_routed_operation(repo, &service, &route)?;
+        }
+    }
     Ok(repos)
+}
+
+/// Every operation a link names by its method and path, as its repository,
+/// service and route.
+fn routes_named(repos: &BTreeMap<String, Repo>) -> BTreeSet<(String, String, String)> {
+    let mut named = BTreeSet::new();
+    for (name, repo) in repos {
+        // A malformed link is reported where links are collected.
+        let ends = repo
+            .files
+            .iter()
+            .flat_map(|file| &file.graph.links)
+            .filter_map(|written| parse_link(written).ok())
+            .flat_map(|link| [link.caller, link.provider]);
+        for end in ends.filter(|end| crate::address::is_route(&end.operation)) {
+            let owner = end.repository.unwrap_or_else(|| name.clone());
+            named.insert((owner, end.service, end.operation));
+        }
+    }
+    named
+}
+
+/// Adds the operation a service's `OpenAPI` documents declare for `route`
+/// (`GET /v1/charges/{}`) under that name, at both snapshots, so a link
+/// naming it is checked as one naming an `operationId` is.
+fn add_routed_operation(repo: &mut Repo, service: &str, route: &str) -> Result<(), GraphError> {
+    let Some((method, path)) = route.split_once(' ') else {
+        return Ok(());
+    };
+    for (file, checkout) in repo.files.iter_mut().zip(&repo.checkouts) {
+        let Some(declared) = file.services.get_mut(service) else {
+            continue;
+        };
+        if declared.exports.operations.contains_key(route) {
+            continue;
+        }
+        for document_file in declared.exports.openapi.clone() {
+            let Some(text) = checkout.read(&document_file)? else {
+                continue;
+            };
+            let document: serde_json::Value =
+                serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
+                    command: format!("reading {document_file}"),
+                    source,
+                })?;
+            let found = crate::openapi::operation_at(&document_file, &document, method, path);
+            if let Some(operation) = found {
+                declared
+                    .exports
+                    .operations
+                    .insert(route.to_owned(), operation);
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A directory as an absolute path, so commands run elsewhere (in a

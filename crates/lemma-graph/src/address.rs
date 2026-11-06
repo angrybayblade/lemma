@@ -3,7 +3,10 @@
 //! `services.web.create_charge` names an operation in the same repository as
 //! the file it is written in; `#billing:services.api.create_charge` names one
 //! in the external service `#billing`. The form
-//! `services.<service>.operations.<operation>` is accepted too.
+//! `services.<service>.operations.<operation>` is accepted too. A documented
+//! operation may be named by its method and path instead of its
+//! `operationId`: `services.api.GET /v1/charges/{}`, path parameters written
+//! `{}`.
 
 /// Where an operation is declared.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,7 +67,7 @@ pub fn parse_address(text: &str) -> Result<Address, AddressError> {
         ["services", service, operation] | ["services", service, "operations", operation] => {
             ((*service).to_owned(), (*operation).to_owned())
         }
-        _ => return Err(error()),
+        _ => split_route(path).ok_or_else(error)?,
     };
     if service.is_empty() || operation.is_empty() {
         return Err(error());
@@ -74,6 +77,28 @@ pub fn parse_address(text: &str) -> Result<Address, AddressError> {
         service,
         operation,
     })
+}
+
+/// The methods a route names.
+const METHODS: [&str; 8] = [
+    "GET", "PUT", "POST", "DELETE", "OPTIONS", "HEAD", "PATCH", "TRACE",
+];
+
+/// Whether an operation's name is a method and a path, as in
+/// `GET /v1/charges/{}`.
+pub fn is_route(operation: &str) -> bool {
+    operation
+        .split_once(' ')
+        .is_some_and(|(method, path)| METHODS.contains(&method) && path.starts_with('/'))
+}
+
+/// The service and route of `services.<service>.[operations.]<METHOD /path>`,
+/// whose path may hold dots.
+fn split_route(path: &str) -> Option<(String, String)> {
+    let rest = path.strip_prefix("services.")?;
+    let (service, operation) = rest.split_once('.')?;
+    let operation = operation.strip_prefix("operations.").unwrap_or(operation);
+    (is_route(operation) && !service.is_empty()).then(|| (service.to_owned(), operation.to_owned()))
 }
 
 /// Reads `caller -> provider`.
@@ -109,6 +134,16 @@ mod tests {
             link.provider.to_string(),
             "#billing:services.api.create_charge"
         );
+    }
+
+    #[test]
+    fn a_route_names_an_operation_by_method_and_path() {
+        let address =
+            parse_address(r##""#billing:services.api.GET /v1/files.upload/{}""##).unwrap();
+
+        assert_eq!(address.service, "api");
+        assert_eq!(address.operation, "GET /v1/files.upload/{}");
+        assert!(parse_address("services.api.FETCH /x.y").is_err());
     }
 
     #[test]

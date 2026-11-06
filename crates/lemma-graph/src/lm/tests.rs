@@ -127,6 +127,22 @@ fn a_caller_with_a_link_to_another_repository_round_trips() {
 }
 
 #[test]
+fn a_link_naming_an_operation_by_method_and_path_round_trips() {
+    let yaml = WEB.replace(
+        "\"#billing:services.api.create_charge\"",
+        "\"#billing:services.api.POST /v1/charges.create\"",
+    );
+
+    let (original, lowered, text) = round_trip(&yaml, "web", &[("billing", BILLING)]);
+
+    assert_eq!(without_manifests(lowered), without_manifests(original));
+    assert!(
+        text.contains(r#"web.create_charge -> billing_api["POST /v1/charges.create"]"#),
+        "{text}"
+    );
+}
+
+#[test]
 fn an_adapter_and_a_generated_client_round_trip() {
     let yaml = r#"
 services:
@@ -253,12 +269,15 @@ export service Functions {
 }
 
 #[test]
-fn a_discovered_operation_named_by_method_and_path_is_not_lowered() {
+fn a_discovered_operation_named_by_method_and_path_lowers_to_a_route() {
     let text = "module example\nimport * as http from lemma.http\nimport { Link } from lemma.links\nservice Gateway {\n    operations: http.openapi(\"openapi.json\")\n}\nservice Web {\n    client operation list {\n        implementation: x\n    }\n}\ngraph links : Link {\n    Web.list -> Gateway[\"GET /users\"]\n}\n";
     let files = BTreeMap::from([((String::new(), "lemma.lm".to_owned()), text.to_owned())]);
     let checked = check_program(&mut Memory(files), "lemma.lm");
 
-    let error = links(&checked, "example").unwrap_err();
+    let lowered = links(&checked, "example").unwrap();
 
-    assert!(error.to_string().contains("operationId"), "{error}");
+    assert_eq!(
+        lowered,
+        ["services.Web.list -> services.Gateway.GET /users"]
+    );
 }
