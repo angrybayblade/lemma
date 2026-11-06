@@ -87,7 +87,8 @@ pub enum GraphError {
         #[source]
         source: lemma_grammar::lm::LowerError,
     },
-    /// `--select` names a check the parent module does not declare.
+    /// `--select` names a check the parent module does not declare, or the
+    /// parent is a `lemma.yaml`, which declares none.
     #[error("{module} declares no check `{name}`")]
     UnknownCheck {
         /// The parent's entry module.
