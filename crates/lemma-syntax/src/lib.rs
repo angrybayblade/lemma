@@ -8,6 +8,7 @@ mod classify;
 mod declaration;
 mod nesting;
 mod pool;
+mod repair;
 
 use lemma_model::{Language, Position, Span, Symbol};
 use tree_sitter::{Node, Parser, Query, QueryCursor, QueryMatch, StreamingIterator};
@@ -15,6 +16,7 @@ use tree_sitter::{Node, Parser, Query, QueryCursor, QueryMatch, StreamingIterato
 pub use crate::declaration::declaration_text;
 use crate::nesting::Definition;
 pub use crate::pool::ExtractorPool;
+pub use crate::repair::parse as parse_source;
 
 /// Changes whenever extraction output could change, so snapshots built by an
 /// older extractor get a different fingerprint.
@@ -94,9 +96,7 @@ impl Extractor {
     /// Extracts the definitions from one file's source.
     pub fn extract(&mut self, language: Language, source: &str) -> Result<Extraction, SyntaxError> {
         let grammar = self.grammar_mut(language);
-        let tree = grammar
-            .parser
-            .parse(source, None)
+        let tree = repair::parse(&mut grammar.parser, language, source)
             .ok_or(SyntaxError::ParseAborted { language })?;
 
         let definitions = grammar.find_definitions(tree.root_node(), source);

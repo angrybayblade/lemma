@@ -234,7 +234,7 @@ pub fn extract(
     parser
         .set_language(&tree_sitter_language(language))
         .map_err(|source| parse_error(lemma_syntax::SyntaxError::Grammar { language, source }))?;
-    let Some(tree) = parser.parse(source, None) else {
+    let Some(tree) = lemma_syntax::parse_source(&mut parser, language, source) else {
         return Err(parse_error(lemma_syntax::SyntaxError::ParseAborted {
             language,
         }));

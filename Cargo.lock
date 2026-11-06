@@ -760,6 +760,7 @@ version = "0.1.0-rc0"
 dependencies = [
  "lemma-model",
  "rayon",
+ "regex",
  "thiserror 2.0.21",
  "tree-sitter",
  "tree-sitter-go",

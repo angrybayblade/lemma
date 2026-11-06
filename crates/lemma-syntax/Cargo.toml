@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 lemma-model.workspace = true
 rayon.workspace = true
+regex.workspace = true
 thiserror.workspace = true
 tree-sitter.workspace = true
 tree-sitter-go.workspace = true
