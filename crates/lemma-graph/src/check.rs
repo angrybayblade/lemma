@@ -1218,8 +1218,31 @@ fn resolved(repos: &BTreeMap<String, Repo>) -> Vec<ResolvedRepository> {
         .collect()
 }
 
-/// The parent and every repository reachable through `#name` services.
+/// The parent and every repository reachable through `#name` services,
+/// with the operations their `OpenAPI` documents declare added to their
+/// services, so links can name them.
 pub(crate) fn load(
+    root_file: &Path,
+    options: &CheckOptions,
+) -> Result<BTreeMap<String, Repo>, GraphError> {
+    let mut repos = load_manifests(root_file, options)?;
+    for repo in repos.values_mut() {
+        for (file, checkout) in repo.files.iter_mut().zip(&repo.checkouts) {
+            add_documented_operations(file, checkout)?;
+        }
+    }
+    for (owner, service, route) in routes_named(&repos) {
+        if let Some(repo) = repos.get_mut(&owner) {
+            add_routed_operation(repo, &service, &route)?;
+        }
+    }
+    Ok(repos)
+}
+
+/// The parent and every repository reachable through `#name` services,
+/// with their manifests as written. Reads no `OpenAPI` document, which can
+/// run to megabytes, so a workspace can list its members on every query.
+pub(crate) fn load_manifests(
     root_file: &Path,
     options: &CheckOptions,
 ) -> Result<BTreeMap<String, Repo>, GraphError> {
@@ -1246,10 +1269,7 @@ pub(crate) fn load(
         };
         let (base_file, base_fallback) = read_manifest(&reading, &checkouts[BASE])?;
         let (head_file, head_fallback) = read_manifest(&reading, &checkouts[HEAD])?;
-        let mut files = [base_file, head_file];
-        for (file, checkout) in files.iter_mut().zip(&checkouts) {
-            add_documented_operations(file, checkout)?;
-        }
+        let files = [base_file, head_file];
         let manifest_from_working_directory = base_fallback || head_fallback;
         let base_directory = root.join(Path::new(&manifest).parent().unwrap_or(Path::new("")));
         for file in &files {
@@ -1272,11 +1292,6 @@ pub(crate) fn load(
                 manifest_from_working_directory,
             },
         );
-    }
-    for (owner, service, route) in routes_named(&repos) {
-        if let Some(repo) = repos.get_mut(&owner) {
-            add_routed_operation(repo, &service, &route)?;
-        }
     }
     Ok(repos)
 }
