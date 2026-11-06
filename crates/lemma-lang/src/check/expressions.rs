@@ -782,6 +782,12 @@ impl Checker<'_> {
         } else {
             format!("{}.{}", builtin.module, builtin.name)
         };
+        if let Some(problem) = values
+            .as_ref()
+            .and_then(|known| stdlib::argument_problem(&function, known))
+        {
+            self.error(context.module, call.span, problem);
+        }
         let value = values.and_then(|mut arguments| {
             match receiver {
                 Receiver::None => {}

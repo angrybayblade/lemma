@@ -39,6 +39,8 @@ pub enum RepositorySource {
         url: String,
         /// The commit, branch or tag; the default branch if absent.
         rev: Option<String>,
+        /// The repository holding the declaring module.
+        declared_in: String,
     },
 }
 
@@ -461,6 +463,7 @@ fn repository_source(
         "git" => Some(RepositorySource::Git {
             url: text("url", 0)?,
             rev: text("rev", 1),
+            declared_in: declared_in.to_owned(),
         }),
         _ => None,
     }
