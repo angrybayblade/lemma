@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks the editor support for Lemma's `.lm` language.
 #
-# Usage: editors/check.sh [grammar] [vscode] [neovim]
+# Usage: editors/check.sh [grammar] [vscode] [neovim] [helix]
 #
 # With no arguments it runs every section:
 #
@@ -20,6 +20,9 @@
 #            headless Neovim 0.11 or later with the setup from README.md:
 #            highlight captures at a few positions, and the language server
 #            attaching and publishing diagnostics.
+#   helix    runs editors/helix/check.sh, which follows the README's Helix
+#            setup in a throwaway home, checks `hx --health lemma` and the
+#            translated captures, and with tmux checks what Helix draws.
 #
 # Needs node, npm and a C compiler. Each package's pinned tools are installed
 # on the first run. With CI set, a committed parser that is out of date with
@@ -33,6 +36,7 @@
 #
 #   VSCODE_EXECUTABLE  a VS Code to use instead of downloading one
 #   NVIM_EXECUTABLE    a Neovim to use instead of `nvim`
+#   HELIX_EXECUTABLE   a Helix to use instead of `hx`
 
 set -euo pipefail
 
@@ -229,17 +233,31 @@ check_neovim() {
     "$runtime" "$editors_directory/fixture/lemma.lm" "$editors_directory/README.md"
 }
 
+check_helix() {
+  step "Running the Helix check"
+  if ! command -v "${HELIX_EXECUTABLE:-hx}" >/dev/null; then
+    skip helix "Helix is not installed; set HELIX_EXECUTABLE to use one not on PATH"
+    return
+  fi
+  if ! find_lemma; then
+    skip helix "no language server to run"
+    return
+  fi
+  run_editor helix "$editors_directory/helix/check.sh" "$lemma"
+}
+
 sections=("$@")
 if [ "${#sections[@]}" -eq 0 ]; then
-  sections=(grammar vscode neovim)
+  sections=(grammar vscode neovim helix)
 fi
 for section in "${sections[@]}"; do
   case "$section" in
     grammar) check_grammar ;;
     vscode) check_vscode ;;
     neovim) check_neovim ;;
+    helix) check_helix ;;
     *)
-      echo "Unknown section \`$section\`; expected grammar, vscode or neovim" >&2
+      echo "Unknown section \`$section\`; expected grammar, vscode, neovim or helix" >&2
       exit 2
       ;;
   esac
