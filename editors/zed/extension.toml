@@ -12,7 +12,7 @@ repository = "https://github.com/angrybayblade/lemma"
 # `repository` to its `file://` URL and `rev` to one of its commits.
 [grammars.lemma]
 repository = "https://github.com/angrybayblade/lemma"
-rev = "63f78fec84a96bcbaf484a70d68c43ddc2e0a779"
+rev = "34ff045842189af9de6b9bd3785c88b9ab514cde"
 path = "editors/tree-sitter-lemma"
 
 [language_servers.lemma]
