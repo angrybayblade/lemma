@@ -953,9 +953,11 @@ Implementation goes in two phases. Each is checked against something that alread
 - `crates/lemma-lang` parses modules with error recovery, loads programs across repositories, resolves names and type-checks them, and holds the standard library.
 - `lemma-grammar` lowers a program's relations, rules, graphs and requirements; `lemma.http` compiles to the same program as `grammars/http-contracts.yaml`, which a test requires.
 - `lemma-graph` reads `lemma.lm` wherever `lemma check` reads `lemma.yaml`. On five fixture systems and a six-repository workspace, checks from converted modules match the YAML ones line for line.
-- `lemma lm check` and `lemma lm convert` are on the command line, and `editors/` has a Tree-sitter grammar, highlighting queries and a VS Code extension.
+- `lemma verify` takes a `.lm` grammar module (`grammar: contracts.lm`), whose `check main` selects requirements.
+- `lemma lm check` and `lemma lm convert` are on the command line, and `lemma lm lsp` serves modules to editors: diagnostics as you type, hovers, definitions across repositories, symbols and completion.
+- `editors/` has a Tree-sitter grammar with highlighting, locals, folds and indents, and a VS Code extension that starts the server. Its checks parse every `.lm` file in the repository, and the two parsers agree on all of them.
 
-Allowances are checked but not yet applied, and `lemma verify` does not yet take a `.lm` grammar.
+Allowances are checked but not yet applied, and there is no formatter yet.
 
 Still to specify:
 
