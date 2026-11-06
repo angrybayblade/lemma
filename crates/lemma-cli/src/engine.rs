@@ -258,7 +258,7 @@ impl Engine {
             .map(selection::read_lemma_file)
             .transpose()?;
         if let (Some(source), Some(lemma_path)) = (&source, &lemma_path) {
-            if selection::is_workspace(&source.file) {
+            if selection::is_workspace(source) {
                 return self.index_workspace(request, lemma_path, indexing, out);
             }
         }
@@ -305,10 +305,10 @@ impl Engine {
         &mut self,
         db_path: &Path,
         root: &Path,
-        source: Option<&selection::LemmaSource>,
+        source: Option<&lemma_graph::config::LemmaFile>,
     ) -> anyhow::Result<Indexed> {
         let selection = match source {
-            Some(source) => selection::repository_selection(&source.file)?,
+            Some(source) => selection::repository_selection(source)?,
             None => lemma_index::Selection::everything(),
         };
         let key = (db_path.to_path_buf(), root.to_path_buf());
@@ -432,11 +432,7 @@ impl Engine {
             None => member.root.clone(),
         };
         let db_path = default_index_path(&member.root)?;
-        let source = selection::LemmaSource {
-            text: format!("{:?}", member.file),
-            file: member.file.clone(),
-        };
-        let indexed = self.index_repository(&db_path, &indexed_root, Some(&source))?;
+        let indexed = self.index_repository(&db_path, &indexed_root, Some(&member.file))?;
         let stored = StoredMember {
             name: member.name.clone(),
             root: member.root.display().to_string(),
@@ -1167,7 +1163,7 @@ fn clear_exports(
 fn update_exports(
     store: &mut Store,
     summary: &lemma_index::IndexSummary,
-    source: &selection::LemmaSource,
+    source: &lemma_graph::config::LemmaFile,
     root: &Path,
 ) -> anyhow::Result<output::ExportCounts> {
     let snapshot_id = summary.snapshot_id;
@@ -1175,16 +1171,18 @@ fn update_exports(
     // Read every time: a document kept for the code as it is costs a file
     // read, and its warnings are shown on every index, not only the one
     // that rebuilt the exports.
-    let from_code = documents_from_code(&source.file, root, &mut adapter_warnings);
+    let from_code = documents_from_code(source, root, &mut adapter_warnings);
     let from_code_digests: Vec<String> = from_code
         .iter()
         .map(|(service, generated)| format!("{service} {}", generated.digest))
         .collect();
     let fingerprint = lemma_model::content_hash(
+        // The parsed file, not its text: a workspace member's file is loaded
+        // rather than read, and both must give one fingerprint, or moving
+        // between the workspace and the member rebuilds the exports each time.
         format!(
-            "{}\n{}\n{}\n{}",
+            "{}\n{source:?}\n{}\n{}",
             lemma_graph::exports::VERSION,
-            source.text,
             summary.snapshot.fingerprint,
             from_code_digests.join("\n")
         )
@@ -1203,7 +1201,7 @@ fn update_exports(
                 },
                 top_level: &top_level,
             };
-            lemma_graph::exports::exports(&source.file, root, &symbols, &from_code)?
+            lemma_graph::exports::exports(source, root, &symbols, &from_code)?
         };
         store.replace_exports(snapshot_id, &fingerprint, &exports, &links)?;
     }

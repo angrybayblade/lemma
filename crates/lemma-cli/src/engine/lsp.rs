@@ -192,7 +192,7 @@ impl Engine {
             .as_deref()
             .map(selection::read_lemma_file)
             .transpose()?
-            .filter(|source| selection::is_workspace(&source.file));
+            .filter(selection::is_workspace);
         let roots = match (workspace, lemma_path) {
             (Some(_), Some(lemma_path)) => workspace_roots(&lemma_path)?,
             _ => vec![Root {
