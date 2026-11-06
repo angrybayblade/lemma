@@ -159,7 +159,7 @@ fn normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-/// A repository's `lemma.lm` at a checkout, checked and lowered to the
+/// A repository's `mod.lm` at a checkout, checked and lowered to the
 /// `lemma.yaml` structures for that repository.
 pub fn read_manifest(
     checkout: &Checkout,
@@ -196,11 +196,11 @@ mod tests {
         std::fs::create_dir_all(&platform).unwrap();
         std::fs::create_dir_all(&functions).unwrap();
         std::fs::write(
-            platform.join("lemma.lm"),
+            platform.join("mod.lm"),
             "module platform\nimport functions\nrepo functions = local(\"../missing\")\n",
         )
         .unwrap();
-        std::fs::write(functions.join("lemma.lm"), "module functions\n").unwrap();
+        std::fs::write(functions.join("mod.lm"), "module functions\n").unwrap();
         let entry = Checkout {
             root: platform,
             commit: None,
@@ -213,7 +213,7 @@ mod tests {
             },
         )]);
 
-        let file = read_manifest(&entry, "lemma.lm", directory.path(), &pins);
+        let file = read_manifest(&entry, "mod.lm", directory.path(), &pins);
 
         assert!(file.is_ok(), "{file:?}");
     }

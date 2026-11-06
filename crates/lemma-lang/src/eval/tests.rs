@@ -9,13 +9,13 @@ struct Memory(String);
 
 impl Sources for Memory {
     fn read(&mut self, repository: &Repository, path: &str) -> Result<Option<String>, SourceError> {
-        let is_entry = repository.source.is_none() && path == "lemma.lm";
+        let is_entry = repository.source.is_none() && path == "mod.lm";
         Ok(is_entry.then(|| self.0.clone()))
     }
 }
 
 fn checked(text: &str) -> Checked {
-    let checked = check_program(&mut Memory(text.to_owned()), "lemma.lm");
+    let checked = check_program(&mut Memory(text.to_owned()), "mod.lm");
     let errors = checked.error_lines();
     assert!(errors.is_empty(), "{errors:#?}");
     checked
@@ -228,7 +228,7 @@ fn deleting_the_link_violates_the_behavior_instead_of_looping_over_nothing() {
 fn a_behavior_that_asserts_nothing_is_unknown() {
     let checked = check_program(
         &mut Memory("module m\nbehavior empty {\n    let x = 1\n}\n".to_owned()),
-        "lemma.lm",
+        "mod.lm",
     );
 
     let (results, _) = run(&checked, &[]);
@@ -362,7 +362,7 @@ check main {
 fn a_function_that_calls_itself_is_reported() {
     let checked = check_program(
         &mut Memory("module m\nfn loop(value: Int): Int {\n    return loop(value)\n}\n".to_owned()),
-        "lemma.lm",
+        "mod.lm",
     );
 
     assert!(

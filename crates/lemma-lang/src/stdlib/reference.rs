@@ -108,7 +108,7 @@ fn declarations() -> Vec<(String, String)> {
         let _ = writeln!(entry, "import {module}");
     }
     let mut program = Program(entry);
-    let checked = crate::check_program(&mut program, "lemma.lm");
+    let checked = crate::check_program(&mut program, "mod.lm");
     let mut found: Vec<(&str, u32, String)> = checked
         .index
         .definitions
@@ -136,7 +136,7 @@ struct Program(String);
 
 impl Sources for Program {
     fn read(&mut self, repository: &Repository, path: &str) -> Result<Option<String>, SourceError> {
-        let is_entry = repository.source.is_none() && path == "lemma.lm";
+        let is_entry = repository.source.is_none() && path == "mod.lm";
         Ok(is_entry.then(|| self.0.clone()))
     }
 }

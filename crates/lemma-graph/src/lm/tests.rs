@@ -24,12 +24,12 @@ impl Sources for Memory {
 fn round_trip(yaml: &str, module: &str, others: &[(&str, &str)]) -> (LemmaFile, LemmaFile, String) {
     let original = parse(yaml).unwrap();
     let text = convert(&original, module);
-    let mut files = BTreeMap::from([((String::new(), "lemma.lm".to_owned()), text.clone())]);
+    let mut files = BTreeMap::from([((String::new(), "mod.lm".to_owned()), text.clone())]);
     for (repository, other) in others {
         let converted = convert(&parse(other).unwrap(), repository);
-        files.insert(((*repository).to_owned(), "lemma.lm".to_owned()), converted);
+        files.insert(((*repository).to_owned(), "mod.lm".to_owned()), converted);
     }
-    let checked = check_program(&mut Memory(files), "lemma.lm");
+    let checked = check_program(&mut Memory(files), "mod.lm");
     assert!(
         checked.diagnostics.is_empty(),
         "{text}\n{:#?}",
@@ -229,13 +229,13 @@ fn a_file_of_external_services_becomes_a_workspace() {
 fn a_workspace_pins_its_repositories_and_level() {
     let workspace = "module example\nworkspace {\n    repo billing = local(\"../billing\")\n    config: { level: check }\n}\n";
     let files = BTreeMap::from([
-        ((String::new(), "lemma.lm".to_owned()), workspace.to_owned()),
+        ((String::new(), "mod.lm".to_owned()), workspace.to_owned()),
         (
-            ("billing".to_owned(), "lemma.lm".to_owned()),
+            ("billing".to_owned(), "mod.lm".to_owned()),
             convert(&parse(BILLING).unwrap(), "billing"),
         ),
     ]);
-    let checked = check_program(&mut Memory(files), "lemma.lm");
+    let checked = check_program(&mut Memory(files), "mod.lm");
 
     let lowered = repository_file(&checked, "example").unwrap();
 
@@ -245,7 +245,7 @@ fn a_workspace_pins_its_repositories_and_level() {
     );
     assert_eq!(
         lowered.services["#billing"].manifest.as_deref(),
-        Some("lemma.lm")
+        Some("mod.lm")
     );
     assert_eq!(lowered.graph.level, Some(Level::Check));
 }
@@ -265,8 +265,8 @@ export service Functions {
     }
 }
 "#;
-    let files = BTreeMap::from([((String::new(), "lemma.lm".to_owned()), text.to_owned())]);
-    let checked = check_program(&mut Memory(files), "lemma.lm");
+    let files = BTreeMap::from([((String::new(), "mod.lm".to_owned()), text.to_owned())]);
+    let checked = check_program(&mut Memory(files), "mod.lm");
 
     let lowered = repository_file(&checked, "functions").unwrap();
 
@@ -287,8 +287,8 @@ export service Functions {
 #[test]
 fn a_discovered_operation_named_by_method_and_path_lowers_to_a_route() {
     let text = "module example\nimport * as http from lemma.http\nimport { Link } from lemma.links\nservice Gateway {\n    operations: http.openapi(\"openapi.json\")\n}\nservice Web {\n    client operation list {\n        implementation: x\n    }\n}\ngraph links : Link {\n    Web.list -> Gateway[\"GET /users\"]\n}\n";
-    let files = BTreeMap::from([((String::new(), "lemma.lm".to_owned()), text.to_owned())]);
-    let checked = check_program(&mut Memory(files), "lemma.lm");
+    let files = BTreeMap::from([((String::new(), "mod.lm".to_owned()), text.to_owned())]);
+    let checked = check_program(&mut Memory(files), "mod.lm");
 
     let lowered = links(&checked, "example").unwrap();
 

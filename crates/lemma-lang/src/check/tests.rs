@@ -31,11 +31,11 @@ fn checked(files: &[(&str, &str, &str)]) -> Checked {
             })
             .collect(),
     );
-    check_program(&mut memory, "lemma.lm")
+    check_program(&mut memory, "mod.lm")
 }
 
 fn single(text: &str) -> Checked {
-    checked(&[("", "lemma.lm", text)])
+    checked(&[("", "mod.lm", text)])
 }
 
 fn errors(checked: &Checked) -> Vec<String> {
@@ -180,13 +180,13 @@ fn platform_example() -> Checked {
     checked(&[
         (
             "",
-            "lemma.lm",
+            "mod.lm",
             "module example\nworkspace {\n    language: \"0.2\"\n    repo functions = local(\"../functions\")\n    repo platform = local(\"../platform\")\n    config: { level: check }\n}\ncheck main {\n    run lemma.links.*\n    run platform.services.worker.forwards_upstream_retriable { severity: warning }\n}\nimport lemma.links\n",
         ),
-        ("functions", "lemma.lm", FUNCTIONS),
+        ("functions", "mod.lm", FUNCTIONS),
         (
             "platform",
-            "lemma.lm",
+            "mod.lm",
             "module platform\nimport platform.services.gateway\nimport platform.services.worker\nrepo functions = git(url: \"https://git.example.com/functions.git\", rev: \"3f2a1c9e04\")\n",
         ),
         ("platform", "services/worker.lm", WORKER),
@@ -415,7 +415,7 @@ fn importing_an_unexported_name_is_reported() {
     let result = checked(&[
         (
             "",
-            "lemma.lm",
+            "mod.lm",
             "module example\nimport { hidden } from example.other\n",
         ),
         ("", "other.lm", "module example.other\nlet hidden = 1\n"),
@@ -427,7 +427,7 @@ fn importing_an_unexported_name_is_reported() {
 #[test]
 fn a_cycle_of_imports_is_reported() {
     let result = checked(&[
-        ("", "lemma.lm", "module example\nimport example.a\n"),
+        ("", "mod.lm", "module example\nimport example.a\n"),
         ("", "a.lm", "module example.a\nimport example.b\n"),
         ("", "b.lm", "module example.b\nimport example.a\n"),
     ]);

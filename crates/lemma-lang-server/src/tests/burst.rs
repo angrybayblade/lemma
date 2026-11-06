@@ -145,7 +145,7 @@ fn write_program(root: &Path, count: usize) {
         writeln!(imports, "import big.mods.m{number:03}").unwrap();
     }
     let text = format!("module big\n\nimport lemma.http\n{imports}");
-    std::fs::write(root.join("lemma.lm"), text).unwrap();
+    std::fs::write(root.join("mod.lm"), text).unwrap();
 }
 
 fn module_text(number: usize, count: usize) -> String {
@@ -307,7 +307,7 @@ fn a_burst_of_changes_to_a_large_program_is_checked_once() {
     let program = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
     write_program(program.path(), MODULES);
-    let path = program.path().join("lemma.lm");
+    let path = program.path().join("mod.lm");
     let text = std::fs::read_to_string(&path).unwrap();
     let uri = Url::from_file_path(&path).unwrap();
     let (bytes, burst) = client_messages(&uri, &text);

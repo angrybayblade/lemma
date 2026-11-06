@@ -154,7 +154,7 @@ with open(os.environ["LEMMA_OUTPUT"], "w") as output:
 fn system(handler: &str) -> tempfile::TempDir {
     let workspace = tempfile::tempdir().unwrap();
     let functions = workspace.path().join("functions");
-    write(&functions.join("lemma.lm"), FUNCTIONS);
+    write(&functions.join("mod.lm"), FUNCTIONS);
     write(
         &functions.join("serverless.py"),
         "def setup_webhook(request):\n    pass\n",
@@ -163,7 +163,7 @@ fn system(handler: &str) -> tempfile::TempDir {
     git(&functions, &["add", "."]);
     git(&functions, &["commit", "-q", "-m", "functions"]);
     let platform = workspace.path().join("platform");
-    write(&platform.join("lemma.lm"), PLATFORM);
+    write(&platform.join("mod.lm"), PLATFORM);
     write(&platform.join("worker/__init__.py"), "");
     write(&platform.join("worker/client.py"), CLIENT);
     write(&platform.join("worker/handlers.py"), handler);
@@ -189,7 +189,7 @@ fn run(workspace: &Path, level: Level, run_checkers: bool) -> Report {
         select: None,
     };
     check(
-        &workspace.join("platform/lemma.lm"),
+        &workspace.join("platform/mod.lm"),
         &options,
         &ReferenceEngine,
         None,
@@ -288,7 +288,7 @@ fn allowing(handler: &str, allowance: &str) -> tempfile::TempDir {
     let workspace = system(handler);
     let platform = workspace.path().join("platform");
     write(
-        &platform.join("lemma.lm"),
+        &platform.join("mod.lm"),
         &format!("{PLATFORM}\n{allowance}"),
     );
     git(&platform, &["commit", "-q", "-am", "allow"]);
@@ -389,7 +389,7 @@ fn a_change_that_breaks_the_worker_introduces_its_violations_and_lists_new_behav
     let platform = workspace.path().join("platform");
     write(&platform.join("worker/handlers.py"), DROPPING_HANDLER);
     let module = format!("{PLATFORM}\nbehavior always {{\n    expect true\n}}\n");
-    write(&platform.join("lemma.lm"), &module);
+    write(&platform.join("mod.lm"), &module);
     git(&platform, &["commit", "-q", "-am", "drop the flag"]);
     let options = CheckOptions {
         change: Some(lemma_graph::Change {
@@ -406,7 +406,7 @@ fn a_change_that_breaks_the_worker_introduces_its_violations_and_lists_new_behav
         select: None,
     };
 
-    let report = check(&platform.join("lemma.lm"), &options, &ReferenceEngine, None).unwrap();
+    let report = check(&platform.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
 
     let forwards = &report.behaviors[0];
     assert_eq!(forwards.outcome, "violated");

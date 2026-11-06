@@ -371,8 +371,8 @@ mod tests {
     }
 
     fn model(text: &str) -> Model {
-        let mut sources = Memory(BTreeMap::from([("lemma.lm".to_owned(), text.to_owned())]));
-        let checked = check_program(&mut sources, "lemma.lm");
+        let mut sources = Memory(BTreeMap::from([("mod.lm".to_owned(), text.to_owned())]));
+        let checked = check_program(&mut sources, "mod.lm");
         assert!(checked.diagnostics.is_empty(), "{:#?}", checked.diagnostics);
         checked.model
     }

@@ -146,7 +146,7 @@ pub(crate) struct CheckArgs {
     /// unknown, or stale when their inputs changed, without it.
     #[arg(long)]
     pub no_run: bool,
-    /// The check of a parent `lemma.lm` to run instead of its `check main`.
+    /// The check of a parent `mod.lm` to run instead of its `check main`.
     #[arg(long, value_name = "CHECK")]
     pub select: Option<String>,
     /// Also list informational findings, not just their count.

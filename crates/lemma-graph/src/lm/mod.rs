@@ -494,7 +494,7 @@ fn externals(checked: &Checked, repository: &str) -> Vec<(String, Service)> {
                 declaring_file,
             }) if declared_in == repository => Service {
                 path: Some(relative_to_root(declaring_file, path)),
-                manifest: Some(lemma_lang::load::ROOT_FILE.to_owned()),
+                manifest: Some(lemma_lang::load::MODULE_FILE.to_owned()),
                 ..Service::default()
             },
             Some(RepositorySource::Git {
@@ -504,7 +504,7 @@ fn externals(checked: &Checked, repository: &str) -> Vec<(String, Service)> {
             }) if declared_in == repository => Service {
                 git: Some(url.clone()),
                 reference: rev.clone(),
-                manifest: Some(lemma_lang::load::ROOT_FILE.to_owned()),
+                manifest: Some(lemma_lang::load::MODULE_FILE.to_owned()),
                 ..Service::default()
             },
             _ => continue,

@@ -73,13 +73,13 @@ pub(crate) struct LanguageServers {
     pub providers_file: Option<PathBuf>,
 }
 
-/// The manifest to start from: `lemma.lm` when the default `lemma.yaml` is
+/// The manifest to start from: `mod.lm` when the default `lemma.yaml` is
 /// absent and it is there.
 fn entry_manifest(manifest: &Path) -> PathBuf {
     let is_default = manifest == Path::new("lemma.yaml");
-    let language = manifest.with_file_name("lemma.lm");
+    let language = manifest.with_file_name("mod.lm");
     if is_default && !manifest.exists() && language.exists() {
-        log::info!("reading lemma.lm: there is no lemma.yaml");
+        log::info!("reading mod.lm: there is no lemma.yaml");
         return language;
     }
     manifest.to_path_buf()
