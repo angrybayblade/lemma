@@ -225,14 +225,45 @@ pub fn run_within(
     env: &BTreeMap<String, String>,
     timeout_ms: Option<u64>,
 ) -> Result<String, GraphError> {
+    let mut process = Command::new("sh");
+    process.arg("-c").arg(command);
+    run_process(process, command, directory, env, timeout_ms)
+}
+
+/// Runs a program with its arguments, without a shell, in `directory` with
+/// `env` added; its standard output if it succeeds within `timeout_ms`.
+pub fn run_program(
+    directory: &Path,
+    program: &[String],
+    env: &BTreeMap<String, String>,
+    timeout_ms: Option<u64>,
+) -> Result<String, GraphError> {
+    let Some((name, arguments)) = program.split_first() else {
+        return Err(GraphError::Resolver {
+            command: String::new(),
+            directory: directory.to_owned(),
+            message: "the command is empty".to_owned(),
+        });
+    };
+    let mut process = Command::new(name);
+    process.args(arguments);
+    run_process(process, &program.join(" "), directory, env, timeout_ms)
+}
+
+/// Runs `process` (described as `command`) in its own process group, so a
+/// timeout stops what it started too.
+fn run_process(
+    mut process: Command,
+    command: &str,
+    directory: &Path,
+    env: &BTreeMap<String, String>,
+    timeout_ms: Option<u64>,
+) -> Result<String, GraphError> {
     let io_error = |source| GraphError::Io {
         path: directory.to_owned(),
         source,
     };
-    let mut process = Command::new("sh");
     process
-        .arg("-c")
-        .arg(command)
         .current_dir(directory)
         .envs(env)
         .stdin(Stdio::null())
