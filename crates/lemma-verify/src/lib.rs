@@ -319,7 +319,13 @@ fn run<E: Engine>(
         },
         None => wanted(&grammar, &options.relations),
     };
+    let started = std::time::Instant::now();
     let derived = evaluate(&grammar, engine, &request)?;
+    log::info!(
+        "evaluated the grammar's rules with {} in {:.1}s",
+        engine.name(),
+        started.elapsed().as_secs_f64()
+    );
     let mut findings = match operations {
         Some(_) => Vec::new(),
         None => findings(&grammar, &derived),
@@ -406,11 +412,17 @@ pub(crate) fn evaluate<E: Engine>(
     engine: &E,
     request: &Request,
 ) -> Result<lemma_logic::Derived, VerifyError> {
-    lemma_logic::evaluate(engine, &grammar.program, &grammar.facts, request).map_err(|error| {
-        VerifyError::Evaluation {
+    let started = std::time::Instant::now();
+    let derived = lemma_logic::evaluate(engine, &grammar.program, &grammar.facts, request)
+        .map_err(|error| VerifyError::Evaluation {
             message: describe(&error),
-        }
-    })
+        })?;
+    log::debug!(
+        "evaluated with {} in {:.1}s",
+        engine.name(),
+        started.elapsed().as_secs_f64()
+    );
+    Ok(derived)
 }
 
 fn describe<E: std::error::Error + 'static>(error: &EvaluationError<E>) -> String {

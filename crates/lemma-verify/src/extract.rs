@@ -136,6 +136,7 @@ pub fn extract_all(
             consumer(name, repository, &snapshot, writer, &mut extractor)?;
         }
     }
+    extractor.counts.log();
     Ok(operations)
 }
 
@@ -1147,11 +1148,14 @@ fn consumer(
         reexports: BTreeMap::new(),
         imports: read_import_aliases(repository, snapshot.commit, snapshot.specs)?,
     };
+    let listed = files.len();
     let to_read = if snapshot.selection.is_some() {
         selected_files(&files, repository, snapshot, &scope, extractor)?
     } else {
         files
     };
+    extractor.counts.consumer_files += listed;
+    extractor.counts.chosen_files += to_read.len();
     let read = extractor.read(&repository.path, snapshot.commit, &to_read, &scope.options)?;
     let scope = ConsumerScope {
         reexports: generated_reexports(&scope, &read),
@@ -1863,6 +1867,44 @@ struct FactReader {
     /// Units whose terms this run has sent to the cache, which its writer
     /// may not have stored yet.
     termed: BTreeSet<String>,
+    /// How much was read, and how, for the log.
+    counts: ReadCounts,
+}
+
+/// How much code a run read and where its facts came from, logged at the
+/// end of extraction.
+#[derive(Debug, Default)]
+struct ReadCounts {
+    /// Files whose facts came from the cache.
+    kept: usize,
+    /// Files parsed.
+    parsed: usize,
+    /// Consumer files listed, and of those chosen to read.
+    consumer_files: usize,
+    chosen_files: usize,
+    /// Repositories whose consumer files were chosen from a terms segment,
+    /// and those looked up file by file.
+    segments_hit: usize,
+    segments_missed: usize,
+}
+
+impl ReadCounts {
+    fn log(&self) {
+        log::info!(
+            "read code: {} files' facts kept, {} parsed; {} of {} consumer files read",
+            self.kept,
+            self.parsed,
+            self.chosen_files,
+            self.consumer_files
+        );
+        if self.segments_hit + self.segments_missed > 0 {
+            log::info!(
+                "chose consumer files from {} kept terms segments, looked up {} repositories",
+                self.segments_hit,
+                self.segments_missed
+            );
+        }
+    }
 }
 
 impl FactReader {
@@ -1887,6 +1929,7 @@ impl FactReader {
             kept,
             read: BTreeMap::new(),
             termed: BTreeSet::new(),
+            counts: ReadCounts::default(),
         }
     }
 
@@ -1923,6 +1966,8 @@ impl FactReader {
             .filter_map(|(file, key)| Some((contents.get(&file.path)?, *key)))
             .collect();
         let parsed = self.parse(&to_parse, options)?;
+        self.counts.kept += kept.len();
+        self.counts.parsed += parsed.len();
         self.read.extend(kept);
         self.read.extend(parsed);
         Ok(keyed
@@ -1993,11 +2038,9 @@ impl FactReader {
             .kept
             .as_ref()
             .map(|kept| crate::term_segments::key(&kept.build, repository, &keys));
-        if let Some(found) = self.kept_term_files(segment.as_ref(), &wanted, keyed.len()) {
-            return Ok(found
-                .into_iter()
-                .map(|position| keyed[position].0.path.clone())
-                .collect());
+        let place = (repository, commit);
+        if let Some(found) = self.chosen_from_segment(segment.as_ref(), &wanted, &keyed, place) {
+            return Ok(found);
         }
         let (indexed, hits) = self.indexed_and_hits(&keys, &wanted);
         let mut chosen: BTreeSet<String> = keyed
@@ -2039,6 +2082,40 @@ impl FactReader {
             self.put_term_segment(segment, keys, indexed, fresh);
         }
         Ok(chosen)
+    }
+
+    /// The paths among `keyed` any of `wanted` indexes, from the terms
+    /// segment under `key`; `None` when it is missing or does not check.
+    fn chosen_from_segment(
+        &mut self,
+        key: Option<&lemma_store::SegmentKey>,
+        wanted: &BTreeSet<String>,
+        keyed: &[(ListedFile, String)],
+        (repository, commit): (&Path, Option<&str>),
+    ) -> Option<BTreeSet<String>> {
+        let at = commit.unwrap_or("the working directory");
+        let Some(found) = self.kept_term_files(key, wanted, keyed.len()) else {
+            self.counts.segments_missed += 1;
+            log::debug!(
+                "{} at {at}: no kept terms segment; looking up {} files",
+                repository.display(),
+                keyed.len()
+            );
+            return None;
+        };
+        self.counts.segments_hit += 1;
+        log::debug!(
+            "{} at {at}: chose {} of {} files from a kept terms segment",
+            repository.display(),
+            found.len(),
+            keyed.len()
+        );
+        Some(
+            found
+                .into_iter()
+                .map(|position| keyed[position].0.path.clone())
+                .collect(),
+        )
     }
 
     /// Those of `keys` whose terms the cache holds, and those of them any

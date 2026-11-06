@@ -288,8 +288,11 @@ pub fn attach(
         .filter(|(index, _)| findings[*index].severity != Severity::Info)
         .collect();
     if problems.is_empty() {
+        log::info!("tracing: no problem to trace");
         return Ok(());
     }
+    log::info!("tracing what {} problems affect", problems.len());
+    let started = std::time::Instant::now();
     let routes = read_routes(&walkable.routes, repos)?;
     let mut code = Code::new(repos, reading);
     let mut traces: BTreeMap<&Seed, Vec<Impact>> = BTreeMap::new();
@@ -306,6 +309,7 @@ pub fn attach(
         }
         findings[*index].affects.clone_from(&traces[seed]);
     }
+    log::info!("tracing done in {:.1}s", started.elapsed().as_secs_f64());
     // Every repository's functions and name index: freeing them takes a
     // noticeable part of a large system's check, and nothing waits on it.
     std::thread::spawn(move || drop(tracing));
@@ -685,6 +689,11 @@ pub(crate) fn functions_of(
         .collect();
     let segment = segment_key(build, root, &keyed);
     if let Some(found) = kept_segment(kept.as_ref(), &segment) {
+        log::debug!(
+            "functions of {}: kept segment, {} functions",
+            root.display(),
+            found.len()
+        );
         return Ok(found);
     }
     let keys: Vec<String> = keyed.iter().map(|(_, key)| key.clone()).collect();
@@ -700,17 +709,42 @@ pub(crate) fn functions_of(
         .filter(|(_, key)| !records.contains_key(key))
         .filter_map(|(file, key)| Some((contents.get(&file.path)?, key)))
         .collect();
+    let kept_count = records.len();
     records.extend(parse_functions(&to_parse, kept, extractors)?);
+    log::debug!(
+        "functions of {}: no kept segment; {kept_count} files from kept records, {} parsed",
+        root.display(),
+        to_parse.len()
+    );
     let functions = merge_records(&keyed, &records);
-    // A file Git vouched for but that could not be read (a blob missing
-    // from a partial clone, a file deleted since listing) has no record.
-    // A segment is named by every file's key, so keeping one now would
-    // leave that file out of every later run's table.
-    let is_complete = keyed.iter().all(|(_, key)| records.contains_key(key));
-    if let (Some(kept), true) = (kept, is_complete) {
-        kept.put_segment(segment, functions.encode_segment());
-    }
+    keep_segment(kept, segment, &keyed, &records, &functions);
     Ok(functions)
+}
+
+/// Keeps `functions` as the segment under `key` when every keyed file had
+/// a record. A file Git vouched for but that could not be read (a blob
+/// missing from a partial clone, a file deleted since listing) has none,
+/// and a segment is named by every file's key, so keeping one then would
+/// leave that file out of every later run's table.
+fn keep_segment(
+    kept: &mut Option<Kept>,
+    key: lemma_store::SegmentKey,
+    keyed: &[(&ListedFile, String)],
+    records: &BTreeMap<String, FileRecord>,
+    functions: &Functions,
+) {
+    let Some(kept) = kept else {
+        return;
+    };
+    let missing = keyed
+        .iter()
+        .filter(|(_, key)| !records.contains_key(key))
+        .count();
+    if missing > 0 {
+        log::debug!("not keeping a functions segment: {missing} files could not be read");
+        return;
+    }
+    kept.put_segment(key, functions.encode_segment());
 }
 
 /// The functions of `keyed` files from their `records`, in the files'

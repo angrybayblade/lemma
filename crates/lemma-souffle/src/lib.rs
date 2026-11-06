@@ -70,6 +70,7 @@ impl SouffleEngine {
     /// Uses `souffle` from `PATH`.
     pub fn find() -> Result<Self, SouffleError> {
         let executable = which::which("souffle").map_err(|_| SouffleError::NotFound)?;
+        log::debug!("found souffle at {}", executable.display());
         Ok(Self::with_executable(executable))
     }
 
@@ -98,6 +99,7 @@ impl SouffleEngine {
         if let Some(jobs) = self.jobs {
             command.arg(format!("--jobs={jobs}"));
         }
+        log::debug!("running souffle in {}", directory.display());
         if explain {
             command.args(["-t", "explain"]).stdin(Stdio::piped());
         } else {

@@ -198,14 +198,21 @@ pub fn check<E: Engine>(
     engine: &E,
     references: Option<&mut dyn crate::anchors::References>,
 ) -> Result<Report, GraphError> {
+    let started = std::time::Instant::now();
     let repos = load(root_file, options)?;
     check_change_names_a_repository(&repos, options)?;
+    log_repositories(&repos);
     let level = options
         .level
         .or(repos[SELF].files[HEAD].graph.level)
         .unwrap_or_default();
     let links = collect_links(&repos)?;
     let mut findings = check_declared(&repos, &links, level, options)?;
+    log::info!(
+        "checked {} declared links: {} findings",
+        links.len(),
+        findings.len()
+    );
     let mut seeds = declared_seeds(&findings, &links, &repos);
     // After the seeds: a doubtful anchor is no problem to trace from.
     if let Some(references) = references {
@@ -219,15 +226,7 @@ pub fn check<E: Engine>(
         options,
         listings: &listings,
     };
-    let inference = match &options.change {
-        Some(change) => infer_change(&repos, change, &shared, engine, &mut findings)?,
-        None if options.list_links => infer_at_head(&repos, &shared, engine)?,
-        None => infer_drift(&repos, level, engine, &mut findings, &shared)?,
-    };
-    let (inferred_links, walkable) = match inference {
-        Some((count, walkable)) => (Some(count), walkable),
-        None => (None, Walkable::default()),
-    };
+    let (inferred_links, walkable) = infer(&repos, &shared, engine, level, &mut findings)?;
     seeds.extend(walkable.seeds.iter().cloned());
     let facts = options.facts_cache.as_ref();
     let reading = affects::CodeReading {
@@ -249,6 +248,7 @@ pub fn check<E: Engine>(
     };
     affects::attach(&mut findings, &seeds, &mut source, &repos, &reading)?;
     sort_findings(&mut findings);
+    log_outcome(&findings, started);
     let link_list = options.list_links.then(|| link_list(&links, &walkable));
     Ok(Report {
         level,
@@ -258,6 +258,79 @@ pub fn check<E: Engine>(
         findings,
         link_list,
     })
+}
+
+/// The links inferred from code, as the options ask: for the change, at
+/// head to list them, or where a service's code and committed documents
+/// may differ; their count, if inference ran, and what tracing walks.
+fn infer<E: Engine>(
+    repos: &BTreeMap<String, Repo>,
+    shared: &Shared<'_>,
+    engine: &E,
+    level: Level,
+    findings: &mut Vec<Finding>,
+) -> Result<(Option<usize>, Walkable), GraphError> {
+    let options = shared.options;
+    let inference = match &options.change {
+        Some(change) => infer_change(repos, change, shared, engine, findings)?,
+        None if options.list_links => infer_at_head(repos, shared, engine)?,
+        None => infer_drift(repos, level, engine, findings, shared)?,
+    };
+    let Some((count, walkable)) = inference else {
+        log::info!("no inference: nothing changed that inferred links could rest on");
+        return Ok((None, Walkable::default()));
+    };
+    Ok((Some(count), walkable))
+}
+
+/// A commit or reference as logs show it: its first ten characters.
+fn short(commit: &str) -> String {
+    commit.chars().take(10).collect()
+}
+
+/// Logs each repository read and the commits it was read at.
+fn log_repositories(repos: &BTreeMap<String, Repo>) {
+    for repository in resolved(repos) {
+        let at = |commit: &Option<String>| {
+            commit.as_deref().map_or_else(
+                || "working directory".to_owned(),
+                |commit| commit.chars().take(10).collect(),
+            )
+        };
+        let commits = if repository.base == repository.head {
+            at(&repository.head)
+        } else {
+            format!("{}..{}", at(&repository.base), at(&repository.head))
+        };
+        let manifest = if repository.manifest_from_working_directory {
+            ", lemma.yaml from the working directory"
+        } else {
+            ""
+        };
+        log::info!(
+            "repository {} at {} ({commits}{manifest})",
+            repository.name,
+            repository.root
+        );
+    }
+}
+
+/// Logs how many findings of each severity a check ended with, and how
+/// long it took.
+fn log_outcome(findings: &[Finding], started: std::time::Instant) {
+    let count = |severity: Severity| {
+        findings
+            .iter()
+            .filter(|finding| finding.severity == severity)
+            .count()
+    };
+    log::info!(
+        "check done in {:.1}s: {} errors, {} warnings, {} informational",
+        started.elapsed().as_secs_f64(),
+        count(Severity::Error),
+        count(Severity::Warning),
+        count(Severity::Info)
+    );
 }
 
 /// Fails when the change names a repository no `lemma.yaml` declares.
@@ -578,17 +651,7 @@ fn infer_links<E: Engine>(
     if run.is_drift && !has_drift && !needs_trace {
         return Ok(None);
     }
-    let options = lemma_verify::Options {
-        explain: false,
-        relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
-        facts_cache: run.facts_cache.cloned(),
-        // Tracing asks for the calls of further operations as it reaches
-        // them (see `affects::CallSource`).
-        evaluation: run.evaluation,
-    };
-    let report =
-        lemma_verify::verify_with_listings(&inferred.manifest, engine, &options, run.listings)
-            .map_err(|source| GraphError::Inference { source })?;
+    let report = verify_inferred(&inferred, run, engine)?;
     let mut walkable = affects::walkable(&report.relations, &inferred.repositories);
     walkable.partial = partial_calls(&report, &inferred);
     for found in &report.findings {
@@ -604,6 +667,44 @@ fn infer_links<E: Engine>(
         findings.push(finding);
     }
     Ok(Some((distinct_calls(&report), walkable)))
+}
+
+/// Verifies the manifest inference made for `run`: the calls code makes to
+/// documented operations, and what the change breaks in them.
+fn verify_inferred<E: Engine>(
+    inferred: &infer::Inferred,
+    run: &Inference<'_>,
+    engine: &E,
+) -> Result<lemma_verify::Report, GraphError> {
+    let (base, head) = (run.base, run.head);
+    let options = lemma_verify::Options {
+        explain: false,
+        relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
+        facts_cache: run.facts_cache.cloned(),
+        // Tracing asks for the calls of further operations as it reaches
+        // them (see `affects::CallSource`).
+        evaluation: run.evaluation,
+    };
+    log::info!(
+        "inferring links from code: {} changed {}..{}, {} evaluation",
+        run.changed,
+        short(base),
+        head.map_or_else(|| "working directory".to_owned(), short),
+        match run.evaluation {
+            lemma_verify::Evaluation::Full => "full",
+            lemma_verify::Evaluation::Demand => "change-driven",
+        }
+    );
+    let started = std::time::Instant::now();
+    let report =
+        lemma_verify::verify_with_listings(&inferred.manifest, engine, &options, run.listings)
+            .map_err(|source| GraphError::Inference { source })?;
+    log::info!(
+        "inference done in {:.1}s: {} findings",
+        started.elapsed().as_secs_f64(),
+        report.findings.len()
+    );
+    Ok(report)
 }
 
 /// How many distinct caller and operation pairs inference found, of the
@@ -793,6 +894,11 @@ fn adapter_contract(
     job: &AdapterJob<'_>,
     cache: &Path,
 ) -> Result<Option<adapters::Contract>, GraphError> {
+    log::info!(
+        "adapter: reading the operations of {} ({}) from its code",
+        job.entry,
+        job.role
+    );
     let Some(generated) =
         adapters::generate(job.from, job.runtime, job.checkout, cache, job.build)?
     else {

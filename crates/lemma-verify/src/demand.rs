@@ -152,6 +152,7 @@ pub(crate) fn operations(
         outputs: plan.anchors.iter().cloned().collect(),
         ..Request::default()
     };
+    log::debug!("finding the operations the change touches, with the reference engine");
     let derived = crate::evaluate(grammar, &ReferenceEngine, &request)?;
     let mut operations = BTreeSet::new();
     for anchor in &plan.anchors {
