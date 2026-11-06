@@ -220,10 +220,12 @@ editors/check.sh
 
 It regenerates `src/`, which is committed so editors can build the parser without the Tree-sitter CLI, and fails if any example in spec 13 or any `.lm` file in the repository (the standard library in `crates/lemma-lang/src/stdlib`, the parser's corpus) stops parsing. Commit the regenerated files with the grammar change. When the spec changes, update `test/corpus/spec.txt` to match its examples.
 
-The grammar follows the parser in `crates/lemma-lang/src/syntax`. It accepts a little more, so an editor can still highlight a file the compiler rejects:
+The grammar follows the parser in `crates/lemma-lang/src/syntax`. Where that parser reads a newline as a separator that cannot stand, as in `fn f(): Int` with its `{` on the next line, `let x` with `= 1` on the next, or an `if` condition continuing on a line that starts with `&&`, the grammar reports an error too. Error recovery keeps a declaration whole when only its `{` is on the next line, and ends a half-written line such as `let x` at its newline, so the next line still parses. A graph row starting with `(` is a tuple in both, so `(a) -> b` is an error.
 
-- the `module` line is optional, since most examples in the spec are fragments;
-- a newline is a separator only where the grammar can end an item, so `fn f(): Int` with its `{` on the next line parses;
-- whether a term is a variable is left to the queries, so a variable with two fields, `x.a.b`, parses.
+The grammar still accepts a little more, so an editor can highlight what the compiler rejects:
 
-It is stricter in two places, both following spec 13: reserved words are never names, so `let in = 1` is an error, and a `\u` escape needs four hex digits.
+- The `module` line is optional. Most examples in spec 13 are fragments without one, and so is a file being started.
+- A newline right after a unary operator (`!`, `-`, `need`) or a member's `.` is whitespace. Those rules also occur inside `( )` and `[ ]`, where a newline is whitespace, and the scanner cannot tell which context it is in; marking the places outside brackets would take a second copy of the expression rules.
+- Whether a term is a variable is left to the queries, so a variable with two fields, `x.a.b`, parses. A variable is a name starting with a lowercase letter or `_`. Telling it apart in the grammar would take separate tokens for lowercase and uppercase names, which clash with each other where a predicate name and a term can both start a rule literal.
+
+In one place the grammar follows spec 13 where the Rust parser does not: a newline after the `:` of a type annotation or return type continues the line, as section 1 says, so `let x:` with `Int = 1` on the next line parses here and is rejected there. Both reject reserved words used as names, such as `let in = 1`, and a `\u` escape without four hex digits.

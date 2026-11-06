@@ -8,16 +8,21 @@
  * a binary operator, `,`, `:`, `=`, `->`, `:-` or an opening bracket, and
  * before a line starting with `because` (continuing an `expect`) or `else`
  * (continuing an `if`). In the bracket and operator exceptions the grammar
- * cannot end an item, so the parser does not ask for a NEWLINE there. The
- * scanner therefore emits one whenever the parser accepts it and the next
- * line does not start with `because` or `else`; otherwise the newline is
- * skipped as whitespace.
+ * cannot end an item, so the parser does not ask for a NEWLINE there.
  *
- * That is slightly more lenient than the spec's rule, which is stated per
- * token: `fn f(): Int` with its `{` on the next line breaks the line where no
- * separator can stand, so a parser applying that rule literally rejects it,
- * while here the newline is whitespace. Wherever the grammar can end an item,
- * the two agree.
+ * Everywhere else a newline is a separator, even where none can stand, as
+ * in `fn f(): Int` with its `{` on the next line, which the Rust parser
+ * rejects. The grammar marks those places with SAME_LINE, a token no input
+ * produces. The scanner emits a NEWLINE where the parser accepts either one
+ * and the next line does not start with `because` or `else`, so at a marked
+ * place the parser meets a separator it cannot take and reports an error.
+ * Anywhere else the newline is skipped as whitespace. The few places left
+ * unmarked are listed in grammar.js.
+ *
+ * MISPLACED_NEWLINE: a newline at a marked place before a line starting with
+ * `{`, as in that `fn f(): Int`. A NEWLINE there would let error recovery end
+ * the declaration at the newline and lose its body. No rule accepts this
+ * token, so recovery skips it instead and keeps the declaration whole.
  *
  * INTERPOLATION_START: the `{` of `{name}` or `{name.field}` inside a string.
  * Telling it apart from a plain `{` needs a look past the closing `}`, so a
@@ -34,6 +39,8 @@
 
 enum TokenType {
   NEWLINE,
+  SAME_LINE,
+  MISPLACED_NEWLINE,
   INTERPOLATION_START,
   ERROR_SENTINEL,
 };
@@ -138,12 +145,17 @@ static bool at_continuation_word(TSLexer *lexer) {
   return strcmp(word, "because") == 0 || strcmp(word, "else") == 0;
 }
 
-static bool scan_newline(TSLexer *lexer) {
+/* `separator_is_valid` says whether the parser can take a NEWLINE here. */
+static bool scan_newline(TSLexer *lexer, bool separator_is_valid) {
   while (is_horizontal_space(lexer->lookahead)) skip(lexer);
   if (lexer->lookahead != '\n') return false;
   advance(lexer);
   lexer->mark_end(lexer);
   skip_to_next_token(lexer);
+  if (!separator_is_valid && lexer->lookahead == '{') {
+    lexer->result_symbol = MISPLACED_NEWLINE;
+    return true;
+  }
   if (at_continuation_word(lexer)) return false;
   lexer->result_symbol = NEWLINE;
   return true;
@@ -162,8 +174,8 @@ bool tree_sitter_lemma_external_scanner_scan(void *payload, TSLexer *lexer,
   if (valid_symbols[INTERPOLATION_START] && !recovering && lexer->lookahead == '{') {
     return scan_interpolation_start(lexer);
   }
-  if (valid_symbols[NEWLINE]) {
-    return scan_newline(lexer);
+  if (valid_symbols[NEWLINE] || valid_symbols[SAME_LINE]) {
+    return scan_newline(lexer, valid_symbols[NEWLINE]);
   }
   return false;
 }

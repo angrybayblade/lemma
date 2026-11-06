@@ -11,8 +11,8 @@
  *
  * - The `module` line is optional, because most examples in the spec are
  *   fragments without one.
- * - A newline is only a separator where the grammar can end an item there
- *   (see `src/scanner.c`). Elsewhere it is whitespace.
+ * - A newline right after a unary operator or a member's `.` is whitespace,
+ *   since those rules also occur inside brackets (see `sameLine` below).
  *
  * editors/README.md lists every difference from that parser.
  */
@@ -45,6 +45,12 @@ module.exports = grammar({
   externals: $ => [
     // A newline that ends an item, statement, field or graph row.
     $._newline,
+    // Never produced. Where a rule accepts it, the next token must be on the
+    // same line; see `sameLine` below and `src/scanner.c`.
+    $._same_line,
+    // Never used by a rule. The scanner produces it for a newline that breaks
+    // a line before a `{`, such as a body's, so error recovery skips it.
+    $._misplaced_newline,
     // The `{` that opens a well-formed `{name}` or `{name.field}` in a string.
     $._interpolation_start,
     // Never used by a rule. The scanner sees it as valid only while
@@ -81,7 +87,7 @@ module.exports = grammar({
     // `{ include: ["src"], exclude: ["vendor"] }`.
     _field_separators: $ => repeat1(choice($._newline, ';', ',')),
 
-    module_declaration: $ => seq('module', field('name', $.qualified_name)),
+    module_declaration: $ => seq('module', sameLine($), field('name', $.qualified_name)),
 
     _item: $ => choice(
       $.import_declaration,
@@ -107,17 +113,25 @@ module.exports = grammar({
 
     import_declaration: $ => seq(
       'import',
+      sameLine($),
       choice(
         field('module', $.qualified_name),
-        seq($._import_list, 'from', field('module', $.qualified_name)),
-        seq($.namespace_import, 'from', field('module', $.qualified_name)),
+        seq($._import_list, $._from_module),
+        seq($.namespace_import, $._from_module),
       ),
     ),
 
     reexport_declaration: $ => seq(
       'export',
+      sameLine($),
       $._import_list,
+      $._from_module,
+    ),
+
+    _from_module: $ => seq(
+      sameLine($),
       'from',
+      sameLine($),
       field('module', $.qualified_name),
     ),
 
@@ -130,12 +144,13 @@ module.exports = grammar({
       optional(seq('as', field('alias', $.identifier))),
     ),
 
-    namespace_import: $ => seq('*', 'as', field('alias', $.identifier)),
+    namespace_import: $ => seq('*', sameLine($), 'as', sameLine($), field('alias', $.identifier)),
 
     // Workspace and repositories
 
     workspace_declaration: $ => seq(
       'workspace',
+      sameLine($),
       braced($, choice(
         $.repo_declaration,
         $.field,
@@ -147,55 +162,68 @@ module.exports = grammar({
     // follows, so a field may still be called `repo`.
     _repo_named_field: $ => seq(
       field('name', alias('repo', $.identifier)),
+      sameLine($),
       ':',
       field('value', $._expression),
     ),
 
     repo_declaration: $ => seq(
       'repo',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       '=',
       field('source', $._expression),
     ),
 
     // Declarations
 
-    let_declaration: $ => seq(optional('export'), $._binding),
+    let_declaration: $ => seq(exported($), $._binding),
 
     _binding: $ => seq(
       'let',
+      sameLine($),
       field('name', $.identifier),
-      optional(seq(':', field('type', $._type))),
+      sameLine($),
+      optional(seq(':', field('type', $._type), sameLine($))),
       '=',
       field('value', $._expression),
     ),
 
     type_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'type',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       '=',
       field('value', $._type),
     ),
 
     entity_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'entity',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       bracedFields($, $.typed_field),
     ),
 
     relation_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'relation',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       field('parameters', $.parameters),
     ),
 
     service_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'service',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       braced($, choice(
         $.service_declaration,
         $.operation_declaration,
@@ -214,24 +242,30 @@ module.exports = grammar({
         alias('service', $.identifier),
         alias('operation', $.identifier),
       )),
+      sameLine($),
       ':',
       field('value', $._expression),
     ),
 
     operation_declaration: $ => seq(
-      optional('export'),
-      optional('client'),
+      exported($),
+      optional(seq('client', sameLine($))),
       'operation',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       bracedFields($, $.field),
     ),
 
     graph_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'graph',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       ':',
       field('relation', $._type),
+      sameLine($),
       choice(
         braced($, $.graph_row),
         seq('=', field('value', $._expression)),
@@ -261,18 +295,22 @@ module.exports = grammar({
     // A rule borrows a relation's columns, `rule r : Relation`, or names its
     // own, `rule r(a: Text, b: Int)`.
     rule_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'rule',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       choice(
         seq(':', field('relation', $._type)),
         field('parameters', $.parameters),
       ),
+      sameLine($),
       braced($, $.rule_clause),
     ),
 
     rule_clause: $ => seq(
       field('head', $.rule_head),
+      sameLine($),
       ':-',
       field('body', $.rule_body),
     ),
@@ -284,9 +322,10 @@ module.exports = grammar({
     _literal: $ => choice($.predicate, $.comparison),
 
     predicate: $ => seq(
-      optional(field('negation', '!')),
+      optional(seq(field('negation', '!'), sameLine($))),
       field('name', $.qualified_name),
-      optional(field('snapshot', $.snapshot)),
+      sameLine($),
+      optional(seq(field('snapshot', $.snapshot), sameLine($))),
       '(',
       choice(
         optionalCommaList($._term),
@@ -299,6 +338,7 @@ module.exports = grammar({
 
     comparison: $ => seq(
       field('left', $._term),
+      sameLine($),
       field('operator', choice('==', '!=', '<', '<=', '>', '>=')),
       field('right', $._term),
     ),
@@ -331,69 +371,86 @@ module.exports = grammar({
     // Requirements
 
     require_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'require',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       braced($, choice($.when_clause, $.field)),
     ),
 
     allow_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'allow',
+      sameLine($),
       field('requirement', $.qualified_name),
+      sameLine($),
       braced($, choice($.when_clause, $.field)),
     ),
 
     // In `require` and `allow`, the value of `when` is a rule body, not an
     // expression.
-    when_clause: $ => seq('when', ':', field('body', $.rule_body)),
+    when_clause: $ => seq('when', sameLine($), ':', field('body', $.rule_body)),
 
     behavior_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'behavior',
+      sameLine($),
       field('name', $.identifier),
-      optional(field('parameters', $.parameters)),
+      sameLine($),
+      optional(seq(field('parameters', $.parameters), sameLine($))),
       field('body', $.block),
     ),
 
     function_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'fn',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       field('parameters', $.parameters),
+      sameLine($),
       ':',
       field('return_type', $._type),
+      sameLine($),
       field('body', $.block),
     ),
 
     checker_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'checker',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       field('parameters', $.parameters),
+      sameLine($),
       ':',
       field('return_type', $._type),
+      sameLine($),
       bracedFields($, $.field),
     ),
 
     check_declaration: $ => seq(
-      optional('export'),
+      exported($),
       'check',
+      sameLine($),
       field('name', $.identifier),
+      sameLine($),
       braced($, choice($.run, $.skip)),
     ),
 
     run: $ => seq(
       'run',
+      sameLine($),
       field('requirement', choice($.qualified_name, $.wildcard)),
       optional(field('arguments', $.arguments)),
       optional(field('overrides', $.record)),
     ),
 
-    skip: $ => seq('skip', field('requirement', $.qualified_name)),
+    skip: $ => seq('skip', sameLine($), field('requirement', $.qualified_name)),
 
     // `lemma.http.*`: every requirement in a module.
-    wildcard: $ => seq(field('module', $.qualified_name), '.', '*'),
+    wildcard: $ => seq(field('module', $.qualified_name), '.', sameLine($), '*'),
 
     // Statements
 
@@ -411,24 +468,37 @@ module.exports = grammar({
 
     expect_statement: $ => seq(
       'expect',
+      sameLine($),
       field('condition', $._expression),
-      optional(seq('because', field('reason', $._expression))),
+      optional(seq('because', sameLine($), field('reason', $._expression))),
     ),
 
-    return_statement: $ => seq('return', field('value', $._expression)),
+    return_statement: $ => seq('return', sameLine($), field('value', $._expression)),
 
+    // The block opens on the line of its condition, and the `else` or
+    // `else if` that follows it on the same line as `else`.
     if_statement: $ => seq(
       'if',
+      sameLine($),
       field('condition', $._expression),
+      sameLine($),
       field('consequence', $.block),
-      optional(seq('else', field('alternative', choice($.block, $.if_statement)))),
+      optional(seq(
+        'else',
+        sameLine($),
+        field('alternative', choice($.block, $.if_statement)),
+      )),
     ),
 
     for_statement: $ => seq(
       'for',
+      sameLine($),
       field('pattern', choice($.identifier, $.tuple_pattern)),
+      sameLine($),
       'in',
+      sameLine($),
       field('domain', $._expression),
+      sameLine($),
       field('body', $.block),
     ),
 
@@ -436,7 +506,7 @@ module.exports = grammar({
 
     // Fields, parameters and types
 
-    field: $ => seq(field('name', $.identifier), ':', field('value', $._expression)),
+    field: $ => seq(field('name', $.identifier), sameLine($), ':', field('value', $._expression)),
 
     parameters: $ => seq(
       '(',
@@ -446,7 +516,7 @@ module.exports = grammar({
 
     parameter: $ => seq(field('name', $.identifier), ':', field('type', $._type)),
 
-    typed_field: $ => seq(field('name', $.identifier), ':', field('type', $._type)),
+    typed_field: $ => seq(field('name', $.identifier), sameLine($), ':', field('type', $._type)),
 
     _type: $ => choice($.named_type, $.record_type),
 
@@ -557,7 +627,7 @@ module.exports = grammar({
 
     // Lexical
 
-    qualified_name: $ => seq($.identifier, repeat(seq('.', $.identifier))),
+    qualified_name: $ => seq($.identifier, repeat(seq('.', sameLine($), $.identifier))),
 
     snapshot: _ => choice('@base', '@head'),
 
@@ -585,10 +655,13 @@ module.exports = grammar({
     ),
 
     // A `{` or `}` that does not open an interpolation or write a brace is
-    // plain text, so dispatch keys such as "GET /users/{}" parse cleanly.
+    // plain text, so dispatch keys such as "GET /users/{}" parse cleanly. The
+    // lone brace has no precedence: inside a string no other `{` can stand,
+    // and while recovering from an error, when every token can, a `{` should
+    // read as the brace that opens a body, so the parser can resume there.
     string_content: _ => choice(
       token.immediate(prec(1, /[^"\\{}\n]+/)),
-      token.immediate(prec(1, /[{}]/)),
+      token.immediate(/[{}]/),
     ),
 
     // JSON escapes, plus `{{` and `}}` for literal braces.
@@ -616,6 +689,36 @@ module.exports = grammar({
     )),
   },
 });
+
+/**
+ * Marks a place where a newline would end the line too early: after a
+ * declaration's keyword or name, before the `{` of a body or block, and
+ * wherever else the Rust parser reads a newline as a separator that cannot
+ * stand there, such as `fn f(): Int` with its `{` on the next line. The
+ * scanner turns a newline at such a place into a separator, so Tree-sitter
+ * reports the same error, and its recovery can end the half-written line
+ * there rather than swallow the next one.
+ *
+ * Only places outside brackets are marked. Inside `( )` and `[ ]` a newline
+ * is whitespace, so the rules that also occur there, such as unary
+ * operators, member access and parameters, have no marks.
+ *
+ * @param {GrammarSymbols<string>} $
+ * @returns {ChoiceRule}
+ */
+function sameLine($) {
+  return optional($._same_line);
+}
+
+/**
+ * The optional `export` that starts a declaration, on its line.
+ *
+ * @param {GrammarSymbols<string>} $
+ * @returns {ChoiceRule}
+ */
+function exported($) {
+  return optional(seq('export', sameLine($)));
+}
 
 /**
  * Zero or more `rule`, each ended by `separators`, except that the last may
