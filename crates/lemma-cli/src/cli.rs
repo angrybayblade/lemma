@@ -425,4 +425,8 @@ pub(crate) struct Filters {
     /// Only symbols whose file path contains this text.
     #[arg(long)]
     pub path: Option<String>,
+    /// When a name is ambiguous, keep only symbols that can have
+    /// implementations: set by `implementations`, not a flag.
+    #[arg(skip)]
+    pub prefers_implementable: bool,
 }

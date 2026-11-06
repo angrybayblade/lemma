@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, bail};
 use lemma_index::LiveIndex;
 use lemma_index::retention::Retention;
-use lemma_model::{Language, Outcome, Position};
+use lemma_model::{Language, Outcome, Position, SymbolKind};
 use lemma_providers::ProviderRegistry;
 use lemma_query::{
     IdlePolicy, LookupContext, LookupOptions, ServerState, SessionPool, SymbolResolution,
@@ -608,9 +608,10 @@ impl Engine {
     fn implementations(
         &mut self,
         request: &Request<'_>,
-        args: SymbolLookupArgs,
+        mut args: SymbolLookupArgs,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
+        args.target.filters.prefers_implementable = true;
         let Some(located) = self.locate(request, args.target, out)? else {
             return Ok(EXIT_AMBIGUOUS);
         };
@@ -1570,13 +1571,49 @@ fn select_symbol(
             .filter(|found| matches_filters(found, &filters));
         return Ok(found.map_or(SymbolResolution::Unresolved, SymbolResolution::Resolved));
     }
+    let prefers_implementable = filters.prefers_implementable;
     let selector = SymbolSelector {
         name: symbol.to_owned(),
         kind: filters.kind,
         language: filters.language,
         path_contains: filters.path,
     };
-    Ok(lemma_query::resolve_symbol(store, snapshot.id, &selector)?)
+    let resolution = lemma_query::resolve_symbol(store, snapshot.id, &selector)?;
+    if !prefers_implementable {
+        return Ok(resolution);
+    }
+    Ok(narrow_to_implementable(resolution))
+}
+
+/// An ambiguous name narrowed to the symbols that can have implementations:
+/// interfaces, classes, structs, enums, type aliases and methods. A field
+/// named after its type (`store Store`) then no longer hides the type.
+/// Unchanged when that leaves nothing.
+fn narrow_to_implementable(resolution: SymbolResolution) -> SymbolResolution {
+    let SymbolResolution::Ambiguous(candidates) = resolution else {
+        return resolution;
+    };
+    let can_be_implemented = |symbol: &StoredSymbol| {
+        matches!(
+            symbol.symbol.kind,
+            SymbolKind::Interface
+                | SymbolKind::Class
+                | SymbolKind::Struct
+                | SymbolKind::Enum
+                | SymbolKind::TypeAlias
+                | SymbolKind::Method
+        )
+    };
+    let mut kept: Vec<StoredSymbol> = candidates
+        .iter()
+        .filter(|s| can_be_implemented(s))
+        .cloned()
+        .collect();
+    match kept.len() {
+        0 => SymbolResolution::Ambiguous(candidates),
+        1 => SymbolResolution::Resolved(kept.remove(0)),
+        _ => SymbolResolution::Ambiguous(kept),
+    }
 }
 
 /// Whether `symbol` passes `filters`, as a symbol found by name must.
@@ -1814,6 +1851,50 @@ fn inode_of(_path: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn candidate(id: i64, name: &str, kind: SymbolKind) -> StoredSymbol {
+        let position = Position { line: 0, column: 0 };
+        let span = lemma_model::Span {
+            start: position,
+            end: position,
+        };
+        StoredSymbol {
+            id,
+            path: "store.go".to_owned(),
+            language: Language::Go,
+            symbol: lemma_model::Symbol {
+                name: name.rsplit('.').next().unwrap_or(name).to_owned(),
+                qualified_name: name.to_owned(),
+                kind,
+                span,
+                name_span: span,
+            },
+        }
+    }
+
+    #[test]
+    fn a_field_named_after_its_type_does_not_hide_the_type() {
+        let ambiguous = SymbolResolution::Ambiguous(vec![
+            candidate(1, "Store", SymbolKind::Interface),
+            candidate(2, "Server.Store", SymbolKind::Field),
+        ]);
+
+        let narrowed = narrow_to_implementable(ambiguous);
+
+        assert!(matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == 1));
+    }
+
+    #[test]
+    fn a_name_with_no_implementable_symbol_stays_ambiguous() {
+        let ambiguous = SymbolResolution::Ambiguous(vec![
+            candidate(1, "A.store", SymbolKind::Field),
+            candidate(2, "B.store", SymbolKind::Field),
+        ]);
+
+        let narrowed = narrow_to_implementable(ambiguous);
+
+        assert!(matches!(narrowed, SymbolResolution::Ambiguous(several) if several.len() == 2));
+    }
 
     #[test]
     fn repository_qualified_ids_are_read_in_every_written_form() {

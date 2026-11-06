@@ -97,6 +97,10 @@ fn to_targets(
         };
         targets.push(Target { location, symbol });
     }
+    // The repository's own targets first, keeping the provider's order
+    // otherwise: those in libraries and the standard library are rarely the
+    // ones being looked for.
+    targets.sort_by_key(|target| target.location.is_external);
     Ok(Outcome::Found(targets))
 }
 
