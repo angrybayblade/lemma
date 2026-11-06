@@ -1,4 +1,4 @@
-//! `lemma lm fmt`: rewriting `.lm` files in the canonical layout
+//! `lm fmt`: rewriting `.lm` files in the canonical layout
 //! (`.specs/13-lm-grammar.md` §1, Layout).
 
 use std::path::{Path, PathBuf};

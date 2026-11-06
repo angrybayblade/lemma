@@ -34,7 +34,7 @@
 # grammar.js fails the check.
 #
 # The editor sections run the language server built from this checkout:
-# $LEMMA if set, or else target/release/lemma, which they build with cargo.
+# $LM if set, or else target/release/lm, which they build with cargo.
 # A section whose editor is not installed, or that needs a display it cannot
 # get, is skipped with a message saying why; set the editor's variable below
 # to use one that is not on PATH.
@@ -85,33 +85,33 @@ install_tree_sitter() {
   printf '{"parser-directories": ["%s"]}\n' "$scratch/parsers" >"$scratch/config.json"
 }
 
-# Sets `lemma` to the language server the editor sections run, building it
-# on first use. Returns 1, after saying why, when there is none.
-lemma=
-find_lemma() {
-  if [ -n "$lemma" ]; then
+# Sets `lm` to the binary whose `lm lsp` the editor sections run, building
+# it on first use. Returns 1, after saying why, when there is none.
+lm=
+find_lm() {
+  if [ -n "$lm" ]; then
     return 0
   fi
-  if [ -n "${LEMMA:-}" ]; then
-    lemma=$LEMMA
+  if [ -n "${LM:-}" ]; then
+    lm=$LM
     return 0
   fi
   if ! command -v cargo >/dev/null; then
-    echo "No lemma binary: set LEMMA, or install cargo to build one."
+    echo "No lm binary: set LM, or install cargo to build one."
     return 1
   fi
-  echo "Building the language server: cargo build --release -p lemma-cli"
-  cargo build --release --quiet --manifest-path "$repository/Cargo.toml" -p lemma-cli
-  lemma="${CARGO_TARGET_DIR:-$repository/target}/release/lemma"
+  echo "Building the language server: cargo build --release -p lemma-lm"
+  cargo build --release --quiet --manifest-path "$repository/Cargo.toml" -p lemma-lm
+  lm="${CARGO_TARGET_DIR:-$repository/target}/release/lm"
 }
 
-# A directory holding only `lemma`, linked to the server, for editors whose
-# documented setup runs `lemma` from PATH.
-lemma_bin_directory() {
+# A directory holding only `lm`, linked to the server, for editors whose
+# documented setup runs `lm` from PATH.
+lm_bin_directory() {
   local directory="$scratch/bin"
-  if [ ! -e "$directory/lemma" ]; then
+  if [ ! -e "$directory/lm" ]; then
     mkdir -p "$directory"
-    ln -s "$(realpath "$lemma")" "$directory/lemma"
+    ln -s "$(realpath "$lm")" "$directory/lm"
   fi
   echo "$directory"
 }
@@ -216,12 +216,12 @@ check_vscode() {
   step "Checking the VS Code extension"
   (cd "$vscode_directory" && npm run --silent check)
 
-  if ! find_lemma; then
+  if ! find_lm; then
     skip vscode "no language server to run"
     return
   fi
   step "Running the VS Code extension in VS Code"
-  run_editor vscode env LEMMA="$lemma" npm --prefix "$vscode_directory" run --silent test:integration
+  run_editor vscode env LM="$lm" npm --prefix "$vscode_directory" run --silent test:integration
 }
 
 check_neovim() {
@@ -237,7 +237,7 @@ check_neovim() {
     skip neovim "Neovim $version is too old; the ABI 15 parser needs 0.11 or later"
     return
   fi
-  if ! find_lemma; then
+  if ! find_lm; then
     skip neovim "no language server to run"
     return
   fi
@@ -250,7 +250,7 @@ check_neovim() {
   # `build` has no --config-path; TREE_SITTER_DIR is where it looks instead.
   TREE_SITTER_DIR="$scratch" "$tree_sitter" build --output "$runtime/parser/lemma.so" "$grammar_directory"
   cp "$grammar_directory"/queries/*.scm "$runtime/queries/lemma/"
-  PATH="$(lemma_bin_directory):$PATH" \
+  PATH="$(lm_bin_directory):$PATH" \
     XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" \
     XDG_STATE_HOME="$home/state" XDG_CACHE_HOME="$home/cache" \
     "$nvim" --clean --headless -l "$editors_directory/neovim/check.lua" \
@@ -263,11 +263,11 @@ check_helix() {
     skip helix "Helix is not installed; set HELIX_EXECUTABLE to use one not on PATH"
     return
   fi
-  if ! find_lemma; then
+  if ! find_lm; then
     skip helix "no language server to run"
     return
   fi
-  run_editor helix "$editors_directory/helix/check.sh" "$lemma"
+  run_editor helix "$editors_directory/helix/check.sh" "$lm"
 }
 
 check_zed() {

@@ -1,6 +1,6 @@
 // VS Code client for Lemma's `.lm` files. Highlighting comes from the
 // TextMate grammar in syntaxes/; everything else comes from the language
-// server that `lemma lm lsp` runs over stdio.
+// server that `lm lsp` runs over stdio.
 
 import * as vscode from 'vscode'
 import {
@@ -10,7 +10,7 @@ import {
 } from 'vscode-languageclient/node'
 
 const configurationSection = 'lemma'
-const defaultBinary = 'lemma'
+const defaultBinary = 'lm'
 
 let client: LanguageClient | undefined
 
@@ -18,7 +18,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand('lemma.restartServer', restartServer),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration(`${configurationSection}.path`)) {
+      if (event.affectsConfiguration(`${configurationSection}.lmPath`)) {
         void restartServer()
       }
     }),
@@ -30,14 +30,14 @@ export async function deactivate(): Promise<void> {
   await stopServer()
 }
 
-/** The binary to run, from the `lemma.path` setting. */
+/** The binary to run, from the `lemma.lmPath` setting. */
 function configuredBinary(): string {
-  const configured = vscode.workspace.getConfiguration(configurationSection).get<string>('path')
+  const configured = vscode.workspace.getConfiguration(configurationSection).get<string>('lmPath')
   return configured?.trim() || defaultBinary
 }
 
 function serverOptions(binary: string): ServerOptions {
-  return { command: binary, args: ['lm', 'lsp'] }
+  return { command: binary, args: ['lsp'] }
 }
 
 function clientOptions(): LanguageClientOptions {
@@ -60,13 +60,13 @@ async function startServer(): Promise<void> {
     const reason = error instanceof Error ? error.message : String(error)
     const openSettings = 'Open Settings'
     const choice = await vscode.window.showErrorMessage(
-      `Lemma: could not start \`${binary} lm lsp\` (${reason}). Set lemma.path to the lemma binary.`,
+      `Lemma: could not start \`${binary} lsp\` (${reason}). Set lemma.lmPath to the lm binary.`,
       openSettings,
     )
     if (choice === openSettings) {
       await vscode.commands.executeCommand(
         'workbench.action.openSettings',
-        `${configurationSection}.path`,
+        `${configurationSection}.lmPath`,
       )
     }
     return

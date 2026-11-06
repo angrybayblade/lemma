@@ -1,5 +1,5 @@
 //! A language server for `.lm` modules, speaking LSP over a reader and a
-//! writer (`lemma lm lsp` uses standard input and output).
+//! writer (`lm lsp` uses standard input and output).
 //!
 //! Each open document is checked as the entry module of its program, with
 //! every open document's unsaved text read in place of its file, so

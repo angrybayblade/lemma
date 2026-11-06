@@ -16,7 +16,7 @@
 #      and a string have their colours and that the server's diagnostic
 #      marks the gutter.
 #
-# Usage: editors/helix/check.sh <lemma binary>
+# Usage: editors/helix/check.sh <lm binary>
 #
 # HELIX_EXECUTABLE names the hx to check; otherwise it is `hx` on PATH.
 # Exits with 77 when there is no Helix. editors/check.sh runs it.
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
-  echo "usage: editors/helix/check.sh <lemma binary>" >&2
+  echo "usage: editors/helix/check.sh <lm binary>" >&2
   exit 2
 fi
 
@@ -33,7 +33,7 @@ editors_directory=$(dirname "$helix_directory")
 repository=$(dirname "$editors_directory")
 readme="$editors_directory/README.md"
 fixture="$editors_directory/fixture/lemma.lm"
-lemma=$(realpath "$1")
+lm=$(realpath "$1")
 
 hx=${HELIX_EXECUTABLE:-hx}
 if ! command -v "$hx" >/dev/null; then
@@ -84,11 +84,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# `hx` and `lemma` on PATH, as the README's setup expects them.
+# `hx` and `lm` on PATH, as the README's setup expects them.
 bin="$scratch/bin"
 mkdir -p "$bin"
 ln -s "$hx" "$bin/hx"
-ln -s "$lemma" "$bin/lemma"
+ln -s "$lm" "$bin/lm"
 
 # Runs a command with a throwaway home, so ~/.config/helix is the check's.
 in_home() {

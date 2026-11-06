@@ -3,7 +3,7 @@ name = "zed-lemma"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Zed extension for Lemma's .lm language: starts `lemma lm lsp`"
+description = "Zed extension for Lemma's .lm language: starts `lm lsp`"
 
 [lib]
 crate-type = ["cdylib"]
