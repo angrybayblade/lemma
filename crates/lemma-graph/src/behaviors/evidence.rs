@@ -70,6 +70,9 @@ pub(crate) struct Request<'r> {
     pub(crate) reads: BTreeMap<String, Option<String>>,
     /// The checker's own repository, where it runs.
     pub(crate) place: &'r Place,
+    /// Where each repository is checked out, which the checker is told but
+    /// the key leaves out, so evidence holds on any machine.
+    pub(crate) roots: &'r BTreeMap<String, String>,
 }
 
 impl Store {
@@ -165,6 +168,7 @@ impl Store {
             "case": request.case,
             "repository": checker.repository,
             "root": root.display().to_string(),
+            "roots": request.roots,
             "arguments": request.arguments,
         });
         write_json(&input, &given)?;

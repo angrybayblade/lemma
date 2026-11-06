@@ -13,7 +13,7 @@ mod evidence;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use lemma_lang::Checked;
 use lemma_lang::eval::{self, BehaviorResult, Demand, Facts, Outcome, StatedFacts, World};
@@ -289,16 +289,17 @@ impl Program {
             .values()
             .map(|module| (module.name.clone(), module.repository.clone()))
             .collect();
-        let roots: BTreeMap<String, PathBuf> = self
+        let roots: BTreeMap<String, String> = self
             .places
             .iter()
-            .map(|(name, place)| (name.clone(), place.checkout.root.clone()))
+            .map(|(name, place)| (name.clone(), place.checkout.root.display().to_string()))
             .collect();
         let mut world = CheckWorld {
             facts: StatedFacts::new(model, other),
-            encoder: Encoder::new(model, repositories, roots),
+            encoder: Encoder::new(model, repositories),
             store,
             places: &self.places,
+            roots: &roots,
         };
         let main = check_main(&self.checked);
         eval::run_check(model, main, &mut world)
@@ -311,6 +312,7 @@ struct CheckWorld<'w> {
     encoder: Encoder<'w>,
     store: &'w Store,
     places: &'w BTreeMap<String, Place>,
+    roots: &'w BTreeMap<String, String>,
 }
 
 impl World for CheckWorld<'_> {
@@ -349,6 +351,7 @@ impl World for CheckWorld<'_> {
             arguments: serde_json::Value::Object(arguments),
             reads,
             place,
+            roots: self.roots,
         })
     }
 }
