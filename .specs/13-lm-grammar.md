@@ -54,8 +54,8 @@ let config = {
 }
 ```
 
-- **Separators.** A newline or `;` ends a declaration, statement, record field or graph row. A closing `}` or the end of the file ends the last one without a separator.
-- **Continuation.** Newlines inside `(...)` and `[...]` are whitespace. A newline after a binary operator, a comma, `:`, `=`, `->`, `:-` or an opening bracket continues the expression, and a line starting with `because` continues the `expect` before it. No other line can start by continuing the previous one, so a line cannot start with a binary operator.
+- **Separators.** A newline or `;` ends a declaration, statement, record field or graph row; record fields may also be separated by commas, as in `{ include: ["src"], exclude: ["tests"] }`. A closing `}` or the end of the file ends the last one without a separator.
+- **Continuation.** Newlines inside `(...)` and `[...]` are whitespace. A newline after a binary operator, a comma, `:`, `=`, `->`, `:-` or an opening bracket continues the expression, a line starting with `because` continues the `expect` before it, and a line starting with `else` continues the `if` before it. No other line can start by continuing the previous one, so a line cannot start with a binary operator.
 - Indentation has no meaning.
 - **Identifiers** are letters, digits and underscores, starting with a letter or underscore. Backticks escape any other name, such as a field called `in`.
 - **Case carries meaning in one place only**, patterns (section 7): a lowercase bare name is a variable there. By convention, services, entities, relations and types are `UpperCamel`, and everything else is `snake_case`.
@@ -296,7 +296,7 @@ For an operation in a link, a binding that resolved at the base and does not at 
 
 Equality is type-strict: `false`, `0`, `"false"`, `null` and a missing field are all different, and comparing values of different types is a compile error where the types are known.
 
-**Enumerated fields.** `severity` (`error`, `warning`) and `level` (`audit`, `check`, `strict`) take a bare name from their field's fixed set. The name is not looked up in scope.
+**Enumerated fields.** `severity` (`error`, `warning`, `info`) and `level` (`audit`, `check`, `strict`) take a bare name from their field's fixed set. The name is not looked up in scope.
 
 ### Missing, null and unknown
 
@@ -433,6 +433,7 @@ export rule reachable : DependsOn {
 ```
 
 - `:-` derives the tuple on the left when the literals on the right hold. Commas are conjunction.
+- A rule takes its columns from a relation (`rule reachable : DependsOn`) or declares them in place (`rule removed(operation: Text) { ... }`), which suits the many small rules a grammar derives on the way to its requirements.
 - Several clauses are alternative derivations.
 - Variables are scoped to one clause.
 - `!literal` is negation.
@@ -505,7 +506,7 @@ export require consumer_misses_new_required_field {
 | `when` | A rule body, evaluated with unqualified literals at the head |
 | `at` | A `Site` variable, the finding's location. Optional |
 | `message` | Interpolates `when` variables by name |
-| `severity` | `error` (default) or `warning`. A check may override it |
+| `severity` | `error` (default), `warning` or `info`. A check may override it |
 
 - Each distinct binding of the variables used in `message` and `at` is one finding. Other variables are existential.
 - Outcome: **satisfied** when there are no findings and the relations the body negates are complete; **violated** when there is at least one finding; **unknown** when a negated relation is incomplete for some binding. Unknown findings name the missing coverage.
@@ -774,7 +775,7 @@ The rule layer, links and requirements lower into the structures Lemma evaluates
 | `repo` in the entry workspace | the parent's `services: "#name": { path \| git, ref }` |
 | `repo` at the top of a root module | a repository's external-service pins |
 | `service` with `index` and `operations: http.openapi(...)` | `services.<name>.index`, `exports.openapi` |
-| `operations: hono.app(...)`, `fastapi.app(...)`, `http.adapter_command(...)` | `exports.operations_from` |
+| `operations: hono.app(...)`, `fastapi.app(...)`, `http.adapter("express-routes", ...)`, `http.adapter_command(...)` | `exports.operations_from`: the shorthands, any built-in adapter by name, or a command |
 | a hand-written `operation` | `exports.operations.<name>`, with `path` and `schema` |
 | `client: http.generated_client(...)` | `exports.client` |
 | `graph g : Link { a -> b }` | `graph.links` |
@@ -796,7 +797,15 @@ Standard library:
 | `lemma.python`, `lemma.typescript`, `lemma.go`, `lemma.rust` | Resolution requests: `module` or `package`, `symbol`, `method`, `type` |
 | `lemma.json` | Schema sources: `document`, `command` |
 
-`lemma.yaml` and grammar YAML keep working through the same lowering. A converter from YAML to `.lm` makes moving an existing configuration mechanical.
+`lemma.yaml` and grammar YAML keep working through the same lowering. `lemma lm convert` writes a `lemma.yaml` as a root module, so moving an existing configuration is mechanical.
+
+How lowering for `lemma check` names things:
+
+- A repository's name is its root module's, so it is an identifier: converting `#payments-client` gives `repo payments_client`, and its external service becomes `#payments_client`.
+- A service that only groups services (no operations, providers or client of its own) is a container. Its fields pass down to the services inside it, and only those are lowered, named by their path joined with `/` (`Functions/serverless`).
+- `lemma.yaml` says an operation's role only by a link's direction, so conversion writes the caller of a link as a `client operation`, and lowering writes `sends`/`accepts` back as `request`/`response`.
+- A link to a discovered operation names it by its `operationId` (`Gateway.listUsers`); naming it by method and path (`Gateway["GET /users"]`) is reported until `lemma check` can resolve those.
+- The standard library's `lemma.http` keeps the variable names of `grammars/http-contracts.yaml` (`c`, `op`, `f`, `l`), because `lemma check` reads a finding's values by those names. Declaring a finding's roles (`at:` and named roles) would remove that coupling.
 
 ## 14. Core grammar
 
@@ -813,7 +822,8 @@ separator     = newline | ";" ;
 (* A newline is not a separator inside ( ) or [ ], or after a binary
    operator, ",", ":", "=", "->", ":-" or an opening bracket. A closing
    "}" or the end of the file ends the last item without a separator.
-   A line starting with "because" continues the expect before it. *)
+   A line starting with "because" or "else" continues the statement before
+   it. Record fields may also be separated by commas. *)
 
 file          = "module" module_name separator { item separator } ;
 
@@ -852,10 +862,10 @@ operation_decl = [ "client" ] "operation" name "{" { field separator } "}" ;
 
 graph_decl    = "graph" name ":" type_expr
                 ( "{" { graph_row separator } "}" | "=" expression ) ;
-graph_row     = expression "->" expression
+graph_row     = expression [ "->" expression ]  (* one value for a one-column relation *)
               | "(" expression "," expression { "," expression } ")" ;
 
-rule_decl     = "rule" name ":" type_expr "{" { rule_clause separator } "}" ;
+rule_decl     = "rule" name ( ":" type_expr | parameters ) "{" { rule_clause separator } "}" ;
 rule_clause   = "(" term { "," term } ")" ":-" body ;
 body          = literal { "," literal } ;
 literal       = [ "!" ] module_name [ snapshot ] "(" [ terms ] ")"
@@ -937,6 +947,15 @@ Implementation goes in two phases. Each is checked against something that alread
 
 1. **Lower what exists.** Build the lexer, a lossless parser (comments and layout kept, for a formatter and editor diagnostics), name resolution and type checking for everything except behaviors and checkers. Lower the result into today's manifest and grammar structures. Port `grammars/http-contracts.yaml` to `lemma.http` and the link checks to `lemma.links`. Convert the fixtures' and gate workspaces' `lemma.yaml` files with the converter. *Acceptance:* `lemma check` gives the same findings from `.lm` as from YAML on every gate (verify, mutations, recall, replay, fixtures, scale).
 2. **Behaviors and evidence.** Add `behavior`, `need`, `checker`, the evidence store and the four outcomes, with the replay checker as the first implementation. *Acceptance:* the worked example's behavior is violated on a worker that drops the flag, satisfied on one that forwards it, and unknown when the checker cannot run.
+
+**Status, 2026-11-06.** Phase 1 is implemented except the formatter:
+
+- `crates/lemma-lang` parses modules with error recovery, loads programs across repositories, resolves names and type-checks them, and holds the standard library.
+- `lemma-grammar` lowers a program's relations, rules, graphs and requirements; `lemma.http` compiles to the same program as `grammars/http-contracts.yaml`, which a test requires.
+- `lemma-graph` reads `lemma.lm` wherever `lemma check` reads `lemma.yaml`. On five fixture systems and a six-repository workspace, checks from converted modules match the YAML ones line for line.
+- `lemma lm check` and `lemma lm convert` are on the command line, and `editors/` has a Tree-sitter grammar, highlighting queries and a VS Code extension.
+
+Allowances are checked but not yet applied, and `lemma verify` does not yet take a `.lm` grammar.
 
 Still to specify:
 

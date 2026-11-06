@@ -171,6 +171,20 @@ fn a_line_continues_after_an_operator_and_before_because() {
 }
 
 #[test]
+fn else_may_start_the_line_after_the_block() {
+    let file = parsed(
+        "module m\nfn f(a: Bool): Int {\n    if a {\n        return 1\n    }\n    else {\n        return 2\n    }\n}\n",
+    );
+
+    let Declaration::Function(function) = declarations(&file)[0] else {
+        panic!("expected a function");
+    };
+    assert!(
+        matches!(&function.body.statements[0], Statement::If(statement) if statement.otherwise.is_some())
+    );
+}
+
+#[test]
 fn newlines_inside_parentheses_are_whitespace() {
     let file =
         parsed("module m\nlet x = f(\n    a: 1,\n    b: [\n        2,\n        3\n    ]\n)\n");
