@@ -205,7 +205,9 @@ pub(crate) fn ask_providers<A: Ask>(
     pool: &mut SessionPool,
     asking: &A,
 ) -> Result<Answered<A::Facts>, QueryError> {
+    let question = asking.question().as_str();
     if let Some(answered) = answer_without_provider(&*store, context, at, asking)? {
+        log_answer_without_provider(question, at.path, answered.from_cache);
         return Ok(answered);
     }
     let LookupContext {
@@ -222,13 +224,20 @@ pub(crate) fn ask_providers<A: Ask>(
             Err(PoolError::Store(error)) => return Err(error.into()),
             Err(PoolError::Files(source)) => return Err(QueryError::Files { source }),
             Err(PoolError::Start(error)) => {
-                start_failures.push(format!("{}: {}", definition.id, describe(&error)));
+                start_failures.push(skipped_provider(definition, &error));
                 continue;
             }
         };
         let provider_version = session.version();
+        let started = std::time::Instant::now();
         let asked = open_projects(&*store, snapshot, at, asking, session)
             .and_then(|()| asking.ask(session, at));
+        log::info!(
+            "{question} at {}: asked {} in {:.1}s",
+            at.path,
+            definition.id,
+            started.elapsed().as_secs_f64()
+        );
         let outcome = match asked {
             Ok(answer) => {
                 let fingerprint = definition.fingerprint();
@@ -255,6 +264,24 @@ pub(crate) fn ask_providers<A: Ask>(
     Ok(Answered::without_provider(Outcome::ProviderFailed {
         message: start_failures.join("; "),
     }))
+}
+
+/// Logs a question answered without asking a provider.
+fn log_answer_without_provider(question: &str, path: &str, from_cache: bool) {
+    let source = if from_cache {
+        "the index's cache"
+    } else {
+        "the index"
+    };
+    log::info!("{question} at {path}: answered from {source}");
+}
+
+/// What a provider that could not start says in the answer, logged as the
+/// next one is tried.
+fn skipped_provider(definition: &ProviderDefinition, error: &ProviderError) -> String {
+    let skipped = format!("{}: {}", definition.id, describe(error));
+    log::warn!("could not start {skipped}; trying the next server");
+    skipped
 }
 
 /// Before a workspace-wide question to a provider that only searches loaded

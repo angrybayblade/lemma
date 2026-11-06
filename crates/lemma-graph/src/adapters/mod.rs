@@ -143,7 +143,10 @@ impl<'a> Adapter<'a> {
             );
             return read_generated(&output);
         }
-        log::info!("adapter: reading {} in its working directory", root.display());
+        log::info!(
+            "adapter: reading {} in its working directory",
+            root.display()
+        );
         self.run(root, root, &output)?;
         read_generated(&output)
     }

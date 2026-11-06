@@ -179,10 +179,37 @@ impl LiveIndex {
             walk_scope,
             known_head,
         } = match self.plan(store, &root_text)? {
-            Plan::Unchanged(summary) => return Ok(*summary),
+            Plan::Unchanged(summary) => {
+                log::info!("index of {root_text}: nothing changed since it was last read");
+                return Ok(*summary);
+            }
             Plan::Scan(plan) => *plan,
         };
+        log_scan(&root_text, &walk_scope);
+        let started = std::time::Instant::now();
+        let plan = ScanPlan {
+            previous,
+            walk_scope,
+            known_head,
+        };
+        let summary = self.scan(store, root_text, plan, indexed_at_ns)?;
+        log::info!("indexed in {:.1}s", started.elapsed().as_secs_f64());
+        Ok(summary)
+    }
 
+    /// Reads what `plan` says may have changed and stores the snapshot.
+    fn scan(
+        &mut self,
+        store: &mut Store,
+        root_text: String,
+        plan: ScanPlan,
+        indexed_at_ns: i64,
+    ) -> Result<IndexSummary, IndexError> {
+        let ScanPlan {
+            previous,
+            walk_scope,
+            known_head,
+        } = plan;
         let area = Area {
             root: &self.root,
             selection: &self.selection,
@@ -218,6 +245,7 @@ impl LiveIndex {
         // If the write fails, memory no longer matches the store; `previous`
         // stays empty and the next run reloads from the store.
         let snapshot_id = write.save(store)?;
+        log_changes(&survey.changes);
         files.apply(survey.changes, coverage);
 
         let is_unchanged = previous_stored
@@ -383,6 +411,26 @@ struct Survey {
     changes: ChangeSet,
     head: Option<git::Head>,
     uncommitted_paths: Vec<String>,
+}
+
+/// Logs what an indexing run found changed.
+fn log_changes(changes: &ChangeSet) {
+    log::info!(
+        "{} files parsed, {} only restamped, {} removed",
+        changes.changed.len(),
+        changes.restamped.len(),
+        changes.removed.len()
+    );
+}
+
+/// Logs what an indexing run looks at.
+fn log_scan(root: &str, walk_scope: &WalkScope) {
+    match walk_scope {
+        WalkScope::Full => log::info!("indexing {root}: checking every file for changes"),
+        WalkScope::Partial(_) => {
+            log::info!("indexing {root}: checking what the watcher saw change");
+        }
+    }
 }
 
 /// How this run learns which source files differ from the commit.
