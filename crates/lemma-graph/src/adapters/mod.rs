@@ -127,14 +127,23 @@ impl<'a> Adapter<'a> {
     /// The document of the code in the working directory at `root`.
     fn in_working_directory(&self, root: &Path) -> Result<Generated, GraphError> {
         let Some(state) = cache::working_state(root)? else {
+            log::info!(
+                "adapter: reading {} in its working directory (not kept: not a Git repository)",
+                root.display()
+            );
             let output = self.store.join(format!("{}-uncached.json", self.key));
             self.run(root, root, &output)?;
             return read_generated(&output);
         };
         let output = self.output(&state);
         if output.exists() {
+            log::info!(
+                "adapter: {} working directory unchanged since last read; kept document",
+                root.display()
+            );
             return read_generated(&output);
         }
+        log::info!("adapter: reading {} in its working directory", root.display());
         self.run(root, root, &output)?;
         read_generated(&output)
     }
@@ -149,16 +158,31 @@ impl<'a> Adapter<'a> {
     ) -> Result<Option<Generated>, GraphError> {
         let state = cache::commit_state(root, commit)?;
         let output = self.output(&state);
+        let short = short_commit(commit);
         if output.exists() {
+            log::info!("adapter: {} at {short}: kept document", root.display());
             return read_generated(&output).map(Some);
         }
         if cache::working_state(root)?.as_deref() == Some(state.as_str()) {
+            log::info!(
+                "adapter: {} at {short}: working directory is that commit; reading it there",
+                root.display()
+            );
             self.run(root, root, &output)?;
             return read_generated(&output).map(Some);
         }
         if build == Build::KeptOnly {
+            log::info!(
+                "adapter: {} at {short}: no kept document and not built for a pinned \
+                 repository; committed documents stand",
+                root.display()
+            );
             return Ok(None);
         }
+        log::info!(
+            "adapter: {} at {short}: no kept document; building it in Lemma's worktree",
+            root.display()
+        );
         let worktree = repos::SharedWorktree::check_out(root, commit, cache)?;
         self.set_up(worktree.path())?;
         self.run(root, worktree.path(), &output)?;
@@ -173,7 +197,13 @@ impl<'a> Adapter<'a> {
         };
         let directory = directory(self.from, worktree)?;
         let env = self.env(worktree, worktree, Path::new(""));
+        log::debug!("adapter setup in {}: {setup}", directory.display());
+        let started = std::time::Instant::now();
         repos::run_within(&directory, setup, &env, Some(SETUP_TIMEOUT_MS))?;
+        log::info!(
+            "adapter: setup finished in {:.1}s",
+            started.elapsed().as_secs_f64()
+        );
         Ok(())
     }
 
@@ -187,6 +217,8 @@ impl<'a> Adapter<'a> {
         let env = self.env(repository, code, &written);
         let command = self.command(repository, code);
         let timeout_ms = self.from.timeout_ms.unwrap_or(ADAPTER_TIMEOUT_MS);
+        log::debug!("adapter command in {}: {command}", directory.display());
+        let started = std::time::Instant::now();
         let result = repos::run_within(&directory, &command, &env, Some(timeout_ms))
             .and_then(|_| read_generated(&written).map(|_| ()))
             .map_err(|error| match error {
@@ -197,12 +229,15 @@ impl<'a> Adapter<'a> {
                 },
                 other => other,
             });
+        let seconds = started.elapsed().as_secs_f64();
         if let Err(error) = result {
+            log::debug!("adapter failed after {seconds:.1}s");
             // The partial file may not exist; either way it is not a
             // document.
             let _ = std::fs::remove_file(&written);
             return Err(error);
         }
+        log::info!("adapter: read the code in {seconds:.1}s");
         std::fs::rename(&written, output).map_err(|source| GraphError::Io {
             path: output.to_owned(),
             source,
@@ -261,6 +296,11 @@ fn write_script(store: &Path, file: &str, text: &str) -> Result<PathBuf, GraphEr
         source,
     })?;
     Ok(path)
+}
+
+/// A commit as logs show it: its first ten characters.
+fn short_commit(commit: &str) -> String {
+    commit.chars().take(10).collect()
 }
 
 /// Where the adapter runs in the code at `code`: its `directory`, which

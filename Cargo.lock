@@ -626,6 +626,7 @@ dependencies = [
  "lemma-store",
  "lemma-syntax",
  "lemma-verify",
+ "log",
  "rayon",
  "regex",
  "serde",
@@ -732,6 +733,7 @@ name = "lemma-souffle"
 version = "0.1.0-rc0"
 dependencies = [
  "lemma-logic",
+ "log",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -744,6 +746,7 @@ version = "0.1.0-rc0"
 dependencies = [
  "blake3",
  "lemma-model",
+ "log",
  "rayon",
  "rusqlite",
  "thiserror 2.0.21",
@@ -773,6 +776,7 @@ dependencies = [
  "lemma-model",
  "lemma-store",
  "lemma-syntax",
+ "log",
  "rayon",
  "serde",
  "serde_json",

@@ -82,16 +82,28 @@ fn check(
     let references = references
         .as_mut()
         .map(|references| references as &mut dyn lemma_graph::References);
+    if let Some(cache) = &options.facts_cache {
+        log::debug!("facts cache: {}", cache.directory.display());
+    }
     let report: Result<Report, GraphError> = match args.engine.as_deref() {
-        Some("reference") => lemma_graph::check(manifest, options, &ReferenceEngine, references),
+        Some("reference") => {
+            log::info!("rule engine: reference (--engine reference)");
+            lemma_graph::check(manifest, options, &ReferenceEngine, references)
+        }
         Some("souffle") => {
+            log::info!("rule engine: souffle (--engine souffle)");
             lemma_graph::check(manifest, options, &SouffleEngine::find()?, references)
         }
         Some(other) => anyhow::bail!("unknown engine `{other}`; use `souffle` or `reference`"),
-        None => match SouffleEngine::find() {
-            Ok(souffle) => lemma_graph::check(manifest, options, &souffle, references),
-            Err(_) => lemma_graph::check(manifest, options, &ReferenceEngine, references),
-        },
+        None => {
+            if let Ok(souffle) = SouffleEngine::find() {
+                log::info!("rule engine: souffle");
+                lemma_graph::check(manifest, options, &souffle, references)
+            } else {
+                log::info!("rule engine: reference (souffle is not installed)");
+                lemma_graph::check(manifest, options, &ReferenceEngine, references)
+            }
+        }
     };
     Ok(report?)
 }

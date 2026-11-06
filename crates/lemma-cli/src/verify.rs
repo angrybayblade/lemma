@@ -100,12 +100,14 @@ fn verify(args: &VerifyArgs) -> anyhow::Result<Report> {
             evaluation,
             ..options.clone()
         };
+        log::info!("verifying with {evaluation:?} evaluation");
         let report: Result<Report, VerifyError> = match args.engine.as_deref() {
             Some("reference") => lemma_verify::verify(&manifest, &ReferenceEngine, &options),
             Some("souffle") => lemma_verify::verify(&manifest, &SouffleEngine::find()?, &options),
             Some(other) => anyhow::bail!("unknown engine `{other}`; use `souffle` or `reference`"),
             None => {
                 if let Ok(souffle) = SouffleEngine::find() {
+                    log::info!("rule engine: souffle");
                     lemma_verify::verify(&manifest, &souffle, &options)
                 } else {
                     eprintln!("souffle is not installed; using the reference engine");
