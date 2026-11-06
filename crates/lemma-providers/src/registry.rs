@@ -42,6 +42,11 @@ pub struct ProviderDefinition {
     /// mentions the symbol.
     #[serde(default)]
     pub project_markers: Vec<String>,
+    /// How to install it, such as `go install golang.org/x/tools/gopls@latest`,
+    /// shown when it is not found. Not part of the fingerprint: it changes
+    /// no answer.
+    #[serde(default)]
+    pub install: Option<String>,
 }
 
 impl ProviderDefinition {
@@ -162,6 +167,19 @@ impl ProviderRegistry {
         }
     }
 
+    /// Where a provider's executable is installed off the search path, in
+    /// one of the directories installers commonly use under `home`
+    /// (`~/go/bin`, `~/.cargo/bin`, ...): found, but not by name.
+    pub fn installed_off_path(&self, command: &str, home: &Path) -> Option<PathBuf> {
+        if Path::new(command).components().count() > 1 {
+            return None;
+        }
+        install_directories(home)
+            .into_iter()
+            .map(|directory| directory.join(command))
+            .find(|candidate| candidate.is_file())
+    }
+
     /// Finds a provider's executable by name on the search path, or checks a
     /// given path.
     pub fn resolve_executable(&self, command: &str) -> Option<PathBuf> {
@@ -214,6 +232,24 @@ impl ProviderRegistry {
     }
 }
 
+/// Directories language servers' installers put executables in, under
+/// `home`: Go's, Cargo's, pip and uv's, Bun's, and npm's when its prefix is
+/// in the home directory; then Homebrew's and the system's local ones.
+fn install_directories(home: &Path) -> Vec<PathBuf> {
+    let under_home = [
+        "go/bin",
+        ".cargo/bin",
+        ".local/bin",
+        ".bun/bin",
+        ".npm-global/bin",
+    ];
+    under_home
+        .iter()
+        .map(|relative| home.join(relative))
+        .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from))
+        .collect()
+}
+
 fn parse_definitions(origin: &str, text: &str) -> Result<Vec<ProviderDefinition>, ProviderError> {
     let file: ProviderFile = toml::from_str(text).map_err(|source| ProviderError::ParseConfig {
         origin: origin.to_owned(),
@@ -236,6 +272,7 @@ mod tests {
             settings: None,
             ready_messages: Vec::new(),
             project_markers: Vec::new(),
+            install: None,
         }
     }
 
@@ -280,6 +317,33 @@ mod tests {
             ["typescript-language-server", "typescript-native"]
         );
         assert_eq!(providers[1].executable, PathBuf::from("/bin/tsc"));
+    }
+
+    #[test]
+    fn a_server_installed_off_path_is_found_where_installers_put_it() {
+        let home = std::env::temp_dir().join(format!("lemma-home-{}", std::process::id()));
+        std::fs::create_dir_all(home.join("go/bin")).unwrap();
+        std::fs::write(home.join("go/bin/gopls"), b"").unwrap();
+        let registry = ProviderRegistry::builtin().unwrap();
+
+        let gopls = registry.installed_off_path("gopls", &home);
+        let missing = registry.installed_off_path("ty", &home);
+
+        assert_eq!(gopls, Some(home.join("go/bin/gopls")));
+        assert_eq!(missing, None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn builtin_providers_say_how_to_install_them() {
+        let registry = ProviderRegistry::builtin().unwrap();
+
+        let gopls = registry.definitions().iter().find(|d| d.id == "gopls");
+
+        assert_eq!(
+            gopls.and_then(|d| d.install.as_deref()),
+            Some("go install golang.org/x/tools/gopls@latest")
+        );
     }
 
     #[test]

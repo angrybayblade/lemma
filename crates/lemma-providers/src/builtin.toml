@@ -17,6 +17,7 @@
 #                           searches once one of their files is open; before a
 #                           project-wide question Lemma opens one file in each
 #                           project that mentions the symbol
+#   install                 how to install it, shown when it is not found
 
 # The server publishes diagnostics and goes quiet before it starts loading
 # the project; this progress report ending is the real signal.
@@ -25,6 +26,7 @@ id = "typescript-language-server"
 languages = ["typescript", "tsx"]
 command = "typescript-language-server"
 args = ["--stdio"]
+install = "npm install -g typescript typescript-language-server"
 ready_messages = ["Initializing JS/TS language features*"]
 # A monorepo has many tsconfig projects; references stay inside loaded ones.
 project_markers = ["tsconfig.json", "jsconfig.json"]
@@ -47,6 +49,7 @@ id = "ty"
 languages = ["python"]
 command = "ty"
 args = ["server"]
+install = "uv tool install ty"
 
 # Pyright answers before it has found the workspace's files, and those
 # answers only cover files it already knows. It logs this once it has.
@@ -55,6 +58,7 @@ id = "pyright"
 languages = ["python"]
 command = "pyright-langserver"
 args = ["--stdio"]
+install = "npm install -g pyright"
 ready_messages = ["Found * source file*", "No source files found*"]
 
 # logLevel keeps the ready message above from being filtered out.
@@ -67,6 +71,7 @@ id = "basedpyright"
 languages = ["python"]
 command = "basedpyright-langserver"
 args = ["--stdio"]
+install = "uv tool install basedpyright"
 ready_messages = ["Found * source file*", "No source files found*"]
 
 [provider.settings.basedpyright.analysis]
@@ -78,6 +83,7 @@ id = "gopls"
 languages = ["go"]
 command = "gopls"
 args = []
+install = "go install golang.org/x/tools/gopls@latest"
 
 # rust-analyzer reports progress while it loads the workspace with cargo and
 # indexes it; references are complete once indexing ends. Earlier reports,
@@ -87,6 +93,7 @@ id = "rust-analyzer"
 languages = ["rust"]
 command = "rust-analyzer"
 args = []
+install = "rustup component add rust-analyzer"
 ready_messages = ["Indexing"]
 # Each Cargo workspace is a separate project.
 project_markers = ["Cargo.toml"]

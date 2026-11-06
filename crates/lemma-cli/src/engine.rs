@@ -894,7 +894,8 @@ impl Engine {
         };
         let root = indexed_root.unwrap_or_else(|| request.invocation.cwd.clone());
         let registry = request.registry(&root)?;
-        output::providers(out, &registry, request.format)?;
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        output::providers(out, &registry, home.as_deref(), request.format)?;
         Ok(0)
     }
 
