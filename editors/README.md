@@ -87,7 +87,7 @@ The nvim-treesitter `main` setup was also followed once in a throwaway configura
 
 ## Helix
 
-Add the language, its server and the grammar to `~/.config/helix/languages.toml`:
+Add the language and its server to `~/.config/helix/languages.toml`:
 
 ```toml
 [[language]]
@@ -103,17 +103,26 @@ language-servers = ["lemma"]
 [language-server.lemma]
 command = "lemma"
 args = ["lm", "lsp"]
+```
 
+Build the grammar into Helix's runtime directory, under the name Helix loads (`lemma.dylib` on macOS):
+
+```sh
+grammar=/path/to/lemma/editors/tree-sitter-lemma
+mkdir -p ~/.config/helix/runtime/grammars
+cc -shared -fPIC -O2 -I "$grammar/src" "$grammar/src/parser.c" "$grammar/src/scanner.c" \
+  -o ~/.config/helix/runtime/grammars/lemma.so
+```
+
+Helix can build it instead, from a `[[grammar]]` entry in `languages.toml`:
+
+```toml
 [[grammar]]
 name = "lemma"
 source = { path = "/path/to/lemma/editors/tree-sitter-lemma" }
 ```
 
-A git source works too: `source = { git = "<repository URL>", rev = "<commit>", subpath = "editors/tree-sitter-lemma" }`, followed by `hx --grammar fetch`. Then build the grammar:
-
-```sh
-hx --grammar build
-```
+A git source works too: `source = { git = "<repository URL>", rev = "<commit>", subpath = "editors/tree-sitter-lemma" }`. Then run `hx --grammar build`. It builds every grammar Helix is configured with, not only this one, and fails for those `hx --grammar fetch` has not fetched. It also writes into `~/.config/helix/runtime/grammars` without creating it, so make that directory first. To build only this grammar, put `use-grammars = { only = ["lemma"] }` at the top of `languages.toml`; it limits what `hx --grammar` fetches and builds, not which grammars Helix loads.
 
 Helix names a few highlight captures differently, so translate them while copying the queries. Helix has its own indent captures and no fold queries, so only highlights and locals are copied:
 
@@ -139,7 +148,9 @@ sed -E \
 cp "$queries/locals.scm" "$target/"
 ```
 
-The parser needs a Helix built against Tree-sitter 0.25 or later. If Helix reports that the grammar's ABI version is unsupported, see [older runtimes](#older-runtimes).
+The queries need Helix 25.07 or later. Its Tree-sitter loads the ABI 15 parser, and like Neovim it lets a later pattern override an earlier one for the same node, which the queries rely on; Helix before 25.07 gave the earlier pattern precedence. If Helix reports that the grammar's ABI version is unsupported, see [older runtimes](#older-runtimes).
+
+Helix highlights a reference to a local definition with the scope its `@local.definition.<scope>` capture names. In `locals.scm` only `type`, `function` and `namespace` are Helix scopes, and they agree with the highlights; the others are nvim-treesitter's kinds, so those references keep their highlights from `highlights.scm`.
 
 ## Zed
 
