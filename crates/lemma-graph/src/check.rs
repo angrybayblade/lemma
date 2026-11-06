@@ -1284,10 +1284,13 @@ fn language_manifest(checkout: &Checkout, manifest: &str) -> Result<String, Grap
         root: checkout.root.clone(),
         commit: None,
     };
-    let has_yaml = checkout.read(manifest)?.is_some() || working.read(manifest)?.is_some();
+    // Most repositories have lemma.yaml; look no further for them.
+    if checkout.read(manifest)?.is_some() || working.read(manifest)?.is_some() {
+        return Ok(manifest.to_owned());
+    }
     let has_language = checkout.read(lemma_lang::load::ROOT_FILE)?.is_some()
         || working.read(lemma_lang::load::ROOT_FILE)?.is_some();
-    if !has_yaml && has_language {
+    if has_language {
         return Ok(lemma_lang::load::ROOT_FILE.to_owned());
     }
     Ok(manifest.to_owned())
