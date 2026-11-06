@@ -48,7 +48,6 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 
 | Limitation | Effect | Until fixed |
 | --- | --- | --- |
-| The head of a change must be a commit | Uncommitted edits are not checked | Commit on a branch first |
 | One commit per repository | Services in one repository cannot be checked at different commits, as when one deploys before another | Check each deploy order with its own parent `lemma.yaml` |
 | Types are followed within the files read (Go and Rust: the anchored file's directory; TypeScript: relative imports; Python without Pydantic: the anchored file's directory) | Fields under types from elsewhere are not compared; each such type is reported as informational | Anchor schemas where their types are defined |
 | Tracing reads the call graph by name | `affects` can list functions that only share a name with a caller, and misses routes whose paths are built at run time | Treat `affects` as where to look |
