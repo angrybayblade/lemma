@@ -23,6 +23,9 @@ pub struct CheckoutSources<'c> {
     /// Texts that win over the files they stand for, such as an editor's
     /// unsaved buffers, by absolute path.
     overlay: BTreeMap<PathBuf, String>,
+    /// Repositories a composition already pinned, which win over the pins
+    /// the modules declare, as a parent's do in `lemma.yaml`.
+    pins: BTreeMap<String, Checkout>,
 }
 
 impl<'c> CheckoutSources<'c> {
@@ -34,7 +37,16 @@ impl<'c> CheckoutSources<'c> {
             cache,
             checkouts: BTreeMap::new(),
             overlay: BTreeMap::new(),
+            pins: BTreeMap::new(),
         }
+    }
+
+    /// The same sources, reading the repositories in `pins` where a
+    /// composition put them rather than where modules pin them.
+    #[must_use]
+    pub fn with_pins(mut self, pins: BTreeMap<String, Checkout>) -> Self {
+        self.pins = pins;
+        self
     }
 
     /// The same sources, with `texts` read instead of the files at those
@@ -62,6 +74,11 @@ impl<'c> CheckoutSources<'c> {
         };
         if let Some(found) = self.checkouts.get(&repository.name) {
             return Ok(found.clone());
+        }
+        if let Some(pinned) = self.pins.get(&repository.name) {
+            self.checkouts
+                .insert(repository.name.clone(), pinned.clone());
+            return Ok(pinned.clone());
         }
         let checkout = match source {
             RepositorySource::Local {
@@ -107,7 +124,17 @@ impl Sources for CheckoutSources<'_> {
                 return Ok(Some(text.clone()));
             }
         }
-        checkout.read(path).map_err(|error| source_error(&error))
+        let found = checkout.read(path).map_err(|error| source_error(&error))?;
+        if found.is_some() || checkout.commit.is_none() {
+            return Ok(found);
+        }
+        // A commit from before the repository had modules: its working
+        // directory's, as a lemma.yaml missing at a commit is read.
+        let working = Checkout {
+            root: checkout.root.clone(),
+            commit: None,
+        };
+        working.read(path).map_err(|error| source_error(&error))
     }
 }
 
@@ -138,8 +165,9 @@ pub fn read_manifest(
     checkout: &Checkout,
     manifest: &str,
     cache: &Path,
+    pins: &BTreeMap<String, Checkout>,
 ) -> Result<LemmaFile, GraphError> {
-    let mut sources = CheckoutSources::new(checkout.clone(), cache);
+    let mut sources = CheckoutSources::new(checkout.clone(), cache).with_pins(pins.clone());
     let checked = check_program(&mut sources, manifest);
     let path = checkout.root.join(manifest);
     let errors = checked.error_lines();
@@ -154,4 +182,39 @@ pub fn read_manifest(
         .unwrap_or_default();
     super::repository_file(&checked, &repository)
         .map_err(|source| GraphError::Lower { path, source })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_composition_pin_wins_over_the_modules_own() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform = directory.path().join("platform");
+        let functions = directory.path().join("checkouts/functions");
+        std::fs::create_dir_all(&platform).unwrap();
+        std::fs::create_dir_all(&functions).unwrap();
+        std::fs::write(
+            platform.join("lemma.lm"),
+            "module platform\nimport functions\nrepo functions = local(\"../missing\")\n",
+        )
+        .unwrap();
+        std::fs::write(functions.join("lemma.lm"), "module functions\n").unwrap();
+        let entry = Checkout {
+            root: platform,
+            commit: None,
+        };
+        let pins = BTreeMap::from([(
+            "functions".to_owned(),
+            Checkout {
+                root: functions,
+                commit: None,
+            },
+        )]);
+
+        let file = read_manifest(&entry, "lemma.lm", directory.path(), &pins);
+
+        assert!(file.is_ok(), "{file:?}");
+    }
 }
