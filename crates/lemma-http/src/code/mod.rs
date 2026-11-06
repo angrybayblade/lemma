@@ -394,6 +394,16 @@ const HTTP_CLIENTS: [&str; 13] = [
 ];
 
 /// Keys whose value is sample data in an API document.
+/// TypeScript nodes holding a type, where a string is part of the type.
+const TYPE_POSITIONS: [&str; 6] = [
+    "type_alias_declaration",
+    "interface_declaration",
+    "type_annotation",
+    "type_arguments",
+    "lookup_type",
+    "literal_type",
+];
+
 const EXAMPLE_KEYS: [&str; 2] = ["example", "examples"];
 
 /// Keys that name the host a request goes to: an object with one describes
@@ -992,12 +1002,18 @@ impl Walk<'_> {
         self.client_functions.insert(local, exported);
     }
 
-    /// Strings naming API paths that no object or call claimed.
+    /// Strings naming API paths that no object or call claimed, outside
+    /// types.
     fn collect_strings(&mut self, node: Node<'_>) {
         // A statement that is only a string does nothing: a docstring, or a
         // directive such as "use strict". Its text is prose, never a call.
         // Sample data in an API document is not code calling anything.
         if is_bare_string_statement(node) || self.is_example_pair(node) {
+            return;
+        }
+        // A type names a path to describe it, as `paths["/v1/x"]["post"]`
+        // does for a generated client's types; types request nothing.
+        if TYPE_POSITIONS.contains(&node.kind()) {
             return;
         }
         if is_string_kind(node.kind()) {
@@ -1296,6 +1312,15 @@ mod tests {
             (item.method.as_str(), item.path.as_str()),
             ("GET", "/v1/users")
         );
+        assert_eq!(found.path_references, []);
+    }
+
+    #[test]
+    fn a_path_in_a_type_is_not_a_request() {
+        let source = "type Body = NonNullable<\n  paths[\"/api/v3.1/tool_router/session\"][\"post\"][\"requestBody\"]\n>[\"content\"];\n";
+
+        let found = facts("types.ts", source);
+
         assert_eq!(found.path_references, []);
     }
 
