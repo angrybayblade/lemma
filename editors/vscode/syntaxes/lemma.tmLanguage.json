@@ -1,0 +1,813 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Lemma",
+  "scopeName": "source.lemma",
+  "fileTypes": [
+    "lm"
+  ],
+  "comment": "Lemma .lm files. The syntax contract is .specs/13-lm-grammar.md; queries/highlights.scm in editors/tree-sitter-lemma covers the same token classes. Contextual keywords are recognised only where a declaration or member starts a line.",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#rule-clause"
+    },
+    {
+      "include": "#when-clause"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#check-members"
+    },
+    {
+      "include": "#expressions"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.lemma",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "captures": {
+            "0": {
+              "name": "punctuation.definition.comment.lemma"
+            }
+          }
+        },
+        {
+          "name": "comment.line.double-slash.lemma",
+          "begin": "//",
+          "end": "$",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.lemma"
+            }
+          }
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.lemma",
+      "begin": "\"",
+      "end": "\"|$",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.lemma"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.lemma"
+        }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.lemma",
+          "match": "\\\\(?:[\"\\\\/bfnrt]|u[0-9A-Fa-f]{4})"
+        },
+        {
+          "name": "invalid.illegal.unknown-escape.lemma",
+          "match": "\\\\."
+        },
+        {
+          "name": "constant.character.escape.brace.lemma",
+          "match": "\\{\\{|\\}\\}"
+        },
+        {
+          "name": "meta.interpolation.lemma",
+          "match": "(\\{)([A-Za-z_][A-Za-z0-9_]*)(?:(\\.)([A-Za-z_][A-Za-z0-9_]*))?(\\})",
+          "captures": {
+            "1": {
+              "name": "punctuation.section.interpolation.begin.lemma"
+            },
+            "2": {
+              "name": "variable.parameter.lemma"
+            },
+            "3": {
+              "name": "punctuation.accessor.lemma"
+            },
+            "4": {
+              "name": "variable.other.property.lemma"
+            },
+            "5": {
+              "name": "punctuation.section.interpolation.end.lemma"
+            }
+          }
+        }
+      ]
+    },
+    "module-path": {
+      "patterns": [
+        {
+          "match": "(\\.)\\s*(\\*)",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.lemma"
+            },
+            "2": {
+              "name": "constant.language.wildcard.lemma"
+            }
+          }
+        },
+        {
+          "match": "\\.",
+          "name": "punctuation.accessor.lemma"
+        },
+        {
+          "match": "(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`)",
+          "name": "entity.name.namespace.lemma"
+        }
+      ]
+    },
+    "requirement-path": {
+      "comment": "A requirement named by its module and name: the last segment is the requirement.",
+      "patterns": [
+        {
+          "match": "(\\.)\\s*(\\*)",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.lemma"
+            },
+            "2": {
+              "name": "constant.language.wildcard.lemma"
+            }
+          }
+        },
+        {
+          "match": "\\.",
+          "name": "punctuation.accessor.lemma"
+        },
+        {
+          "match": "(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`)(?=\\s*\\.)",
+          "name": "entity.name.namespace.lemma"
+        },
+        {
+          "match": "(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`)",
+          "name": "entity.name.function.lemma"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "^\\s*(module)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`)(?:\\s*\\.\\s*(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.import.lemma"
+            },
+            "2": {
+              "patterns": [
+                {
+                  "include": "#module-path"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "match": "^\\s*(import)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`)(?:\\s*\\.\\s*(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))*)\\s*(?=$|//|/\\*|;)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.import.lemma"
+            },
+            "2": {
+              "patterns": [
+                {
+                  "include": "#module-path"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "match": "(?<![.\\w`])(from)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`)(?:\\s*\\.\\s*(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.import.lemma"
+            },
+            "2": {
+              "patterns": [
+                {
+                  "include": "#module-path"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "match": "(\\*)\\s*(as)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))",
+          "captures": {
+            "1": {
+              "name": "constant.language.wildcard.lemma"
+            },
+            "2": {
+              "name": "keyword.control.import.lemma"
+            },
+            "3": {
+              "name": "entity.name.namespace.lemma"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(workspace)\\s*(?=\\{)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.workspace.lemma"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(repo)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(?==)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.repo.lemma"
+            },
+            "2": {
+              "name": "entity.name.namespace.lemma"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(?:(export)\\s+)?(service|entity)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.export.lemma"
+            },
+            "2": {
+              "name": "storage.type.$2.lemma"
+            },
+            "3": {
+              "name": "entity.name.type.lemma"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(?:(export)\\s+)?(type)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(?==)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.export.lemma"
+            },
+            "2": {
+              "name": "storage.type.type.lemma"
+            },
+            "3": {
+              "name": "entity.name.type.alias.lemma"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(?:(export)\\s+)?(?:(client)\\s+)?(operation)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.export.lemma"
+            },
+            "2": {
+              "name": "storage.modifier.client.lemma"
+            },
+            "3": {
+              "name": "storage.type.operation.lemma"
+            },
+            "4": {
+              "name": "entity.name.function.member.lemma"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(?:(export)\\s+)?(graph|rule)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(:)(?!-)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.export.lemma"
+            },
+            "2": {
+              "name": "storage.type.$2.lemma"
+            },
+            "3": {
+              "name": "entity.name.function.lemma"
+            },
+            "4": {
+              "name": "punctuation.separator.type.lemma"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(?:(export)\\s+)?(require|check)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(?=\\{|$)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.export.lemma"
+            },
+            "2": {
+              "name": "storage.type.$2.lemma"
+            },
+            "3": {
+              "name": "entity.name.function.lemma"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(?:(export)\\s+)?(allow)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`)(?:\\s*\\.\\s*(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))*)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.export.lemma"
+            },
+            "2": {
+              "name": "storage.type.allow.lemma"
+            },
+            "3": {
+              "patterns": [
+                {
+                  "include": "#requirement-path"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "meta.function.lemma",
+          "begin": "^\\s*(?:(export)\\s+)?(fn|behavior|checker)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(\\()",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.modifier.export.lemma"
+            },
+            "2": {
+              "name": "storage.type.$2.lemma"
+            },
+            "3": {
+              "name": "entity.name.function.lemma"
+            },
+            "4": {
+              "name": "punctuation.definition.parameters.begin.lemma"
+            }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.parameters.end.lemma"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "match": "((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(:)",
+              "captures": {
+                "1": {
+                  "name": "variable.parameter.lemma"
+                },
+                "2": {
+                  "name": "punctuation.separator.type.lemma"
+                }
+              }
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "match": ",",
+              "name": "punctuation.separator.comma.lemma"
+            }
+          ]
+        },
+        {
+          "name": "meta.function.lemma",
+          "begin": "^\\s*(?:(export)\\s+)?(relation)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(\\()",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.modifier.export.lemma"
+            },
+            "2": {
+              "name": "storage.type.$2.lemma"
+            },
+            "3": {
+              "name": "entity.name.type.lemma"
+            },
+            "4": {
+              "name": "punctuation.definition.parameters.begin.lemma"
+            }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.parameters.end.lemma"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "match": "((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(:)",
+              "captures": {
+                "1": {
+                  "name": "variable.parameter.lemma"
+                },
+                "2": {
+                  "name": "punctuation.separator.type.lemma"
+                }
+              }
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "match": ",",
+              "name": "punctuation.separator.comma.lemma"
+            }
+          ]
+        },
+        {
+          "match": "^\\s*(?:(export)\\s+)?(behavior)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.export.lemma"
+            },
+            "2": {
+              "name": "storage.type.behavior.lemma"
+            },
+            "3": {
+              "name": "entity.name.function.lemma"
+            }
+          }
+        },
+        {
+          "match": "(?<![.\\w`])(let)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))",
+          "captures": {
+            "1": {
+              "name": "storage.type.let.lemma"
+            },
+            "2": {
+              "name": "variable.other.constant.lemma"
+            }
+          }
+        }
+      ]
+    },
+    "check-members": {
+      "patterns": [
+        {
+          "match": "^\\s*(run|skip)\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`)(?:\\s*\\.\\s*(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))*(?:\\s*\\.\\s*\\*)?)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.$1.lemma"
+            },
+            "2": {
+              "patterns": [
+                {
+                  "include": "#requirement-path"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "rule-clause": {
+      "comment": "A clause `(head) :- body`. Its body continues on the next line after a trailing `,` or `:-`.",
+      "name": "meta.rule.clause.lemma",
+      "begin": "^\\s*(?=\\((?:[^()\"]|\"(?:[^\"\\\\]|\\\\.)*\")*\\)\\s*:-)",
+      "end": "(?<![,:\\s])(?<!:-)\\s*$",
+      "patterns": [
+        {
+          "include": "#rule-body"
+        }
+      ]
+    },
+    "when-clause": {
+      "comment": "`when:` in a require or allow: a rule body, not an expression.",
+      "name": "meta.rule.body.lemma",
+      "begin": "^\\s*(when)\\s*(:)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.other.when.lemma"
+        },
+        "2": {
+          "name": "punctuation.separator.key-value.lemma"
+        }
+      },
+      "end": "(?<![,:\\s])(?<!:-)\\s*$",
+      "patterns": [
+        {
+          "include": "#rule-body"
+        }
+      ]
+    },
+    "rule-body": {
+      "comment": "In rule clauses a lowercase bare name is a variable; an uppercase or self. path is a constant.",
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "match": ":-",
+          "name": "keyword.operator.rule.lemma"
+        },
+        {
+          "match": "@(?:base|head)\\b",
+          "name": "storage.modifier.snapshot.lemma"
+        },
+        {
+          "match": "\\b\\d+\\b",
+          "name": "constant.numeric.integer.decimal.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:true|false)\\b",
+          "name": "constant.language.boolean.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:null)\\b",
+          "name": "constant.language.null.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:self)\\b",
+          "name": "variable.language.self.lemma"
+        },
+        {
+          "match": "\\b([A-Z][A-Za-z0-9_]*)(?=\\s*(?:@(?:base|head)\\b)?\\s*\\()",
+          "name": "entity.name.type.lemma"
+        },
+        {
+          "match": "((?:(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`)\\s*\\.\\s*)*)((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))(?=\\s*(?:@(?:base|head)\\b)?\\s*\\()",
+          "captures": {
+            "1": {
+              "patterns": [
+                {
+                  "include": "#module-path"
+                }
+              ]
+            },
+            "2": {
+              "name": "entity.name.function.predicate.lemma"
+            }
+          }
+        },
+        {
+          "match": "((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(:)(?!-)",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.lemma"
+            },
+            "2": {
+              "name": "punctuation.separator.key-value.lemma"
+            }
+          }
+        },
+        {
+          "match": "(\\.)\\s*((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.lemma"
+            },
+            "2": {
+              "name": "variable.other.property.lemma"
+            }
+          }
+        },
+        {
+          "match": "\\b_\\b",
+          "name": "variable.language.anonymous.lemma"
+        },
+        {
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b",
+          "name": "entity.name.type.lemma"
+        },
+        {
+          "match": "\\b[a-z_][A-Za-z0-9_]*\\b",
+          "name": "variable.parameter.lemma"
+        },
+        {
+          "match": "==|!=|<=|>=|<|>",
+          "name": "keyword.operator.comparison.lemma"
+        },
+        {
+          "match": "!",
+          "name": "keyword.operator.logical.lemma"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "match": "\\b(?:Bool|Int|Text|Json|List|Service|Operation|ClientOperation|Symbol|Site|Resolution|Fact|Evidence)\\b",
+          "name": "support.type.lemma"
+        },
+        {
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b",
+          "name": "entity.name.type.lemma"
+        },
+        {
+          "match": "[<>]",
+          "name": "punctuation.definition.typeparameters.lemma"
+        }
+      ]
+    },
+    "expressions": {
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "match": "@(?:base|head)\\b",
+          "name": "storage.modifier.snapshot.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:module|import|from|as)\\b",
+          "name": "keyword.control.import.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:export)\\b",
+          "name": "storage.modifier.export.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:let)\\b",
+          "name": "storage.type.let.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:fn)\\b",
+          "name": "storage.type.function.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:if|else)\\b",
+          "name": "keyword.control.conditional.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:for|in)\\b",
+          "name": "keyword.control.loop.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:return)\\b",
+          "name": "keyword.control.flow.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:expect|because)\\b",
+          "name": "keyword.control.assert.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:need)\\b",
+          "name": "keyword.operator.expression.need.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:true|false)\\b",
+          "name": "constant.language.boolean.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:null)\\b",
+          "name": "constant.language.null.lemma"
+        },
+        {
+          "match": "(?<![.\\w`])(?:self)\\b",
+          "name": "variable.language.self.lemma"
+        },
+        {
+          "match": "\\b\\d+\\b",
+          "name": "constant.numeric.integer.decimal.lemma"
+        },
+        {
+          "match": "\\b(severity|level)\\s*(:)\\s*(error|warning|audit|check|strict)\\b",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.lemma"
+            },
+            "2": {
+              "name": "punctuation.separator.key-value.lemma"
+            },
+            "3": {
+              "name": "constant.language.$3.lemma"
+            }
+          }
+        },
+        {
+          "comment": "`at:` in a require names the variable holding the finding's site.",
+          "match": "\\b(at)\\s*(:)\\s*([a-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.lemma"
+            },
+            "2": {
+              "name": "punctuation.separator.key-value.lemma"
+            },
+            "3": {
+              "name": "variable.parameter.lemma"
+            }
+          }
+        },
+        {
+          "match": "(\\.)\\s*((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.lemma"
+            },
+            "2": {
+              "name": "entity.name.function.member.lemma"
+            }
+          }
+        },
+        {
+          "match": "(\\.)\\s*((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.lemma"
+            },
+            "2": {
+              "name": "variable.other.property.lemma"
+            }
+          }
+        },
+        {
+          "match": "((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\n]+`))\\s*(:)(?![-:])",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.lemma"
+            },
+            "2": {
+              "name": "punctuation.separator.key-value.lemma"
+            }
+          }
+        },
+        {
+          "include": "#types"
+        },
+        {
+          "match": "\\b([a-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "name": "entity.name.function.call.lemma"
+        },
+        {
+          "match": "`[^`\\n]+`",
+          "name": "variable.other.escaped.lemma"
+        },
+        {
+          "match": "->",
+          "name": "keyword.operator.arrow.lemma"
+        },
+        {
+          "match": ":-",
+          "name": "keyword.operator.rule.lemma"
+        },
+        {
+          "match": "==|!=|<=|>=|<|>",
+          "name": "keyword.operator.comparison.lemma"
+        },
+        {
+          "match": "&&|\\|\\||!",
+          "name": "keyword.operator.logical.lemma"
+        },
+        {
+          "match": "[+\\-*/%]",
+          "name": "keyword.operator.arithmetic.lemma"
+        },
+        {
+          "match": "=",
+          "name": "keyword.operator.assignment.lemma"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "match": "[{}]",
+          "name": "punctuation.section.braces.lemma"
+        },
+        {
+          "match": "[()]",
+          "name": "punctuation.section.parens.lemma"
+        },
+        {
+          "match": "[\\[\\]]",
+          "name": "punctuation.section.brackets.lemma"
+        },
+        {
+          "match": ",",
+          "name": "punctuation.separator.comma.lemma"
+        },
+        {
+          "match": ";",
+          "name": "punctuation.terminator.lemma"
+        },
+        {
+          "match": ":",
+          "name": "punctuation.separator.key-value.lemma"
+        },
+        {
+          "match": "\\.",
+          "name": "punctuation.accessor.lemma"
+        }
+      ]
+    }
+  }
+}
