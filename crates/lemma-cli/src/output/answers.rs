@@ -297,12 +297,60 @@ pub(crate) fn signature_report(
         }
         writeln!(out)?;
     }
-    write_provenance(out, hover)?;
     let Outcome::Found(text) = &hover.outcome else {
+        write_provenance(out, hover)?;
         let nothing = format!("{} has nothing to show for it", provider_name(hover));
         return write_unanswered(out, hover, &report.symbol, "hover", &nothing);
     };
-    writeln!(out, "{}", text.trim_end())
+    let shown = hover_beyond_declaration(text, report.declaration.as_deref());
+    if shown.is_empty() {
+        return Ok(());
+    }
+    write_provenance(out, hover)?;
+    writeln!(out, "{shown}")
+}
+
+/// The part of a hover worth showing next to the declaration.
+///
+/// A server's hover often opens with its own rendering of the header, and
+/// some render less than the source says: pyright shows a class's bases as
+/// `class submit_task()`. When every word of that rendering is already in
+/// the declaration, it adds nothing and is dropped; inferred types or
+/// documentation are kept.
+fn hover_beyond_declaration<'t>(hover: &'t str, declaration: Option<&str>) -> &'t str {
+    let hover = hover.trim();
+    let Some(declaration) = declaration else {
+        return hover;
+    };
+    let Some((code, rest)) = leading_code_block(hover) else {
+        return hover;
+    };
+    if !is_shorter_form(code, declaration) {
+        return hover;
+    }
+    rest.trim_start().trim_start_matches("---").trim()
+}
+
+/// A Markdown text's opening fenced block and what follows it.
+fn leading_code_block(text: &str) -> Option<(&str, &str)> {
+    let after_fence = text.strip_prefix("```")?;
+    let (_language, body) = after_fence.split_once('\n')?;
+    let end = body.find("```")?;
+    Some((&body[..end], &body[end + 3..]))
+}
+
+/// Whether `code` is no longer than `declaration` and every word in it is
+/// a word of `declaration`.
+fn is_shorter_form(code: &str, declaration: &str) -> bool {
+    let words = |text: &str| -> Vec<String> {
+        text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|word| !word.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    let declared = words(declaration);
+    let code = code.trim();
+    code.len() <= declaration.trim().len() && words(code).iter().all(|word| declared.contains(word))
 }
 
 /// `nouns` is the singular and plural of what the targets are.
@@ -338,9 +386,10 @@ fn write_provenance<T>(out: &mut dyn Write, answer: &Answered<T>) -> io::Result<
         let version = provenance
             .provider_version
             .as_deref()
-            .unwrap_or("unknown version");
+            .map(|version| format!(" {version}"))
+            .unwrap_or_default();
         let cached = if answer.from_cache { ", cached" } else { "" };
-        writeln!(out, "via {} {version}{cached}", provenance.provider_id)?;
+        writeln!(out, "via {}{version}{cached}", provenance.provider_id)?;
     }
     for skipped in &answer.skipped_providers {
         writeln!(out, "skipped {skipped}")?;
@@ -461,6 +510,24 @@ mod tests {
                 name_span: span,
             },
         }
+    }
+
+    #[test]
+    fn a_hover_rendering_less_than_the_declaration_is_dropped() {
+        let hover = "```python\nclass submit_task()\n```\n---\nRuns one action.";
+
+        let shown = hover_beyond_declaration(hover, Some("class submit_task(TaskFunction):"));
+
+        assert_eq!(shown, "Runs one action.");
+    }
+
+    #[test]
+    fn a_hover_adding_inferred_types_is_kept() {
+        let hover = "```python\ndef total(items) -> int\n```";
+
+        let shown = hover_beyond_declaration(hover, Some("def total(items):"));
+
+        assert_eq!(shown, hover);
     }
 
     #[test]
