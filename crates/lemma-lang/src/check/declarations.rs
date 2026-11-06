@@ -761,6 +761,22 @@ impl<'a> Checker<'a> {
             .get("language")
             .and_then(Value::as_text)
             .map(str::to_owned);
+        let field = workspace
+            .fields
+            .iter()
+            .find(|field| field.name.text == "language");
+        if let (Some(written), Some(field)) = (&language, field) {
+            if written != crate::LANGUAGE_VERSION {
+                self.error(
+                    context.module,
+                    field.value.span,
+                    format!(
+                        "this Lemma implements language {}, not {written}",
+                        crate::LANGUAGE_VERSION
+                    ),
+                );
+            }
+        }
         self.model.workspace = Some(model::Workspace { language, level });
     }
 

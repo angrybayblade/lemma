@@ -479,3 +479,10 @@ fn hovering_a_use_finds_its_declaration() {
     assert_eq!(definition.detail, "(a: Text)");
     assert!(reference.span.start > definition.span.start);
 }
+
+#[test]
+fn a_workspace_naming_another_language_version_is_refused() {
+    let result = single("module system\nworkspace {\n    language: \"0.9\"\n}\n");
+
+    assert_error(&result, "implements language 0.2, not 0.9");
+}
