@@ -105,14 +105,20 @@ fn parse(path: &str, source: &str) -> Option<tree_sitter::Tree> {
     let is_tsx = std::path::Path::new(path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("tsx"));
-    let language = if is_tsx {
-        tree_sitter_typescript::LANGUAGE_TSX
+    let (grammar, language) = if is_tsx {
+        (
+            tree_sitter_typescript::LANGUAGE_TSX,
+            lemma_model::Language::Tsx,
+        )
     } else {
-        tree_sitter_typescript::LANGUAGE_TYPESCRIPT
+        (
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            lemma_model::Language::TypeScript,
+        )
     };
     let mut parser = Parser::new();
-    parser.set_language(&language.into()).ok()?;
-    parser.parse(source, None)
+    parser.set_language(&grammar.into()).ok()?;
+    lemma_syntax::parse_source(&mut parser, language, source)
 }
 
 /// The relative module specifiers (`./types`, `../models/charge`) a file
