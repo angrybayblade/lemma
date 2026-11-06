@@ -194,7 +194,7 @@ fn print_behaviors(out: &mut dyn Write, report: &Report) -> std::io::Result<()> 
         let evidence = if behavior.evidence.is_empty() {
             String::new()
         } else {
-            format!(", evidence {} ({reused} kept)", behavior.evidence.len())
+            format!(", {reused} of {} evidence reused", behavior.evidence.len())
         };
         writeln!(
             out,
