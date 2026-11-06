@@ -1,4 +1,5 @@
-//! `lemma lm`: checking `.lm` modules and converting `lemma.yaml` to them.
+//! `lemma lm`: checking `.lm` modules, converting `lemma.yaml` to them and
+//! serving them to editors. Formatting is in [`crate::formatting`].
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ use crate::cli::{LmAction, LmArgs};
 pub(crate) fn run(args: &LmArgs, json: bool) -> ExitCode {
     let outcome = match &args.action {
         LmAction::Check { file } => check(file, json),
+        LmAction::Fmt { paths, check } => crate::formatting::run(paths, *check),
         LmAction::Convert {
             file,
             module,

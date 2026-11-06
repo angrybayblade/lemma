@@ -15,6 +15,7 @@ mod config;
 mod daemon;
 mod duration;
 mod engine;
+mod formatting;
 mod language;
 mod logging;
 mod mcp;
