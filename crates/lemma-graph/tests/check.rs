@@ -393,3 +393,32 @@ fn a_renamed_operation_is_compared_with_where_it_was() {
         "its disagreements were already there"
     );
 }
+
+#[test]
+fn select_is_refused_for_a_parent_lemma_yaml() {
+    let workspace = system(CALLER_GO);
+    let options = CheckOptions {
+        change: None,
+        level: Some(Level::Check),
+        cache: workspace.path().join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
+        run_checkers: true,
+        select: Some("nightly".to_owned()),
+    };
+
+    let refused = check(
+        &workspace.path().join("lemma.yaml"),
+        &options,
+        &ReferenceEngine,
+        None,
+    );
+
+    assert!(
+        refused
+            .unwrap_err()
+            .to_string()
+            .contains("declares no check `nightly`")
+    );
+}

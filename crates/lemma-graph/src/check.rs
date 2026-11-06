@@ -598,10 +598,17 @@ impl<'a> Shared<'a> {
         root_file: &Path,
         repos: &BTreeMap<String, Repo>,
     ) -> Result<Self, GraphError> {
+        let grammar = crate::behaviors::program_grammar(root_file, repos, options)?;
+        if let (None, Some(name)) = (&grammar, &options.select) {
+            return Err(GraphError::UnknownCheck {
+                module: root_file.display().to_string(),
+                name: name.clone(),
+            });
+        }
         Ok(Self {
             options,
             listings,
-            grammar: crate::behaviors::program_grammar(root_file, repos, options)?,
+            grammar,
         })
     }
 }
