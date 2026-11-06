@@ -1,0 +1,89 @@
+{
+  "name": "lemma-lm",
+  "displayName": "Lemma",
+  "description": "Syntax highlighting and language server support for Lemma's .lm files",
+  "version": "0.1.0",
+  "publisher": "lemma",
+  "private": true,
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:lemma"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "lemma",
+        "aliases": [
+          "Lemma",
+          "lemma"
+        ],
+        "extensions": [
+          ".lm"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lemma",
+        "scopeName": "source.lemma",
+        "path": "./syntaxes/lemma.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Lemma",
+      "properties": {
+        "lemma.path": {
+          "type": "string",
+          "default": "lemma",
+          "scope": "machine-overridable",
+          "markdownDescription": "The `lemma` binary. The extension runs `lemma lm lsp` and talks to it over stdio."
+        },
+        "lemma.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Logs the messages between VS Code and the Lemma language server to the output panel."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "lemma.restartServer",
+        "title": "Restart Language Server",
+        "category": "Lemma"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "check": "tsc -p . --noEmit && eslint . && prettier --check src scripts eslint.config.mjs && node scripts/check-grammar.mjs",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package --allow-missing-repository --skip-license"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/vscode": "~1.82.0",
+    "@vscode/vsce": "^3.2.0",
+    "eslint": "^9.17.0",
+    "prettier": "^3.4.0",
+    "typescript": "~5.7.0",
+    "typescript-eslint": "^8.18.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.1.0"
+  }
+}
