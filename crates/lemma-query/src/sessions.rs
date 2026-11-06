@@ -209,6 +209,7 @@ impl SessionPool {
                     ServerState::Running
                 },
                 memory_bytes: memory.get(&pooled.session.process_id()).copied(),
+                failure: None,
             })
             .collect();
         statuses.extend(self.warming.iter().map(|key| SessionStatus {
@@ -217,7 +218,20 @@ impl SessionPool {
             idle: Duration::ZERO,
             state: ServerState::Starting,
             memory_bytes: None,
+            failure: None,
         }));
+        statuses.extend(
+            self.failed_warm_ups
+                .iter()
+                .map(|(key, error)| SessionStatus {
+                    provider_id: key.provider_id.clone(),
+                    root: key.root.clone(),
+                    idle: Duration::ZERO,
+                    state: ServerState::Failed,
+                    memory_bytes: None,
+                    failure: Some(crate::lookup::describe(error)),
+                }),
+        );
         statuses.sort_by(|left, right| {
             left.root
                 .cmp(&right.root)
@@ -260,6 +274,40 @@ impl SessionPool {
             pooled.wake();
             pooled.session.shutdown();
         }
+    }
+
+    /// Waits until one of `providers` serves the snapshot's root, or every
+    /// one of them has failed to start; their statuses then say which.
+    pub fn wait_for(&mut self, snapshot: &StoredSnapshot, providers: &[InstalledProvider]) {
+        for provider in providers {
+            let key = session_key(snapshot, provider);
+            self.collect_arrivals(Some(&key));
+            if self.sessions.contains_key(&key) {
+                return;
+            }
+        }
+    }
+
+    /// Stops the servers on `root` whose provider `is_chosen` accepts, and
+    /// forgets their failed starts; the ids of those stopped, sorted. A
+    /// server still starting is left to finish.
+    pub fn stop_on(&mut self, root: &Path, is_chosen: &dyn Fn(&str) -> bool) -> Vec<String> {
+        self.collect_arrivals(None);
+        let matches = |key: &SessionKey| key.root == root && is_chosen(&key.provider_id);
+        let chosen: Vec<SessionKey> = self
+            .sessions
+            .keys()
+            .filter(|key| matches(key))
+            .cloned()
+            .collect();
+        self.failed_warm_ups.retain(|key, _| !matches(key));
+        let mut stopped = Vec::new();
+        for key in chosen {
+            stopped.push(key.provider_id.clone());
+            self.stop(&key);
+        }
+        stopped.sort();
+        stopped
     }
 
     /// Stops every server, waiting for any still starting.
@@ -578,6 +626,9 @@ pub enum ServerState {
     Running,
     /// Paused while idle; resumed on the next lookup.
     Paused,
+    /// Its last start failed; the status says why. Starting it again, or
+    /// a lookup that needs it, tries again.
+    Failed,
 }
 
 /// One server, for status reports.
@@ -593,6 +644,8 @@ pub struct SessionStatus {
     pub state: ServerState,
     /// Resident memory of the server and its helpers, if it could be read.
     pub memory_bytes: Option<u64>,
+    /// Why its last start failed, for a failed server.
+    pub failure: Option<String>,
 }
 
 fn session_key(snapshot: &StoredSnapshot, provider: &InstalledProvider) -> SessionKey {

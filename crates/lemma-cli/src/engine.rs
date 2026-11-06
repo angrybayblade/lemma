@@ -30,11 +30,14 @@ use lemma_store::{
     SymbolFilter,
 };
 
+mod lsp;
+
 use crate::addresses;
 use crate::anchors::UsesRequest;
 use crate::cli::{
-    Cli, Command, DefinitionArgs, GraphArgs, GraphDirection, GraphDrawing, GraphSourceArg,
-    LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget, SymbolsArgs,
+    Cli, Command, DaemonAction, DaemonArgs, DefinitionArgs, GraphArgs, GraphDirection,
+    GraphDrawing, GraphSourceArg, LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget,
+    SymbolsArgs,
 };
 use crate::output::{self, Format};
 use crate::selection;
@@ -217,6 +220,10 @@ impl Engine {
                 self.graph(&request, args, out)
             }
             Command::Providers => self.providers(&request, out),
+            Command::Daemon(DaemonArgs {
+                action: Some(DaemonAction::Lsp(args)),
+                ..
+            }) => self.lsp(&request, args, out),
             Command::Daemon(_) => bail!("`lemma daemon` cannot run inside the daemon"),
             Command::Mcp => bail!("`lemma mcp` cannot run inside the daemon"),
             Command::Verify(_) => bail!("`lemma verify` runs in its own process"),
@@ -984,6 +991,7 @@ impl Engine {
                 ServerState::Starting => "starting",
                 ServerState::Running => "running",
                 ServerState::Paused => "paused",
+                ServerState::Failed => "failed",
             };
             let _ = writeln!(
                 text,
