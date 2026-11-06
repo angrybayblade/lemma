@@ -597,6 +597,7 @@ dependencies = [
  "lemma-souffle",
  "lemma-store",
  "lemma-verify",
+ "log",
  "serde",
  "serde_json",
  "tempfile",

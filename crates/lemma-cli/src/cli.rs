@@ -31,6 +31,12 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub no_daemon: bool,
 
+    /// Log what Lemma is doing to stderr, at this level: `error`, `warn`,
+    /// `info` (each step: in this process or the daemon, what is read,
+    /// cached or run), `debug` or `trace`. Off when not given.
+    #[arg(short = 'l', long = "logging", global = true, value_name = "LEVEL")]
+    pub logging: Option<crate::logging::LogLevel>,
+
     #[command(subcommand)]
     pub command: Command,
 }

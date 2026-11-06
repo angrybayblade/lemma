@@ -29,6 +29,7 @@ clap = { version = "4", features = ["derive"] }
 globset = "0.4"
 ignore = "0.4"
 json-schema-diff = "0.1.8"
+log = "0.4"
 lsp-types = "0.95"
 memchr = "2"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }

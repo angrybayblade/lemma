@@ -14,6 +14,7 @@ These work with every command.
 | `--providers <file>` | Language server configuration to use instead of the project's `.lemma/providers.toml`. Built-in servers stay available. See [Language servers](providers.md). |
 | `--json` | Print JSON instead of text. See [JSON output](json-output.md). |
 | `--no-daemon` | Run in this process instead of the background daemon. Slower, but nothing stays running. Setting `LEMMA_NO_DAEMON=1` does the same. |
+| `-l`, `--logging <level>` | Log what Lemma is doing to stderr: `error`, `warn`, `info`, `debug` or `trace`. Off by default. `info` shows each step and the choice made in it: whether the command ran in this process or the daemon (and why), which repositories and commits were read, what came from a cache and what was run, and the engines and language servers used, with timings. A command the daemon runs sends its lines back, marked `daemon`. Logs never go to stdout, so `--json` output stays parseable. |
 
 Every command runs in a background daemon that keeps the index open, watches indexed directories for changes, and keeps language servers warm; `lemma` itself only forwards the command. The first command starts the daemon. See [`lemma daemon`](#lemma-daemon).
 
