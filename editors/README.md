@@ -11,14 +11,14 @@ Syntax highlighting, parsing and a language server client for Lemma's `.lm` lang
 | `fixture/` | The module the editor checks open: valid but for one requirement naming a predicate nothing declares, so the language server has one problem to report |
 | `check.sh` | Regenerates the parser, runs the grammar's tests, parses every example in spec 13 and every `.lm` file in the repository, and runs each editor's check |
 
-`editors/check.sh` runs every section; name sections to run only those, such as `editors/check.sh grammar vscode`. The editor sections run the language server built from this checkout (`$LEMMA`, or `target/release/lemma`, which they build), and skip an editor that is not installed, saying why.
+`editors/check.sh` runs every section; name sections to run only those, such as `editors/check.sh grammar vscode`. The editor sections run the language server built from this checkout (`$LM`, or `target/release/lm`, which they build with `cargo build --release -p lemma-lm`), and skip an editor that is not installed, saying why.
 
 ## The language server
 
-Every editor below runs the same command:
+Every editor below runs the same command, from Lemma's `lm` binary, which works with `.lm` files (`lemma` itself checks and verifies):
 
 ```sh
-lemma lm lsp
+lm lsp
 ```
 
 It speaks the Language Server Protocol over stdio. A directory holding `lemma.lm`, a repository's root module, is a good project root.
@@ -55,7 +55,7 @@ vim.api.nvim_create_autocmd('FileType', {
 })
 
 vim.lsp.config('lemma', {
-  cmd = { 'lemma', 'lm', 'lsp' },
+  cmd = { 'lm', 'lsp' },
   filetypes = { 'lemma' },
   root_markers = { 'lemma.lm', '.git' },
 })
@@ -103,8 +103,8 @@ indent = { tab-width = 4, unit = "    " }
 language-servers = ["lemma"]
 
 [language-server.lemma]
-command = "lemma"
-args = ["lm", "lsp"]
+command = "lm"
+args = ["lsp"]
 ```
 
 Build the grammar into Helix's runtime directory, under the name Helix loads (`lemma.dylib` on macOS):
@@ -158,7 +158,7 @@ Helix highlights a reference to a local definition with the scope its `@local.de
 
 ## Zed
 
-`zed/` is a Zed extension. `extension.toml` names the grammar and the language server, and `languages/lemma/` holds the language's settings and the queries Zed reads: highlights, brackets, indents, the outline and the scopes that stop a quote auto-closing in strings and comments. Zed starts a language server only through extension code, so `src/lib.rs` runs `lemma lm lsp` with the `lemma` that `worktree.which` finds on the worktree's `PATH`.
+`zed/` is a Zed extension. `extension.toml` names the grammar and the language server, and `languages/lemma/` holds the language's settings and the queries Zed reads: highlights, brackets, indents, the outline and the scopes that stop a quote auto-closing in strings and comments. Zed starts a language server only through extension code, so `src/lib.rs` runs `lm lsp` with the `lm` that `worktree.which` finds on the worktree's `PATH`.
 
 `languages/lemma/highlights.scm` is generated from the grammar's highlights by `zed/update-highlights.sh`, which renames the two captures Zed's themes name differently; run it after changing the grammar's highlights. Zed clones the grammar at the commit `rev` in `extension.toml` names, the last one that changed it. To try a grammar that is not committed and pushed yet, set `repository` to your checkout, `file:///path/to/lemma`, and `rev` to a local commit.
 
@@ -181,9 +181,9 @@ npm run compile
 
 Highlighting comes from `syntaxes/lemma.tmLanguage.json`. TextMate grammars match lines with regular expressions, so contextual keywords such as `service` or `check` are recognised where a declaration starts a line, and rule variables inside rule clauses and `when:` bodies.
 
-The extension starts `lemma lm lsp` when it opens a `.lm` file. Set `lemma.path` if `lemma` is not on your `PATH`, and run **Lemma: Restart Language Server** after rebuilding the server. `lemma.trace.server` logs the protocol messages to the output panel.
+The extension starts `lm lsp` when it opens a `.lm` file. Set `lemma.lmPath` if `lm` is not on your `PATH`, and run **Lemma: Restart Language Server** after rebuilding the server. `lemma.trace.server` logs the protocol messages to the output panel.
 
-**Verified** with VS Code 1.145.2 on Linux. `npm run test:integration` packages the extension, installs the `.vsix` into a fresh VS Code profile, points `lemma.path` at the server built from this checkout and opens `editors/fixture`. Its Mocha suite in `test/suite` runs inside VS Code and asserts that:
+**Verified** with VS Code 1.145.2 on Linux. `npm run test:integration` packages the extension, installs the `.vsix` into a fresh VS Code profile, points `lemma.lmPath` at the `lm` built from this checkout and opens `editors/fixture`. Its Mocha suite in `test/suite` runs inside VS Code and asserts that:
 
 - the extension runs from the installed package and gives `.lm` files the `lemma` language;
 - the server's diagnostic for the fixture's error arrives, with its message and position;

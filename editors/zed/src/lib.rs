@@ -2,7 +2,7 @@
 //!
 //! Highlighting, brackets, indentation and the outline come from the queries
 //! in `languages/lemma`. Zed starts a language server only through extension
-//! code, so this crate's one job is to tell Zed how to run `lemma lm lsp`.
+//! code, so this crate's one job is to tell Zed how to run `lm lsp`.
 
 use zed_extension_api::{self as zed, LanguageServerId, Result};
 
@@ -15,8 +15,8 @@ impl zed::Extension for LemmaExtension {
         LemmaExtension
     }
 
-    /// Runs the `lemma` found on the worktree's `PATH` as `lemma lm lsp`, with
-    /// the worktree's shell environment, so a `lemma` installed by a version
+    /// Runs the `lm` found on the worktree's `PATH` as `lm lsp`, with the
+    /// worktree's shell environment, so an `lm` installed by a version
     /// manager or a project's shell setup is found the way a terminal finds
     /// it.
     fn language_server_command(
@@ -24,15 +24,15 @@ impl zed::Extension for LemmaExtension {
         _language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        let Some(lemma) = worktree.which("lemma") else {
+        let Some(lm) = worktree.which("lm") else {
             return Err(
-                "`lemma` is not on PATH; install it to get diagnostics, hover and go-to-definition"
+                "`lm` is not on PATH; install it to get diagnostics, hover and go-to-definition"
                     .to_owned(),
             );
         };
         Ok(zed::Command {
-            command: lemma,
-            args: vec!["lm".to_owned(), "lsp".to_owned()],
+            command: lm,
+            args: vec!["lsp".to_owned()],
             env: worktree.shell_env(),
         })
     }

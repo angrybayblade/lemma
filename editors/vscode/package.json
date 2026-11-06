@@ -39,11 +39,11 @@
     "configuration": {
       "title": "Lemma",
       "properties": {
-        "lemma.path": {
+        "lemma.lmPath": {
           "type": "string",
-          "default": "lemma",
+          "default": "lm",
           "scope": "machine-overridable",
-          "markdownDescription": "The `lemma` binary. The extension runs `lemma lm lsp` and talks to it over stdio."
+          "markdownDescription": "The `lm` binary. The extension runs `lm lsp` and talks to it over stdio."
         },
         "lemma.trace.server": {
           "type": "string",

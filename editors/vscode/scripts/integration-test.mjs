@@ -1,5 +1,5 @@
 // Runs the extension in a real VS Code. It installs the packaged .vsix into a
-// fresh profile, points `lemma.path` at the `lemma` built from this checkout,
+// fresh profile, points `lemma.lmPath` at the `lm` built from this checkout,
 // opens editors/fixture and runs the Mocha suite in out-test/suite inside
 // VS Code, which asserts diagnostics, hover, go-to-definition and TextMate
 // tokens.
@@ -7,7 +7,7 @@
 // Usage: npm run test:integration (which packages and compiles first)
 //
 // Environment:
-//   LEMMA              the lemma binary; defaults to target/release/lemma
+//   LM                 the lm binary; defaults to target/release/lm
 //   VSCODE_EXECUTABLE  an installed VS Code to use instead of downloading one
 //   VSCODE_VERSION     the VS Code to download, `stable` by default
 //
@@ -86,9 +86,9 @@ function rerunUnderXvfb() {
 
 function lemmaBinary() {
   const targetDirectory = process.env.CARGO_TARGET_DIR || join(repository, 'target')
-  const binary = process.env.LEMMA || join(targetDirectory, 'release', 'lemma')
+  const binary = process.env.LM || join(targetDirectory, 'release', 'lm')
   if (!isExecutable(binary)) {
-    fail(`no lemma binary at ${binary}; run \`cargo build --release -p lemma-cli\` or set LEMMA`)
+    fail(`no lm binary at ${binary}; run \`cargo build --release -p lemma-lm\` or set LM`)
   }
   return binary
 }
@@ -118,7 +118,7 @@ function makeProfile(scratch, binary) {
   mkdirSync(join(profile.userData, 'User'), { recursive: true })
   mkdirSync(profile.extensions, { recursive: true })
   const settings = {
-    'lemma.path': binary,
+    'lemma.lmPath': binary,
     'extensions.autoCheckUpdates': false,
     'extensions.autoUpdate': false,
     'telemetry.telemetryLevel': 'off',

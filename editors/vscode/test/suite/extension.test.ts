@@ -84,7 +84,7 @@ describe('the Lemma extension in VS Code', () => {
     await vscode.window.showTextDocument(document)
     // The server reads a document when it opens, so its first diagnostics
     // also mean hover and definition have something to answer from.
-    await waitFor('diagnostics from `lemma lm lsp`', () => lemmaDiagnostics(document.uri))
+    await waitFor('diagnostics from `lm lsp`', () => lemmaDiagnostics(document.uri))
   })
 
   it('runs the extension installed from the packaged .vsix', () => {

@@ -591,7 +591,6 @@ dependencies = [
  "lemma-http",
  "lemma-index",
  "lemma-lang",
- "lemma-lang-server",
  "lemma-logic",
  "lemma-model",
  "lemma-providers",
@@ -700,6 +699,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "lemma-lm"
+version = "0.1.0-rc0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "lemma-graph",
+ "lemma-lang",
+ "lemma-lang-server",
+ "log",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

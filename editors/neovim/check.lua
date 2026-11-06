@@ -5,8 +5,8 @@
 -- <runtime> holds parser/lemma.so and queries/lemma/*.scm, built from
 -- editors/tree-sitter-lemma. <readme> is editors/README.md: its first Lua
 -- block under "## Neovim" is run as written, so the check covers the
--- filetype, Tree-sitter and language server setup it documents. `lemma`
--- must be on PATH, as that setup runs `lemma lm lsp`.
+-- filetype, Tree-sitter and language server setup it documents. `lm`
+-- must be on PATH, as that setup runs `lm lsp`.
 --
 -- The check opens <fixture>, asserts the highlight capture that wins at a
 -- few positions, then waits for the language server to attach and publish

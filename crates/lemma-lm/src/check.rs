@@ -1,5 +1,5 @@
-//! `lemma lm`: checking `.lm` modules, converting `lemma.yaml` to them and
-//! serving them to editors. Formatting is in [`crate::formatting`].
+//! `lm check`: loading a module and everything it imports, and reporting
+//! every problem with its file, line and column.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -9,38 +9,8 @@ use anyhow::Context;
 use lemma_graph::repos::{Checkout, cache_directory};
 use lemma_lang::{Checked, Severity, check_program};
 
-use crate::cli::{LmAction, LmArgs};
-
-pub(crate) fn run(args: &LmArgs, json: bool) -> ExitCode {
-    let outcome = match &args.action {
-        LmAction::Check { file } => check(file, json),
-        LmAction::Fmt { paths, check } => crate::formatting::run(paths, *check),
-        LmAction::Convert {
-            file,
-            module,
-            write,
-        } => convert(file, module.as_deref(), *write).map(|()| ExitCode::SUCCESS),
-        LmAction::Lsp => serve().map(|()| ExitCode::SUCCESS),
-    };
-    match outcome {
-        Ok(code) => code,
-        Err(error) => {
-            eprintln!("error: {error:#}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-/// Serves an editor on standard input and output until it exits.
-fn serve() -> anyhow::Result<()> {
-    let input = std::io::BufReader::new(std::io::stdin());
-    let stdout = std::io::stdout();
-    lemma_lang_server::serve(input, &mut stdout.lock(), &cache_directory())?;
-    Ok(())
-}
-
 /// Loads and checks the program `file` is the entry module of.
-pub(crate) fn load(file: &Path) -> anyhow::Result<(Checked, PathBuf)> {
+fn load(file: &Path) -> anyhow::Result<(Checked, PathBuf)> {
     let absolute =
         std::path::absolute(file).with_context(|| format!("cannot find {}", file.display()))?;
     let root = absolute.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -57,7 +27,9 @@ pub(crate) fn load(file: &Path) -> anyhow::Result<(Checked, PathBuf)> {
     Ok((check_program(&mut sources, &name), root))
 }
 
-fn check(file: &Path, json: bool) -> anyhow::Result<ExitCode> {
+/// Checks the program `file` is the entry module of and prints what it
+/// found: as `file:line:column` lines, or as JSON.
+pub(crate) fn run(file: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let (checked, root) = load(file)?;
     let mut stdout = std::io::stdout().lock();
     if json {
@@ -157,43 +129,4 @@ fn print_json(out: &mut impl Write, checked: &Checked, root: &Path) -> anyhow::R
     });
     writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
     Ok(())
-}
-
-fn convert(file: &Path, module: Option<&str>, write: bool) -> anyhow::Result<()> {
-    let text =
-        std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
-    let parsed =
-        lemma_graph::config::parse(&text).with_context(|| format!("invalid {}", file.display()))?;
-    let directory = std::path::absolute(file)?
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let name = match module {
-        Some(name) => name.to_owned(),
-        None => module_name(&directory),
-    };
-    let converted = lemma_graph::lm::convert(&parsed, &name);
-    if !write {
-        print!("{converted}");
-        return Ok(());
-    }
-    let target = directory.join(lemma_lang::load::ROOT_FILE);
-    anyhow::ensure!(
-        !target.exists(),
-        "{} exists; remove it or print instead",
-        target.display()
-    );
-    std::fs::write(&target, converted)
-        .with_context(|| format!("cannot write {}", target.display()))?;
-    eprintln!("wrote {}", target.display());
-    Ok(())
-}
-
-/// A module name from a directory's name: letters, digits and `_`.
-fn module_name(directory: &Path) -> String {
-    let raw = directory.file_name().map_or_else(
-        || "workspace".to_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    lemma_graph::lm::repository_name(&raw)
 }
