@@ -53,8 +53,10 @@ pub struct WarmUp {
     pub db_path: PathBuf,
     /// The snapshot whose root the server will serve.
     pub snapshot: StoredSnapshot,
-    /// The provider to start.
-    pub provider: InstalledProvider,
+    /// The providers to try, in order: the first that starts serves, as a
+    /// lookup would choose. A server that cannot start (one needing a
+    /// dependency the project lacks) gives way to the next.
+    pub providers: Vec<InstalledProvider>,
     /// The language to warm up. A file of it is opened so the server loads
     /// that file's project.
     pub language: Language,
@@ -120,23 +122,29 @@ impl SessionPool {
         }
     }
 
-    /// Starts a server in the background unless one is running or starting
-    /// already. A lookup that needs it meanwhile waits for it instead of
-    /// starting a second one.
+    /// Starts a server in the background, trying the providers in order,
+    /// unless one of them is running or starting already. A lookup that
+    /// needs one meanwhile waits for it instead of starting a second.
     pub fn warm_up(&mut self, warm_up: WarmUp) {
         self.collect_arrivals(None);
-        let key = session_key(&warm_up.snapshot, &warm_up.provider);
-        if self.sessions.contains_key(&key) || self.warming.contains(&key) {
+        let keys: Vec<SessionKey> = warm_up
+            .providers
+            .iter()
+            .map(|provider| session_key(&warm_up.snapshot, provider))
+            .collect();
+        let is_served =
+            |key: &SessionKey| self.sessions.contains_key(key) || self.warming.contains(key);
+        if keys.is_empty() || keys.iter().any(is_served) {
             return;
         }
-        self.warming.insert(key.clone());
+        for key in &keys {
+            // Starting again is how a failed start is retried.
+            self.failed_warm_ups.remove(key);
+            self.warming.insert(key.clone());
+        }
         let arrivals = self.arrivals.clone();
         let is_long_lived = self.is_long_lived;
-        thread::spawn(move || {
-            let outcome = warm_session(&warm_up, is_long_lived);
-            // The pool may have been dropped; the session then stops with it.
-            let _ = arrivals.send(Arrival { key, outcome });
-        });
+        thread::spawn(move || warm_in_order(&warm_up, keys, &arrivals, is_long_lived));
     }
 
     /// How many servers are running.
@@ -446,7 +454,33 @@ fn start(
 
 /// Starts and readies a server on a background thread, with its own
 /// connection to the index for the baseline of file hashes.
-fn warm_session(warm_up: &WarmUp, is_long_lived: bool) -> WarmUpOutcome {
+/// Tries `warm_up`'s providers in order, each only if the one before
+/// could not start, reporting each by its key; those after the one that
+/// serves are reported as not needed.
+fn warm_in_order(
+    warm_up: &WarmUp,
+    keys: Vec<SessionKey>,
+    arrivals: &mpsc::Sender<Arrival>,
+    is_long_lived: bool,
+) {
+    let mut is_done = false;
+    for (provider, key) in warm_up.providers.iter().zip(keys) {
+        let outcome = if is_done {
+            WarmUpOutcome::Abandoned
+        } else {
+            warm_session(warm_up, provider, is_long_lived)
+        };
+        is_done = !matches!(outcome, WarmUpOutcome::StartFailed(_));
+        // The pool may have been dropped; the session then stops with it.
+        let _ = arrivals.send(Arrival { key, outcome });
+    }
+}
+
+fn warm_session(
+    warm_up: &WarmUp,
+    provider: &InstalledProvider,
+    is_long_lived: bool,
+) -> WarmUpOutcome {
     let Ok(store) = Store::open(&warm_up.db_path) else {
         return WarmUpOutcome::Abandoned;
     };
@@ -458,7 +492,7 @@ fn warm_session(warm_up: &WarmUp, is_long_lived: bool) -> WarmUpOutcome {
     let started = start(
         &view,
         &mut files,
-        &warm_up.provider,
+        provider,
         warm_up.request_timeout,
         is_long_lived,
     );

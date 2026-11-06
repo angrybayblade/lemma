@@ -914,13 +914,10 @@ impl Engine {
         };
         let registry = origin.registry(root)?;
         for language in languages {
-            let Some(provider) = registry.installed(*language).into_iter().next() else {
-                continue;
-            };
             self.pool.warm_up(WarmUp {
                 db_path: db_path.to_owned(),
                 snapshot: snapshot.clone(),
-                provider,
+                providers: registry.installed(*language),
                 language: *language,
                 request_timeout: WARM_UP_TIMEOUT,
             });
