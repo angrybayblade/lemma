@@ -136,13 +136,38 @@ impl Walk<'_> {
         };
         let Some(prefix) = Self::children(arguments)
             .into_iter()
-            .find_map(|argument| self.string_value(argument))
+            .find_map(|argument| self.go_literal_suffix(argument))
         else {
             return;
         };
         let parts = self.chain_parts(function);
         let full = format!("{}{prefix}", self.router_prefix(&parts));
         self.prefixes.insert(self.text(name).to_owned(), full);
+    }
+
+    /// The constant end of a path expression: all of `"/api"`, and the
+    /// `"/api/v1"` of `cfg.BasePath + "/api/v1"`.
+    ///
+    /// A prefix read from configuration is unknown here, but the literal
+    /// after it is what the provider's spec usually spells, so keeping it
+    /// beats dropping the whole prefix and recording bare handler paths.
+    fn go_literal_suffix(&self, node: Node<'_>) -> Option<String> {
+        if let Some(text) = self.string_value(node) {
+            return Some(text);
+        }
+        if node.kind() != "binary_expression" {
+            return None;
+        }
+        let operator = node.child_by_field_name("operator")?;
+        if self.text(operator) != "+" {
+            return None;
+        }
+        let suffix = self.string_value(node.child_by_field_name("right")?)?;
+        let left = node.child_by_field_name("left")?;
+        let Some(before) = self.go_literal_suffix(left) else {
+            return Some(suffix);
+        };
+        Some(format!("{before}{suffix}"))
     }
 
     /// `http.MethodPost` among a call's arguments, as `POST`.
