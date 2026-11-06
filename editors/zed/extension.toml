@@ -1,0 +1,20 @@
+id = "lemma"
+name = "Lemma"
+version = "0.1.0"
+schema_version = 1
+authors = ["Lemma contributors"]
+description = "Lemma's .lm language: Tree-sitter highlighting and the `lemma lm lsp` language server"
+repository = "https://github.com/angrybayblade/lemma"
+
+# Zed clones the grammar's repository at `rev` and builds `path` within it.
+# `rev` is the last commit that changed the grammar; editors/check.sh warns
+# when the grammar has changed since. To build from a local checkout, set
+# `repository` to its `file://` URL and `rev` to one of its commits.
+[grammars.lemma]
+repository = "https://github.com/angrybayblade/lemma"
+rev = "63f78fec84a96bcbaf484a70d68c43ddc2e0a779"
+path = "editors/tree-sitter-lemma"
+
+[language_servers.lemma]
+name = "Lemma"
+languages = ["Lemma"]

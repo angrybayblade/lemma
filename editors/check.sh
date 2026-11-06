@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks the editor support for Lemma's `.lm` language.
 #
-# Usage: editors/check.sh [grammar] [vscode] [neovim] [helix]
+# Usage: editors/check.sh [grammar] [vscode] [neovim] [helix] [zed]
 #
 # With no arguments it runs every section:
 #
@@ -23,6 +23,11 @@
 #   helix    runs editors/helix/check.sh, which follows the README's Helix
 #            setup in a throwaway home, checks `hx --health lemma` and the
 #            translated captures, and with tmux checks what Helix draws.
+#   zed      checks that the Zed extension's generated highlights.scm is up
+#            to date, runs its queries against the same files as the grammar
+#            section, and builds and lints its Rust crate for each WebAssembly
+#            target installed (wasm32-wasip2, which Zed uses, and
+#            wasm32-wasip1). No Zed runs.
 #
 # Needs node, npm and a C compiler. Each package's pinned tools are installed
 # on the first run. With CI set, a committed parser that is out of date with
@@ -129,8 +134,38 @@ run_editor() {
   return "$status"
 }
 
+# Sets `spec_blocks` to spec 13's ```lm blocks, written out as files, and
+# `repository_sources` to every `.lm` file in the repository, tracked or new.
+spec_blocks=()
+repository_sources=()
+collect_lm_files() {
+  if [ "${#spec_blocks[@]}" -gt 0 ]; then
+    return 0
+  fi
+  mkdir -p "$scratch/spec"
+  awk -v directory="$scratch/spec" '
+    /^```lm[[:space:]]*$/ { inside = 1; count++; file = sprintf("%s/block-%02d.lm", directory, count); next }
+    /^```/ && inside { inside = 0; close(file); next }
+    inside { print > file }
+  ' "$spec"
+  spec_blocks=("$scratch"/spec/*.lm)
+  if [ ! -e "${spec_blocks[0]}" ]; then
+    echo "No \`\`\`lm blocks found in $spec" >&2
+    exit 1
+  fi
+  local source
+  while IFS= read -r -d '' source; do
+    repository_sources+=("$repository/$source")
+  done < <(git -C "$repository" ls-files -z --cached --others --exclude-standard -- '*.lm')
+  if [ "${#repository_sources[@]}" -eq 0 ]; then
+    echo "No .lm files found in $repository" >&2
+    exit 1
+  fi
+}
+
 check_grammar() {
   install_tree_sitter
+  collect_lm_files
   cd "$grammar_directory"
 
   step "Generating the parser"
@@ -150,39 +185,28 @@ check_grammar() {
   "$tree_sitter" test --config-path "$scratch/config.json"
 
   step "Parsing the examples in spec 13"
-  mkdir "$scratch/spec"
-  awk -v directory="$scratch/spec" '
-    /^```lm[[:space:]]*$/ { inside = 1; count++; file = sprintf("%s/block-%02d.lm", directory, count); next }
-    /^```/ && inside { inside = 0; close(file); next }
-    inside { print > file }
-  ' "$spec"
-  local blocks=("$scratch"/spec/*.lm)
-  if [ ! -e "${blocks[0]}" ]; then
-    echo "No \`\`\`lm blocks found in $spec" >&2
-    exit 1
-  fi
   # --quiet prints a line only for a file with an ERROR or MISSING node, and
   # the exit status says whether there was one.
-  "$tree_sitter" parse --quiet --config-path "$scratch/config.json" "${blocks[@]}"
-  echo "${#blocks[@]} blocks parse without errors"
+  "$tree_sitter" parse --quiet --config-path "$scratch/config.json" "${spec_blocks[@]}"
+  echo "${#spec_blocks[@]} blocks parse without errors"
 
   step "Parsing every .lm file in the repository"
-  local sources=() source
-  while IFS= read -r -d '' source; do
-    sources+=("$repository/$source")
-  done < <(git -C "$repository" ls-files -z --cached --others --exclude-standard -- '*.lm')
-  if [ "${#sources[@]}" -eq 0 ]; then
-    echo "No .lm files found in $repository" >&2
-    exit 1
-  fi
-  "$tree_sitter" parse --quiet --config-path "$scratch/config.json" "${sources[@]}"
-  echo "${#sources[@]} files parse without errors"
+  "$tree_sitter" parse --quiet --config-path "$scratch/config.json" "${repository_sources[@]}"
+  echo "${#repository_sources[@]} files parse without errors"
 
   step "Running the queries"
+  run_queries queries/*.scm
+}
+
+# Runs each query against spec 13's blocks and the repository's `.lm` files,
+# failing on a query the grammar cannot compile. Runs in the grammar's
+# directory, where the CLI finds the grammar.
+run_queries() {
   local query
-  for query in queries/*.scm; do
-    "$tree_sitter" query --config-path "$scratch/config.json" "$query" "${blocks[@]}" "${sources[@]}" >/dev/null
-    echo "$query"
+  for query in "$@"; do
+    "$tree_sitter" query --config-path "$scratch/config.json" "$query" \
+      "${spec_blocks[@]}" "${repository_sources[@]}" >/dev/null
+    echo "${query#"$editors_directory"/}"
   done
 }
 
@@ -246,9 +270,54 @@ check_helix() {
   run_editor helix "$editors_directory/helix/check.sh" "$lemma"
 }
 
+check_zed() {
+  local zed_directory="$editors_directory/zed"
+  install_tree_sitter
+  collect_lm_files
+
+  step "Checking the Zed extension's queries"
+  "$zed_directory/update-highlights.sh" "$scratch/zed-highlights.scm"
+  if ! cmp -s "$scratch/zed-highlights.scm" "$zed_directory/languages/lemma/highlights.scm"; then
+    echo "editors/zed/languages/lemma/highlights.scm is out of date; run editors/zed/update-highlights.sh" >&2
+    exit 1
+  fi
+  (cd "$grammar_directory" && run_queries "$zed_directory"/languages/lemma/*.scm)
+  # The extension can only name a commit that already holds the grammar, so a
+  # grammar change is followed by a change to this `rev`.
+  local revision
+  revision=$(sed -n 's/^rev = "\(.*\)"$/\1/p' "$zed_directory/extension.toml")
+  if ! git -C "$repository" diff --quiet "$revision" -- editors/tree-sitter-lemma/src 2>/dev/null; then
+    echo "Note: editors/zed/extension.toml pins the grammar at $revision, which differs from this checkout's; update its rev once the grammar change is committed."
+  fi
+
+  step "Building the Zed extension"
+  if ! command -v cargo >/dev/null || ! command -v rustup >/dev/null; then
+    skip zed "building the extension needs cargo and rustup"
+    return
+  fi
+  local installed targets=() target
+  installed=$(rustup target list --installed)
+  for target in wasm32-wasip2 wasm32-wasip1; do
+    if grep -qx "$target" <<<"$installed"; then
+      targets+=("$target")
+    fi
+  done
+  if [ "${#targets[@]}" -eq 0 ]; then
+    skip zed "no WebAssembly target to build for; run rustup target add wasm32-wasip2"
+    return
+  fi
+  local manifest="$zed_directory/Cargo.toml"
+  cargo fmt --manifest-path "$manifest" --check
+  for target in "${targets[@]}"; do
+    cargo clippy --release --quiet --manifest-path "$manifest" --target "$target" -- -D warnings
+    cargo build --release --quiet --manifest-path "$manifest" --target "$target"
+    echo "The extension builds for $target"
+  done
+}
+
 sections=("$@")
 if [ "${#sections[@]}" -eq 0 ]; then
-  sections=(grammar vscode neovim helix)
+  sections=(grammar vscode neovim helix zed)
 fi
 for section in "${sections[@]}"; do
   case "$section" in
@@ -256,8 +325,9 @@ for section in "${sections[@]}"; do
     vscode) check_vscode ;;
     neovim) check_neovim ;;
     helix) check_helix ;;
+    zed) check_zed ;;
     *)
-      echo "Unknown section \`$section\`; expected grammar, vscode, neovim or helix" >&2
+      echo "Unknown section \`$section\`; expected grammar, vscode, neovim, helix or zed" >&2
       exit 2
       ;;
   esac
