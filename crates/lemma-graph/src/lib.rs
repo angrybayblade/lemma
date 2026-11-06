@@ -154,6 +154,27 @@ pub enum GraphError {
         /// What it printed.
         message: String,
     },
+    /// An adapter failed on this code. Its output is shortened here and
+    /// kept whole in `log`.
+    #[error("{summary}\n(full output in {})", log.display())]
+    AdapterFailed {
+        /// The start and end of what it printed.
+        summary: String,
+        /// The file holding all of it.
+        log: PathBuf,
+    },
+    /// An adapter failed on this code in an earlier run and was not run
+    /// again, since the same code and adapter would fail the same way.
+    #[error(
+        "{summary}\n(failed the same way on this code before, so not run again; full output in {}; delete it to try again)",
+        log.display()
+    )]
+    AdapterFailedBefore {
+        /// The start and end of what it printed then.
+        summary: String,
+        /// The file holding all of it.
+        log: PathBuf,
+    },
     /// A resolver's output is not JSON.
     #[error("`{command}` did not produce JSON")]
     ResolverOutput {
