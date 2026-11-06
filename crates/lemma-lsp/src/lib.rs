@@ -53,6 +53,13 @@ pub enum LspError {
     /// The server exited or closed its output before answering.
     #[error("the language server closed the connection")]
     Closed,
+    /// The server exited while starting, saying why on its error output,
+    /// such as an interpreter its script names that is not installed.
+    #[error("the language server exited while starting: {said}")]
+    Exited {
+        /// The end of what it wrote to its error output.
+        said: String,
+    },
     /// The server did not answer in time. The request has been cancelled.
     #[error("{method} timed out after {} seconds", timeout.as_secs())]
     Timeout {
