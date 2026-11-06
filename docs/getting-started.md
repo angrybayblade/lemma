@@ -117,7 +117,7 @@ lemma refs Router.delete
 
 ```text
 #415     method     Router.delete  src/router.py:31:9
-via pyright unknown version
+via pyright
 3 references
   src/api/routes.py:22:12  in remove_route
   src/api/routes.py:57:8  in reset
