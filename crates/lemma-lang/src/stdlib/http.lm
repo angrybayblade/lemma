@@ -51,7 +51,7 @@ export relation addressed_to(path: Text, service: Text)
 // What consumers call, matched against the operations they were written
 // for. A service's own code naming its own operations (route declarations,
 // links to itself) is not a call.
-rule references_operation(c: Text, op: Text, f: Text, l: Int) {
+export rule references_operation(c: Text, op: Text, f: Text, l: Int) {
     (c, op, f, l) :-
         calls_path(c, m, p, f, l),
         operation@base(_, op, m, p)
@@ -64,13 +64,13 @@ rule references_operation(c: Text, op: Text, f: Text, l: Int) {
         operation@base(_, op, m, p)
 }
 
-rule own_operation(f: Text, op: Text) {
+export rule own_operation(f: Text, op: Text) {
     (f, op) :-
         part_of_service(f, s),
         operation@base(s, op, _, _)
 }
 
-rule calls(c: Text, op: Text, f: Text, l: Int) {
+export rule calls(c: Text, op: Text, f: Text, l: Int) {
     (c, op, f, l) :-
         references_operation(c, op, f, l),
         !own_operation(f, op)
@@ -80,7 +80,7 @@ rule calls(c: Text, op: Text, f: Text, l: Int) {
 // its own function, or declarations outside functions (schemas, types,
 // constants) in its file or a file its file imports. Other functions do
 // not count; they often reuse common names for other things.
-rule uses(c: Text, n: Text) {
+export rule uses(c: Text, n: Text) {
     (c, n) :- mentions(c, n)
     (c, n) :-
         in_file(c, f),
@@ -96,7 +96,7 @@ rule uses(c: Text, n: Text) {
 // its file it calls name, where a request body is often built. Other
 // functions of the file do not count: a script naming a field in one
 // function says nothing about the request another sends.
-rule local_callee(c: Text, g: Text) {
+export rule local_callee(c: Text, g: Text) {
     (c, g) :-
         in_file(c, f),
         in_file(g, f),
@@ -105,7 +105,7 @@ rule local_callee(c: Text, g: Text) {
         c != g
 }
 
-rule sends(c: Text, n: Text) {
+export rule sends(c: Text, n: Text) {
     (c, n) :- uses(c, n)
     (c, n) :-
         local_callee(c, g),
@@ -115,47 +115,47 @@ rule sends(c: Text, n: Text) {
 // What changed between the base and head of the change. Parameter and
 // field changes count only on operations the change kept; a removed
 // operation is reported once, not once per field it had.
-rule removed_operation(op: Text) {
+export rule removed_operation(op: Text) {
     (op) :-
         operation@base(s, op, m, p),
         !operation@head(s, op, m, p)
 }
 
-rule kept_operation(op: Text) {
+export rule kept_operation(op: Text) {
     (op) :-
         operation@base(s, op, m, p),
         operation@head(s, op, m, p)
 }
 
-rule removed_parameter(op: Text, n: Text, loc: Text) {
+export rule removed_parameter(op: Text, n: Text, loc: Text) {
     (op, n, loc) :-
         parameter@base(op, n, loc),
         !parameter@head(op, n, loc),
         kept_operation(op)
 }
 
-rule new_required_parameter(op: Text, n: Text, loc: Text) {
+export rule new_required_parameter(op: Text, n: Text, loc: Text) {
     (op, n, loc) :-
         required_parameter@head(op, n, loc),
         !required_parameter@base(op, n, loc),
         kept_operation(op)
 }
 
-rule removed_request_field(op: Text, fld: Text, leaf: Text) {
+export rule removed_request_field(op: Text, fld: Text, leaf: Text) {
     (op, fld, leaf) :-
         request_field@base(op, fld, leaf),
         !request_field@head(op, fld, leaf),
         kept_operation(op)
 }
 
-rule new_required_request_field(op: Text, fld: Text, leaf: Text) {
+export rule new_required_request_field(op: Text, fld: Text, leaf: Text) {
     (op, fld, leaf) :-
         required_request_field@head(op, fld, leaf),
         !required_request_field@base(op, fld, leaf),
         kept_operation(op)
 }
 
-rule removed_response_field(op: Text, fld: Text, leaf: Text) {
+export rule removed_response_field(op: Text, fld: Text, leaf: Text) {
     (op, fld, leaf) :-
         response_field@base(op, fld, leaf),
         !response_field@head(op, fld, leaf),
@@ -165,20 +165,20 @@ rule removed_response_field(op: Text, fld: Text, leaf: Text) {
 // Route parts whose schema rejects unknown keys (zod's `.strict()`): a
 // strict schema defined in the route's file or a file it imports, or a
 // union of them.
-rule strict_in_scope(f: Text, n: Text) {
+export rule strict_in_scope(f: Text, n: Text) {
     (f, n) :- strict_schema(f, n)
     (f, n) :-
         imports(f, g),
         strict_schema(g, n)
 }
 
-rule loose_union(f: Text, u: Text) {
+export rule loose_union(f: Text, u: Text) {
     (f, u) :-
         union_member(f, u, m),
         !strict_in_scope(f, m)
 }
 
-rule strict_definition(f: Text, n: Text) {
+export rule strict_definition(f: Text, n: Text) {
     (f, n) :- strict_in_scope(f, n)
     (f, u) :-
         union_member(f, u, _),
@@ -189,7 +189,7 @@ rule strict_definition(f: Text, n: Text) {
         !loose_union(g, u)
 }
 
-rule strict_route(s: Text, m: Text, p: Text, part: Text) {
+export rule strict_route(s: Text, m: Text, p: Text, part: Text) {
     (s, m, p, part) :-
         route_schema(s, m, p, part, f, n),
         strict_definition(f, n)
@@ -199,7 +199,7 @@ rule strict_route(s: Text, m: Text, p: Text, part: Text) {
 // Operations that fail a request sending a field or parameter they do not
 // know, after the change: by their spec, their route code, or because
 // their service says so.
-rule rejects_unknown(op: Text) {
+export rule rejects_unknown(op: Text) {
     (op) :- strict_request@head(op)
     (op) :-
         operation@head(s, op, m, p),
@@ -209,7 +209,7 @@ rule rejects_unknown(op: Text) {
         rejects_unknown_fields(s)
 }
 
-rule rejects_unknown_parameter(op: Text) {
+export rule rejects_unknown_parameter(op: Text) {
     (op) :-
         operation@head(s, op, m, p),
         strict_route(s, m, p, "query")
@@ -223,19 +223,19 @@ rule rejects_unknown_parameter(op: Text) {
 // no service's prefixes (a consumer's own routes, other APIs), and a
 // service's own code naming paths under its own prefixes, are not the
 // change's doing.
-rule served(m: Text, p: Text) {
+export rule served(m: Text, p: Text) {
     (m, p) :- operation(_, _, m, p)
 }
 
-rule served_path(p: Text) {
+export rule served_path(p: Text) {
     (p) :- operation(_, _, _, p)
 }
 
-rule called_before(c: Text, m: Text, p: Text) {
+export rule called_before(c: Text, m: Text, p: Text) {
     (c, m, p) :- calls_path@base(c, m, p, _, _)
 }
 
-rule unserved_call(c: Text, m: Text, p: Text, f: Text, l: Int) {
+export rule unserved_call(c: Text, m: Text, p: Text, f: Text, l: Int) {
     (c, m, p, f, l) :-
         calls_path(c, m, p, f, l),
         m != "*",
@@ -253,17 +253,17 @@ rule unserved_call(c: Text, m: Text, p: Text, f: Text, l: Int) {
 }
 
 // Spec against code, in the head snapshot.
-rule specified(s: Text, m: Text, p: Text) {
+export rule specified(s: Text, m: Text, p: Text) {
     (s, m, p) :- operation(s, _, m, p)
 }
 
-rule routed(s: Text, m: Text, p: Text) {
+export rule routed(s: Text, m: Text, p: Text) {
     (s, m, p) :- route(s, m, p, _, _)
 }
 
 // A route declared once may be served at several paths (route aliases);
 // it is in the spec if any of them is.
-rule specified_route(s: Text, m: Text, f: Text, l: Int) {
+export rule specified_route(s: Text, m: Text, f: Text, l: Int) {
     (s, m, f, l) :-
         route(s, m, p, f, l),
         specified(s, m, p)
