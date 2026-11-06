@@ -6,8 +6,9 @@
 //! runs of blank lines and keeps every comment. Newlines separate items,
 //! so it never adds or removes one between two tokens; it only changes how
 //! many blank lines there are, which the parser does not see. A module with
-//! syntax errors is refused, and the result is checked to read as the same
-//! tokens and comments before it is returned.
+//! syntax errors is refused, though a fragment without a `module` line, as
+//! the spec's examples are, is laid out like a module. The result is
+//! checked to read as the same tokens and comments before it is returned.
 
 mod facts;
 mod layout;
@@ -16,6 +17,7 @@ mod spacing;
 use crate::diagnostic::Diagnostic;
 use crate::syntax::lexer::{Comment, Token, TokenKind, lex};
 use crate::syntax::parse;
+use crate::syntax::parser::MISSING_MODULE;
 
 /// Why a module was not formatted.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -40,9 +42,16 @@ pub enum FormatError {
 /// Lays `source` out in the canonical layout.
 pub fn format(source: &str) -> Result<String, FormatError> {
     let parsed = parse(source);
-    if !parsed.diagnostics.is_empty() {
+    let is_fragment = parsed.file.module.is_none();
+    let problems: Vec<Diagnostic> = parsed
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| !(is_fragment && diagnostic.message.starts_with(MISSING_MODULE)))
+        .cloned()
+        .collect();
+    if !problems.is_empty() {
         return Err(FormatError::Syntax {
-            diagnostics: parsed.diagnostics,
+            diagnostics: problems,
         });
     }
     let lexed = lex(source);

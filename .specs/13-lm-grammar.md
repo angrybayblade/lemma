@@ -78,7 +78,7 @@ fn identity(value: Bool): Bool {
 
 ### Layout
 
-Every module has one canonical layout, so a diff shows only what changed. The formatter keeps the author's line breaks, since newlines separate items, and changes only indentation, the spaces within a line and the number of blank lines. It refuses a module with syntax errors. The examples in this document, the standard library and `docs/language.md` are in this layout.
+Every module has one canonical layout, so a diff shows only what changed. The formatter keeps the author's line breaks, since newlines separate items, and changes only indentation, the spaces within a line and the number of blank lines. It refuses a module with syntax errors, but lays out a fragment without a `module` line like a module. The examples in this document, the standard library and `docs/language.md` are in this layout.
 
 - **Indentation** is four spaces for each bracket open at the start of the line. Brackets opened on the same line count once, so `f({` indents its contents one level. A line starting with a closing bracket lines up with the line that opened it, as in `): Evidence<Json> {`.
 - **Continuation.** Where newlines separate, a line that continues the one before (after a binary operator, a comma, `:`, `=`, `->` or `:-`, or starting with `because`) goes one level further in, and every further continued line stays at that level. This is how a rule's body sits under its head and a `when:` body under its field. A line starting with `else` is not indented. After a comma, a line starting with `name:` is a new field, not a continuation. Inside `(...)`, `[...]` and an import's `{...}`, newlines are whitespace and lines take the bracket's level only.
