@@ -501,20 +501,31 @@ impl<'a> Checker<'a> {
             );
             return Vec::new();
         }
-        let mut values = Vec::new();
-        for (expression, column) in row.values.iter().zip(columns) {
-            let value = self.expect_value(context, expression, &column.column_type);
-            let Some(value) = value else {
-                self.error(
-                    context.module,
-                    expression.span,
-                    "a row's values must be known without running anything",
-                );
-                continue;
-            };
-            values.push(value);
+        row.values
+            .iter()
+            .zip(columns)
+            .filter_map(|(expression, column)| self.row_value(context, expression, column))
+            .collect()
+    }
+
+    /// One value of a row, which must be known without running anything.
+    fn row_value(
+        &mut self,
+        context: &Context,
+        expression: &ast::Expression,
+        column: &Column,
+    ) -> Option<Value> {
+        let reported = self.diagnostics.len();
+        let value = self.expect_value(context, expression, &column.column_type);
+        // A value that failed to check was reported already.
+        if value.is_none() && self.diagnostics.len() == reported {
+            self.error(
+                context.module,
+                expression.span,
+                "a row's values must be known without running anything",
+            );
         }
-        values
+        value
     }
 
     fn check_entry_point(&mut self, id: DeclarationId, check: &ast::CheckDeclaration) {

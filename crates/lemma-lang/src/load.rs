@@ -200,6 +200,10 @@ impl Loader<'_> {
             file: entry_path,
         };
         self.add_workspace_repositories(&parsed.file, declaring);
+        // An entry below the root still sees its repository's pins.
+        if entry_path != ROOT_FILE && repository != declared {
+            self.request(repository.clone(), None);
+        }
         let place = Place {
             name: declared,
             repository,
@@ -631,6 +635,30 @@ mod tests {
                 .contains("no repository `functions`")
         );
         assert_eq!(loaded.diagnostics[0].module, "example");
+    }
+
+    #[test]
+    fn an_entry_below_the_root_loads_its_root_and_the_repositories_it_pins() {
+        let mut sources = memory(&[
+            (
+                "",
+                "lemma.lm",
+                "module example\nrepo functions = local(\"../functions\")\n",
+            ),
+            (
+                "",
+                "checks/replay.lm",
+                "module example.checks.replay\nimport functions\n",
+            ),
+            ("functions", "lemma.lm", "module functions\n"),
+        ]);
+
+        let loaded = load(&mut sources, "checks/replay.lm");
+
+        assert_eq!(loaded.diagnostics, []);
+        assert!(loaded.modules.contains_key("example"));
+        assert!(loaded.modules.contains_key("functions"));
+        assert_eq!(loaded.entry, "example.checks.replay");
     }
 
     #[test]
