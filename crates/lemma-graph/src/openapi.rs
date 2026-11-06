@@ -35,6 +35,42 @@ pub fn operations(file: &str, document: &Value) -> BTreeMap<String, Operation> {
     found
 }
 
+/// The operation `document` declares for `method` and `path`, path
+/// parameters compared whatever their names (`{id}` and `{}` match),
+/// whether or not it has an `operationId`.
+pub fn operation_at(file: &str, document: &Value, method: &str, path: &str) -> Option<Operation> {
+    let method = method.to_lowercase();
+    let wanted = without_parameter_names(path);
+    let paths = document.get("paths")?.as_object()?;
+    let (written, item) = paths
+        .iter()
+        .find(|(written, _)| without_parameter_names(written) == wanted)?;
+    let operation = item.get(&method)?;
+    let at = format!("$.paths[\"{written}\"].{method}");
+    Some(declared(file, operation, &at))
+}
+
+/// `/users/{id}` as `/users/{}`.
+fn without_parameter_names(path: &str) -> String {
+    let mut written = String::with_capacity(path.len());
+    let mut in_parameter = false;
+    for character in path.chars() {
+        match character {
+            '{' => {
+                in_parameter = true;
+                written.push('{');
+            }
+            '}' => {
+                in_parameter = false;
+                written.push('}');
+            }
+            _ if in_parameter => {}
+            _ => written.push(character),
+        }
+    }
+    written
+}
+
 fn declared(file: &str, operation: &Value, at: &str) -> Operation {
     let location = |path: String| {
         SchemaSource::Document(DocumentLocation {

@@ -219,3 +219,103 @@ fn a_caller_anchored_at_a_method_nothing_calls_is_warned_about() {
         )]
     );
 }
+
+/// A provider documenting its operations without `operationId`s, and a
+/// caller whose links name them by method and path, `route` among them.
+fn routed_system(route: &str) -> tempfile::TempDir {
+    let workspace = tempfile::tempdir().unwrap();
+    let billing = workspace.path().join("billing");
+    write(
+        &billing.join("lemma.lm"),
+        "module billing\nimport * as http from lemma.http\nexport service api {\n    operations: http.openapi(\"openapi.json\")\n}\n",
+    );
+    write(
+        &billing.join("openapi.json"),
+        r#"{ "openapi": "3.0.0", "paths": { "/v1/charges/{id}": { "get": {
+  "responses": { "200": { "content": { "application/json": { "schema": { "type": "object" } } } } } } } } }"#,
+    );
+    git(&billing, &["init", "-q"]);
+    git(&billing, &["add", "."]);
+    git(&billing, &["commit", "-q", "-m", "billing"]);
+    let web = workspace.path().join("web");
+    write(
+        &web.join("lemma.lm"),
+        &format!(
+            r#"module web
+
+import * as python from lemma.python
+import {{ Link }} from lemma.links
+import {{ api }} from billing
+
+repo billing = local("../billing")
+
+let client = python.file("client.py")
+
+export service web {{
+    client operation get_charge {{
+        implementation: client.symbol("get_charge")
+    }}
+}}
+
+export graph links : Link {{
+    web.get_charge -> api["{route}"]
+}}
+"#
+        ),
+    );
+    write(
+        &web.join("client.py"),
+        "def get_charge(identifier):\n    pass\n",
+    );
+    git(&web, &["init", "-q"]);
+    git(&web, &["add", "."]);
+    git(&web, &["commit", "-q", "-m", "web"]);
+    workspace
+}
+
+fn link_problems(workspace: &Path) -> Vec<String> {
+    let options = CheckOptions {
+        change: None,
+        level: Some(Level::Check),
+        cache: workspace.join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
+        run_checkers: true,
+    };
+    let report = check(
+        &workspace.join("web/lemma.lm"),
+        &options,
+        &ReferenceEngine,
+        None,
+    )
+    .unwrap();
+    assert_eq!(report.links, 1);
+    report
+        .findings
+        .iter()
+        .filter(|finding| finding.check == "link")
+        .map(|finding| finding.message.clone())
+        .collect()
+}
+
+#[test]
+fn a_link_may_name_a_documented_operation_by_method_and_path() {
+    let workspace = routed_system("GET /v1/charges/{id}");
+
+    assert_eq!(link_problems(workspace.path()), Vec::<String>::new());
+}
+
+#[test]
+fn a_link_to_a_route_no_document_declares_is_reported() {
+    let workspace = routed_system("GET /v1/refunds/{id}");
+
+    let problems = link_problems(workspace.path());
+
+    assert_eq!(problems.len(), 1, "{problems:#?}");
+    assert!(
+        problems[0].contains("GET /v1/refunds/{}"),
+        "{}",
+        problems[0]
+    );
+}

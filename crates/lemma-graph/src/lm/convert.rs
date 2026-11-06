@@ -491,6 +491,9 @@ fn link_end(address: &LinkAddress) -> String {
         Some(repository) => imported_name(repository.trim_start_matches('#'), &address.service),
         None => identifier(&address.service),
     };
+    if crate::address::is_route(&address.operation) {
+        return format!("{service}[{:?}]", address.operation);
+    }
     format!("{service}.{}", identifier(&address.operation))
 }
 
