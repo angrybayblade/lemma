@@ -5,6 +5,7 @@
 //! a `state`. What a found answer holds sits under a field named for it,
 //! such as `references`.
 
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use lemma_model::{Outcome, Position, Provenance, Reference, Span};
@@ -98,11 +99,50 @@ pub(crate) fn outline(
     if symbols.is_empty() {
         return writeln!(out, "no symbols indexed in {path}");
     }
-    for stored in symbols {
-        let depth = stored.symbol.qualified_name.matches('.').count();
+    for (depth, stored) in outline_rows(symbols) {
         writeln!(out, "{}{}", "  ".repeat(depth), symbol_line(stored))?;
     }
     Ok(())
+}
+
+/// Orders symbols as a tree, each under the symbol its qualified name is
+/// prefixed by, with its depth in that tree.
+///
+/// Source order alone misplaces members: a Go method can follow an unrelated
+/// function, and counting the dots in its name would indent it under that
+/// function. A symbol whose container is not in the file stays at the top.
+fn outline_rows(symbols: &[StoredSymbol]) -> Vec<(usize, &StoredSymbol)> {
+    let mut first_by_name: BTreeMap<&str, usize> = BTreeMap::new();
+    for (index, stored) in symbols.iter().enumerate() {
+        first_by_name
+            .entry(stored.symbol.qualified_name.as_str())
+            .or_insert(index);
+    }
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); symbols.len()];
+    let mut roots = Vec::new();
+    for (index, stored) in symbols.iter().enumerate() {
+        let container = stored
+            .symbol
+            .qualified_name
+            .rsplit_once('.')
+            .and_then(|(prefix, _)| first_by_name.get(prefix));
+        match container {
+            Some(&parent) => children[parent].push(index),
+            None => roots.push(index),
+        }
+    }
+    let mut rows = Vec::with_capacity(symbols.len());
+    let mut pending: Vec<(usize, usize)> = roots.iter().rev().map(|&root| (0, root)).collect();
+    while let Some((depth, index)) = pending.pop() {
+        rows.push((depth, &symbols[index]));
+        pending.extend(
+            children[index]
+                .iter()
+                .rev()
+                .map(|&child| (depth + 1, child)),
+        );
+    }
+    rows
 }
 
 pub(crate) fn reference_report(
@@ -395,7 +435,67 @@ fn json_value(value: &impl Serialize) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use lemma_model::{Language, Symbol, SymbolKind};
+
     use super::*;
+
+    fn stored(qualified_name: &str, kind: SymbolKind, line: u32) -> StoredSymbol {
+        let position = Position { line, column: 0 };
+        let span = Span {
+            start: position,
+            end: position,
+        };
+        StoredSymbol {
+            id: i64::from(line),
+            path: "server.go".to_owned(),
+            language: Language::Go,
+            symbol: Symbol {
+                name: qualified_name
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned(),
+                qualified_name: qualified_name.to_owned(),
+                kind,
+                span,
+                name_span: span,
+            },
+        }
+    }
+
+    #[test]
+    fn methods_sit_under_their_type_even_after_an_unrelated_function() {
+        let symbols = [
+            stored("Server", SymbolKind::Struct, 1),
+            stored("NewRouter", SymbolKind::Function, 5),
+            stored("Server.listItems", SymbolKind::Method, 9),
+            stored("Server.tagItem", SymbolKind::Method, 14),
+        ];
+
+        let rows: Vec<(usize, &str)> = outline_rows(&symbols)
+            .into_iter()
+            .map(|(depth, stored)| (depth, stored.symbol.qualified_name.as_str()))
+            .collect();
+
+        assert_eq!(
+            rows,
+            [
+                (0, "Server"),
+                (1, "Server.listItems"),
+                (1, "Server.tagItem"),
+                (0, "NewRouter"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_member_whose_container_is_not_in_the_file_stays_at_the_top() {
+        let symbols = [stored("Elsewhere.method", SymbolKind::Method, 3)];
+
+        let rows = outline_rows(&symbols);
+
+        assert_eq!(rows[0].0, 0);
+    }
 
     #[test]
     fn found_outcomes_hold_their_answer_under_the_named_field() {
