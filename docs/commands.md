@@ -236,17 +236,6 @@ Each behavior is printed as `behavior <identity>: <outcome> (<held> of <cases> c
 
 Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
-## `lemma lm`
-
-Works with `.lm` modules. See [The `.lm` language](language.md).
-
-| Command | Meaning |
-| --- | --- |
-| `lemma lm check [lemma.lm]` | Loads a module and everything it imports, and prints every problem as `file:line:column: severity: message`, then a summary. With `--json`, `diagnostics` lists each with its `module`, `path`, `line` and `column`. Exits with 1 if any is an error. |
-| `lemma lm fmt [paths...]` | Rewrites `.lm` files in the canonical layout ([spec 13, Layout](../.specs/13-lm-grammar.md#layout)): four-space indentation by brackets and continued lines, one space around operators and after `,` and `:`, at most one blank line in a row. Line breaks and comments are kept. Each path is a file or a directory to search; with none, the current directory is searched, skipping hidden directories, `target` and `node_modules`. A file with syntax errors is left alone and its errors are printed; a fragment without a `module` line is formatted. `--check` lists the files that are not formatted instead of rewriting them. Exits with 1 if a file has syntax errors or, with `--check`, is not formatted. |
-| `lemma lm convert [lemma.yaml]` | Writes a `lemma.yaml` as an `.lm` root module. `--module <name>` names it (the directory's name by default); `--write` writes `lemma.lm` beside the file, refusing to replace one. |
-| `lemma lm lsp` | Serves `.lm` modules to an editor over the Language Server Protocol, on standard input and output. |
-
 ## `lemma daemon`
 
 Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground. Language servers start when a lookup needs one, when `lemma index` runs (in the background), or with `lemma daemon lsp start`; there is one per indexed root and language, and idle ones are paused and stopped by the settings below.
@@ -294,3 +283,20 @@ There is one daemon per user. It talks to `lemma` over a Unix socket in the temp
 | `2` | `refs`, `implementations`, `signature` and `graph`: the name matches several symbols. The candidates are printed. |
 | `3` | `refs`, `definition`, `implementations`, `signature` and `graph`: no answer. The file is stale, no server is installed, the server failed, or it does not support the question. |
 | `4` | `verify` and `check` only: a finding is an error. |
+
+## `lm`
+
+`.lm` modules have their own command, `lm`, installed beside `lemma`. It checks, formats and converts modules and serves them to editors; `lemma check` and `lemma verify` run what they declare. Every `lm` command runs in its own process, without Lemma's daemon or index.
+
+```text
+lm [--json] [-l <level>] <command>
+```
+
+See [The `.lm` language](language.md).
+
+| Command | Meaning |
+| --- | --- |
+| `lm check [lemma.lm]` | Loads a module and everything it imports, and prints every problem as `file:line:column: severity: message`, then a summary. With `--json`, `diagnostics` lists each with its `module`, `path`, `line` and `column`. Exits with 1 if any is an error. |
+| `lm fmt [paths...]` | Rewrites `.lm` files in the canonical layout ([spec 13, Layout](../.specs/13-lm-grammar.md#layout)): four-space indentation by brackets and continued lines, one space around operators and after `,` and `:`, at most one blank line in a row. Line breaks and comments are kept. Each path is a file or a directory to search; with none, the current directory is searched, skipping hidden directories, `target` and `node_modules`. A file with syntax errors is left alone and its errors are printed; a fragment without a `module` line is formatted. `--check` lists the files that are not formatted instead of rewriting them. Exits with 1 if a file has syntax errors or, with `--check`, is not formatted. |
+| `lm convert [lemma.yaml]` | Writes a `lemma.yaml` as an `.lm` root module. `--module <name>` names it (the directory's name by default); `--write` writes `lemma.lm` beside the file, refusing to replace one. |
+| `lm lsp` | Serves `.lm` modules to an editor over the Language Server Protocol, on standard input and output. |

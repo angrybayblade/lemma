@@ -60,7 +60,7 @@ Pick three or four calls you can see in the code and confirm they appear. If one
 
 For a system with calls inference cannot see (function runtimes, queues, RPC), or to compare schemas field by field, describe each repository in its own `lemma.yaml` and compose them from a parent in a workspace repository; check with `lemma check` instead of `lemma verify`. The format and checks are in [Checking links](https://github.com/angrybayblade/lemma/blob/main/docs/check.md).
 
-The same description can be a typed `lemma.lm` module per repository, which `lemma check` reads when there is no `lemma.yaml`: `lemma lm convert lemma.yaml --write` writes one from an existing file, and `lemma lm check` reports mistakes (a link to an operation that does not exist, an unknown field) with their line. Editors get diagnostics and completion from `lemma lm lsp`. See [The `.lm` language](https://github.com/angrybayblade/lemma/blob/main/docs/language.md).
+The same description can be a typed `lemma.lm` module per repository, which `lemma check` reads when there is no `lemma.yaml`: `lm convert lemma.yaml --write` writes one from an existing file, and `lm check` reports mistakes (a link to an operation that does not exist, an unknown field) with their line. `lm` is the `.lm` command installed beside `lemma`; editors get diagnostics and completion from `lm lsp`. See [The `.lm` language](https://github.com/angrybayblade/lemma/blob/main/docs/language.md).
 
 1. In each repository serving an API, add a service with what it is made of (`index.include`) and its OpenAPI documents (`exports.openapi`); calls to it are then inferred everywhere.
 2. In each repository calling others, add a service with its `index.include`.

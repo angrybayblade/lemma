@@ -855,7 +855,7 @@ Standard library:
 
 [The standard library's reference](../docs/standard-library.md) lists every module's functions, methods and declarations with their signatures; it is generated from the library, and a test keeps the two equal.
 
-`lemma.yaml` and grammar YAML keep working through the same lowering. `lemma lm convert` writes a `lemma.yaml` as a root module, so moving an existing configuration is mechanical.
+`lemma.yaml` and grammar YAML keep working through the same lowering. `lm convert` writes a `lemma.yaml` as a root module, so moving an existing configuration is mechanical.
 
 How lowering for `lemma check` names things:
 
@@ -1016,7 +1016,7 @@ Phase 1:
 - `lemma-graph` reads `lemma.lm` wherever `lemma check` reads `lemma.yaml`. On five fixture systems and a six-repository workspace, checks from converted modules match the YAML ones line for line, and replaying 54 past changes from converted modules gives the reviewed findings.
 - `lemma check` runs a parent module's own requirements beside `lemma.http`'s, as its `check main` (or `--select`ed check) selects them, and a workspace naming a language version other than 0.2 is refused.
 - `lemma verify` takes a `.lm` grammar module (`grammar: contracts.lm`), whose `check main` selects requirements.
-- `lemma lm check`, `lemma lm fmt` and `lemma lm convert` are on the command line, and `lemma lm lsp` serves modules to editors: diagnostics as you type (one check per burst of edits), hovers, definitions across repositories, symbols, completion and formatting.
+- `lm`, a command of its own beside `lemma`, has `lm check`, `lm fmt` and `lm convert`, and `lm lsp` serves modules to editors: diagnostics as you type (one check per burst of edits), hovers, definitions across repositories, symbols, completion and formatting.
 - `editors/` has a Tree-sitter grammar with highlighting, locals, folds and indents, a VS Code extension that starts the server, and a Zed extension. `editors/check.sh` parses every `.lm` file in the repository with both parsers, which agree on all of them, and checks each editor for real: VS Code runs the packaged extension against the server under xvfb, headless Neovim and Helix in tmux check captures and diagnostics, and the Zed extension is built for WASM with its queries run by the Tree-sitter CLI. Zed itself has not been run.
 
 Phase 2:
