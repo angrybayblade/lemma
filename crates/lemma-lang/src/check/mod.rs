@@ -548,6 +548,7 @@ impl<'a> Checker<'a> {
                 (module.name.as_str(), imported)
             })
             .collect();
+        let component = components(&edges);
         let cycles: Vec<(&str, &str, Span)> = edges
             .iter()
             .flat_map(|(module, imports)| {
@@ -555,7 +556,7 @@ impl<'a> Checker<'a> {
                     .iter()
                     .map(move |(imported, span)| (*module, *imported, *span))
             })
-            .filter(|(module, imported, _)| reaches(&edges, imported, module))
+            .filter(|(module, imported, _)| component.get(module) == component.get(imported))
             .collect();
         for (module, imported, span) in cycles {
             self.error(
@@ -629,21 +630,114 @@ impl<'a> Checker<'a> {
     }
 }
 
-fn reaches(edges: &BTreeMap<&str, Vec<(&str, Span)>>, from: &str, target: &str) -> bool {
-    let mut stack = vec![from];
-    let mut seen = BTreeSet::new();
-    while let Some(module) = stack.pop() {
-        if module == target {
-            return true;
-        }
-        if !seen.insert(module) {
-            continue;
-        }
-        if let Some(next) = edges.get(module) {
-            stack.extend(next.iter().map(|(imported, _)| *imported));
+/// Each module's strongly connected component of the import graph, by
+/// Tarjan's algorithm: an import is on a cycle exactly when the importing
+/// and the imported module share a component. One pass over every import,
+/// where asking per import whether it leads back costs a walk each.
+fn components<'a>(edges: &BTreeMap<&'a str, Vec<(&'a str, Span)>>) -> BTreeMap<&'a str, usize> {
+    let names: Vec<&str> = edges.keys().copied().collect();
+    let numbers: BTreeMap<&str, usize> = names
+        .iter()
+        .enumerate()
+        .map(|(number, name)| (*name, number))
+        .collect();
+    let imports: Vec<Vec<usize>> = names
+        .iter()
+        .map(|name| {
+            edges[name]
+                .iter()
+                .filter_map(|(imported, _)| numbers.get(imported).copied())
+                .collect()
+        })
+        .collect();
+    let mut tarjan = Tarjan::new(names.len());
+    for root in 0..names.len() {
+        if tarjan.order[root].is_none() {
+            tarjan.visit(&imports, root);
         }
     }
-    false
+    names.into_iter().zip(tarjan.component).collect()
+}
+
+/// The state of Tarjan's algorithm over modules numbered `0..n`.
+struct Tarjan {
+    /// The order each module was first reached in.
+    order: Vec<Option<usize>>,
+    /// The earliest-reached module each can reach while still on `stack`.
+    low: Vec<usize>,
+    stack: Vec<usize>,
+    is_on_stack: Vec<bool>,
+    component: Vec<usize>,
+    reached: usize,
+    components: usize,
+}
+
+impl Tarjan {
+    fn new(count: usize) -> Self {
+        Self {
+            order: vec![None; count],
+            low: vec![0; count],
+            stack: Vec::new(),
+            is_on_stack: vec![false; count],
+            component: vec![0; count],
+            reached: 0,
+            components: 0,
+        }
+    }
+
+    fn reach(&mut self, module: usize) {
+        self.order[module] = Some(self.reached);
+        self.low[module] = self.reached;
+        self.reached += 1;
+        self.stack.push(module);
+        self.is_on_stack[module] = true;
+    }
+
+    /// Walks from `root` without recursion, so a long chain of imports
+    /// cannot overflow the stack.
+    fn visit(&mut self, imports: &[Vec<usize>], root: usize) {
+        self.reach(root);
+        let mut walk = vec![(root, 0)];
+        while let Some((module, next)) = walk.pop() {
+            if let Some(&imported) = imports[module].get(next) {
+                walk.push((module, next + 1));
+                self.follow(module, imported, &mut walk);
+                continue;
+            }
+            if let Some(&(parent, _)) = walk.last() {
+                self.low[parent] = self.low[parent].min(self.low[module]);
+            }
+            if Some(self.low[module]) == self.order[module] {
+                self.close_component(module);
+            }
+        }
+    }
+
+    /// Follows the import of `imported` by `module`: walks into it when it
+    /// is new, and otherwise notes how early it was reached.
+    fn follow(&mut self, module: usize, imported: usize, walk: &mut Vec<(usize, usize)>) {
+        match self.order[imported] {
+            None => {
+                self.reach(imported);
+                walk.push((imported, 0));
+            }
+            Some(order) if self.is_on_stack[imported] => {
+                self.low[module] = self.low[module].min(order);
+            }
+            Some(_) => {}
+        }
+    }
+
+    fn close_component(&mut self, module: usize) {
+        while let Some(member) = self.stack.pop() {
+            self.is_on_stack[member] = false;
+            self.component[member] = self.components;
+            if member == module {
+                break;
+            }
+        }
+        self.components += 1;
+    }
 }
 
 pub(crate) fn builtin_target(builtin: &Builtin) -> Target {
