@@ -106,7 +106,7 @@ Each definition shows its location and, when it is an indexed symbol, its qualif
 
 ## `lemma implementations <symbol>`
 
-Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters work as for `refs`, and so do `--refresh` and `--timeout-secs`.
+Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters work as for `refs`, and so do `--refresh` and `--timeout-secs`. When a name is ambiguous, only symbols that can have implementations count (interfaces, classes, structs, enums, type aliases and methods), so a field named after its type (`store Store`) does not make `Store` ambiguous. Implementations in the repository are listed before those in libraries.
 
 Interface methods are indexed as symbols qualified by their interface (`Shape.area`), so you can ask about them directly. Support varies by server: gopls, rust-analyzer and the TypeScript servers answer; pyright and ty say they do not support it (`does not support implementation lookup`), which is not the same as finding none.
 
