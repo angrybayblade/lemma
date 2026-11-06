@@ -375,6 +375,14 @@ impl<'f> Writer<'f> {
                 let _ = writeln!(text, "        {field}: {written}");
             }
         }
+        if !operation.previously.is_empty() {
+            let addresses: Vec<String> = operation
+                .previously
+                .iter()
+                .map(|old| quoted(&format!("{}::{}", self.module, old.replace('/', "."))))
+                .collect();
+            let _ = writeln!(text, "        previously: [{}]", addresses.join(", "));
+        }
         text.push_str("    }\n");
         text
     }

@@ -283,7 +283,23 @@ fn lower_operation(operation: &model::Operation) -> Result<Operation, LowerError
     } else {
         Some(schemas(request, response, &what)?)
     };
-    Ok(Operation { path, schema })
+    let previously = optional_texts(operation.fields.get("previously"), &what)?
+        .iter()
+        .filter_map(|old| old_place(old))
+        .collect();
+    Ok(Operation {
+        path,
+        schema,
+        previously,
+    })
+}
+
+/// Where an old address (`module::Service.op`) puts an operation, as
+/// `previously` in `lemma.yaml` writes it: `Service.op`.
+fn old_place(address: &str) -> Option<String> {
+    let path = address.split_once("::").map_or(address, |(_, path)| path);
+    let (service, operation) = path.rsplit_once('.')?;
+    Some(format!("{}.{operation}", service.replace('.', "/")))
 }
 
 /// `file:Symbol` for an operation's `implementation`, if it names one.

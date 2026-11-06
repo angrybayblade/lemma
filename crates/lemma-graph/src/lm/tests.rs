@@ -127,6 +127,22 @@ fn a_caller_with_a_link_to_another_repository_round_trips() {
 }
 
 #[test]
+fn where_a_renamed_operation_was_round_trips() {
+    let yaml = BILLING.replace(
+        "        void:\n          path: billing/handlers.py:void",
+        "        void:\n          path: billing/handlers.py:void\n          previously: [api.cancel]",
+    );
+
+    let (original, lowered, text) = round_trip(&yaml, "billing", &[]);
+
+    assert_eq!(lowered, original);
+    assert!(
+        text.contains(r#"previously: ["billing::api.cancel"]"#),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_link_naming_an_operation_by_method_and_path_round_trips() {
     let yaml = WEB.replace(
         "\"#billing:services.api.create_charge\"",

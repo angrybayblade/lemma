@@ -322,3 +322,74 @@ fn a_link_to_a_route_no_document_declares_is_reported() {
         problems[0]
     );
 }
+
+/// The provider renames `create_charge` to `make_charge` in its last
+/// commit, its document unchanged and already disagreeing with the
+/// caller, saying so with `previously` when `says_previously`.
+fn renamed_system(says_previously: bool) -> tempfile::TempDir {
+    let workspace = system(CALLER_GO);
+    let provider = workspace.path().join("provider");
+    write(&provider.join("spec.json"), SPEC_HEAD);
+    git(&provider, &["commit", "-q", "--amend", "-am", "head"]);
+    let previously = if says_previously {
+        "\n          previously: [api.create_charge]"
+    } else {
+        ""
+    };
+    let renamed = PROVIDER_LEMMA.replace(
+        "        create_charge:\n          path: charges.py:create_charge",
+        &format!("        make_charge:\n          path: charges.py:create_charge{previously}"),
+    );
+    write(&provider.join("lemma.yaml"), &renamed);
+    git(&provider, &["commit", "-q", "-am", "rename"]);
+    let caller = workspace.path().join("caller");
+    write(
+        &caller.join("lemma.yaml"),
+        &CALLER_LEMMA.replace("api.create_charge", "api.make_charge"),
+    );
+    workspace
+}
+
+fn errors_after_rename(says_previously: bool) -> usize {
+    let workspace = renamed_system(says_previously);
+    let options = CheckOptions {
+        change: Some(Change {
+            repository: "#provider".to_owned(),
+            base: "HEAD~1".to_owned(),
+            head: Some("HEAD".to_owned()),
+        }),
+        level: Some(Level::Check),
+        cache: workspace.path().join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
+        run_checkers: true,
+        select: None,
+    };
+    let report = check(
+        &workspace.path().join("lemma.yaml"),
+        &options,
+        &ReferenceEngine,
+        None,
+    )
+    .unwrap();
+    report
+        .findings
+        .iter()
+        .filter(|finding| finding.severity == Severity::Error)
+        .count()
+}
+
+#[test]
+fn a_renamed_operation_is_compared_with_where_it_was() {
+    assert_eq!(
+        errors_after_rename(false),
+        2,
+        "the rename looks like a new operation"
+    );
+    assert_eq!(
+        errors_after_rename(true),
+        0,
+        "its disagreements were already there"
+    );
+}

@@ -1637,11 +1637,28 @@ impl Checker<'_> {
     fn find(&self, address: &Address, snapshot: usize) -> Option<Found<'_>> {
         let repo = self.repos.get(address.repository.as_deref()?)?;
         let service = repo.files[snapshot].services.get(&address.service)?;
-        let operation = service.exports.operations.get(&address.operation)?;
-        Some(Found {
-            repo,
-            service,
-            operation,
+        if let Some(operation) = service.exports.operations.get(&address.operation) {
+            return Some(Found {
+                repo,
+                service,
+                operation,
+            });
+        }
+        if snapshot == HEAD {
+            return None;
+        }
+        // Renamed by the change: the head's declaration says where it was.
+        let head = repo.files[HEAD].services.get(&address.service)?;
+        let renamed = head.exports.operations.get(&address.operation)?;
+        renamed.previously.iter().find_map(|old| {
+            let (service_name, operation_name) = old.rsplit_once('.')?;
+            let service = repo.files[BASE].services.get(service_name)?;
+            let operation = service.exports.operations.get(operation_name)?;
+            Some(Found {
+                repo,
+                service,
+                operation,
+            })
         })
     }
 
