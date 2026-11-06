@@ -17,6 +17,10 @@ use crate::span::Span;
 use crate::syntax::ast::{File, Name};
 use crate::syntax::lexer::{Token, TokenKind, lex};
 
+/// What a file without a `module` line is told; the formatter, which
+/// lays out the spec's fragments too, looks past it.
+pub(crate) const MISSING_MODULE: &str = "expected `module <name>` first";
+
 /// A parsed module and the problems found on the way.
 #[derive(Debug, Clone, Default)]
 pub struct Parsed {

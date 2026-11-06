@@ -280,10 +280,10 @@ fn a_module_with_syntax_errors_is_refused() {
 }
 
 #[test]
-fn a_module_without_a_module_line_is_refused() {
-    let refused = format("let a = 1\n");
+fn a_fragment_without_a_module_line_is_laid_out() {
+    let formatted = format("let a=1\nlet b =  2\n");
 
-    assert!(matches!(refused, Err(FormatError::Syntax { .. })));
+    assert_eq!(formatted.as_deref(), Ok("let a = 1\nlet b = 2\n"));
 }
 
 #[test]

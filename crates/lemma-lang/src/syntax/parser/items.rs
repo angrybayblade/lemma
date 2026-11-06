@@ -32,7 +32,7 @@ impl Parser<'_> {
 
     fn module_line(&mut self) -> Option<ModuleName> {
         if self.eat_word("module").is_none() {
-            self.error_here("expected `module <name>` first");
+            self.error_here(super::MISSING_MODULE);
             return None;
         }
         let name = self.module_name("the module's name");
