@@ -16,7 +16,7 @@ Before relying on Lemma, read the [pre-release checklist](pre-release.md): it li
 
 ## 1. Install
 
-Releases ship `lemma` for macOS and Linux on arm64 and x86_64:
+Releases ship `lemma`, and `lm` for `.lm` modules, for macOS and Linux on arm64 and x86_64:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh
 
 The script installs the newest release, pre-releases included, into `~/.local/bin`. Set `LEMMA_VERSION=v0.1.0-rc0` to pin a version, `LEMMA_INSTALL_DIR` to change where it goes, and `LEMMA_SKILLS=1` to also install the agent skills into `~/.claude/skills` (see [Agent skills](#agent-skills)). If GitHub's API rate limit stops the script finding the newest release, set `LEMMA_VERSION` or `GITHUB_TOKEN`.
 
-From source instead: `cargo install --path crates/lemma-cli --locked` (Rust 1.85 or later).
+From source instead: `cargo install --path crates/lemma-cli --locked`, and `cargo install --path crates/lemma-lm --locked` for `lm` (Rust 1.85 or later).
 
 Optional but recommended for `lemma verify`: [Soufflé](https://souffle-lang.github.io), `brew install souffle` on macOS. Without it Lemma uses its built-in engine, which gives the same results about six times slower.
 

@@ -1,4 +1,4 @@
-# Builds `lemma` for each platform when a version tag is pushed and attaches
+# Builds `lemma` and `lm` for each platform when a version tag is pushed and attaches
 # the archives, their checksums, the agent skills and install.sh to a GitHub
 # release. Tags with a pre-release suffix (v0.1.0-rc0) make pre-releases.
 name: release
@@ -37,13 +37,13 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
           CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
-        run: cargo build --release --locked --target ${{ matrix.target }} -p lemma-cli
+        run: cargo build --release --locked --target ${{ matrix.target }} -p lemma-cli -p lemma-lm
       - name: Package
         shell: bash
         run: |
           name="lemma-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir "$name"
-          cp "target/${{ matrix.target }}/release/lemma" README.md "$name/"
+          cp "target/${{ matrix.target }}/release/lemma" "target/${{ matrix.target }}/release/lm" README.md "$name/"
           tar -czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
