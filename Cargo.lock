@@ -609,6 +609,7 @@ dependencies = [
 name = "lemma-grammar"
 version = "0.1.0-rc0"
 dependencies = [
+ "lemma-lang",
  "lemma-logic",
  "serde",
  "thiserror 2.0.21",
