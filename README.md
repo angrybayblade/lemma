@@ -1,6 +1,8 @@
 # Lemma
 
-Lemma indexes source code into a shared, versioned store of symbols and asks language servers about them. It covers TypeScript, Python, Go, and Rust: syntax indexing with Tree-sitter, pluggable language servers for semantic answers, and the questions agents ask while changing code: where a symbol is used, where something is defined, what implements an interface, and what a symbol's signature is. Agents can call it as an MCP server.
+Lemma checks the contracts between your services before a change merges: it reads every repository of a system at the right commits and reports what a change breaks, where, and what depends on that code. It also answers questions about code (where a symbol is used or defined, what implements it) through language servers, for TypeScript, Python, Go and Rust, and serves both to agents over MCP.
+
+**Start here:** [Introduction](docs/introduction.md) · [Quickstart](docs/quickstart.md) · [Tutorials](docs/tutorials/README.md)
 
 Lemma is in release candidates; see the [pre-release checklist](docs/pre-release.md) for what is ready and what is not.
 
@@ -13,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh
 
 Or from source: `cargo install --path crates/lemma-cli --locked`, which installs `lemma` and `lm`, the command for `.lm` modules (Rust 1.85+). Details in [Onboarding](docs/onboarding.md#1-install).
 
-## Quick start
+## Quick start: navigating code
 
 Describe the project in `lemma.yaml` at its root: its services and the code each is made of.
 
@@ -48,6 +50,14 @@ Lemma is built to be called in a loop by agents. Commands run in a background da
 Lemma keeps "no answer" separate from "no references". "No references found" means the server looked and saw nothing; it does not prove a symbol is unused.
 
 ## Documentation
+
+Learn:
+
+- [Introduction](docs/introduction.md): what Lemma checks, how you describe a system, and its two commands.
+- [Quickstart](docs/quickstart.md): two repositories, a breaking change, and Lemma catching it, in about ten minutes.
+- [Tutorials](docs/tutorials/README.md): links, your own requirements, allowances, behaviors, and editor setup.
+
+Use and reference:
 
 - [Onboarding](docs/onboarding.md): set Lemma up for a team's repositories, from install to checks in CI.
 - [Pre-release checklist](docs/pre-release.md): what this release candidate is ready for, and its known limitations.

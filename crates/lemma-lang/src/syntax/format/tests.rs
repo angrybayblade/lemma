@@ -434,13 +434,23 @@ fn lm_blocks(markdown: &str) -> Vec<String> {
 }
 
 #[test]
-fn the_language_guides_examples_are_in_canonical_form() {
-    let guide = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/language.md");
-    let markdown = std::fs::read_to_string(guide).unwrap();
-    let blocks = lm_blocks(&markdown);
-    assert!(blocks.len() >= 4, "found {} blocks", blocks.len());
-
-    for (number, block) in blocks.iter().enumerate() {
-        assert_canonical(&format!("docs/language.md block {number}"), block);
+fn the_guides_examples_are_in_canonical_form() {
+    let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
+    let pages = [
+        "language.md",
+        "introduction.md",
+        "quickstart.md",
+        "tutorials/1-links.md",
+        "tutorials/2-requirements.md",
+        "tutorials/3-allowances.md",
+        "tutorials/4-behaviors.md",
+    ];
+    for page in pages {
+        let markdown = std::fs::read_to_string(docs.join(page)).unwrap();
+        let blocks = lm_blocks(&markdown);
+        assert!(!blocks.is_empty(), "docs/{page} has no lm blocks");
+        for (number, block) in blocks.iter().enumerate() {
+            assert_canonical(&format!("docs/{page} block {number}"), block);
+        }
     }
 }
