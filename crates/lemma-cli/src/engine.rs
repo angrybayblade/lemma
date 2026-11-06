@@ -219,7 +219,8 @@ impl Engine {
             Command::Daemon(_)
             | Command::Mcp
             | Command::Verify(_)
-            | Command::Check(_) => bail!("this command runs in its own process, not in the daemon"),
+            | Command::Check(_)
+            | Command::Lm(_) => bail!("this command runs in its own process, not in the daemon"),
         }
     }
 

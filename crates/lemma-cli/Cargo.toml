@@ -21,6 +21,7 @@ lemma-query.workspace = true
 lemma-souffle.workspace = true
 lemma-store.workspace = true
 lemma-graph.workspace = true
+lemma-lang.workspace = true
 lemma-http.workspace = true
 lemma-verify.workspace = true
 log.workspace = true

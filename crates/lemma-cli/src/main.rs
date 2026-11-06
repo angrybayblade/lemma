@@ -15,6 +15,7 @@ mod config;
 mod daemon;
 mod duration;
 mod engine;
+mod language;
 mod logging;
 mod mcp;
 mod output;
@@ -46,6 +47,10 @@ fn main() -> ExitCode {
             return manage_servers(&cli);
         }
         return run_daemon(args, logger);
+    }
+    if let Command::Lm(args) = &cli.command {
+        log::info!("running in this process: lm always does");
+        return language::run(args, cli.json);
     }
     if let Command::Verify(args) = &cli.command {
         log::info!("running in this process: verify always does");

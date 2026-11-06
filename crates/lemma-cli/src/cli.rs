@@ -115,6 +115,40 @@ pub(crate) enum Command {
     /// Every other command starts the daemon automatically; run this to keep
     /// it in the foreground, check on it, stop it, or start it at login.
     Daemon(DaemonArgs),
+    /// Work with `.lm` modules: check them, convert a lemma.yaml into one,
+    /// or serve them to an editor.
+    Lm(LmArgs),
+}
+
+#[derive(Args)]
+pub(crate) struct LmArgs {
+    #[command(subcommand)]
+    pub action: LmAction,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum LmAction {
+    /// Load a module and everything it imports, and report every problem.
+    ///
+    /// Exits with 1 if there is an error.
+    Check {
+        /// The entry module.
+        #[arg(default_value = "lemma.lm")]
+        file: PathBuf,
+    },
+    /// Write a lemma.yaml as an `.lm` root module.
+    Convert {
+        /// The lemma.yaml to convert.
+        #[arg(default_value = "lemma.yaml")]
+        file: PathBuf,
+        /// The module's name, its repository's; the directory's name by
+        /// default.
+        #[arg(long)]
+        module: Option<String>,
+        /// Write lemma.lm beside the file instead of printing it.
+        #[arg(long)]
+        write: bool,
+    },
 }
 
 #[derive(Args)]

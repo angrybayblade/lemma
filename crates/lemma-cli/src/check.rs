@@ -1,7 +1,7 @@
 //! `lemma check`: checks the links declared in composable lemma.yaml files.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use lemma_graph::config::Level;
@@ -70,12 +70,24 @@ pub(crate) struct LanguageServers {
     pub providers_file: Option<PathBuf>,
 }
 
+/// The manifest to start from: `lemma.lm` when the default `lemma.yaml` is
+/// absent and it is there.
+fn entry_manifest(manifest: &Path) -> PathBuf {
+    let is_default = manifest == Path::new("lemma.yaml");
+    let language = manifest.with_file_name("lemma.lm");
+    if is_default && !manifest.exists() && language.exists() {
+        log::info!("reading lemma.lm: there is no lemma.yaml");
+        return language;
+    }
+    manifest.to_path_buf()
+}
+
 fn check(
     args: &CheckArgs,
     options: &CheckOptions,
     lsp: &LanguageServers,
 ) -> anyhow::Result<Report> {
-    let manifest = &args.manifest;
+    let manifest = &entry_manifest(&args.manifest);
     let mut references = args
         .anchors
         .then(|| CheckReferences::new(lsp.asks_daemon, lsp.providers_file.clone()));
