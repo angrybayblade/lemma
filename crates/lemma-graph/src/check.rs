@@ -315,7 +315,13 @@ fn evaluate_behaviors(
     let Some(mut evaluated) = evaluated else {
         return Ok((Vec::new(), Vec::new()));
     };
-    let date = crate::allowances::committer_date(&repos[SELF].checkouts[HEAD]);
+    // The newest commit read dates the check: a change's head, or, without
+    // a change, the newest of the repositories' commits, whether or not the
+    // workspace's own directory is a Git repository.
+    let date = repos
+        .values()
+        .filter_map(|repo| crate::allowances::committer_date(&repo.checkouts[HEAD]))
+        .max();
     let mut allowances = crate::allowances::Allowed::new(&evaluated.head.model, date);
     allowances.cover_cases(&evaluated.results, &mut evaluated.reports);
     findings.extend(crate::behaviors::findings(&evaluated.reports, level));

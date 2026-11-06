@@ -536,7 +536,7 @@ allow lemma.http.consumer_calls_removed_operation {
 
 - `when` is a rule body over the requirement's message variables. It selects the findings the allowance covers.
 - An allowance never hides a finding. A covered finding is reported as **allowed**, with the reason, and does not fail the check.
-- `until` is compared with the head commit's committer date, never the clock, so the same commit always gives the same answer. Past it, the findings count again and the allowance is reported as expired.
+- `until` is compared with the committer date of the newest commit the check reads, a change's head when there is one, never the clock, so the same commits always give the same answer. Past it, the findings count again and the allowance is reported as expired.
 - An allowance that covers no finding is reported, so stale allowances get removed, where covering nothing means something: for a behavior that ran, since a behavior runs whole. A grammar's requirements are evaluated only over what a change touches, and `lemma check` without a change evaluates them for little or nothing, so an allowance for one is never reported as unused.
 - An allowance's variables are its requirement's message and `at` variables, or a behavior's parameters and loop variables, so `allow worker.forwards_upstream_retriable { when: flag == false }` covers that behavior's `flag=false` cases. A grammar's findings carry their values as text; those of `Int` and `Bool` variables are read as such.
 - `lemma check` applies allowances to behaviors' cases and to its grammar's findings, and `lemma verify` to the findings of a `.lm` grammar.

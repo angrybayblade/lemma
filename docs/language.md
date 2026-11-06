@@ -127,7 +127,7 @@ allow lemma.http.consumer_calls_removed_operation {
 }
 ```
 
-`when` reads the requirement's message variables. A covered finding is reported as allowed, with the reason, and is informational. `until` is compared with the head commit's committer date, so the same commit always gives the same answer; past it, the findings count again and the allowance is reported as expired. An allowance for a behavior that ran and covered none of its cases is reported, so stale ones get removed; requirements are evaluated only over what a change touches, so allowances for them are not.
+`when` reads the requirement's message variables. A covered finding is reported as allowed, with the reason, and is informational. `until` is compared with the committer date of the newest commit the check reads (a change's head), never the clock, so the same commits always give the same answer; past it, the findings count again and the allowance is reported as expired. An allowance for a behavior that ran and covered none of its cases is reported, so stale ones get removed; requirements are evaluated only over what a change touches, so allowances for them are not.
 
 ## Behaviors and checkers
 
