@@ -278,6 +278,9 @@ fn focus<'a>(
 fn load_grammar(
     manifest: &Manifest,
 ) -> Result<(CompiledGrammar, Option<allowances::Program>), VerifyError> {
+    if let Some(lowered) = &manifest.lowered {
+        return Ok((lemma_grammar::compile(lowered)?, None));
+    }
     if let Some(path) = manifest
         .grammar
         .as_ref()
