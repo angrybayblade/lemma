@@ -307,13 +307,7 @@ pub(crate) fn index_summary(
     };
     writeln!(out, "revision {revision}{dirty}")?;
     export_counts(out, exports)?;
-    if !summary.files_with_syntax_errors.is_empty() {
-        writeln!(
-            out,
-            "{} files had syntax errors; some of their symbols may be missing",
-            summary.files_with_syntax_errors.len()
-        )?;
-    }
+    unparsed_files(out, &summary.files_with_syntax_errors)?;
     for path in &summary.unreadable_files {
         writeln!(out, "skipped {path}: not valid UTF-8")?;
     }
@@ -447,6 +441,39 @@ fn print_provider_order(out: &mut dyn Write, registry: &ProviderRegistry) -> io:
     Ok(())
 }
 
+/// How many unparsed files to name.
+const NAMED_UNPARSED_FILES: usize = 5;
+
+/// The files Tree-sitter could not parse whole, whose symbols after the
+/// failure may be missing: how many, how many of them are tests, and the
+/// first few others by name, since those are where missing symbols
+/// matter. Valid code can fail too, where the grammar lags the language.
+fn unparsed_files(out: &mut dyn Write, files: &[String]) -> io::Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let (tests, code): (Vec<&String>, Vec<&String>) = files
+        .iter()
+        .partition(|path| lemma_http::is_test_file(path));
+    let of_which = if tests.is_empty() {
+        String::new()
+    } else {
+        format!(" ({} of them tests)", tests.len())
+    };
+    writeln!(
+        out,
+        "{} files could not be parsed whole{of_which}; symbols past the failure may be missing",
+        files.len()
+    )?;
+    for path in code.iter().take(NAMED_UNPARSED_FILES) {
+        writeln!(out, "  {path}")?;
+    }
+    if code.len() > NAMED_UNPARSED_FILES || !tests.is_empty() {
+        writeln!(out, "  (--json lists them all as files_with_syntax_errors)")?;
+    }
+    Ok(())
+}
+
 /// A provider installed where `PATH` does not reach, and the fix.
 fn off_path_status(path: &Path) -> String {
     let directory = path.parent().unwrap_or(path);
@@ -496,4 +523,27 @@ fn display_position(position: Position) -> String {
 fn print_json(out: &mut dyn Write, value: &impl Serialize) -> io::Result<()> {
     serde_json::to_writer_pretty(&mut *out, value)?;
     writeln!(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unparsed_files_name_code_before_tests() {
+        let files = [
+            "src/a.test.ts".to_owned(),
+            "src/db.ts".to_owned(),
+            "src/__tests__/b.ts".to_owned(),
+        ];
+        let mut printed = Vec::new();
+
+        unparsed_files(&mut printed, &files).unwrap();
+
+        assert_eq!(
+            String::from_utf8(printed).unwrap(),
+            "3 files could not be parsed whole (2 of them tests); symbols past the failure \
+             may be missing\n  src/db.ts\n  (--json lists them all as files_with_syntax_errors)\n"
+        );
+    }
 }
