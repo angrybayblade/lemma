@@ -308,18 +308,12 @@ impl Program {
             .values()
             .map(|module| (module.name.clone(), module.repository.clone()))
             .collect();
-        let roots: BTreeMap<String, String> = self
-            .checkouts
-            .iter()
-            .map(|(name, checkout)| (name.clone(), checkout.root.display().to_string()))
-            .collect();
         let mut world = CheckWorld {
             facts: StatedFacts::new(model, other),
             encoder: Encoder::new(model, repositories),
             store,
             checkouts: &self.checkouts,
             places: BTreeMap::new(),
-            roots: &roots,
         };
         let main = selected_check(&self.checked, selected)?;
         Ok(eval::run_check(model, main, &mut world))
@@ -336,10 +330,26 @@ struct CheckWorld<'w> {
     /// needs it: a working directory's costs a `git status` and a digest
     /// of each changed file, which a check without checkers never pays.
     places: BTreeMap<String, Place>,
-    roots: &'w BTreeMap<String, String>,
 }
 
 impl CheckWorld<'_> {
+    /// Where each repository a checker reads, and its own, has its files at
+    /// the snapshot checked: a worktree for one read at a commit, so the
+    /// checker sees the code it is checking, not the clone's working tree.
+    fn roots(&mut self, read: &[String], own: &str) -> Result<BTreeMap<String, String>, String> {
+        let mut roots = BTreeMap::new();
+        for name in read.iter().map(String::as_str).chain([own]) {
+            let Some(checkout) = self.checkouts.get(name) else {
+                return Err(format!(
+                    "repository `{name}`, which the checker reads, is not loaded"
+                ));
+            };
+            let files = self.store.files_of(checkout)?;
+            roots.insert(name.to_owned(), files.display().to_string());
+        }
+        Ok(roots)
+    }
+
     /// Where repository `name` is read, and the state of its code.
     fn place(&mut self, name: &str) -> Option<Place> {
         if let Some(found) = self.places.get(name) {
@@ -380,19 +390,23 @@ impl World for CheckWorld<'_> {
             checker.reads.clone()
         };
         let reads = read
-            .into_iter()
+            .iter()
             .map(|name| {
-                let state = self.place(&name).and_then(|place| place.state);
-                (name, state)
+                let state = self.place(name).and_then(|place| place.state);
+                (name.clone(), state)
             })
             .collect();
+        let roots = match self.roots(&read, &checker.repository) {
+            Ok(roots) => roots,
+            Err(why) => return eval::Evidence::Unavailable(why),
+        };
         self.store.demand(&Request {
             checker,
             case: demand.case,
             arguments: serde_json::Value::Object(arguments),
             reads,
             place: &place,
-            roots: self.roots,
+            roots: &roots,
         })
     }
 }

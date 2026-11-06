@@ -70,8 +70,9 @@ pub(crate) struct Request<'r> {
     pub(crate) reads: BTreeMap<String, Option<String>>,
     /// The checker's own repository, where it runs.
     pub(crate) place: &'r Place,
-    /// Where each repository is checked out, which the checker is told but
-    /// the key leaves out, so evidence holds on any machine.
+    /// Where each repository the checker reads has its files at the
+    /// snapshot checked, which the checker is told but the key leaves out,
+    /// so evidence holds on any machine.
     pub(crate) roots: &'r BTreeMap<String, String>,
 }
 
@@ -83,6 +84,14 @@ impl Store {
             cache: cache.to_path_buf(),
             may_run,
         }
+    }
+
+    /// Where a checkout's files are: the clone for a working directory, a
+    /// worktree in the cache for a commit.
+    pub(crate) fn files_of(&self, checkout: &Checkout) -> Result<PathBuf, String> {
+        checkout
+            .worktree(&self.cache)
+            .map_err(|error| error.to_string())
     }
 
     /// The evidence for `request`: stored evidence with an equal key, or
