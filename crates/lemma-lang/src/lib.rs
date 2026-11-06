@@ -25,6 +25,10 @@ pub use diagnostic::{Diagnostic, Severity};
 pub use load::{Repository, RepositorySource, SourceError, Sources};
 pub use span::{LineIndex, Position, Span};
 
+/// The version of the language this crate implements, which a workspace's
+/// `language` names.
+pub const LANGUAGE_VERSION: &str = "0.2";
+
 /// Loads the program whose entry module is `entry_path` in the entry
 /// repository, and checks it.
 pub fn check_program(sources: &mut dyn Sources, entry_path: &str) -> Checked {
