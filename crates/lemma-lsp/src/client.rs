@@ -1,9 +1,9 @@
 //! Running a language server process and exchanging requests with it.
 
 use std::collections::HashMap;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -154,7 +154,9 @@ impl LspClient {
             .map_err(LspError::Thread)?;
 
         let params = initialize_params(root_uri, root_name, config.initialization_options.clone());
-        let initialized = connection.request::<Initialize>(params, config.request_timeout)?;
+        let initialized = connection
+            .request::<Initialize>(params, config.request_timeout)
+            .map_err(|error| process.explain_failed_start(error))?;
         connection.notify::<Initialized>(InitializedParams {})?;
 
         let server_info = initialized.server_info;
@@ -258,7 +260,18 @@ impl LspClient {
 /// The child process, killed when dropped so a failed start never leaks it.
 struct ServerProcess {
     child: Child,
+    /// The end of what it writes to its error output.
+    said: Arc<Mutex<Vec<u8>>>,
+    /// Told when its error output has been read to the end.
+    said_all: Option<mpsc::Receiver<()>>,
 }
+
+/// How much of a server's error output is kept to explain a failed start.
+const KEPT_ERROR_OUTPUT_BYTES: usize = 4096;
+
+/// How long a server that stopped answering while starting is given to
+/// finish exiting and writing why.
+const EXIT_GRACE: Duration = Duration::from_secs(1);
 
 impl ServerProcess {
     fn spawn(config: &LaunchConfig) -> Result<Self, LspError> {
@@ -268,7 +281,7 @@ impl ServerProcess {
             .current_dir(&config.root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         if let Some(path) = &config.path {
             command.env("PATH", path);
         }
@@ -276,11 +289,39 @@ impl ServerProcess {
         // processes it starts as well.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
-        let child = command.spawn().map_err(|source| LspError::Spawn {
+        let mut child = command.spawn().map_err(|source| LspError::Spawn {
             command: config.command.display().to_string(),
             source,
         })?;
-        Ok(Self { child })
+        let said = Arc::new(Mutex::new(Vec::new()));
+        let said_all = child
+            .stderr
+            .take()
+            .map(|stderr| keep_error_output(stderr, Arc::clone(&said)));
+        Ok(Self {
+            child,
+            said,
+            said_all,
+        })
+    }
+
+    /// `error`, from a server that stopped answering while starting, as
+    /// what the server said when it exited, if it said anything.
+    fn explain_failed_start(&mut self, error: LspError) -> LspError {
+        if !matches!(error, LspError::Closed | LspError::Write(_)) {
+            return error;
+        }
+        self.wait_for_exit(EXIT_GRACE);
+        // An exited server's output may not all be read yet. Its children
+        // can hold the output open, so the wait is bounded.
+        if let Some(said_all) = &self.said_all {
+            let _ = said_all.recv_timeout(EXIT_GRACE);
+        }
+        let said = String::from_utf8_lossy(&lock(&self.said)).trim().to_owned();
+        if said.is_empty() {
+            return error;
+        }
+        LspError::Exited { said }
     }
 
     fn take_pipes(&mut self) -> Result<(ChildStdin, ChildStdout), LspError> {
@@ -298,6 +339,32 @@ impl ServerProcess {
             thread::sleep(Duration::from_millis(20));
         }
     }
+}
+
+/// Reads a server's error output until it closes, keeping the end of it;
+/// the receiver is told when it has closed. Always read, so a server
+/// writing much there never blocks on a full pipe. Without a thread to
+/// read it, nothing is kept.
+fn keep_error_output(mut stderr: ChildStderr, said: Arc<Mutex<Vec<u8>>>) -> mpsc::Receiver<()> {
+    let (closed, said_all) = mpsc::channel();
+    let reader = thread::Builder::new()
+        .name("lsp-stderr".to_owned())
+        .spawn(move || {
+            let mut buffer = [0u8; 1024];
+            while let Ok(count) = stderr.read(&mut buffer) {
+                if count == 0 {
+                    break;
+                }
+                let mut kept = lock(&said);
+                kept.extend_from_slice(&buffer[..count]);
+                let excess = kept.len().saturating_sub(KEPT_ERROR_OUTPUT_BYTES);
+                kept.drain(..excess);
+            }
+            let _ = closed.send(());
+        });
+    // A server whose error output is not read can still answer.
+    drop(reader);
+    said_all
 }
 
 impl Drop for ServerProcess {
@@ -554,18 +621,38 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn a_server_runs_with_the_path_it_is_given() {
-        let config = LaunchConfig {
+    fn shell(script: &str) -> LaunchConfig {
+        LaunchConfig {
             command: PathBuf::from("/bin/sh"),
             path: Some(std::ffi::OsString::from("/opt/node/bin:/usr/bin:/bin")),
-            args: vec!["-c".to_owned(), "printf %s \"$PATH\"".to_owned()],
+            args: vec!["-c".to_owned(), script.to_owned()],
             root: std::env::temp_dir(),
             initialization_options: None,
             settings: Value::Null,
             request_timeout: Duration::from_secs(5),
             ready_messages: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_server_that_exits_while_starting_is_reported_with_what_it_said() {
+        let config =
+            shell("echo \"/usr/bin/env: 'node': No such file or directory\" >&2; exit 127");
+
+        let started = LspClient::start(&config);
+
+        let Err(LspError::Exited { said }) = started else {
+            panic!(
+                "expected the server's exit to be explained, got {:?}",
+                started.err()
+            );
         };
+        assert_eq!(said, "/usr/bin/env: 'node': No such file or directory");
+    }
+
+    #[test]
+    fn a_server_runs_with_the_path_it_is_given() {
+        let config = shell("printf %s \"$PATH\"");
         let mut process = ServerProcess::spawn(&config).unwrap();
         let (_, mut stdout) = process.take_pipes().unwrap();
 
