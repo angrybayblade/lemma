@@ -8,3 +8,6 @@ out/**/*.map
 node_modules/.bin/**
 *.vsix
 .vscode/**
+test/**
+out-test/**
+.vscode-test/**
