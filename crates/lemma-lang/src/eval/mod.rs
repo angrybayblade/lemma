@@ -6,6 +6,7 @@
 //! in answers. Iteration is sorted, and nothing reads a clock, so the same
 //! facts and evidence give the same outcome.
 
+mod allow;
 mod datum;
 mod facts;
 mod run;
@@ -13,6 +14,7 @@ mod run;
 #[cfg(test)]
 mod tests;
 
+pub use allow::{Allowances, Values};
 pub use datum::{Absence, Datum, Evidence, FactDatum, Truth};
 pub use facts::{Facts, Row, StatedFacts};
 pub use run::{run_behavior, run_check};
