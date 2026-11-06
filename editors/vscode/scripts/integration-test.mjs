@@ -88,7 +88,7 @@ function lemmaBinary() {
   const targetDirectory = process.env.CARGO_TARGET_DIR || join(repository, 'target')
   const binary = process.env.LM || join(targetDirectory, 'release', 'lm')
   if (!isExecutable(binary)) {
-    fail(`no lm binary at ${binary}; run \`cargo build --release -p lemma-lm\` or set LM`)
+    fail(`no lm binary at ${binary}; run \`cargo build --release -p lemma-cli --bin lm\` or set LM`)
   }
   return binary
 }

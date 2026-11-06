@@ -1,6 +1,6 @@
 [package]
 name = "lemma-lm"
-description = "The `lm` command: check, format and convert `.lm` modules, and serve them to editors."
+description = "The `lm` command's implementation: check, format and convert `.lm` modules, and serve them to editors."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,10 +17,6 @@ lemma-lang.workspace = true
 lemma-lang-server.workspace = true
 log.workspace = true
 serde_json.workspace = true
-
-[[bin]]
-name = "lm"
-path = "src/main.rs"
 
 [dev-dependencies]
 tempfile.workspace = true

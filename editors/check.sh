@@ -100,8 +100,8 @@ find_lm() {
     echo "No lm binary: set LM, or install cargo to build one."
     return 1
   fi
-  echo "Building the language server: cargo build --release -p lemma-lm"
-  cargo build --release --quiet --manifest-path "$repository/Cargo.toml" -p lemma-lm
+  echo "Building the language server: cargo build --release -p lemma-cli --bin lm"
+  cargo build --release --quiet --manifest-path "$repository/Cargo.toml" -p lemma-cli --bin lm
   lm="${CARGO_TARGET_DIR:-$repository/target}/release/lm"
 }
 

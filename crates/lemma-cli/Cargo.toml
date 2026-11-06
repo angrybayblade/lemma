@@ -1,6 +1,6 @@
 [package]
 name = "lemma-cli"
-description = "Command-line interface for Lemma."
+description = "Lemma's commands: `lemma`, and `lm` for `.lm` modules."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,6 +22,7 @@ lemma-souffle.workspace = true
 lemma-store.workspace = true
 lemma-graph.workspace = true
 lemma-lang.workspace = true
+lemma-lm.workspace = true
 lemma-http.workspace = true
 lemma-verify.workspace = true
 log.workspace = true
@@ -33,6 +34,10 @@ toml.workspace = true
 [[bin]]
 name = "lemma"
 path = "src/main.rs"
+
+[[bin]]
+name = "lm"
+path = "src/bin/lm.rs"
 
 [dev-dependencies]
 tempfile.workspace = true

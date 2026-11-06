@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh
 # add LEMMA_SKILLS=1 before `sh` to also install the agent skills
 ```
 
-Or from source: `cargo install --path crates/lemma-cli --locked`, and `crates/lemma-lm` for `lm`, the `.lm` command (Rust 1.85+). Details in [Onboarding](docs/onboarding.md#1-install).
+Or from source: `cargo install --path crates/lemma-cli --locked`, which installs `lemma` and `lm`, the command for `.lm` modules (Rust 1.85+). Details in [Onboarding](docs/onboarding.md#1-install).
 
 ## Quick start
 

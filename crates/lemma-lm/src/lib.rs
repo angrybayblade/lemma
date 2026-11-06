@@ -2,7 +2,9 @@
 //! converts a `lemma.yaml` into one, and serves them to editors. Running
 //! what modules declare (checks, verification, behaviors) is `lemma`'s.
 //!
-//! Every command runs in this process; none needs Lemma's daemon or index.
+//! The `lm` binary is built by `lemma-cli`, beside `lemma`, and calls
+//! [`run`]. Every command runs in its process; none needs Lemma's daemon or
+//! index.
 
 mod check;
 mod cli;
@@ -17,7 +19,8 @@ use lemma_graph::repos::cache_directory;
 
 use crate::cli::{Cli, Command};
 
-fn main() -> ExitCode {
+/// Runs `lm` with the process's arguments; its exit code.
+pub fn run() -> ExitCode {
     let cli = Cli::parse();
     logging::init(cli.logging);
     log::info!("lm {}", env!("CARGO_PKG_VERSION"));

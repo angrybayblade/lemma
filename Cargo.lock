@@ -591,6 +591,7 @@ dependencies = [
  "lemma-http",
  "lemma-index",
  "lemma-lang",
+ "lemma-lm",
  "lemma-logic",
  "lemma-model",
  "lemma-providers",
