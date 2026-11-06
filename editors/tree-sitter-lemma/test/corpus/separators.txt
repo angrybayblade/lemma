@@ -412,6 +412,44 @@ let typed: Fact<Link,> = key
     value: (identifier)))
 
 ================================================================================
+A block comment may hold a newline between a header and its body
+================================================================================
+
+fn f(): Int /* a
+   b */ {
+    return 1
+}
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameters)
+    return_type: (named_type
+      name: (identifier))
+    (comment)
+    body: (block
+      (return_statement
+        value: (integer)))))
+
+================================================================================
+A newline after the colon of a type continues, as spec 13 says
+================================================================================
+
+let x:
+    Int = 1
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    type: (named_type
+      name: (identifier))
+    value: (integer)))
+
+================================================================================
 A graph row starting with a parenthesis is a tuple of any length
 ================================================================================
 
