@@ -44,7 +44,7 @@ relations:
     sources: [syntax]
   client_parameter:
     args: [Text]                       # client
-    attributes: { method: Text, path: Text, name: Text, location: Text }
+    attributes: { method: Text, path: Text, name: Text, location: Text, file: Text, line: Number }
     sources: [spec]
   calls_path:
     args: [Text]                       # consumer
@@ -224,9 +224,9 @@ requirements:
     explain: "{c} calls {op}, whose request field `{fld}` changed; its code never names `{leaf}` ({f}:{l})"
 
   client_declares_removed_parameter:
-    when: client_parameter(cl, m, p, n, loc), operation@base(_, op, m, p), removed_parameter(op, n, loc)
+    when: client_parameter(cl, m, p, n, loc, f, l), operation@base(_, op, m, p), removed_parameter(op, n, loc)
     severity: error
-    explain: "{cl} still declares {loc} parameter `{n}` on {op}, which the service removed"
+    explain: "{cl} still declares {loc} parameter `{n}` on {op}, which the service removed ({f}:{l})"
 
   client_calls_removed_operation:
     when: client_operation(cl, ch, m, p, f, l), operation@base(_, op, m, p), removed_operation(op)
