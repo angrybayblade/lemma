@@ -1,6 +1,6 @@
 # The `.lm` grammar and verification semantics
 
-Captured: 2026-11-05. Revised: 2026-11-06, draft 0.2. Status: **proposal**. This records the language design, worked through a platform example whose services are named `functions`, `worker` and `gateway`. There is no parser, standard library, checker protocol or behavior evaluation yet. `lemma.yaml` and grammar YAML remain the implemented surface. [Changes from draft 0.1](#16-changes-from-draft-01) lists what this revision tightened.
+Captured: 2026-11-05. Revised: 2026-11-06, draft 0.2. Status: **implemented**, both phases of [section 15](#15-implementation-boundary-and-remaining-work); that section lists what is left. This records the language design, worked through a platform example whose services are named `functions`, `worker` and `gateway`. `lemma.yaml` and grammar YAML keep working beside it. [Changes from draft 0.1](#16-changes-from-draft-01) lists what this revision tightened.
 
 The intended consumer is an AI coding agent. Lemma should give the agent task-specific context, discover technical obligations affected by a change, and return evidence tied to particular input snapshots. The `.lm` surface combines configuration, reusable modules, software declarations, typed relationships, derived graphs, requirements, and the checkers that produce evidence for them.
 
@@ -536,7 +536,9 @@ allow lemma.http.consumer_calls_removed_operation {
 - `when` is a rule body over the requirement's message variables. It selects the findings the allowance covers.
 - An allowance never hides a finding. A covered finding is reported as **allowed**, with the reason, and does not fail the check.
 - `until` is compared with the head commit's committer date, never the clock, so the same commit always gives the same answer. Past it, the findings count again and the allowance is reported as expired.
-- An allowance that covers no finding is reported, so stale allowances get removed.
+- An allowance that covers no finding is reported, so stale allowances get removed. Only a check of the whole system (`lemma check` without a change) reports these: a change-driven run reads only what the change touches, so most allowances rightly cover nothing in it.
+- An allowance's variables are its requirement's message and `at` variables, or a behavior's parameters and loop variables, so `allow worker.forwards_upstream_retriable { when: flag == false }` covers that behavior's `flag=false` cases. A grammar's findings carry their values as text; those of `Int` and `Bool` variables are read as such.
+- `lemma check` applies allowances to behaviors' cases and to its grammar's findings, and `lemma verify` to the findings of a `.lm` grammar.
 
 ## 9. Behaviors
 
@@ -602,9 +604,13 @@ behavior forwards_flag(handler: Operation, link: Fact<Link>, field: Text) {
 
 A parameterised behavior runs from a check with arguments: `run forwards_flag(handler: ..., link: ..., field: "retriable")`. Each distinct argument set is a separate obligation, and its identity includes the arguments. Behaviors do not call behaviors in v0.2; shared logic goes in functions and parameterised behaviors. A placeholder body runs no assertion, so it is unknown, never evidence that a property holds.
 
+### What a behavior reads
+
+A behavior reads stated facts: graphs written in modules, the relations they make up, and rules over them, evaluated bottom-up stratum by stratum. Facts Lemma reads from code (the standard library's `lemma.http` relations) and provided graphs are not available to behaviors yet, so those relations are incompletely covered: a lookup that finds nothing is unknown rather than false, and a loop over them makes the behavior at best unknown. Iteration over facts is in the order of their values' text.
+
 ### Re-running
 
-Under a change, a behavior runs again when anything it read in its last evaluation changed: graph lookups (including lookups that found nothing), iterated domains, coverage, and its evidence keys. Otherwise its stored outcome is reused.
+A behavior runs again on every check; only evidence is kept (section 10). Evaluation is pure and cheap given its facts and evidence, so when nothing a behavior read changed, its evidence keys are equal, its kept evidence is reused, and it reaches the outcome it reached before. Keeping outcomes themselves would only save the evaluation.
 
 ## 10. Functions and checkers
 
@@ -652,14 +658,52 @@ export checker replay_setup_error(
 | `cache` | `false` for a command that depends on anything else, such as a network service. Its evidence is never reused |
 
 **Protocol.** It mirrors [adapters](../docs/adapters.md).
-- **Running:** Lemma runs `command` in the repository at the snapshot, in a worktree when the commit is not checked out.
-- **Inputs:** `LEMMA_INPUT` names a JSON file holding the arguments. Operations and facts are passed as their addresses plus their resolved bindings (symbol, file, line).
+- **Running:** Lemma runs `command` in `directory` of the checker's repository at the snapshot: the clone itself for a working directory, a worktree for a commit. `setup` runs first, once per state of that repository's code. `timeout_ms` defaults to ten minutes, `setup`'s to twenty.
+- **Environment:** `env`, plus `LEMMA_INPUT`, `LEMMA_OUTPUT`, `LEMMA_ROOT` (the checkout it runs in) and `LEMMA_CASE` (the demanding case's identity).
+- **Inputs:** `LEMMA_INPUT` names a JSON file (below).
 - **Output:** the command writes to `LEMMA_OUTPUT` either `{ "observed": <T>, "artifacts": [...], "toolchain": {...}, "coverage": {...} }` or `{ "unavailable": "<reason>" }`.
-- **Failure:** a non-zero exit, a timeout, or output that is not a `T` makes the evidence unavailable.
+- **Failure:** a non-zero exit, a timeout, no output, or output that is not a `T` makes the evidence unavailable, with the reason.
 
-**Evidence** is the value plus its provenance. The provenance records the checker's address and declaration digest, the argument values, the trees of `reads` (with changed files' content for working trees), `env`, the reported toolchain, and the artifacts. Those form its key. A stored result with an equal key is reused without running.
+The input:
 
-**Stale** appears only when running is not allowed, under `--no-run` or for a checker not permitted on the machine. Then a behavior whose stored evidence key no longer matches is reported as stale, instead of running.
+```json
+{
+  "checker": "platform.checks.setup_replay::replay_setup_error",
+  "case": "platform.services.worker::forwards_upstream_retriable[flag=true]",
+  "repository": "platform",
+  "root": "/checkouts/platform",
+  "roots": { "platform": "/checkouts/platform", "functions": "/checkouts/functions" },
+  "arguments": {
+    "handler": {
+      "operation": "platform.services.worker::Worker.setup_trigger",
+      "name": "Worker.setup_trigger",
+      "client": false,
+      "service": "platform.services.worker::Worker",
+      "repository": "platform",
+      "implementation": { "path": "apps/worker/handlers/triggers.go:SetupTriggerHandler.ServeHTTP",
+                          "file": "apps/worker/handlers/triggers.go", "symbol": "SetupTriggerHandler.ServeHTTP" }
+    },
+    "through": {
+      "relation": "lemma.links::Link",
+      "values": { "caller": { "operation": "...", "...": "..." }, "provider": { "...": "..." } },
+      "exists": true,
+      "supports": ["stated in graph platform.services.worker::serverless_links"]
+    },
+    "upstream_retriable": true
+  }
+}
+```
+
+- An operation is its address, its name in its module, whether it is a client operation, its service, its repository and its `implementation`'s file and symbol (`null` when it has none). A discovered operation is `{ "operation": <key>, "discovered": true, "service", "repository" }`, a service `{ "service", "name", "repository" }`.
+- A fact is its relation, its values by column, whether it holds (`null` when unknown) and where it was stated.
+- Entities are their fields plus `"entity"`; booleans, integers, text, lists and records are themselves.
+- Arguments name repositories, never paths on the machine, since they are part of the evidence's key; `roots` gives each repository's checkout. A file is relative to its repository.
+
+**Evidence** is the value plus its provenance. Its key is a digest of the protocol version, the checker's address and declaration as written, the argument values, the state of the code in each repository of `reads` (its Git tree, plus a digest of each changed file for a working directory), and `env`. The reported toolchain, artifacts and coverage are kept with the evidence but are not part of the key, since they are only known after running. Kept evidence with an equal key is reused without running.
+
+**Where evidence is kept.** Each result is a JSON file named by its key under `evidence/` in Lemma's cache (`$XDG_CACHE_HOME/lemma` or `~/.cache/lemma`), holding the key, checker, case, arguments, the states read and the output. `evidence/cases/` keeps the key each case (a checker and its arguments) last ran with. A checker's own `unavailable` answer is kept; failures are not, so they run again. Nothing in a key names a path, so copying the files carries evidence to another machine; sharing it as [segments](12-segments-and-shared-storage.md) is future work. Files a checker leaves in a working directory change its state, and so its keys, unless Git ignores them. Code outside Git has no state to name, and its evidence is never reused.
+
+**Stale** appears only when running is not allowed, under `lemma check --no-run`. A case whose kept key differs from its current one is stale; one never run is unknown.
 
 The replay checker's contract:
 1. Exercise the bound worker handler.
@@ -684,7 +728,8 @@ check main {
 
 - `run` takes a requirement, written as its module and name joined by `.`, a module's `*` (every requirement in it), or a parameterised behavior with arguments. A trailing record overrides fields such as `severity`. A module that `run` names is loaded. `allow` names its requirement the same way.
 - `skip` removes a requirement a `*` selected.
-- `lemma check` runs the entry module's `check main`, and `lemma check <name>` runs another. Without a `check main`, it runs every requirement of every loaded module, as `lemma verify` runs the whole grammar today.
+- `lemma check` runs the entry module's `check main`, and `lemma check --select <name>` runs another. Without a `check main`, it runs every requirement of every loaded module and every behavior without parameters, as `lemma verify` runs the whole grammar. `lemma check` always loads `lemma.http`, so its contract checks run unless a `check main` leaves them out: a `check main` that names only behaviors runs no HTTP contract check.
+- A `.lm` grammar for `lemma verify` follows the same rules.
 
 | Outcome | Meaning |
 | --- | --- |
@@ -705,7 +750,7 @@ The replay checker could not capture the response
     -> unknown
 ```
 
-The workspace's `config.level` decides what fails, extending today's levels:
+The workspace's `config.level`, or `lemma check --level`, decides what fails, extending today's levels:
 
 | Level | Error-severity requirement violated | Error-severity requirement unknown |
 | --- | --- | --- |
@@ -713,7 +758,7 @@ The workspace's `config.level` decides what fails, extending today's levels:
 | `check` | fails (exit 4) | reported |
 | `strict` | fails | fails |
 
-**With a change**, only findings the change introduced count. A finding counts when there is no equal finding (same requirement, same message variables) with the base evaluated as the head. Lemma evaluates the base only for requirements that produced findings at the head. It does not run checkers at the base just to compare: a behavior's violated case counts unless the base's evidence for the same case is already stored and shows the same violation. The change report also lists requirements and behaviors that were added, removed or changed between base and head, by address and body digest, so a deleted requirement shows up instead of disappearing.
+**With a change**, only findings the change introduced count. A finding counts when there is no equal finding (same requirement, same message variables) with the base evaluated as the head. Lemma evaluates the base only for requirements that produced findings at the head. It does not run checkers at the base just to compare: the base's program runs on kept evidence only, and a behavior's case that did not hold counts unless the base ended the same case the same way, with the same message. The change report also lists requirements and behaviors that were added, removed or changed between base and head, by address and body, so a deleted requirement shows up instead of disappearing.
 
 Every outcome is tied to a requirement, the input snapshots, the evidence scope and the checker versions. For the example, a satisfied outcome establishes forwarding for the two executed application-error cases. It does not establish that every execution forwards the flag. Whether the functions service classifies upstream failures as retriable is a separate behavior, and so is the worker's handling of a response that omits the flag. A stronger checker, such as static value flow or symbolic execution, can supply evidence under the same behavior, with its scope and assumptions visible.
 
@@ -779,7 +824,7 @@ The public handler is a separate operation because verifying propagation require
 
 ## 13. Lowering and the standard library
 
-The rule layer, links and requirements lower into the structures Lemma evaluates today. Behaviors, checkers and evidence are new.
+The rule layer, links and requirements lower into the structures Lemma evaluates today. Behaviors, checkers and evidence are new, and `lemma check` runs them itself (sections 9 to 11).
 
 | `.lm` | Today |
 | --- | --- |
@@ -794,19 +839,21 @@ The rule layer, links and requirements lower into the structures Lemma evaluates
 | `relation`, `rule`, `require` | grammar YAML `relations`, `rules`, `requirements` |
 | `@base`, `@head` | the same qualifiers |
 | `config.level` | `graph.level` |
-| `allow`, `previously` | new |
-| `behavior`, `checker`, `need` | new |
+| `previously` | an operation's `previously` in `lemma.yaml` |
+| `allow` | applied to findings by `lemma check` and `lemma verify` |
+| `behavior`, `checker`, `need` | run by `lemma check` |
 
 Standard library:
 
 | Module | Contents |
 | --- | --- |
-| `lemma.code` | Syntax facts: files, symbols, `mentions`, `imports`, `in_file`, `named` |
-| `lemma.http` | `operation`, parameters, request and response fields, routes, `calls_path`, `calls_client`, `client_operation`; providers `openapi`, `generated_client`, `inferred_links`, `adapter_command`; the rules and requirements of `grammars/http-contracts.yaml` |
-| `lemma.links` | `Link`; requirements `link_persists` and `schemas_agree`, today's link checks |
+| `lemma.http` | `operation`, parameters, request and response fields, routes, `calls_path`, `calls_client`, `client_operation`, and the syntax facts the rules read (`mentions`, `imports`, `in_file`, `named`); providers `openapi`, `generated_client`, `inferred_links`, `adapter`, `adapter_command`; the rules and requirements of `grammars/http-contracts.yaml` |
+| `lemma.links` | `Link`. `lemma check` checks each link for persistence and schema agreement in code of its own, not as requirements, so allowances do not name those checks yet |
 | `lemma.hono`, `lemma.fastapi` | Operation providers, today's built-in adapters |
 | `lemma.python`, `lemma.typescript`, `lemma.go`, `lemma.rust` | Resolution requests: `module` or `package`, `symbol`, `method`, `type` |
 | `lemma.json` | Schema sources: `document`, `command` |
+
+[The standard library's reference](../docs/standard-library.md) lists every module's functions, methods and declarations with their signatures; it is generated from the library, and a test keeps the two equal.
 
 `lemma.yaml` and grammar YAML keep working through the same lowering. `lemma lm convert` writes a `lemma.yaml` as a root module, so moving an existing configuration is mechanical.
 
@@ -815,7 +862,8 @@ How lowering for `lemma check` names things:
 - A repository's name is its root module's, so it is an identifier: converting `#payments-client` gives `repo payments_client`, and its external service becomes `#payments_client`.
 - A service that only groups services (no operations, providers or client of its own) is a container. Its fields pass down to the services inside it, and only those are lowered, named by their path joined with `/` (`Functions/serverless`).
 - `lemma.yaml` says an operation's role only by a link's direction, so conversion writes the caller of a link as a `client operation`, and lowering writes `sends`/`accepts` back as `request`/`response`.
-- A link to a discovered operation names it by its `operationId` (`Gateway.listUsers`); naming it by method and path (`Gateway["GET /users"]`) is reported until `lemma check` can resolve those.
+- A link to a discovered operation names it by its `operationId` (`Gateway.listUsers`) or by method and path (`Gateway["GET /users/{id}"]`). The latter lowers to the address `services.Gateway.GET /users/{}`, and `lemma check` finds the operation a service's `OpenAPI` documents declare for that method and path at each snapshot, path parameters compared whatever their names, with or without an `operationId`. Operations an adapter discovers are not linkable yet, by either name.
+- `previously: ["functions::Functions.serverless.register_webhook"]` lowers to `previously: [Functions/serverless.register_webhook]` on the operation. When a change's base has no operation by the new name, `lemma check` compares a link with the operation at its old name, so a rename does not make old disagreements look new. It applies to links; renames do not yet carry relation facts.
 - The standard library's `lemma.http` keeps the variable names of `grammars/http-contracts.yaml` (`c`, `op`, `f`, `l`), because `lemma check` reads a finding's values by those names. Declaring a finding's roles (`at:` and named roles) would remove that coupling.
 
 ## 14. Core grammar
@@ -959,25 +1007,39 @@ Implementation goes in two phases. Each is checked against something that alread
 1. **Lower what exists.** Build the lexer, a lossless parser (comments and layout kept, for a formatter and editor diagnostics), name resolution and type checking for everything except behaviors and checkers. Lower the result into today's manifest and grammar structures. Port `grammars/http-contracts.yaml` to `lemma.http` and the link checks to `lemma.links`. Convert the fixtures' and gate workspaces' `lemma.yaml` files with the converter. *Acceptance:* `lemma check` gives the same findings from `.lm` as from YAML on every gate (verify, mutations, recall, replay, fixtures, scale).
 2. **Behaviors and evidence.** Add `behavior`, `need`, `checker`, the evidence store and the four outcomes, with the replay checker as the first implementation. *Acceptance:* the worked example's behavior is violated on a worker that drops the flag, satisfied on one that forwards it, and unknown when the checker cannot run.
 
-**Status, 2026-11-06.** Phase 1 is implemented:
+**Status, 2026-11-06.** Both phases are implemented.
+
+Phase 1:
 
 - `crates/lemma-lang` parses modules with error recovery, loads programs across repositories, resolves names and type-checks them, and holds the standard library. Its formatter writes a module in the [canonical layout](#layout), keeping every comment, and checks that the result reads as the same tokens.
 - `lemma-grammar` lowers a program's relations, rules, graphs and requirements; `lemma.http` compiles to the same program as `grammars/http-contracts.yaml`, which a test requires.
-- `lemma-graph` reads `lemma.lm` wherever `lemma check` reads `lemma.yaml`. On five fixture systems and a six-repository workspace, checks from converted modules match the YAML ones line for line.
+- `lemma-graph` reads `lemma.lm` wherever `lemma check` reads `lemma.yaml`. On five fixture systems and a six-repository workspace, checks from converted modules match the YAML ones line for line, and replaying 54 past changes from converted modules gives the reviewed findings.
+- `lemma check` runs a parent module's own requirements beside `lemma.http`'s, as its `check main` (or `--select`ed check) selects them, and a workspace naming a language version other than 0.2 is refused.
 - `lemma verify` takes a `.lm` grammar module (`grammar: contracts.lm`), whose `check main` selects requirements.
-- `lemma lm check`, `lemma lm fmt` and `lemma lm convert` are on the command line, and `lemma lm lsp` serves modules to editors: diagnostics as you type, hovers, definitions across repositories, symbols, completion and formatting.
+- `lemma lm check`, `lemma lm fmt` and `lemma lm convert` are on the command line, and `lemma lm lsp` serves modules to editors: diagnostics as you type (one check per burst of edits), hovers, definitions across repositories, symbols, completion and formatting.
 - `editors/` has a Tree-sitter grammar with highlighting, locals, folds and indents, and a VS Code extension that starts the server. Its checks parse every `.lm` file in the repository, and the two parsers agree on all of them.
 
-Allowances are checked but not yet applied.
+Phase 2:
 
-Still to specify:
+- `lemma-lang` lowers behaviors, functions and checkers to statements with resolved names, and runs them case by case with the outcomes of sections 5 and 9, over stated facts and rules (section 9) and evidence from a caller.
+- `lemma check` runs the selected behaviors, runs checkers with the protocol of section 10 and keeps their evidence; `--no-run` uses kept evidence only; `--level strict` fails on unknown error-severity behaviors; a change compares cases with the base's on kept evidence and lists requirements added, removed or changed.
+- Allowances are applied by `lemma check` and `lemma verify` (section 8).
+- *Acceptance:* `crates/lemma-graph/tests/behaviors.rs` runs the worked example's behavior with a replay checker: violated on a worker that drops the flag, satisfied on one that forwards it, unknown (failing only at `strict`) when the checker cannot run, and stale under `--no-run` once the worker's code changes.
 
-- Each standard-library function's signature, written with the standard library.
-- The JSON encoding of operations, facts and bindings in `LEMMA_INPUT`.
-- How a module declares the language versions it supports, beyond the workspace's `language`.
-- Where evidence is stored and how it moves between machines, likely as [segments](12-segments-and-shared-storage.md).
+Settled since draft 0.2 left them open:
 
-No `.lm` file in this document is an executable module in any repository, and no replay was run.
+- Standard-library signatures: [docs/standard-library.md](../docs/standard-library.md), generated from the library.
+- The `LEMMA_INPUT` encoding, and where evidence is kept: section 10.
+- Language versions: a module declares none; the entry workspace's `language` names the version of the whole program, and a Lemma that does not implement it refuses the program.
+- The formatter's layout: [section 1](#layout).
+
+Still open:
+
+- Facts read from code and provided graphs for behaviors, so a behavior can loop over `calls` with complete coverage.
+- Sharing evidence between machines as segments, and running checkers for the base when asked.
+- Linking operations an adapter discovers, and `previously` for relation facts.
+- Finding roles (`at:` with a `Site` from the standard library's relations) in place of the variable names `lemma check` reads.
+- Allowances for `lemma check`'s built-in link checks.
 
 ## 16. Changes from draft 0.1
 

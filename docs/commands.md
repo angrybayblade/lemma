@@ -217,18 +217,22 @@ Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
 ## `lemma check [lemma.yaml]`
 
-Checks a change against every repository composed by a parent `lemma.yaml`: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Checking links](check.md). The parent may be a `.lm` workspace module instead, and without an argument, `lemma.lm` is read when there is no `lemma.yaml`; a repository with only `lemma.lm` is read too. See [The `.lm` language](language.md).
+Checks a change against every repository composed by a parent `lemma.yaml`: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Checking links](check.md). The parent may be a `.lm` workspace module instead, and without an argument, `lemma.lm` is read when there is no `lemma.yaml`; a repository with only `lemma.lm` is read too. A module parent's own requirements run beside the HTTP contracts, its behaviors run (with their checkers), and its allowances apply, as its `check main` selects them. See [The `.lm` language](language.md).
 
 | Option | Meaning |
 | --- | --- |
 | `--change <name>` | The changed repository, as the parent's services name it (`#billing`), or `self`. Needs `--base` and `--head`. |
 | `--base <commit>`, `--head <commit>` | The commits before and with the change. |
-| `--level <level>` | `audit` (problems are warnings) or `check` (problems are errors). Overrides the graph's level. |
+| `--level <level>` | `audit` (problems are warnings), `check` (problems and violated behaviors are errors) or `strict` (error-severity behaviors that are unknown or stale are errors too). Overrides the graph's level. |
 | `--all` | List informational findings too, not just their count. |
+| `--select <check>` | Run this check of a parent `lemma.lm` instead of its `check main`. |
+| `--no-run` | Run no checkers: behaviors use the evidence already kept in Lemma's cache. A case whose inputs changed since is `stale`; one never run is `unknown`. |
 | `--engine <name>` | The rule engine for inferred links: `souffle` or `reference`. Default: Soufflé if installed. |
 | `--evaluation <how>` | `demand` (the default) reads only the consumer code inferred findings can rest on, asking for more callers as traces reach further operations; `full` reads everything. |
 | `--links` | Also list every link found: those declared, then the calls inference found from code to documented operations, by calling repository and the service called, with each group's count and first ten calls (`--all` lists every call). Inference then reads all consumer code, and, without `--change`, runs once at head without adding findings. With `--json`, the list is `link_list`: `declared` (`caller -> provider`) and `inferred` (`repository`, `location`, `operation`, `service`). |
 | `--anchors` | Also ask language servers who calls each link's caller anchor, and warn when nothing calls an anchored method while a sibling method is called. Uses the running daemon's warm servers, or starts its own without one. |
+
+Each behavior is printed as `behavior <identity>: <outcome> (<held> of <cases> cases held, evidence <n> (<kept> kept))`, and each case that did not hold is a finding naming the expression, its file and line, each operand's value and the `because` text. A finding an allowance covers ends with `(allowed: <reason>)` and is informational. With `--json`, `behaviors` lists every behavior with its cases (`identity`, `outcome`, `problem`, `introduced`, `allowed`) and the evidence each used (`checker`, `case`, `key`, `reused`, `unavailable`); `requirement_changes` lists what a change added, removed or changed; findings carry `allowed`.
 
 Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
