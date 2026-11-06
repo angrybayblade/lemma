@@ -1,0 +1,24 @@
+{
+  "name": "tree-sitter-lemma",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for Lemma's .lm language",
+  "private": true,
+  "keywords": [
+    "tree-sitter",
+    "parser",
+    "lemma"
+  ],
+  "files": [
+    "grammar.js",
+    "tree-sitter.json",
+    "src/**",
+    "queries/**"
+  ],
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "0.25.10"
+  }
+}

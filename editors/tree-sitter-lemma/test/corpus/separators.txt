@@ -1,0 +1,196 @@
+================================================================================
+Semicolons separate items, fields and statements
+================================================================================
+
+let a = 1; let b = 2;
+let c = { x: 1; y: 2; }
+fn f(): Int { let d = 1; return d }
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (integer))
+  (let_declaration
+    name: (identifier)
+    value: (integer))
+  (let_declaration
+    name: (identifier)
+    value: (record
+      (field
+        name: (identifier)
+        value: (integer))
+      (field
+        name: (identifier)
+        value: (integer))))
+  (function_declaration
+    name: (identifier)
+    parameters: (parameters)
+    return_type: (named_type
+      name: (identifier))
+    body: (block
+      (let_declaration
+        name: (identifier)
+        value: (integer))
+      (return_statement
+        value: (identifier)))))
+
+================================================================================
+Blank lines and comments between items
+================================================================================
+
+let a = 1 // trailing
+
+
+// own line
+/* block
+   comment */
+let b = 2
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (integer))
+  (comment)
+  (comment)
+  (comment)
+  (let_declaration
+    name: (identifier)
+    value: (integer)))
+
+================================================================================
+A newline after an operator, comma, colon, equals or arrow continues
+================================================================================
+
+let total = a +
+    b
+let named =
+    1
+let record = {
+    key:
+        "value"
+}
+graph links : Link {
+    Worker.call ->
+        Functions.setup
+}
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (binary_expression
+      left: (identifier)
+      right: (identifier)))
+  (let_declaration
+    name: (identifier)
+    value: (integer))
+  (let_declaration
+    name: (identifier)
+    value: (record
+      (field
+        name: (identifier)
+        value: (string
+          (string_content)))))
+  (graph_declaration
+    name: (identifier)
+    relation: (named_type
+      name: (identifier))
+    (graph_row
+      column: (member_expression
+        object: (identifier)
+        member: (identifier))
+      column: (member_expression
+        object: (identifier)
+        member: (identifier)))))
+
+================================================================================
+Newlines inside parentheses and brackets are whitespace
+================================================================================
+
+let a = f(
+    x
+    , y
+)
+let b = [
+    1
+    , 2
+]
+
+---
+
+(source_file
+  (let_declaration
+    name: (identifier)
+    value: (call_expression
+      function: (identifier)
+      arguments: (arguments
+        (identifier)
+        (identifier))))
+  (let_declaration
+    name: (identifier)
+    value: (list
+      (integer)
+      (integer))))
+
+================================================================================
+A because line continues the expect before it
+================================================================================
+
+behavior forwards {
+    expect a == b
+        because "one"
+    expect c
+        // a comment line does not end the statement
+        because "two"
+    expect d because "three"
+}
+
+---
+
+(source_file
+  (behavior_declaration
+    name: (identifier)
+    body: (block
+      (expect_statement
+        condition: (binary_expression
+          left: (identifier)
+          right: (identifier))
+        reason: (string
+          (string_content)))
+      (expect_statement
+        condition: (identifier)
+        (comment)
+        reason: (string
+          (string_content)))
+      (expect_statement
+        condition: (identifier)
+        reason: (string
+          (string_content))))))
+
+================================================================================
+A closing brace or the end of the file ends the last item
+================================================================================
+
+service Worker { index: { include: ["apps/worker"] } }
+let last = 1
+---
+
+(source_file
+  (service_declaration
+    name: (identifier)
+    (field
+      name: (identifier)
+      value: (record
+        (field
+          name: (identifier)
+          value: (list
+            (string
+              (string_content)))))))
+  (let_declaration
+    name: (identifier)
+    value: (integer)))

@@ -1,0 +1,377 @@
+; Highlights for Lemma's `.lm` language.
+;
+; Capture names follow nvim-treesitter. Where two patterns capture the same
+; node, the later one is the more specific and should win, as it does in
+; Neovim. See editors/README.md for using these queries in other editors.
+
+; Punctuation and operators
+
+[
+  "("
+  ")"
+  "["
+  "]"
+  "{"
+  "}"
+] @punctuation.bracket
+
+[
+  ","
+  "."
+  ":"
+  ";"
+] @punctuation.delimiter
+
+[
+  "=="
+  "!="
+  "<"
+  "<="
+  ">"
+  ">="
+  "+"
+  "-"
+  "*"
+  "/"
+  "%"
+  "!"
+  "&&"
+  "||"
+  "="
+  "->"
+  ":-"
+] @operator
+
+(type_arguments
+  [
+    "<"
+    ">"
+  ] @punctuation.bracket)
+
+(wildcard
+  "*" @character.special)
+
+(namespace_import
+  "*" @character.special)
+
+; Keywords. Contextual words are matched only where the parser read them as
+; keywords; `config.service` or a field called `check` is an identifier.
+
+[
+  "module"
+  "import"
+  "from"
+  "as"
+] @keyword.import
+
+"export" @keyword.modifier
+
+(reexport_declaration
+  "export" @keyword.import)
+
+"let" @keyword
+
+"fn" @keyword.function
+
+[
+  "if"
+  "else"
+] @keyword.conditional
+
+[
+  "for"
+  "in"
+] @keyword.repeat
+
+"return" @keyword.return
+
+[
+  "expect"
+  "because"
+] @keyword
+
+"need" @keyword.operator
+
+[
+  "entity"
+  "relation"
+  "type"
+] @keyword.type
+
+[
+  "workspace"
+  "repo"
+  "service"
+  "client"
+  "operation"
+  "graph"
+  "rule"
+  "require"
+  "allow"
+  "behavior"
+  "checker"
+  "check"
+  "run"
+  "skip"
+  "when"
+] @keyword
+
+; Literals
+
+(comment) @comment @spell
+
+(string) @string
+
+(escape_sequence) @string.escape
+
+(integer) @number
+
+[
+  (true)
+  (false)
+] @boolean
+
+(null) @constant.builtin
+
+(self) @variable.builtin
+
+(snapshot) @attribute
+
+; Interpolation in `message:` and `because` strings names rule variables.
+
+(interpolation
+  [
+    "{"
+    "}"
+  ] @punctuation.special)
+
+(interpolation
+  name: (identifier) @variable.parameter)
+
+(interpolation
+  member: (identifier) @property)
+
+; Names by convention: services, entities, relations and types are
+; UpperCamel. An uppercase name used as a value is one of those.
+
+([
+  (member_expression
+    object: (identifier) @type)
+  (snapshot_expression
+    object: (identifier) @type)
+  (index_expression
+    object: (identifier) @type)
+  (index_expression
+    index: (identifier) @type)
+  (graph_row
+    column: (identifier) @type)
+  (list
+    (identifier) @type)
+  (arguments
+    (identifier) @type)
+  (named_argument
+    value: (identifier) @type)
+  (field
+    value: (identifier) @type)
+  (let_declaration
+    value: (identifier) @type)
+  (binary_expression
+    left: (identifier) @type)
+  (binary_expression
+    right: (identifier) @type)
+  (for_statement
+    domain: (identifier) @type)
+  (import_name
+    name: (identifier) @type)
+  (import_name
+    alias: (identifier) @type)
+]
+  (#match? @type "^[A-Z]"))
+
+; Declarations
+
+(module_declaration
+  name: (qualified_name
+    (identifier) @module))
+
+(import_declaration
+  module: (qualified_name
+    (identifier) @module))
+
+(reexport_declaration
+  module: (qualified_name
+    (identifier) @module))
+
+(namespace_import
+  alias: (identifier) @module)
+
+(repo_declaration
+  name: (identifier) @module)
+
+(let_declaration
+  name: (identifier) @variable)
+
+[
+  (type_declaration
+    name: (identifier) @type.definition)
+  (entity_declaration
+    name: (identifier) @type.definition)
+  (relation_declaration
+    name: (identifier) @type.definition)
+  (service_declaration
+    name: (identifier) @type.definition)
+]
+
+(operation_declaration
+  name: (identifier) @function.method)
+
+[
+  (graph_declaration
+    name: (identifier) @function)
+  (rule_declaration
+    name: (identifier) @function)
+  (require_declaration
+    name: (identifier) @function)
+  (behavior_declaration
+    name: (identifier) @function)
+  (function_declaration
+    name: (identifier) @function)
+  (checker_declaration
+    name: (identifier) @function)
+  (check_declaration
+    name: (identifier) @function)
+]
+
+(parameter
+  name: (identifier) @variable.parameter)
+
+[
+  (field
+    name: (identifier) @property)
+  (typed_field
+    name: (identifier) @property)
+  (named_term
+    name: (identifier) @property)
+]
+
+(named_argument
+  name: (identifier) @variable.parameter)
+
+(member_expression
+  member: (identifier) @property)
+
+(for_statement
+  pattern: (identifier) @variable)
+
+(tuple_pattern
+  (identifier) @variable)
+
+; Types
+
+(named_type
+  name: (identifier) @type)
+
+((named_type
+  name: (identifier) @type.builtin)
+  (#any-of? @type.builtin
+    "Bool" "Int" "Text" "Json" "List" "Service" "Operation" "ClientOperation"
+    "Symbol" "Site" "Resolution" "Fact" "Evidence"))
+
+; Calls
+
+(call_expression
+  function: (identifier) @function.call)
+
+((call_expression
+  function: (identifier) @constructor)
+  (#match? @constructor "^[A-Z]"))
+
+(call_expression
+  function: (member_expression
+    member: (identifier) @function.method.call))
+
+; Requirement references: the module part, then the requirement's name.
+
+[
+  (run
+    requirement: (qualified_name
+      (identifier) @module
+      (identifier)))
+  (skip
+    requirement: (qualified_name
+      (identifier) @module
+      (identifier)))
+  (allow_declaration
+    requirement: (qualified_name
+      (identifier) @module
+      (identifier)))
+  (wildcard
+    module: (qualified_name
+      (identifier) @module))
+]
+
+[
+  (run
+    requirement: (qualified_name
+      (identifier) @function .))
+  (skip
+    requirement: (qualified_name
+      (identifier) @function .))
+  (allow_declaration
+    requirement: (qualified_name
+      (identifier) @function .))
+]
+
+; Enumerated fields take a bare name from a fixed set.
+
+((field
+  name: (identifier) @property
+  value: (identifier) @constant)
+  (#any-of? @property "severity" "level"))
+
+; Rules. A lowercase bare name in a term is a variable; an uppercase or
+; `self.` path is a constant (spec 13, section 7).
+
+(predicate
+  name: (qualified_name
+    (identifier) @module
+    (identifier)))
+
+(predicate
+  name: (qualified_name
+    (identifier) @function.call .))
+
+((predicate
+  name: (qualified_name
+    (identifier) @type .))
+  (#match? @type "^[A-Z]"))
+
+(predicate
+  negation: "!" @keyword.operator)
+
+(term
+  member: (identifier) @property)
+
+((term
+  root: (identifier) @type)
+  (#match? @type "^[A-Z]"))
+
+((term
+  root: (identifier) @variable.parameter)
+  (#match? @variable.parameter "^[a-z]"))
+
+((term
+  root: (identifier) @variable.parameter)
+  (#match? @variable.parameter "^_[A-Za-z0-9_]"))
+
+((term
+  root: (identifier) @variable.builtin)
+  (#eq? @variable.builtin "_"))
+
+; `at:` in a requirement names the variable holding the finding's site.
+
+(require_declaration
+  (field
+    name: (identifier) @property
+    value: (identifier) @variable.parameter)
+  (#eq? @property "at"))

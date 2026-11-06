@@ -1,0 +1,124 @@
+module platform.services.worker
+// <- keyword.import
+//              ^ module
+
+import * as go from lemma.go
+//     ^ character.special
+//          ^ module
+//                  ^ module
+
+export service Worker {
+// <- keyword.modifier
+//     ^ keyword
+//             ^ type.definition
+    client: http.generated_client("clients/functions")
+//  ^ property
+//               ^ function.method.call
+//                                 ^ string
+    client operation call_setup_webhook {
+//  ^ keyword
+//         ^ keyword
+//                   ^ function.method
+        sends: generated.type("SetupWebhookRequest")
+//      ^ property
+//                       ^ function.method.call
+    }
+}
+
+let service = config.service
+// <- keyword
+//  ^ variable
+//                   ^ property
+
+graph serverless_links : Link {
+// <- keyword
+//    ^ function
+//                       ^ type
+    Worker.call_setup_webhook -> Functions.serverless.setup_webhook
+//  ^ type
+//         ^ property
+//                            ^ operator
+//                               ^ type
+}
+
+rule removed_operation : Removed {
+// <- keyword
+//   ^ function
+//                       ^ type
+    (target, Worker) :- operation@base(operation: target), !Link(self.production, _), target.size > 1
+//   ^ variable.parameter
+//           ^ type
+//                   ^ operator
+//                      ^ function.call
+//                               ^ attribute
+//                                     ^ property
+//                                                ^ variable.parameter
+//                                                         ^ keyword.operator
+//                                                          ^ type
+//                                                               ^ variable.builtin
+//                                                                    ^ property
+//                                                                                ^ variable.builtin
+//                                                                                    ^ variable.parameter
+//                                                                                           ^ property
+//                                                                                                  ^ number
+}
+
+require removed_operation_called {
+// <- keyword
+//      ^ function
+    severity: error
+//  ^ property
+//            ^ constant
+    when: calls(consumer, operation, site), removed_operation(operation)
+//  ^ keyword
+//        ^ function.call
+//              ^ variable.parameter
+//                        ^ variable.parameter
+    at: site
+//  ^ property
+//      ^ variable.parameter
+    message: "{consumer} calls {operation.dispatch}, which was removed {{sic}}"
+//            ^ punctuation.special
+//             ^ variable.parameter
+//                       ^ string
+//                                        ^ property
+//                                                ^ punctuation.special
+//                                                                     ^ string.escape
+}
+
+export behavior forwards_upstream_retriable(link: Fact<Link>) {
+//     ^ keyword
+//              ^ function
+//                                          ^ variable.parameter
+//                                                ^ type.builtin
+//                                                    ^ punctuation.bracket
+    for flag in [true, false] {
+//  ^ keyword.repeat
+//           ^ keyword.repeat
+//               ^ boolean
+        let trace = need replay(handler: Worker.setup_trigger, upstream_retriable: flag)
+//                  ^ keyword.operator
+//                       ^ function.call
+//                              ^ variable.parameter
+        expect trace.http.body.retriable == null
+//      ^ keyword
+//                   ^ property
+//                                       ^ operator
+//                                          ^ constant.builtin
+            because "the worker passes on the flag"
+//          ^ keyword
+    }
+}
+
+check main {
+// <- keyword
+//    ^ function
+    run lemma.links.*
+//  ^ keyword
+//      ^ module
+//                  ^ character.special
+    skip lemma.http.consumer_sends_removed_parameter
+//  ^ keyword
+//             ^ module
+//                  ^ function
+}
