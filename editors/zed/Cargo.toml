@@ -1,0 +1,35 @@
+[package]
+name = "zed-lemma"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Zed extension for Lemma's .lm language: starts `lemma lm lsp`"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+zed_extension_api = "0.7.0"
+
+# Zed builds this crate for WebAssembly on its own, so it is a workspace of
+# its own rather than a member of the repository's. These lints repeat the
+# repository's workspace lints.
+[workspace]
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+dbg_macro = "deny"
+todo = "warn"
+excessive_nesting = "warn"
+allow_attributes_without_reason = "warn"

@@ -6,6 +6,8 @@ Syntax highlighting, parsing and a language server client for Lemma's `.lm` lang
 | --- | --- |
 | `tree-sitter-lemma/` | A Tree-sitter grammar with highlight, locals, fold and indent queries, for Neovim, Helix, Zed and anything else that loads Tree-sitter parsers |
 | `vscode/` | A VS Code extension: a TextMate grammar, language configuration and a client for the language server |
+| `zed/` | A Zed extension: the language's settings, its queries for Zed, and the code that starts the language server |
+| `neovim/`, `helix/` | The Neovim and Helix checks, which run each editor with the setup this README documents |
 | `fixture/` | The module the editor checks open: valid but for one requirement naming a predicate nothing declares, so the language server has one problem to report |
 | `check.sh` | Regenerates the parser, runs the grammar's tests, parses every example in spec 13 and every `.lm` file in the repository, and runs each editor's check |
 
@@ -156,21 +158,13 @@ Helix highlights a reference to a local definition with the scope its `@local.de
 
 ## Zed
 
-Zed loads languages from extensions. Make a development extension with an `extension.toml` that points at the grammar:
+`zed/` is a Zed extension. `extension.toml` names the grammar and the language server, and `languages/lemma/` holds the language's settings and the queries Zed reads: highlights, brackets, indents, the outline and the scopes that stop a quote auto-closing in strings and comments. Zed starts a language server only through extension code, so `src/lib.rs` runs `lemma lm lsp` with the `lemma` that `worktree.which` finds on the worktree's `PATH`.
 
-```toml
-id = "lemma"
-name = "Lemma"
-version = "0.1.0"
-schema_version = 1
+`languages/lemma/highlights.scm` is generated from the grammar's highlights by `zed/update-highlights.sh`, which renames the two captures Zed's themes name differently; run it after changing the grammar's highlights. Zed clones the grammar at the commit `rev` in `extension.toml` names, the last one that changed it. To try a grammar that is not committed and pushed yet, set `repository` to your checkout, `file:///path/to/lemma`, and `rev` to a local commit.
 
-[grammars.lemma]
-repository = "file:///path/to/lemma"
-rev = "<commit>"
-path = "editors/tree-sitter-lemma"
-```
+To install it, run **zed: install dev extension** and choose `editors/zed`. Zed builds the crate for `wasm32-wasip2` and compiles the grammar with its own wasi-sdk.
 
-Add `languages/lemma/config.toml` with `name = "Lemma"`, `grammar = "lemma"`, `path_suffixes = ["lm"]`, `line_comments = ["// "]` and `block_comment = ["/* ", " */"]`, copy `highlights.scm` into `languages/lemma/`, and install the folder with **zed: install dev extension**. Zed starts a language server only through extension code, so running `lemma lm lsp` takes a small `language_server_command` implementation in the extension's `src/lib.rs`.
+**Verified** without Zed: no Zed ran on this machine, so the extension has not been seen working in Zed itself. The crate builds for `wasm32-wasip2`, which Zed uses, and for `wasm32-wasip1`, and passes clippy. Every query compiles and runs with the Tree-sitter CLI over spec 13's examples and every `.lm` file in the repository. Once, by hand, the grammar was also compiled as Zed's extension builder compiles it, with wasi-sdk 34's clang and the same flags. The result loaded through Tree-sitter's WebAssembly store, the loader Zed uses (here from the tree-sitter 0.25 crate; Zed pins a later revision). It parsed the fixture without errors, the five queries compiled, and the keyword, declared names, rule variables and string got the captures they should. Re-run the automated part with `editors/check.sh zed`. It needs `rustup target add wasm32-wasip2` (or `wasm32-wasip1`) and skips the build without one.
 
 ## VS Code
 
@@ -218,7 +212,7 @@ Edit `tree-sitter-lemma/grammar.js` (and `src/scanner.c` for newlines and string
 editors/check.sh
 ```
 
-It regenerates `src/`, which is committed so editors can build the parser without the Tree-sitter CLI, and fails if any example in spec 13 or any `.lm` file in the repository (the standard library in `crates/lemma-lang/src/stdlib`, the parser's corpus) stops parsing. Commit the regenerated files with the grammar change. When the spec changes, update `test/corpus/spec.txt` to match its examples.
+It regenerates `src/`, which is committed so editors can build the parser without the Tree-sitter CLI, and fails if any example in spec 13 or any `.lm` file in the repository (the standard library in `crates/lemma-lang/src/stdlib`, the parser's corpus) stops parsing. Commit the regenerated files with the grammar change. When the spec changes, update `test/corpus/spec.txt` to match its examples. After changing `highlights.scm`, run `zed/update-highlights.sh`; `check.sh` fails until the Zed copy matches. The Zed extension can only pin a commit that already holds the grammar, so once a grammar change is committed, set `rev` in `zed/extension.toml` to that commit in a commit of its own; `check.sh` notes when the two differ.
 
 The grammar follows the parser in `crates/lemma-lang/src/syntax`. Where that parser reads a newline as a separator that cannot stand, as in `fn f(): Int` with its `{` on the next line, `let x` with `= 1` on the next, or an `if` condition continuing on a line that starts with `&&`, the grammar reports an error too. Error recovery keeps a declaration whole when only its `{` is on the next line, and ends a half-written line such as `let x` at its newline, so the next line still parses. A graph row starting with `(` is a tuple in both, so `(a) -> b` is an error.
 
