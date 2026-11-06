@@ -406,6 +406,7 @@ fn start(
     let session = ProviderSession::start(
         &provider.definition,
         &provider.executable,
+        provider.search_path.as_deref(),
         view.root,
         request_timeout,
     )

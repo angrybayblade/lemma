@@ -43,6 +43,11 @@ const RETRY_PAUSE: Duration = Duration::from_millis(500);
 pub struct LaunchConfig {
     /// Resolved path to the server executable.
     pub command: PathBuf,
+    /// The `PATH` the server runs with; this process's own when `None`.
+    /// A daemon starts servers for callers whose `PATH` may differ from its
+    /// own, and servers start interpreters by name (`#!/usr/bin/env node`),
+    /// so the server must see the `PATH` it was found on.
+    pub path: Option<std::ffi::OsString>,
     /// Arguments, such as `--stdio`.
     pub args: Vec<String>,
     /// Workspace root the server analyzes. Also its working directory.
@@ -264,6 +269,9 @@ impl ServerProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        if let Some(path) = &config.path {
+            command.env("PATH", path);
+        }
         // Its own process group, so pausing or stopping it reaches the
         // processes it starts as well.
         #[cfg(unix)]
@@ -537,5 +545,33 @@ fn client_capabilities() -> ClientCapabilities {
             ..WindowClientCapabilities::default()
         }),
         ..ClientCapabilities::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+
+    use super::*;
+
+    #[test]
+    fn a_server_runs_with_the_path_it_is_given() {
+        let config = LaunchConfig {
+            command: PathBuf::from("/bin/sh"),
+            path: Some(std::ffi::OsString::from("/opt/node/bin:/usr/bin:/bin")),
+            args: vec!["-c".to_owned(), "printf %s \"$PATH\"".to_owned()],
+            root: std::env::temp_dir(),
+            initialization_options: None,
+            settings: Value::Null,
+            request_timeout: Duration::from_secs(5),
+            ready_messages: Vec::new(),
+        };
+        let mut process = ServerProcess::spawn(&config).unwrap();
+        let (_, mut stdout) = process.take_pipes().unwrap();
+
+        let mut printed = String::new();
+        stdout.read_to_string(&mut printed).unwrap();
+
+        assert_eq!(printed, "/opt/node/bin:/usr/bin:/bin");
     }
 }
