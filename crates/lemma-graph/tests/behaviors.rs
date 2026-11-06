@@ -186,6 +186,7 @@ fn run(workspace: &Path, level: Level, run_checkers: bool) -> Report {
         evaluation: lemma_verify::Evaluation::Full,
         list_links: false,
         run_checkers,
+        select: None,
     };
     check(
         &workspace.join("platform/lemma.lm"),

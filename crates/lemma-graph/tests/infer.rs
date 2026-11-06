@@ -109,6 +109,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        select: None,
     };
 
     let report = check(
@@ -187,6 +188,7 @@ fn checks_of(workspace: &Path) -> Vec<(Severity, String)> {
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        select: None,
     };
     let report = check(
         &workspace.join("lemma.lm"),
@@ -245,5 +247,52 @@ fn a_check_main_selects_what_runs() {
                 "consumer_misses_new_required_field".to_owned()
             ),
         ]
+    );
+}
+
+#[test]
+fn select_runs_another_check_and_an_unknown_one_is_refused() {
+    let workspace = tempfile::tempdir().unwrap();
+    system_of_modules(
+        workspace.path(),
+        "\ncheck main {\n    run charges_are_called\n}\n\ncheck strict_http {\n    run lemma.http.*\n}\n",
+    );
+    let options = |select: &str| CheckOptions {
+        change: Some(Change {
+            repository: "#billing".to_owned(),
+            base: "HEAD~1".to_owned(),
+            head: Some("HEAD".to_owned()),
+        }),
+        level: Some(Level::Check),
+        cache: workspace.path().join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
+        run_checkers: true,
+        select: Some(select.to_owned()),
+    };
+    let entry = workspace.path().join("lemma.lm");
+
+    let report = check(&entry, &options("strict_http"), &ReferenceEngine, None).unwrap();
+    let unknown = check(&entry, &options("nightly"), &ReferenceEngine, None);
+
+    let checks: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.link.ends_with(" -> POST /v1/charges"))
+        .map(|finding| finding.check.as_str())
+        .collect();
+    assert_eq!(
+        checks,
+        [
+            "consumer_misses_new_required_field",
+            "consumer_uses_removed_response_field"
+        ]
+    );
+    assert!(
+        unknown
+            .unwrap_err()
+            .to_string()
+            .contains("no check `nightly`")
     );
 }

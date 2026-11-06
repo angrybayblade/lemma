@@ -23,7 +23,7 @@ use lemma_lang::syntax::ast::Snapshot;
 use self::encode::Encoder;
 use self::evidence::{Place, Request, Store};
 use crate::GraphError;
-use crate::check::{BASE, Finding, HEAD, Repo, SELF, Severity};
+use crate::check::{BASE, CheckOptions, Finding, HEAD, Repo, SELF, Severity};
 use crate::config::Level;
 use crate::lm::CheckoutSources;
 use crate::repos::Checkout;
@@ -136,10 +136,9 @@ pub(crate) struct Evaluated {
 pub(crate) fn run(
     manifest: &str,
     repos: &BTreeMap<String, Repo>,
-    cache: &Path,
-    has_change: bool,
-    may_run: bool,
+    options: &CheckOptions,
 ) -> Result<Option<Evaluated>, GraphError> {
+    let (cache, has_change) = (options.cache.as_path(), options.change.is_some());
     let Some(manifest) = parent_module(manifest, repos)? else {
         return Ok(None);
     };
@@ -168,10 +167,18 @@ pub(crate) fn run(
         }));
     }
     let base_model = base.as_ref().map(|base| &base.checked.model);
-    let results = head.run(&Store::new(cache, may_run), base_model);
-    let base_results = base
-        .as_ref()
-        .map(|base| base.run(&Store::new(cache, false), None));
+    let selected = options.select.as_deref();
+    let results = head.run(
+        &Store::new(cache, options.run_checkers),
+        base_model,
+        selected,
+    )?;
+    // The base may lack the check the head selects; it then runs them all.
+    let base_results = base.as_ref().map(|base| {
+        base.run(&Store::new(cache, false), None, selected)
+            .or_else(|_| base.run(&Store::new(cache, false), None, None))
+            .unwrap_or_default()
+    });
     let reports = results
         .iter()
         .map(|result| report(result, base_results.as_deref(), has_change, &head.checked))
@@ -191,8 +198,9 @@ pub(crate) fn run(
 pub(crate) fn program_grammar(
     root_file: &Path,
     repos: &BTreeMap<String, Repo>,
-    cache: &Path,
+    options: &CheckOptions,
 ) -> Result<Option<lemma_grammar::GrammarFile>, GraphError> {
+    let cache = options.cache.as_path();
     let manifest = root_file.file_name().map_or_else(
         || crate::config::LEMMA_FILE.to_owned(),
         |name| name.to_string_lossy().into_owned(),
@@ -202,7 +210,8 @@ pub(crate) fn program_grammar(
     };
     let program = Program::load(repos, &manifest, HEAD, cache)?;
     let checked = &program.checked;
-    let main = check_main(checked).map(|check| check.runs.as_slice());
+    let main =
+        selected_check(checked, options.select.as_deref())?.map(|check| check.runs.as_slice());
     lemma_grammar::lm::grammar_file(&checked.model, &checked.loaded.entry, main)
         .map(Some)
         .map_err(|source| GraphError::Grammar {
@@ -279,8 +288,14 @@ impl Program {
         Ok(Program { checked, places })
     }
 
-    /// Runs the program's behaviors; `@base` reads `base`'s stated facts.
-    fn run(&self, store: &Store, other: Option<&Model>) -> Vec<BehaviorResult> {
+    /// Runs the behaviors the selected check (or `check main`) selects;
+    /// `@base` reads `other`'s stated facts.
+    fn run(
+        &self,
+        store: &Store,
+        other: Option<&Model>,
+        selected: Option<&str>,
+    ) -> Result<Vec<BehaviorResult>, GraphError> {
         let model = &self.checked.model;
         let repositories = self
             .checked
@@ -301,8 +316,8 @@ impl Program {
             places: &self.places,
             roots: &roots,
         };
-        let main = check_main(&self.checked);
-        eval::run_check(model, main, &mut world)
+        let main = selected_check(&self.checked, selected)?;
+        Ok(eval::run_check(model, main, &mut world))
     }
 }
 
@@ -356,11 +371,24 @@ impl World for CheckWorld<'_> {
     }
 }
 
-/// The entry module's `check main`, if it has one.
-fn check_main(checked: &Checked) -> Option<&Check> {
-    checked.model.checks.iter().find(|check| {
-        check.address.module == checked.loaded.entry && check.address.name() == "main"
-    })
+/// The entry module's check named `selected`, which must exist, or its
+/// `check main` if it has one.
+fn selected_check<'c>(
+    checked: &'c Checked,
+    selected: Option<&str>,
+) -> Result<Option<&'c Check>, GraphError> {
+    let name = selected.unwrap_or("main");
+    let found =
+        checked.model.checks.iter().find(|check| {
+            check.address.module == checked.loaded.entry && check.address.name() == name
+        });
+    if found.is_none() && selected.is_some() {
+        return Err(GraphError::UnknownCheck {
+            module: checked.loaded.entry.clone(),
+            name: name.to_owned(),
+        });
+    }
+    Ok(found)
 }
 
 fn entry_repository(checked: &Checked) -> String {
