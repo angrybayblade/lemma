@@ -58,6 +58,11 @@ pub struct Generated {
     pub reading: Reading,
 }
 
+/// The names of Lemma's built-in adapters.
+pub fn built_in_names() -> impl Iterator<Item = &'static str> {
+    registry::BUILT_IN.iter().map(|adapter| adapter.name)
+}
+
 /// The document `from` generates from the code at `checkout`; `None` for a
 /// commit with no kept document when `build` does not allow building one.
 pub fn generate(

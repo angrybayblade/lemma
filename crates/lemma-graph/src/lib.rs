@@ -22,6 +22,7 @@ mod functions;
 pub mod handlers;
 mod impact;
 mod infer;
+pub mod lm;
 pub mod openapi;
 pub mod repos;
 pub mod schema;
@@ -56,6 +57,23 @@ pub enum GraphError {
         /// Why.
         #[source]
         source: yaml_serde::Error,
+    },
+    /// A `.lm` manifest does not check.
+    #[error("{} has errors:\n  {}", path.display(), errors.join("\n  "))]
+    Language {
+        /// The entry module's file.
+        path: PathBuf,
+        /// Each error, as `module:line:column: message`.
+        errors: Vec<String>,
+    },
+    /// A `.lm` manifest says something `lemma check` cannot express yet.
+    #[error("cannot use {}", path.display())]
+    Lower {
+        /// The entry module's file.
+        path: PathBuf,
+        /// What it cannot express.
+        #[source]
+        source: lm::LowerError,
     },
     /// A service in a `lemma.yaml` contradicts its name.
     #[error("invalid {}", path.display())]

@@ -590,6 +590,7 @@ dependencies = [
  "lemma-graph",
  "lemma-http",
  "lemma-index",
+ "lemma-lang",
  "lemma-logic",
  "lemma-model",
  "lemma-providers",
@@ -622,6 +623,7 @@ version = "0.1.0-rc0"
 dependencies = [
  "json-schema-diff",
  "lemma-http",
+ "lemma-lang",
  "lemma-logic",
  "lemma-model",
  "lemma-store",
