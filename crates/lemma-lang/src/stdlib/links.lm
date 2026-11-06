@@ -1,0 +1,7 @@
+module lemma.links
+
+// Links between operations: a caller's client operation and the provider's
+// operation it calls. `lemma check` checks each link for persistence (both
+// operations exist and their code resolves) and for schema agreement.
+
+export relation Link(caller: ClientOperation, provider: Operation)

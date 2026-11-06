@@ -1,0 +1,5 @@
+module lemma.typescript
+
+// Resolution requests into Typescript code: `file(path)` names a source
+// file, and its `symbol`, `method` and `type` name what is in it. They
+// are resolved against each snapshot a check reads.
