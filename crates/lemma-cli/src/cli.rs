@@ -149,6 +149,9 @@ pub(crate) enum LmAction {
         #[arg(long)]
         write: bool,
     },
+    /// Serve `.lm` modules to an editor over the Language Server Protocol,
+    /// on standard input and output.
+    Lsp,
 }
 
 #[derive(Args)]
