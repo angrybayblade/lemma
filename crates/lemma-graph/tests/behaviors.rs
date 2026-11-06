@@ -186,6 +186,7 @@ fn run(workspace: &Path, level: Level, run_checkers: bool) -> Report {
         evaluation: lemma_verify::Evaluation::Full,
         list_links: false,
         run_checkers,
+        runs_base_checkers: false,
         select: None,
     };
     check(
@@ -403,6 +404,7 @@ fn a_change_that_breaks_the_worker_introduces_its_violations_and_lists_new_behav
         evaluation: lemma_verify::Evaluation::Full,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: None,
     };
 
@@ -420,6 +422,53 @@ fn a_change_that_breaks_the_worker_introduces_its_violations_and_lists_new_behav
         .map(|change| (change.requirement.as_str(), change.change))
         .collect();
     assert_eq!(changes, [("platform::always", "added")]);
+}
+
+/// The worker's fix at HEAD, after a commit that dropped the flag.
+fn fixing_change(runs_base_checkers: bool) -> Report {
+    let workspace = system(DROPPING_HANDLER);
+    let platform = workspace.path().join("platform");
+    write(&platform.join("worker/handlers.py"), FORWARDING_HANDLER);
+    git(&platform, &["commit", "-q", "-am", "forward the flag"]);
+    let options = CheckOptions {
+        change: Some(lemma_graph::Change {
+            repository: "self".to_owned(),
+            base: "HEAD~1".to_owned(),
+            head: Some("HEAD".to_owned()),
+        }),
+        level: Some(Level::Check),
+        cache: workspace.path().join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Full,
+        list_links: false,
+        run_checkers: true,
+        runs_base_checkers,
+        select: None,
+    };
+    check(&platform.join("mod.lm"), &options, &ReferenceEngine, None).unwrap()
+}
+
+#[test]
+fn a_change_that_fixes_the_worker_reports_its_cases_fixed_when_the_base_runs() {
+    let report = fixing_change(true);
+
+    let forwards = &report.behaviors[0];
+    assert_eq!(forwards.outcome, "satisfied");
+    assert!(
+        forwards.cases[1..].iter().all(|case| case.fixed),
+        "{forwards:#?}"
+    );
+}
+
+#[test]
+fn without_running_the_base_a_fix_is_not_known() {
+    let report = fixing_change(false);
+
+    let forwards = &report.behaviors[0];
+    assert!(
+        forwards.cases.iter().all(|case| !case.fixed),
+        "{forwards:#?}"
+    );
 }
 
 #[test]
@@ -457,6 +506,7 @@ fn a_checker_reads_other_repositories_at_the_commit_checked() {
         evaluation: lemma_verify::Evaluation::Full,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: None,
     };
 

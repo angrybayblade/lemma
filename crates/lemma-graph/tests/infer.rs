@@ -109,6 +109,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: None,
     };
 
@@ -188,6 +189,7 @@ fn checks_of(workspace: &Path) -> Vec<(Severity, String)> {
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: None,
     };
     let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
@@ -263,6 +265,7 @@ fn select_runs_another_check_and_an_unknown_one_is_refused() {
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: Some(select.to_owned()),
     };
     let entry = workspace.path().join("mod.lm");
@@ -307,6 +310,7 @@ fn a_change_may_name_its_repository_as_a_module_does() {
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
         run_checkers: true,
+        runs_base_checkers: false,
         select: None,
     };
 

@@ -759,7 +759,7 @@ The workspace's `config.level`, or `lemma check --level`, decides what fails, ex
 | `check` | fails (exit 4) | reported |
 | `strict` | fails | fails |
 
-**With a change**, only findings the change introduced count. A finding counts when there is no equal finding (same requirement, same message variables) with the base evaluated as the head. Lemma evaluates the base only for requirements that produced findings at the head. It does not run checkers at the base just to compare: the base's program runs on kept evidence only, and a behavior's case that did not hold counts unless the base ended the same case the same way, with the same message. The change report also lists requirements and behaviors that were added, removed or changed between base and head, by address and body, so a deleted requirement shows up instead of disappearing.
+**With a change**, only findings the change introduced count. A finding counts when there is no equal finding (same requirement, same message variables) with the base evaluated as the head. Lemma evaluates the base only for requirements that produced findings at the head. It does not run checkers at the base just to compare: the base's program runs on kept evidence only, and a behavior's case that did not hold counts unless the base ended the same case the same way, with the same message. `--run-base` lets the base run its checkers too, so a case that ended violated at the base and holds at the head is reported as fixed; without it a fix is reported only when the base's evidence was already kept. The change report also lists requirements and behaviors that were added, removed or changed between base and head, by address and body, so a deleted requirement shows up instead of disappearing.
 
 Every outcome is tied to a requirement, the input snapshots, the evidence scope and the checker versions. For the example, a satisfied outcome establishes forwarding for the two executed application-error cases. It does not establish that every execution forwards the flag. Whether the functions service classifies upstream failures as retriable is a separate behavior, and so is the worker's handling of a response that omits the flag. A stronger checker, such as static value flow or symbolic execution, can supply evidence under the same behavior, with its scope and assumptions visible.
 
@@ -1037,7 +1037,7 @@ Settled since draft 0.2 left them open:
 Still open:
 
 - Facts read from code and provided graphs for behaviors, so a behavior can loop over `calls` with complete coverage.
-- Sharing evidence between machines as segments, and running checkers for the base when asked.
+- Sharing evidence between machines as segments.
 - Linking operations an adapter discovers, and `previously` for relation facts.
 - Finding roles (`at:` with a `Site` from the standard library's relations) in place of the variable names `lemma check` reads.
 - Allowances for `lemma check`'s built-in link checks.

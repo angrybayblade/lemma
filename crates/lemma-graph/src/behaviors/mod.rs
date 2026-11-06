@@ -65,6 +65,10 @@ pub struct CaseReport {
     pub problem: Option<ProblemReport>,
     /// Whether the change brought it about; always true without a change.
     pub introduced: bool,
+    /// Whether the change made it hold: it ended violated at the base and
+    /// holds at the head. Known only when the base ran its checkers or
+    /// kept the evidence it needs.
+    pub fixed: bool,
     /// The reason of the allowance covering it, if one does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed: Option<String>,
@@ -174,9 +178,10 @@ pub(crate) fn run(
         selected,
     )?;
     // The base may lack the check the head selects; it then runs them all.
+    let base_store = Store::new(cache, options.run_checkers && options.runs_base_checkers);
     let base_results = base.as_ref().map(|base| {
-        base.run(&Store::new(cache, false), None, selected)
-            .or_else(|_| base.run(&Store::new(cache, false), None, None))
+        base.run(&base_store, None, selected)
+            .or_else(|_| base.run(&base_store, None, None))
             .unwrap_or_default()
     });
     let reports = results
@@ -459,13 +464,15 @@ fn report(
         .cases
         .iter()
         .map(|case| {
-            let was_there = base_cases
-                .get(case.identity.as_str())
-                .is_some_and(|before| {
-                    before.outcome == case.outcome
-                        && before.problem.as_ref().map(|problem| &problem.message)
-                            == case.problem.as_ref().map(|problem| &problem.message)
-                });
+            let before = base_cases.get(case.identity.as_str());
+            let fixed = has_change
+                && case.outcome == Outcome::Satisfied
+                && before.is_some_and(|before| before.outcome == Outcome::Violated);
+            let was_there = before.is_some_and(|before| {
+                before.outcome == case.outcome
+                    && before.problem.as_ref().map(|problem| &problem.message)
+                        == case.problem.as_ref().map(|problem| &problem.message)
+            });
             CaseReport {
                 identity: case.identity.clone(),
                 outcome: case.outcome.as_str(),
@@ -474,6 +481,7 @@ fn report(
                     .as_ref()
                     .map(|problem| problem_report(problem, checked)),
                 introduced: !has_change || (case.outcome != Outcome::Satisfied && !was_there),
+                fixed,
                 allowed: None,
             }
         })

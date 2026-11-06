@@ -38,6 +38,7 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
         },
         list_links: args.links,
         run_checkers: !args.no_run,
+        runs_base_checkers: args.run_base,
         select: args.select.clone(),
     };
     let report = match check(args, &options, lsp) {
@@ -196,9 +197,15 @@ fn print_behaviors(out: &mut dyn Write, report: &Report) -> std::io::Result<()> 
         } else {
             format!(", {reused} of {} evidence reused", behavior.evidence.len())
         };
+        let fixed = behavior.cases.iter().filter(|case| case.fixed).count();
+        let fixed = if fixed == 0 {
+            String::new()
+        } else {
+            format!(", {fixed} fixed by this change")
+        };
         writeln!(
             out,
-            "behavior {}: {} ({held} of {} cases held{evidence})",
+            "behavior {}: {} ({held} of {} cases held{evidence}{fixed})",
             behavior.identity,
             behavior.outcome,
             behavior.cases.len()

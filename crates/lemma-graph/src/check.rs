@@ -68,6 +68,10 @@ pub struct CheckOptions {
     /// Whether behaviors may run checkers for evidence not kept yet;
     /// without, kept evidence is used and the rest is unknown or stale.
     pub run_checkers: bool,
+    /// Whether, with a change, behaviors may also run checkers at the base,
+    /// so a case the change fixed is reported as fixed. Without, the base
+    /// uses kept evidence only.
+    pub runs_base_checkers: bool,
     /// The check of a parent module to run instead of its `check main`.
     pub select: Option<String>,
 }
