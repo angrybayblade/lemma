@@ -38,6 +38,7 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
         },
         list_links: args.links,
         run_checkers: !args.no_run,
+        select: args.select.clone(),
     };
     let report = match check(args, &options, lsp) {
         Ok(report) => report,

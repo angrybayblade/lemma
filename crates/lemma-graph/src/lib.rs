@@ -87,6 +87,14 @@ pub enum GraphError {
         #[source]
         source: lemma_grammar::lm::LowerError,
     },
+    /// `--select` names a check the parent module does not declare.
+    #[error("{module} declares no check `{name}`")]
+    UnknownCheck {
+        /// The parent's entry module.
+        module: String,
+        /// The check asked for.
+        name: String,
+    },
     /// A service in a `lemma.yaml` contradicts its name.
     #[error("invalid {}", path.display())]
     InvalidService {

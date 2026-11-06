@@ -68,6 +68,8 @@ pub struct CheckOptions {
     /// Whether behaviors may run checkers for evidence not kept yet;
     /// without, kept evidence is used and the rest is unknown or stale.
     pub run_checkers: bool,
+    /// The check of a parent module to run instead of its `check main`.
+    pub select: Option<String>,
 }
 
 /// Every link a check found, as [`CheckOptions::list_links`] asks.
@@ -292,13 +294,7 @@ fn evaluate_behaviors(
         || LEMMA_FILE.to_owned(),
         |name| name.to_string_lossy().into_owned(),
     );
-    let evaluated = crate::behaviors::run(
-        &manifest,
-        repos,
-        &options.cache,
-        options.change.is_some(),
-        options.run_checkers,
-    )?;
+    let evaluated = crate::behaviors::run(&manifest, repos, options)?;
     let Some(mut evaluated) = evaluated else {
         return Ok((Vec::new(), Vec::new()));
     };
@@ -600,7 +596,7 @@ impl<'a> Shared<'a> {
         Ok(Self {
             options,
             listings,
-            grammar: crate::behaviors::program_grammar(root_file, repos, &options.cache)?,
+            grammar: crate::behaviors::program_grammar(root_file, repos, options)?,
         })
     }
 }
