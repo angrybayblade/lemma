@@ -60,6 +60,32 @@ pub struct CheckOptions {
     /// How much consumer code inference reads: what the change's findings
     /// rest on (the default), or everything.
     pub evaluation: lemma_verify::Evaluation,
+    /// Also list every link found: those declared, and every call from code
+    /// to a documented operation. Inference then reads all consumer code,
+    /// and runs at head when there is no change.
+    pub list_links: bool,
+}
+
+/// Every link a check found, as [`CheckOptions::list_links`] asks.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LinkList {
+    /// The links `lemma.yaml` files declare, as `caller -> provider`.
+    pub declared: Vec<String>,
+    /// The calls from code to documented operations inference found.
+    pub inferred: Vec<InferredLink>,
+}
+
+/// A call from code to a documented operation, found by inference.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub struct InferredLink {
+    /// The calling repository, as the parent names it (`#dashboard`).
+    pub repository: String,
+    /// `file::Function`, or the file for a call outside functions.
+    pub location: String,
+    /// The operation called, as `METHOD /path`.
+    pub operation: String,
+    /// The service serving it (`#platform:apollo`), when one does.
+    pub service: Option<String>,
 }
 
 /// How serious a finding is.
@@ -151,6 +177,9 @@ pub struct Report {
     pub repositories: Vec<ResolvedRepository>,
     /// Findings, most severe first.
     pub findings: Vec<Finding>,
+    /// Every link found, when [`CheckOptions::list_links`] asks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_list: Option<LinkList>,
 }
 
 /// A repository at both snapshots.
@@ -170,13 +199,7 @@ pub fn check<E: Engine>(
     references: Option<&mut dyn crate::anchors::References>,
 ) -> Result<Report, GraphError> {
     let repos = load(root_file, options)?;
-    if let Some(change) = &options.change {
-        if !repos.contains_key(&change.repository) {
-            return Err(GraphError::UnknownRepository {
-                name: change.repository.clone(),
-            });
-        }
-    }
+    check_change_names_a_repository(&repos, options)?;
     let level = options
         .level
         .or(repos[SELF].files[HEAD].graph.level)
@@ -198,6 +221,7 @@ pub fn check<E: Engine>(
     };
     let inference = match &options.change {
         Some(change) => infer_change(&repos, change, &shared, engine, &mut findings)?,
+        None if options.list_links => infer_at_head(&repos, &shared, engine)?,
         None => infer_drift(&repos, level, engine, &mut findings, &shared)?,
     };
     let (inferred_links, walkable) = match inference {
@@ -225,13 +249,92 @@ pub fn check<E: Engine>(
     };
     affects::attach(&mut findings, &seeds, &mut source, &repos, &reading)?;
     sort_findings(&mut findings);
+    let link_list = options.list_links.then(|| link_list(&links, &walkable));
     Ok(Report {
         level,
         links: links.len(),
         inferred_links,
         repositories: resolved(&repos),
         findings,
+        link_list,
     })
+}
+
+/// Fails when the change names a repository no `lemma.yaml` declares.
+fn check_change_names_a_repository(
+    repos: &BTreeMap<String, Repo>,
+    options: &CheckOptions,
+) -> Result<(), GraphError> {
+    let Some(change) = &options.change else {
+        return Ok(());
+    };
+    if repos.contains_key(&change.repository) {
+        return Ok(());
+    }
+    Err(GraphError::UnknownRepository {
+        name: change.repository.clone(),
+    })
+}
+
+/// The links declared, and the calls inference found, each call with the
+/// service serving its operation.
+fn link_list(links: &BTreeSet<Link>, walkable: &Walkable) -> LinkList {
+    let declared = links
+        .iter()
+        .map(|link| format!("{} -> {}", link.caller, link.provider))
+        .collect();
+    let inferred: BTreeSet<InferredLink> = walkable
+        .calls
+        .iter()
+        .map(|call| InferredLink {
+            repository: call.repository.clone(),
+            location: match &call.function {
+                Some(function) => format!("{}::{function}", call.file),
+                None => call.file.clone(),
+            },
+            operation: call.operation.clone(),
+            service: walkable.services.get(&call.operation).cloned(),
+        })
+        .collect();
+    LinkList {
+        declared,
+        inferred: inferred.into_iter().collect(),
+    }
+}
+
+/// Without a change, for a list of links: one inference over every
+/// repository at head, its findings left out, since there is nothing to
+/// compare head with. The first repository inference reads stands as the
+/// changed one, at `HEAD` on both sides.
+fn infer_at_head<E: Engine>(
+    repos: &BTreeMap<String, Repo>,
+    shared: &Shared<'_>,
+    engine: &E,
+) -> Result<Option<(usize, Walkable)>, GraphError> {
+    let options = shared.options;
+    for name in repos.keys() {
+        let run = Inference {
+            changed: name,
+            base: "HEAD",
+            head: Some("HEAD"),
+            is_drift: false,
+            cache: &options.cache,
+            facts_cache: options.facts_cache.as_ref(),
+            listings: shared.listings,
+            evaluation: lemma_verify::Evaluation::Full,
+        };
+        let mut ignored = Vec::new();
+        if let Some(found) = infer_links(repos, &run, Level::Audit, engine, &mut ignored)? {
+            return Ok(Some((
+                found.0,
+                Walkable {
+                    seeds: Vec::new(),
+                    ..found.1
+                },
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// When inference read only some consumer code: the operations whose calls
@@ -381,9 +484,18 @@ fn infer_change<E: Engine>(
         cache: &options.cache,
         facts_cache: options.facts_cache.as_ref(),
         listings,
-        evaluation: options.evaluation,
+        evaluation: evaluation_of(options),
     };
     infer_links(repos, &run, level, engine, findings)
+}
+
+/// How much consumer code inference reads: everything when every link is
+/// to be listed.
+fn evaluation_of(options: &CheckOptions) -> lemma_verify::Evaluation {
+    if options.list_links {
+        return lemma_verify::Evaluation::Full;
+    }
+    options.evaluation
 }
 
 /// Without a change: for each repository with a service whose operations

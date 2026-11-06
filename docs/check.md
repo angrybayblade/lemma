@@ -125,6 +125,16 @@ Types that cannot be followed, such as a type from another package, are left ope
 
 ### Inferred links
 
+To see what is linked to what, declared and inferred, run `lemma check --links`:
+
+```text
+$ lemma check lemma.yaml --links
+inferred links: 521
+  #dashboard -> #platform:gateway: 203 calls to 123 operations
+    src/server/clients/session.ts::createSession -> POST /api/v3/sessions
+    ...
+```
+
 A service that exports its OpenAPI documents (`exports.openapi`) needs no links: calls to its operations from any repository's code are found and checked, as `lemma verify` does. A service's code (`index.include`) is read for its route code and searched for calls to others, unless the service is itself a generated client (`exports.client`); a service alone in its repository that declares nothing else has the whole repository searched.
 
 Calls through clients need no declaration. A call through a client library (`client.authConfigs.list()`) reaches the client method its names spell, where the code imports the client's package or its repository depends on it; the client's own code says what that method requests. A client generated at build time is recognised by its imports, a module inside the repository that no file holds (or a module re-exporting it), and its functions by the `operationId`s they are named after.

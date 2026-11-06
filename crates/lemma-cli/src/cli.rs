@@ -142,6 +142,11 @@ pub(crate) struct CheckArgs {
     /// can rest on, the default) or `full`.
     #[arg(long, value_parser = ["demand", "full"])]
     pub evaluation: Option<String>,
+    /// Also list every link: those declared, and each call from code to a
+    /// documented operation, by calling repository and the service called.
+    /// Reads all consumer code; without `--change`, at head.
+    #[arg(long)]
+    pub links: bool,
     /// Also ask language servers who calls each link's caller anchor, and
     /// warn when a method nothing calls is anchored while a sibling method
     /// is called. Uses the running daemon's warm servers, or, without one,
