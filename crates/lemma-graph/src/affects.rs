@@ -56,7 +56,7 @@ pub struct Walkable {
     /// Routes services declare.
     pub routes: Vec<RouteSite>,
     /// The service serving each operation (`METHOD /path`), as inference
-    /// names it (`#platform:apollo`).
+    /// names it (`#platform:gateway`).
     pub services: BTreeMap<String, String>,
     /// Trace starts for inferred findings, by their index in the findings.
     pub seeds: Vec<(usize, Seed)>,

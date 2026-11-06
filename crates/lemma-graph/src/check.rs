@@ -84,7 +84,7 @@ pub struct InferredLink {
     pub location: String,
     /// The operation called, as `METHOD /path`.
     pub operation: String,
-    /// The service serving it (`#platform:apollo`), when one does.
+    /// The service serving it (`#platform:gateway`), when one does.
     pub service: Option<String>,
 }
 
