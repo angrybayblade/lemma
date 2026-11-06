@@ -358,7 +358,12 @@ pub fn cache_directory() -> PathBuf {
 }
 
 pub(crate) fn git(directory: &Path, args: &[&str]) -> Result<String, GraphError> {
+    // `--no-optional-locks` keeps `status` from rewriting the repository's
+    // index: the rewrite would block the user's own Git commands, and the
+    // index watching `.git` would take it for a new commit and re-read the
+    // head on the next query.
     let output = Command::new("git")
+        .arg("--no-optional-locks")
         .arg("-C")
         .arg(directory)
         .args(args)
