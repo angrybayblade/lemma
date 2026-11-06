@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 
 use lemma_lang::eval::{Allowances, BehaviorResult, Datum, Outcome, Values};
 use lemma_lang::model::Model;
+use lemma_lang::types::Address;
 
 use crate::behaviors::BehaviorReport;
 use crate::check::{Finding, Severity};
@@ -17,6 +18,8 @@ use crate::check::{Finding, Severity};
 /// Applies a program's allowances to `lemma check`'s findings.
 pub(crate) struct Allowed<'m> {
     allowances: Allowances<'m>,
+    /// The name each requirement's findings carry.
+    names: BTreeMap<Address, String>,
 }
 
 impl<'m> Allowed<'m> {
@@ -25,6 +28,7 @@ impl<'m> Allowed<'m> {
     pub(crate) fn new(model: &'m Model, date: Option<String>) -> Self {
         Self {
             allowances: Allowances::new(model, date),
+            names: lemma_grammar::lm::requirement_names(model),
         }
     }
 
@@ -47,16 +51,16 @@ impl<'m> Allowed<'m> {
     }
 
     /// Marks the grammar requirements' findings an allowance covers; they
-    /// become informational. Lemma check's grammar names requirements by
-    /// their own names, as the standard library's `lemma.http` does.
+    /// become informational. Findings name requirements as lowering does.
     pub(crate) fn cover_findings(&mut self, findings: &mut [Finding]) {
+        let names = &self.names;
         for finding in findings
             .iter_mut()
             .filter(|finding| !finding.values.is_empty())
         {
-            let requirement = finding.check.as_str();
+            let requirement = &finding.check;
             let reason = self.allowances.covering(
-                |address| address.name() == requirement,
+                |address| names.get(address) == Some(requirement),
                 Values::Text(&finding.values),
             );
             let Some(reason) = reason else {

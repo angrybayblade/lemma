@@ -623,6 +623,7 @@ name = "lemma-graph"
 version = "0.1.0-rc0"
 dependencies = [
  "json-schema-diff",
+ "lemma-grammar",
  "lemma-http",
  "lemma-lang",
  "lemma-logic",

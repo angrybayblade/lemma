@@ -28,6 +28,10 @@ use crate::config::Level;
 use crate::lm::CheckoutSources;
 use crate::repos::Checkout;
 
+/// The standard library's HTTP contracts, whose requirements `lemma check`
+/// always loads, as it ran the built-in grammar before modules.
+const HTTP: &str = "lemma.http";
+
 /// A behavior's result, as a report lists it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct BehaviorReport {
@@ -136,16 +140,9 @@ pub(crate) fn run(
     has_change: bool,
     may_run: bool,
 ) -> Result<Option<Evaluated>, GraphError> {
-    let Some(parent) = repos.get(SELF) else {
+    let Some(manifest) = parent_module(manifest, repos)? else {
         return Ok(None);
     };
-    let manifest = crate::check::language_manifest(&parent.checkouts[HEAD], manifest)?;
-    let is_module = Path::new(&manifest)
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("lm"));
-    if !is_module {
-        return Ok(None);
-    }
     let head = Program::load(repos, &manifest, HEAD, cache)?;
     // A base that does not load (one from before the repository had
     // modules, or with errors since fixed) only means nothing is compared.
@@ -187,6 +184,48 @@ pub(crate) fn run(
     }))
 }
 
+/// The grammar the parent's `.lm` program lowers to: the relations, rules
+/// and requirements of every module it loads, `lemma.http` always among
+/// them, as its `check main` selects them. `None` when the parent's
+/// manifest is not a module, and the built-in grammar runs.
+pub(crate) fn program_grammar(
+    root_file: &Path,
+    repos: &BTreeMap<String, Repo>,
+    cache: &Path,
+) -> Result<Option<lemma_grammar::GrammarFile>, GraphError> {
+    let manifest = root_file.file_name().map_or_else(
+        || crate::config::LEMMA_FILE.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let Some(manifest) = parent_module(&manifest, repos)? else {
+        return Ok(None);
+    };
+    let program = Program::load(repos, &manifest, HEAD, cache)?;
+    let checked = &program.checked;
+    let main = check_main(checked).map(|check| check.runs.as_slice());
+    lemma_grammar::lm::grammar_file(&checked.model, &checked.loaded.entry, main)
+        .map(Some)
+        .map_err(|source| GraphError::Grammar {
+            path: repos[SELF].checkouts[HEAD].root.join(&manifest),
+            source,
+        })
+}
+
+/// The parent's entry module, if its manifest is one.
+fn parent_module(
+    manifest: &str,
+    repos: &BTreeMap<String, Repo>,
+) -> Result<Option<String>, GraphError> {
+    let Some(parent) = repos.get(SELF) else {
+        return Ok(None);
+    };
+    let manifest = crate::check::language_manifest(&parent.checkouts[HEAD], manifest)?;
+    let is_module = Path::new(&manifest)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("lm"));
+    Ok(is_module.then_some(manifest))
+}
+
 /// A program checked at one snapshot, with where its repositories are.
 struct Program {
     checked: Checked,
@@ -214,7 +253,7 @@ impl Program {
             .collect();
         let parent = &repos[SELF].checkouts[snapshot];
         let mut sources = CheckoutSources::new(parent.clone(), cache).with_pins(pins.clone());
-        let checked = lemma_lang::check_program(&mut sources, manifest);
+        let checked = lemma_lang::check_program_including(&mut sources, manifest, &[HTTP]);
         let errors = checked.error_lines();
         if !errors.is_empty() {
             return Err(GraphError::Language {
