@@ -19,7 +19,8 @@ Lemma answers code questions through each language's own server (references, def
 | What is this symbol's declaration and documentation? | `lemma signature <symbol>` | Header and the server's hover text, without opening files |
 | What does this file define? | `lemma outline <file>` | Symbols in source order, nested |
 | Which symbols are named like X? | `lemma symbols <name>` | Searches the index by name or qualified name |
-| Does my service change break callers in other repositories? | `lemma check lemma.yaml --change '#repo' --base <commit> --head <commit>`, or `lemma verify <manifest>` where the system uses a manifest | Checks declared and inferred links, compares schemas, and traces what a break affects |
+| Does my service change break callers in other repositories? | `lemma check --change <repo>` from the workspace: the branch's commits and uncommitted edits, against where the branch left the default branch; `--base`/`--head` for other commits; `lemma verify <manifest>` where the system uses a manifest | Checks declared and inferred links, compares schemas, and traces what a break affects |
+| Is the feature I am adding wired up? | `lemma check --change <repo>` | Warns about an operation added with no route or no caller (`operation_without_route`, `operation_without_consumer`) and a route added that no spec declares (`route_without_operation`) |
 | Strings, log messages, config keys, one-off lookups in small repositories | `rg` / grep | Text is the question |
 
 Prefer Lemma's MCP tools when they are available (`references`, `definition`, `implementations`, `signature`, `outline`, `search_symbols`, `index`); they answer the same questions. Before deleting something "unused", cross-check with text search: "no references found" means the server saw none, not that nothing uses it dynamically.
@@ -75,14 +76,20 @@ error   request: the receiver requires `currency` at the root; the sender may le
 - `(introduced)` means the change caused it; `(already there)` findings are informational when a change is given.
 - `affects` lists, by distance, the operations whose handlers reach the problem (with the calls from each handler down to it), the code elsewhere that calls them, the operations reached through that code, and so on; each group shows three, and `--all` lists them all. It is traced by name, so treat it as where to look, not as proof.
 
-`--head` must be a commit: commit the change on a branch before checking it.
+Without `--head`, the working directory is checked, uncommitted edits included; without `--base`, the change starts where the branch left the default branch.
 
 ## When changing a service's API
 
 1. Before editing: `lemma refs` on the handler or schema to see local uses.
-2. After editing, with the change committed on a branch: `lemma check <parent lemma.yaml> --change '#<repo>' --base main --head HEAD` (or `lemma verify <manifest> --base main --head HEAD`).
+2. After editing, committed or not: `lemma check --change <repo>` from the workspace (or `lemma verify <manifest> --base main --head HEAD`).
 3. For each error: update the consumer in the same change, or keep the old field or parameter accepted.
 4. For each warning: decide whether the consumer still works; say so in the pull request.
 5. For each `affects` entry in another repository: check whether it passes the changed field on to its own callers.
+
+## When adding a feature
+
+1. Add the operation to the spec, the route that serves it, and the consumer that calls it, in any order.
+2. Run `lemma check --change <repo>` as you go: until each part is there, it warns about what is missing. An operation only callers outside the workspace use goes in a graph of `lemma.http.public_operation`.
+3. To test what the feature does, `lm new behavior <name> --handler <service.operation> [--through "<caller> -> <provider>"]` scaffolds a behavior and its checker script; fill in the `TODO`s and run it alone with `lemma check --select <name>`.
 
 More detail: [reference.md](reference.md).
