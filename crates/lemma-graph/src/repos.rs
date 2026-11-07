@@ -493,6 +493,12 @@ pub(crate) fn git(directory: &Path, args: &[&str]) -> Result<String, GraphError>
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// The Git directory a clone and all its worktrees share.
+pub fn git_common_directory(root: &Path) -> Result<PathBuf, GraphError> {
+    let common = git(root, &["rev-parse", "--git-common-dir"])?;
+    Ok(root.join(common.trim()))
+}
+
 pub(crate) fn directory_name(path: &Path) -> String {
     sanitize(&path.to_string_lossy())
 }

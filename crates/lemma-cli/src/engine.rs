@@ -1622,11 +1622,12 @@ fn select_symbol(
     // the workspace names the same symbol inside billing, and nothing in
     // another repository, where 607 is some other symbol.
     if let Some((repository, id)) = qualified_id(symbol) {
-        let here = Path::new(&snapshot.snapshot.root)
+        let root = Path::new(&snapshot.snapshot.root);
+        let here = root
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if !is_same_repository(&repository, &here) {
+        if !is_same_repository(&repository, &here) && !is_composed_as(root, &repository) {
             bail!(
                 "`{symbol}` is an id in {repository}, but this index is of `{here}`: ids are \
                  numbered per repository, so ask from the workspace or inside {repository}, or \
@@ -1714,6 +1715,47 @@ fn is_same_repository(name: &str, directory: &str) -> bool {
             .replace('-', "_")
     };
     normal(name) == normal(directory)
+}
+
+/// Whether a workspace in a directory above `root` composes the repository
+/// at `root` under `name`, as `repo billing = local("../billing-service")`
+/// does, whatever its directory is called. A worktree of the member's
+/// clone is the same repository.
+fn is_composed_as(root: &Path, name: &str) -> bool {
+    let wanted = name.trim_start_matches('#');
+    let cache = lemma_graph::repos::cache_directory();
+    let manifests = root
+        .ancestors()
+        .skip(1)
+        .take(4)
+        .flat_map(|directory| {
+            ["mod.lm", lemma_graph::config::LEMMA_FILE].map(|file| directory.join(file))
+        })
+        .filter(|file| file.exists());
+    for manifest in manifests {
+        let Ok(members) = lemma_graph::compose::members(&manifest, &cache) else {
+            continue;
+        };
+        let member = members
+            .iter()
+            .find(|member| member.name.trim_start_matches('#') == wanted);
+        if let Some(member) = member {
+            return same_clone(&member.root, root);
+        }
+    }
+    false
+}
+
+/// Whether two directories are one clone, or worktrees of one clone.
+fn same_clone(left: &Path, right: &Path) -> bool {
+    let common = |directory: &Path| {
+        lemma_graph::repos::git_common_directory(directory)
+            .ok()
+            .and_then(|common| std::fs::canonicalize(common).ok())
+    };
+    let canonical = |directory: &Path| std::fs::canonicalize(directory).ok();
+    canonical(left).is_some_and(|left| Some(left) == canonical(right))
+        || common(left).is_some_and(|left| Some(left) == common(right))
 }
 
 /// Whether `symbol` passes `filters`, as a symbol found by name must.
@@ -2035,6 +2077,39 @@ mod tests {
         );
         assert_eq!(qualified_id("#607"), None);
         assert_eq!(qualified_id("#billing:services.api.create"), None);
+    }
+
+    #[test]
+    fn a_member_is_known_by_the_workspace_composing_it_whatever_its_directory() {
+        let workspace = tempfile::tempdir().unwrap();
+        let git = |directory: &Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(directory)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        let billing = workspace.path().join("billing-service");
+        std::fs::create_dir_all(&billing).unwrap();
+        std::fs::write(billing.join("mod.lm"), "module billing\n").unwrap();
+        git(&billing, &["init", "-q"]);
+        git(&billing, &["add", "."]);
+        git(&billing, &["commit", "-q", "-m", "billing"]);
+        let worktree = workspace.path().join("billing-feature");
+        let target = worktree.display().to_string();
+        git(&billing, &["worktree", "add", "-q", "--detach", &target]);
+        std::fs::write(
+            workspace.path().join("mod.lm"),
+            "module shop\n\nworkspace {\n    repo billing = local(\"billing-service\")\n}\n",
+        )
+        .unwrap();
+
+        assert!(is_composed_as(&billing, "#billing"));
+        assert!(is_composed_as(&worktree, "#billing"));
+        assert!(!is_composed_as(&billing, "#web"));
     }
 
     #[test]
