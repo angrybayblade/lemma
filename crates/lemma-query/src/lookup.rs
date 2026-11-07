@@ -141,7 +141,8 @@ impl Ask for LocationQuery {
         store: &dyn FactStore,
         key: &AnswerKey<'_>,
     ) -> Result<Option<StoredAnswer<Vec<Location>>>, StoreError> {
-        store.cached_locations(key)
+        let stored = store.cached_locations(key)?;
+        Ok(stored.filter(|stored| !points_outside_what_exists(&stored.answer)))
     }
 
     fn save(
@@ -153,6 +154,18 @@ impl Ask for LocationQuery {
     ) -> Result<(), StoreError> {
         store.save_locations(key, provider_version, answer)
     }
+}
+
+/// Whether an answer names a file outside the snapshot that is gone, such
+/// as a dependency in a module cache since removed: the provider would
+/// answer differently now, so the stored answer is not used.
+fn points_outside_what_exists(answer: &ProviderAnswer<Vec<Location>>) -> bool {
+    let ProviderAnswer::Found(locations) = answer else {
+        return false;
+    };
+    locations
+        .iter()
+        .any(|location| location.is_external && !Path::new(&location.path).exists())
 }
 
 /// What the provider shows for a symbol.
@@ -458,6 +471,35 @@ pub(crate) fn describe(error: &dyn Error) -> String {
 mod tests {
     use super::*;
     use lemma_model::Position;
+
+    fn located(path: &str, is_external: bool) -> Location {
+        let position = Position { line: 0, column: 0 };
+        Location {
+            path: path.to_owned(),
+            span: lemma_model::Span {
+                start: position,
+                end: position,
+            },
+            is_external,
+        }
+    }
+
+    #[test]
+    fn an_answer_naming_a_vanished_dependency_is_not_used() {
+        let gone = located("/tmp/sandbox-that-is-gone/pkg/mod/lib.go", true);
+        let here = located("internal/api/router.go", false);
+
+        let answer = ProviderAnswer::Found(vec![here, gone]);
+
+        assert!(points_outside_what_exists(&answer));
+    }
+
+    #[test]
+    fn an_answer_inside_the_snapshot_is_used() {
+        let answer = ProviderAnswer::Found(vec![located("internal/api/router.go", false)]);
+
+        assert!(!points_outside_what_exists(&answer));
+    }
 
     #[test]
     fn identifiers_are_read_around_the_column() {
