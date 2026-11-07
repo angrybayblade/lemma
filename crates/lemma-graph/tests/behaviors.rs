@@ -424,6 +424,42 @@ fn a_change_that_breaks_the_worker_introduces_its_violations_and_lists_new_behav
     assert_eq!(changes, [("platform::always", "added")]);
 }
 
+#[test]
+fn a_new_behavior_selected_alone_runs_no_checker_at_the_base() {
+    let workspace = system(FORWARDING_HANDLER);
+    let platform = workspace.path().join("platform");
+    let marker = workspace.path().join("ran-at-base");
+    let replay = format!(
+        "{REPLAY}\nopen({:?}, \"w\").close()\n",
+        marker.display().to_string()
+    );
+    write(&platform.join("tools/replay.py"), &replay);
+    git(&platform, &["commit", "-q", "-am", "mark replays"]);
+    let module = format!("{PLATFORM}\nbehavior always {{\n    expect true\n}}\n");
+    write(&platform.join("mod.lm"), &module);
+    git(&platform, &["commit", "-q", "-am", "add a behavior"]);
+    let options = CheckOptions {
+        change: Some(lemma_graph::Change {
+            repository: "self".to_owned(),
+            base: Some("HEAD~1".to_owned()),
+            head: Some("HEAD".to_owned()),
+        }),
+        level: Some(Level::Check),
+        cache: workspace.path().join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Full,
+        list_links: false,
+        run_checkers: true,
+        runs_base_checkers: true,
+        select: Some("always".to_owned()),
+    };
+
+    let report = check(&platform.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
+
+    assert_eq!(report.behaviors.len(), 1, "{:#?}", report.behaviors);
+    assert!(!marker.exists());
+}
+
 /// The worker's fix at HEAD, after a commit that dropped the flag.
 fn fixing_change(runs_base_checkers: bool) -> Report {
     let workspace = system(DROPPING_HANDLER);

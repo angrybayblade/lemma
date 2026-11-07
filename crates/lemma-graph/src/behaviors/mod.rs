@@ -182,11 +182,21 @@ pub(crate) fn run(
         base_model,
         selected,
     )?;
-    // The base may lack the check the head selects; it then runs them all.
+    // The base may lack what the head selects. A check the head defines
+    // may have been renamed, so the base then runs them all; a behavior or
+    // requirement it lacks is new, and has nothing at the base to compare
+    // with, so nothing runs there (with `--run-base`, every base behavior's
+    // checkers would run for none of their cases to be compared).
     let base_store = Store::new(cache, options.run_checkers && options.runs_base_checkers);
+    let selects_a_check = selected.is_none_or(|name| names_a_check(&head.checked, name));
     let base_results = base.as_ref().map(|base| {
         base.run(&base_store, None, selected)
-            .or_else(|_| base.run(&base_store, None, None))
+            .or_else(|error| {
+                if selects_a_check {
+                    return base.run(&base_store, None, None);
+                }
+                Err(error)
+            })
             .unwrap_or_default()
     });
     let reports = results
@@ -424,6 +434,16 @@ impl World for CheckWorld<'_> {
 /// The entry module's check named `selected`, or else a check running just
 /// the behavior or requirement it names; without `selected`, its `check
 /// main` if it has one.
+/// Whether `name` is a check of the program's entry module, rather than a
+/// behavior or requirement selected alone.
+fn names_a_check(checked: &Checked, name: &str) -> bool {
+    checked
+        .model
+        .checks
+        .iter()
+        .any(|check| check.address.module == checked.loaded.entry && check.address.name() == name)
+}
+
 fn selected_check(checked: &Checked, selected: Option<&str>) -> Result<Option<Check>, GraphError> {
     let name = selected.unwrap_or("main");
     let found =
