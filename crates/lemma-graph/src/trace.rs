@@ -117,6 +117,15 @@ fn step(relationship: &Use, at: usize, calls: usize) -> Option<usize> {
     (at < calls).then_some(at)
 }
 
+/// Where a trace keeps what it reads between runs.
+pub struct TraceCaches<'a> {
+    /// Clones of `git` sources and worktrees.
+    pub clones: &'a Path,
+    /// Facts read from code, as `lemma check` keeps them; read afresh
+    /// without.
+    pub facts: Option<&'a lemma_verify::FactsCache>,
+}
+
 /// How a trace reads the system: at the head, all consumer code, no change.
 fn trace_options(cache: &Path) -> CheckOptions {
     CheckOptions {
@@ -134,15 +143,16 @@ fn trace_options(cache: &Path) -> CheckOptions {
 
 /// Traces from `reached`, functions in the repository indexed at
 /// `index_root`, through the system `workspace` composes. Inference rules
-/// are evaluated with `engine`; clones and worktrees go in `cache`.
+/// are evaluated with `engine`; clones, worktrees and facts read from code
+/// are kept in `caches`.
 pub fn trace_through_system<E: Engine>(
     workspace: &Path,
     index_root: &Path,
     reached: &[Reached],
-    cache: &Path,
+    caches: &TraceCaches<'_>,
     engine: &E,
 ) -> Result<SystemTrace, GraphError> {
-    let options = trace_options(cache);
+    let options = trace_options(caches.clones);
     let repos = check::load(workspace, &options)?;
     let Some((repository, offset)) = owning_repository(&repos, index_root) else {
         let note = format!(
@@ -155,7 +165,7 @@ pub fn trace_through_system<E: Engine>(
             ..SystemTrace::default()
         });
     };
-    let walkable = current_inference(&repos, engine)?;
+    let walkable = current_inference(&repos, engine, caches.facts)?;
     let routes = affects::read_routes(&walkable.routes, &repos)?;
     let in_repository = |file: &str| join(&offset, file);
     let start = Start::Reached {
@@ -167,7 +177,7 @@ pub fn trace_through_system<E: Engine>(
     };
     let listings = lemma_http::Listings::default();
     let reading = affects::CodeReading {
-        facts: None,
+        facts: caches.facts,
         listings: &listings,
     };
     let mut code = Code::new(&repos, &reading);
@@ -235,6 +245,7 @@ fn join(offset: &str, file: &str) -> String {
 fn current_inference<E: Engine>(
     repos: &BTreeMap<String, Repo>,
     engine: &E,
+    facts: Option<&lemma_verify::FactsCache>,
 ) -> Result<Walkable, GraphError> {
     let files = repos
         .values()
@@ -272,7 +283,7 @@ fn current_inference<E: Engine>(
         let options = lemma_verify::Options {
             explain: false,
             relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
-            facts_cache: None,
+            facts_cache: facts.cloned(),
             // Tracing reads every call, not only the change's.
             evaluation: lemma_verify::Evaluation::Full,
         };

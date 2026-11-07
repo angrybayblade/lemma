@@ -1686,16 +1686,21 @@ fn add_system_trace(
             })
         })
         .collect();
-    let cache = lemma_graph::repos::cache_directory();
+    let clones = lemma_graph::repos::cache_directory();
+    let facts = crate::verify::facts_cache();
+    let caches = lemma_graph::TraceCaches {
+        clones: &clones,
+        facts: facts.as_ref(),
+    };
     let trace = match lemma_souffle::SouffleEngine::find() {
         Ok(souffle) => {
-            lemma_graph::trace_through_system(workspace, index_root, &reached, &cache, &souffle)?
+            lemma_graph::trace_through_system(workspace, index_root, &reached, &caches, &souffle)?
         }
         Err(_) => lemma_graph::trace_through_system(
             workspace,
             index_root,
             &reached,
-            &cache,
+            &caches,
             &lemma_logic::ReferenceEngine,
         )?,
     };

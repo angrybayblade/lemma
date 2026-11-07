@@ -37,7 +37,7 @@ pub use check::{
     Change, CheckOptions, Finding, Impact, InferredLink, LinkList, Report, ResolvedRepository,
     Severity, check,
 };
-pub use trace::{Reached, SystemTrace, trace_through_system};
+pub use trace::{Reached, SystemTrace, TraceCaches, trace_through_system};
 
 /// Why a check could not run.
 #[derive(Debug, thiserror::Error)]
