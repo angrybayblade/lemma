@@ -219,8 +219,10 @@ fn unknown_handler(reference: &str, own: &[&Operation]) -> String {
 ///
 /// The provider may be another repository's, which the module names
 /// through an import alias (`functions_serverless.submit_task` for
-/// functions' `serverless.submit_task`), so it is matched by its own
-/// name, and written in the scaffold as the module's graph writes it.
+/// functions' `serverless.submit_task`), so it may be given by its own
+/// name, and is written in the scaffold as the module's graph writes it.
+/// A provider written as the graph writes it is that row; one given by its
+/// own name must name one row only.
 fn link_through(
     model: &Model,
     entry: &str,
@@ -232,11 +234,57 @@ fn link_through(
     };
     let (caller, provider) = (caller.trim(), provider.trim());
     let wanted = operation_name(provider);
-    // The caller is the module's own operation; the provider a declared
-    // operation, or one a service's documents describe (`api.createCharge`,
-    // or `api["POST /v1/charges"]` by route).
-    let names = |value: &Value, name: &str| match value {
-        Value::Operation(address) => address.dotted_path() == name,
+    let graphs = graphs_holding(model, entry, caller, wanted);
+    if graphs.is_empty() {
+        bail!(
+            "no graph of the module holds the link {caller} -> {provider}; declare it first, as \
+             `export graph links : Link {{ {caller} -> {provider} }}`"
+        );
+    }
+    let spellings: Vec<String> = graph_rows(source)
+        .into_iter()
+        .filter(|(from, to)| from == caller && operation_name(to) == wanted)
+        .map(|(_, to)| to)
+        .collect();
+    let chosen = spellings
+        .iter()
+        .position(|spelling| spelling == provider)
+        .or_else(|| (graphs.len() == 1).then_some(0));
+    let Some(chosen) = chosen else {
+        bail!(
+            "{caller} -> {provider} could be any of the links {}; write the provider as the \
+             graph does",
+            spellings
+                .iter()
+                .map(|spelling| format!("{caller} -> {spelling}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    };
+    // The rows the source writes are the model's, in order; if they are
+    // not (rows written another way), the first graph and the provider as
+    // given are the best guess.
+    let is_aligned = spellings.len() == graphs.len();
+    let graph = graphs[if is_aligned { chosen } else { 0 }].clone();
+    let provider = spellings
+        .get(chosen)
+        .cloned()
+        .unwrap_or_else(|| provider.to_owned());
+    Ok(Through {
+        graph,
+        caller: caller.to_owned(),
+        provider,
+    })
+}
+
+/// The graph of each row of the module's graphs from `caller` to an
+/// operation named `wanted`, in the order the rows are written. The caller
+/// is the module's own operation; the provider a declared operation, or
+/// one a service's documents describe (`api.createCharge`, or
+/// `api["POST /v1/charges"]` by route).
+fn graphs_holding(model: &Model, entry: &str, caller: &str, wanted: &str) -> Vec<String> {
+    let names = |value: &Value| match value {
+        Value::Operation(address) => address.dotted_path() == caller,
         _ => false,
     };
     let is_wanted = |value: &Value| match value {
@@ -244,30 +292,19 @@ fn link_through(
         Value::Discovered { key, .. } => key == wanted,
         _ => false,
     };
-    let graph = model
+    model
         .graphs
         .iter()
         .filter(|graph| graph.address.module == entry)
-        .find(|graph| {
-            graph.rows.iter().any(|row| {
+        .flat_map(|graph| {
+            graph.rows.iter().filter_map(move |row| {
                 let [from, to] = &row[..] else {
-                    return false;
+                    return None;
                 };
-                names(from, caller) && is_wanted(to)
+                (names(from) && is_wanted(to)).then(|| graph.address.dotted_path())
             })
-        });
-    let Some(graph) = graph else {
-        bail!(
-            "no graph of the module holds the link {caller} -> {provider}; declare it first, as \
-             `export graph links : Link {{ {caller} -> {provider} }}`"
-        );
-    };
-    let provider = written_provider(source, caller, wanted).unwrap_or_else(|| provider.to_owned());
-    Ok(Through {
-        graph: graph.address.dotted_path(),
-        caller: caller.to_owned(),
-        provider,
-    })
+        })
+        .collect()
 }
 
 /// An operation's own name in a reference: `submit_task` in
@@ -282,15 +319,19 @@ fn operation_name(reference: &str) -> &str {
     reference.rsplit('.').next().unwrap_or(reference)
 }
 
-/// How the module's source writes the provider of a link from `caller` to
-/// an operation named `wanted`: the right side of its graph row, which is
-/// in scope in the module.
-fn written_provider(source: &str, caller: &str, wanted: &str) -> Option<String> {
-    source.lines().find_map(|line| {
-        let (from, to) = line.split_once("->")?;
-        let to = to.trim().trim_end_matches(',');
-        (from.trim() == caller && operation_name(to) == wanted).then(|| to.to_owned())
-    })
+/// The `caller -> provider` rows the module's source writes, in order,
+/// without those commented out; rows may share a line with their graph's
+/// braces or each other.
+fn graph_rows(source: &str) -> Vec<(String, String)> {
+    source
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .flat_map(|line| line.split(['{', '}', ',']))
+        .filter_map(|part| {
+            let (from, to) = part.split_once("->")?;
+            Some((from.trim().to_owned(), to.trim().to_owned()))
+        })
+        .collect()
 }
 
 fn write(path: &Path, text: &str) -> anyhow::Result<()> {
@@ -437,6 +478,49 @@ mod tests {
     fn a_provider_written_by_its_own_name_is_written_as_the_graph_writes_it() {
         let directory = tempfile::tempdir().unwrap();
         let module = aliased_shop(directory.path());
+
+        run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
+
+        let text = std::fs::read_to_string(&module).unwrap();
+        assert!(
+            text.contains("links[orders.charge, billing_api.createCharge]"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_provider_written_as_the_graph_does_is_that_row_though_another_shares_its_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let module = shop(directory.path());
+        let two = ORDERS
+            .replace(
+                "import { api } from billing",
+                "import { api } from billing\nimport { api as ledger_api } from billing",
+            )
+            .replace(
+                "    orders.charge -> api.createCharge\n",
+                "    orders.charge -> ledger_api.createCharge\n    // orders.charge -> old.createCharge\n    orders.charge -> api.createCharge\n",
+            );
+        std::fs::write(&module, two).unwrap();
+
+        run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
+
+        let text = std::fs::read_to_string(&module).unwrap();
+        assert!(
+            text.contains("links[orders.charge, api.createCharge]"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_graph_on_one_line_holds_its_link() {
+        let directory = tempfile::tempdir().unwrap();
+        let module = aliased_shop(directory.path());
+        let text = std::fs::read_to_string(&module).unwrap().replace(
+            "export graph links : Link {\n    orders.charge -> billing_api.createCharge\n}",
+            "export graph links : Link { orders.charge -> billing_api.createCharge }",
+        );
+        std::fs::write(&module, text).unwrap();
 
         run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
 
