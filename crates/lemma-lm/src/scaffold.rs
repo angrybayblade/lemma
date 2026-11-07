@@ -85,6 +85,42 @@ pub(crate) struct Scaffold {
     pub go_module: Option<String>,
 }
 
+/// How the Python checker imports a file's module: from above its package's
+/// `__init__.py` files, else its project's directory or its `src/`, else the
+/// repository's root.
+const PYTHON_IMPORTS: &str = r#"def import_root(file):
+    """Where `file`'s module is imported from: above its package's
+    __init__.py files, else its project's directory (or its src/), else the
+    repository's root."""
+    root = given["root"]
+    path = os.path.join(root, file)
+    directory = os.path.dirname(path)
+    if os.path.exists(os.path.join(directory, "__init__.py")):
+        while os.path.exists(os.path.join(directory, "__init__.py")):
+            directory = os.path.dirname(directory)
+        return directory
+    while directory.startswith(root) and directory != root:
+        if any(os.path.exists(os.path.join(directory, marker))
+               for marker in ("pyproject.toml", "setup.py", "setup.cfg")):
+            source = os.path.join(directory, "src")
+            return source if path.startswith(source + os.sep) else directory
+        directory = os.path.dirname(directory)
+    return root
+
+
+def attribute(file, symbol):
+    """The object holding `symbol` in `file`, and the symbol's last name."""
+    base = import_root(file)
+    if base not in sys.path:
+        sys.path.insert(0, base)
+    module = os.path.relpath(os.path.join(given["root"], file), base)
+    owner = importlib.import_module(module.removesuffix(".py").replace(os.sep, "."))
+    *outer, name = symbol.split(".")
+    for part in outer:
+        owner = getattr(owner, part)
+    return owner, name
+"#;
+
 impl Scaffold {
     /// The checker's name.
     pub(crate) fn checker(&self) -> String {
@@ -166,12 +202,7 @@ impl Scaffold {
              given = json.load(open(os.environ[\"LEMMA_INPUT\"]))\n\
              arguments = given[\"arguments\"]\n\
              sys.path.insert(0, given[\"root\"])\n\n\n\
-             def attribute(file, symbol):\n    \
-             \"\"\"The object holding `symbol` in `file`, and the symbol's last name.\"\"\"\n    \
-             owner = importlib.import_module(file.removesuffix(\".py\").replace(\"/\", \".\"))\n    \
-             *outer, name = symbol.split(\".\")\n    \
-             for part in outer:\n        owner = getattr(owner, part)\n    \
-             return owner, name\n\n\n\
+             {imports}\n\n\
              {replaced}\n\
              handler = arguments[\"handler\"][\"implementation\"]\n\
              owner, name = attribute(handler[\"file\"], handler[\"symbol\"])\n\
@@ -183,6 +214,7 @@ impl Scaffold {
              json.dump({{\"observed\": {{\"response\": response, \"calls\": calls}}}}, output, default=repr)\n",
             header = self.python_header(),
             handler = self.handler.reference,
+            imports = PYTHON_IMPORTS,
         )
     }
 
@@ -328,6 +360,50 @@ mod tests {
 
         assert!(script.contains("setattr(owner, name, reply)"));
         assert!(script.contains("\"calls\": calls"));
+    }
+
+    #[test]
+    fn the_python_script_imports_a_handler_from_its_own_package_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let app = root.join("services/billing/app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("__init__.py"), "").unwrap();
+        std::fs::write(app.join("models.py"), "CHARGE = \"ch_1\"\n").unwrap();
+        std::fs::write(
+            app.join("handlers.py"),
+            "from app.models import CHARGE\n\n\ndef place_order(request):\n    return {\"id\": CHARGE}\n",
+        )
+        .unwrap();
+        let scaffold = Scaffold {
+            handler: Code {
+                reference: "billing.place_order".to_owned(),
+                file: "services/billing/app/handlers.py".to_owned(),
+                symbol: "place_order".to_owned(),
+            },
+            ..orders(false)
+        };
+        let script = root.join("check.py");
+        std::fs::write(&script, scaffold.script_text()).unwrap();
+        let input = root.join("input.json");
+        let handler = serde_json::json!({ "file": "services/billing/app/handlers.py", "symbol": "place_order" });
+        let given = serde_json::json!({
+            "root": root.display().to_string(),
+            "arguments": { "handler": { "implementation": handler } },
+        });
+        std::fs::write(&input, given.to_string()).unwrap();
+        let output = root.join("output.json");
+
+        let status = std::process::Command::new("python3")
+            .arg(&script)
+            .current_dir(root)
+            .env("LEMMA_INPUT", &input)
+            .env("LEMMA_OUTPUT", &output)
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+        assert!(std::fs::read_to_string(&output).unwrap().contains("ch_1"));
     }
 
     #[test]
