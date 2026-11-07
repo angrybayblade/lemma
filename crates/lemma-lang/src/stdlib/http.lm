@@ -503,13 +503,13 @@ export require operation_without_consumer {
     message: "{s} adds {op}, which no code in the workspace calls; if code outside it does, add \"{op}\" to a graph of lemma.http.public_operation"
 }
 
-// Informational: public specs leave out internal routes on purpose. A route
-// the change adds is reported by route_without_operation instead.
+// Informational: public specs leave out internal routes on purpose. It reads
+// one snapshot, so its base twin tells the routes already there from those
+// a change adds, which route_without_operation also warns about.
 export require route_not_in_spec {
     severity: info
     when:
         route(s, m, p, f, l),
-        routed_before(s, m, p),
         !specified_route(s, m, f, l)
     message: "{s} serves {m} {p} ({f}:{l}) but its spec does not declare it"
 }

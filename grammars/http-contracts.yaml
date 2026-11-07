@@ -295,9 +295,10 @@ requirements:
     severity: warning
     explain: "{s} adds {op}, which no code in the workspace calls; if code outside it does, add \"{op}\" to a graph of lemma.http.public_operation"
 
-  # Informational: public specs leave out internal routes on purpose. A route
-  # the change adds is reported by route_without_operation instead.
+  # Informational: public specs leave out internal routes on purpose. It reads
+  # one snapshot, so its base twin tells the routes already there from those
+  # a change adds, which route_without_operation also warns about.
   route_not_in_spec:
-    when: route(s, m, p, f, l), routed_before(s, m, p), !specified_route(s, m, f, l)
+    when: route(s, m, p, f, l), !specified_route(s, m, f, l)
     severity: info
     explain: "{s} serves {m} {p} ({f}:{l}) but its spec does not declare it"

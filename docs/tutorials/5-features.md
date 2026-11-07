@@ -151,10 +151,10 @@ $ lemma check --change billing --base HEAD~1 --head HEAD
 ...
 warning #billing:api adds a route for DELETE /v1/charges/{} (src/server.ts:15) that its spec does not declare
         [route_without_operation] route_without_operation  (introduced)
-0 errors, 1 warnings, 0 informational
+0 errors, 1 warnings, 1 informational (--all lists them)
 ```
 
-Only what a change adds is reported, so routes and operations that were already out of step stay out of the way.
+The informational finding is `route_not_in_spec`, which lists every route a spec leaves out, introduced or not; `--all` shows it. Only what a change adds is warned about, so routes and operations that were already out of step stay out of the way.
 
 ## Operations called from outside
 

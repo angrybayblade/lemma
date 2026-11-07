@@ -190,9 +190,66 @@ fn a_route_added_without_its_spec_entry_is_reported_at_its_line() {
     assert_eq!(
         found,
         [
+            "route_not_in_spec: #billing:api serves DELETE /v1/charges/{} (src/server.ts:4) but its spec does not declare it",
             "route_without_operation: #billing:api adds a route for DELETE /v1/charges/{} (src/server.ts:4) that its spec does not declare"
         ]
     );
+}
+
+#[test]
+fn a_route_out_of_the_spec_is_introduced_only_by_the_change_adding_it() {
+    let workspace = shop();
+    let billing = workspace.path().join("billing");
+    let internal = format!("{SERVER}app.get(\"/v1/health\", (req, res) => res.sendStatus(200));\n");
+    write(&billing.join("src/server.ts"), &internal);
+    commit(&billing, "serve health");
+    let deleting =
+        format!("{internal}app.delete(\"/v1/charges/:id\", (req, res) => res.sendStatus(204));\n");
+    write(&billing.join("src/server.ts"), &deleting);
+    commit(&billing, "delete a charge");
+
+    let found = not_in_spec(workspace.path());
+
+    assert_eq!(
+        found,
+        [
+            ("DELETE /v1/charges/{}".to_owned(), true),
+            ("GET /v1/health".to_owned(), false)
+        ]
+    );
+}
+
+/// Each `route_not_in_spec` finding of billing's last commit, by route, with
+/// whether the commit introduced it.
+fn not_in_spec(workspace: &Path) -> Vec<(String, bool)> {
+    let options = CheckOptions {
+        change: Some(Change {
+            repository: "billing".to_owned(),
+            base: Some("HEAD~1".to_owned()),
+            head: Some("HEAD".to_owned()),
+        }),
+        level: Some(Level::Check),
+        cache: workspace.join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
+        run_checkers: true,
+        runs_base_checkers: false,
+        select: None,
+    };
+    let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
+    let mut found: Vec<(String, bool)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.check == "route_not_in_spec")
+        .map(|finding| {
+            let route = finding.message.split(" serves ").nth(1).unwrap_or_default();
+            let route = route.split(" (").next().unwrap_or_default().to_owned();
+            (route, finding.introduced)
+        })
+        .collect();
+    found.sort();
+    found
 }
 
 #[test]

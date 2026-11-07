@@ -59,7 +59,7 @@ Every command takes `--json`. Positions in JSON are zero-based.
 | `operation_without_route` | warning | The change adds a spec operation no route serves |
 | `route_without_operation` | warning | The change adds a route the spec does not declare |
 | `operation_without_consumer` | warning | The change adds an operation nothing in the workspace calls (exempt if in `public_operation`) |
-| `route_not_in_spec` | info | A service serves a route its spec does not declare, already there before the change |
+| `route_not_in_spec` | info | A service serves a route its spec does not declare (introduced when the change adds it, which `route_without_operation` also warns about) |
 
 ## Known limits that affect answers
 
