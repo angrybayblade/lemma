@@ -1666,6 +1666,15 @@ fn narrow_to_implementable(resolution: SymbolResolution) -> SymbolResolution {
         .filter(|s| can_be_implemented(s))
         .cloned()
         .collect();
+    // An interface is what implementations are asked about: a struct or
+    // class of the same name (Go's `Backend` beside `type Backend
+    // interface`) implements, rather than is implemented.
+    if kept
+        .iter()
+        .any(|symbol| symbol.symbol.kind == SymbolKind::Interface)
+    {
+        kept.retain(|symbol| symbol.symbol.kind == SymbolKind::Interface);
+    }
     match kept.len() {
         0 => SymbolResolution::Ambiguous(candidates),
         1 => SymbolResolution::Resolved(kept.remove(0)),
@@ -1946,6 +1955,18 @@ mod tests {
         let narrowed = narrow_to_implementable(ambiguous);
 
         assert!(matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == 1));
+    }
+
+    #[test]
+    fn an_interface_wins_over_a_struct_of_the_same_name() {
+        let ambiguous = SymbolResolution::Ambiguous(vec![
+            candidate(1, "Backend", SymbolKind::Struct),
+            candidate(2, "Backend", SymbolKind::Interface),
+        ]);
+
+        let narrowed = narrow_to_implementable(ambiguous);
+
+        assert!(matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == 2));
     }
 
     #[test]
