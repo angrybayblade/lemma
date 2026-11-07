@@ -5,7 +5,8 @@
 //!
 //! Such a call looks like a request (`client.post("/charges", body)`), so
 //! it counts as a route only with a sign of serving: a decorator, a
-//! receiver named like a router, or a function among its arguments.
+//! receiver made or typed as a router (see [`super::routers`]) or named
+//! like one, or a function among its arguments.
 
 use tree_sitter::Node;
 
@@ -37,13 +38,17 @@ impl Walk<'_> {
             return None;
         }
         let called = parts.last()?.to_ascii_lowercase();
-        let receiver = parts
+        let written_receiver = parts
             .len()
             .checked_sub(2)
-            .and_then(|position| parts.get(position))?
+            .and_then(|position| parts.get(position))?;
+        // A router made or typed as one (`const api = express()`) is one
+        // whatever its name.
+        let is_made_router = self.routers.contains_key(written_receiver);
+        let receiver = written_receiver
             .trim_start_matches('_')
             .to_ascii_lowercase();
-        if HTTP_CLIENTS.contains(&receiver.as_str()) {
+        if HTTP_CLIENTS.contains(&receiver.as_str()) && !is_made_router {
             return None;
         }
         let mut cursor = arguments.walk();
@@ -70,8 +75,9 @@ impl Walk<'_> {
         if !VERBS.contains(&called.as_str()) {
             return None;
         }
-        let is_router =
-            ROUTER_RECEIVERS.contains(&receiver.as_str()) || receiver.ends_with("router");
+        let is_router = is_made_router
+            || ROUTER_RECEIVERS.contains(&receiver.as_str())
+            || receiver.ends_with("router");
         let has_handler = listed[1..]
             .iter()
             .any(|argument| FUNCTION_LITERALS.contains(&argument.kind()));

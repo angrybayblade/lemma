@@ -8,6 +8,7 @@
 
 mod go;
 mod registration;
+mod routers;
 mod rust;
 mod zod;
 
@@ -53,6 +54,21 @@ pub struct MethodPath {
     /// or a route in data: never a call.
     #[serde(default)]
     pub is_registration: bool,
+    /// The router a registration is made on, when this file does not
+    /// mount it: a file that imports it may (`app.use("/v1/charges",
+    /// charges)`), putting its prefix before the path.
+    #[serde(default)]
+    pub router: Option<String>,
+}
+
+/// A router mounted under a prefix that the file mounting it does not
+/// make: `app.use("/v1/charges", charges)` with `charges` imported.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct Mount {
+    /// The full prefix, with those of the router it is mounted on.
+    pub prefix: String,
+    /// The router as written: `charges`, or `routers.charges`.
+    pub target: String,
 }
 
 /// A string naming an API path outside a method-and-path object.
@@ -161,6 +177,9 @@ pub struct CodeFacts {
     /// names, whether or not Lemma reads a route from them. Sorted, unique.
     #[serde(default)]
     pub written_paths: Vec<String>,
+    /// Routers mounted under a prefix that this file does not make.
+    #[serde(default)]
+    pub mounts: Vec<Mount>,
 }
 
 /// What to look for.
@@ -229,6 +248,8 @@ fn sorted(mut facts: CodeFacts) -> CodeFacts {
     facts.schema_unions.sort();
     facts.written_paths.sort();
     facts.written_paths.dedup();
+    facts.mounts.sort();
+    facts.mounts.dedup();
     facts
 }
 
@@ -272,8 +293,12 @@ pub fn extract(
         client_functions: BTreeMap::new(),
         examples: 0,
         bound_paths: BTreeMap::new(),
+        routers: routers::Routers::new(),
+        mounts: Vec::new(),
+        registered: Vec::new(),
     };
     walk.visit(tree.root_node());
+    walk.finish_routers();
     walk.collect_strings(tree.root_node());
     walk.facts.is_generated = says_generated(source);
     Ok(sorted(walk.facts))
@@ -415,6 +440,14 @@ struct Walk<'a> {
     /// by enclosing function and variable, so a request passed the
     /// variable (`requests.get(url)`) gets its method.
     bound_paths: BTreeMap<(Option<String>, String), BoundPath>,
+    /// Routers made or typed in this file, with the prefix each was made
+    /// with.
+    routers: routers::Routers,
+    /// Routers this file mounts under a prefix.
+    mounts: Vec<routers::WrittenMount>,
+    /// Routes registered on a router, by their place in the facts' method
+    /// paths, with the router.
+    registered: Vec<(usize, String)>,
 }
 
 /// A path string assigned to a variable: its node, as consumed strings
@@ -523,9 +556,16 @@ impl Walk<'_> {
             "object" => self.object(node),
             "variable_declarator" => {
                 self.bind_path(node);
+                self.router_definition(node);
                 self.zod_definition(node);
             }
-            "assignment" => self.bind_path(node),
+            "assignment" => {
+                self.bind_path(node);
+                self.router_definition(node);
+            }
+            "required_parameter" | "optional_parameter" | "typed_parameter" => {
+                self.router_parameter(node);
+            }
             "call_expression" | "call" => self.call(node),
             "import_statement" | "import_from_statement" => self.import(node),
             "export_statement" => self.export(node),
@@ -637,6 +677,7 @@ impl Walk<'_> {
         }
         self.member_call(function, &parts, node);
         self.client_call(&parts, node);
+        self.router_mount(&parts, arguments);
         // `message.includes('/v1/x')` looks for a path; it requests nothing.
         if self.is_text_search(node) {
             return;
@@ -649,8 +690,9 @@ impl Walk<'_> {
         }
         if let Some((methods, path_node)) = self.route_registration(node, &parts, arguments) {
             let template = self.string_value(path_node).unwrap_or_default();
+            let receiver = parts.len().checked_sub(2).and_then(|at| parts.get(at));
             for method in methods {
-                self.add_registered_route(&method, &template, path_node);
+                self.add_registered_route(&method, &template, path_node, receiver);
             }
             return;
         }
@@ -915,23 +957,35 @@ impl Walk<'_> {
             template: template.to_owned(),
             location,
             is_registration: false,
+            router: None,
         });
     }
 
     /// A route the code registers with its handler, at any path written
     /// from `/`: a path beside a router needs no marker.
-    fn add_registered_route(&mut self, method: &str, template: &str, path_node: Node<'_>) {
+    fn add_registered_route(
+        &mut self,
+        method: &str,
+        template: &str,
+        path_node: Node<'_>,
+        receiver: Option<&String>,
+    ) {
         let Some(path) = canonical_route(template) else {
             return;
         };
         self.consumed.push(path_node.id());
         let location = self.location(path_node);
+        if let Some(receiver) = receiver {
+            let index = self.facts.method_paths.len();
+            self.registered.push((index, receiver.clone()));
+        }
         self.facts.method_paths.push(MethodPath {
             method: canonical_method(method),
             path,
             template: template.to_owned(),
             location,
             is_registration: true,
+            router: None,
         });
     }
 
@@ -1573,6 +1627,60 @@ mod tests {
         let found = facts("server.ts", source);
 
         assert_eq!(routes(&found), [("GET", "/v1/charges", false)]);
+    }
+
+    #[test]
+    fn a_router_mounted_under_a_prefix_serves_its_routes_beneath_it() {
+        let source = "const app = express();\nconst charges = express.Router();\ncharges.post(\"/\", create);\ncharges.get(\"/:id\", show);\napp.use(\"/v1/charges\", auth, charges);\n";
+
+        let found = facts("server.ts", source);
+
+        assert_eq!(
+            routes(&found),
+            [
+                ("GET", "/v1/charges/{}", true),
+                ("POST", "/v1/charges", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_router_made_with_a_prefix_serves_its_routes_beneath_it() {
+        let source = "router = APIRouter(prefix=\"/charges\")\n\n@router.get(\"/{charge_id}\")\ndef show(charge_id: str):\n    return {}\n\napp = FastAPI()\napp.include_router(router, prefix=\"/v1\")\n";
+
+        let found = facts("charges.py", source);
+
+        assert_eq!(routes(&found), [("GET", "/v1/charges/{}", true)]);
+    }
+
+    #[test]
+    fn a_router_is_known_by_how_it_is_made_or_typed_not_its_name() {
+        let source = "const api = express();\napi.post(\"/v1/charges\", create);\nexport function mount(r: Router) {\n  r.get(\"/v1/charges/:id\", show);\n}\n";
+
+        let found = facts("server.ts", source);
+
+        assert_eq!(
+            routes(&found),
+            [
+                ("GET", "/v1/charges/{}", true),
+                ("POST", "/v1/charges", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_mount_of_a_router_made_elsewhere_is_kept_for_its_file() {
+        let source = "import charges from \"./charges\";\nconst app = express();\nconst v1 = express.Router();\nv1.use(\"/charges\", charges);\napp.use(\"/v1\", v1);\n";
+
+        let found = facts("server.ts", source);
+
+        assert_eq!(
+            found.mounts,
+            [Mount {
+                prefix: "/v1/charges".to_owned(),
+                target: "charges".to_owned()
+            }]
+        );
     }
 
     #[test]

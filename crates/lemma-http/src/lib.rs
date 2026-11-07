@@ -14,7 +14,7 @@ mod tsconfig;
 pub use aliases::implied_aliases;
 pub use code::{
     ClientCall, CodeError, CodeFacts, CodeOptions, ImportBinding, Location, MemberCall, Mention,
-    MethodPath, PathReference, Reexport, SchemaUnion, SchemaUse, extract,
+    MethodPath, Mount, PathReference, Reexport, SchemaUnion, SchemaUse, extract,
 };
 pub use openapi::{Field, Operation, Parameter, is_yaml_document, operations};
 pub use paths::{

@@ -788,10 +788,17 @@ fn service(
             .iter()
             .any(|directory| path.starts_with(directory.as_str()))
     };
-    let written = read
+    let known: BTreeSet<String> = files.iter().map(|file| file.path.clone()).collect();
+    let imports = read_import_aliases(repository, commit, snapshot.specs)?;
+    let route_files: Vec<(&str, &CodeFacts)> = read
         .iter()
         .filter(|(path, _)| is_route_file(path))
-        .flat_map(|(_, facts)| written_routes(facts))
+        .map(|(path, facts)| (path.as_str(), &**facts))
+        .collect();
+    let routes = mounted_routes(&route_files, &known, &imports);
+    let written = routes
+        .iter()
+        .map(|(_, route)| (route.method.clone(), route.path.clone()))
         .collect();
     let mut route_aliases = lemma_http::implied_aliases(&documents, &written);
     route_aliases.extend(repository.route_aliases.clone());
@@ -799,25 +806,17 @@ fn service(
         name,
         service: service_name,
         snapshots: &code_snapshots,
-        known: files.iter().map(|file| file.path.clone()).collect(),
+        known,
         route_aliases: &route_aliases,
-        imports: read_import_aliases(repository, commit, snapshot.specs)?,
+        imports,
     };
-    let route_files = read.iter().filter(|(path, _)| is_route_file(path));
-    named_path_facts(
-        &scope,
-        &documents,
-        route_files.map(|(_, facts)| &**facts),
-        writer,
-    );
+    let route_facts_read = route_files.iter().map(|(_, facts)| *facts);
+    named_path_facts(&scope, &documents, route_facts_read, writer);
     for (path, facts) in &read {
         schema_facts(&scope, path, facts, writer);
-        if !is_route_file(path) {
-            continue;
-        }
-        for route in served_routes(facts) {
-            route_facts(&scope, path, route, writer);
-        }
+    }
+    for (file, route) in &routes {
+        route_facts(&scope, file, route, writer);
     }
     Ok(())
 }
@@ -858,9 +857,106 @@ fn served_routes(facts: &CodeFacts) -> impl Iterator<Item = &lemma_http::MethodP
         .filter(|item| item.is_registration || !facts.is_generated)
 }
 
-/// The routes a file's code serves, as method and canonical path.
-fn written_routes(facts: &CodeFacts) -> impl Iterator<Item = (String, String)> + '_ {
-    served_routes(facts).map(|item| (item.method.clone(), item.path.clone()))
+/// The routes route files serve, by file, each under the prefix another
+/// file mounts its router at (`app.use("/v1/charges", charges)` with
+/// `charges` imported from the file).
+fn mounted_routes(
+    route_files: &[(&str, &CodeFacts)],
+    known: &BTreeSet<String>,
+    imports: &PathAliases,
+) -> Vec<(String, lemma_http::MethodPath)> {
+    let prefixes = mount_prefixes(route_files, known, imports);
+    let mut routes = Vec::new();
+    for (file, facts) in route_files {
+        for route in served_routes(facts) {
+            let mut route = route.clone();
+            let mounted = route.router.clone().and_then(|router| {
+                let file = (*file).to_owned();
+                prefixes
+                    .get(&(file.clone(), Some(router)))
+                    .or_else(|| prefixes.get(&(file, None)))
+            });
+            let path = mounted
+                .and_then(|prefix| lemma_http::canonical_route(&format!("{prefix}{}", route.path)));
+            if let Some(path) = path {
+                route.path = path;
+            }
+            routes.push(((*file).to_owned(), route));
+        }
+    }
+    routes
+}
+
+/// The prefixes route files mount routers made in other files under, by
+/// the file making the router and its name there (`None` for the file's
+/// default export, which may be any router it leaves unmounted).
+fn mount_prefixes(
+    route_files: &[(&str, &CodeFacts)],
+    known: &BTreeSet<String>,
+    imports: &PathAliases,
+) -> BTreeMap<(String, Option<String>), String> {
+    let mut prefixes = BTreeMap::new();
+    for (file, facts) in route_files {
+        for mount in &facts.mounts {
+            let targets = mounted_modules(facts, &mount.target)
+                .into_iter()
+                .filter_map(|(module, router)| {
+                    let target = resolve_import(file, &module, known, imports)
+                        .or_else(|| python_module_file(&module, known))?;
+                    Some((target, router))
+                });
+            for target in targets {
+                prefixes
+                    .entry(target)
+                    .or_insert_with(|| mount.prefix.clone());
+            }
+        }
+    }
+    prefixes
+}
+
+/// The modules a mounted router may be made in, each with its name there:
+/// `charges` imported from `./charges` (its default export, `None`), or
+/// `charges.router` with `charges` a module or a Python package's module.
+fn mounted_modules(facts: &CodeFacts, target: &str) -> Vec<(String, Option<String>)> {
+    let (local, member) = match target.split_once('.') {
+        Some((local, member)) => (local, Some(member.to_owned())),
+        None => (target, None),
+    };
+    let Some(binding) = facts
+        .import_bindings
+        .iter()
+        .find(|binding| binding.local == local)
+    else {
+        return Vec::new();
+    };
+    let module = binding.module.clone();
+    match (member, &binding.imported) {
+        (None, imported) => vec![(module, imported.clone())],
+        (Some(member), None) => vec![(module, Some(member))],
+        (Some(member), Some(imported)) => {
+            let separator = if module.ends_with('.') { "" } else { "." };
+            let submodule = format!("{module}{separator}{imported}");
+            vec![(submodule, Some(member.clone())), (module, Some(member))]
+        }
+    }
+}
+
+/// The file an absolute Python module names (`app.api.charges`), wherever
+/// the package root is: the one known file ending in its path.
+fn python_module_file(module: &str, known: &BTreeSet<String>) -> Option<String> {
+    if module.starts_with('.') || module.contains('/') {
+        return None;
+    }
+    let path = module.replace('.', "/");
+    let endings = [format!("{path}.py"), format!("{path}/__init__.py")];
+    let mut found = known.iter().filter(|file| {
+        endings
+            .iter()
+            .any(|ending| *file == ending || file.ends_with(&format!("/{ending}")))
+    });
+    let file = found.next()?;
+    found.next().is_none().then(|| file.clone())
 }
 
 /// The snapshots a service's code facts are written to: the head, and the

@@ -232,6 +232,29 @@ fn a_route_moved_where_no_route_is_read_from_it_is_not_taken_for_removed() {
 }
 
 #[test]
+fn a_route_on_a_router_another_file_mounts_is_served_under_its_prefix() {
+    let workspace = shop();
+    let billing = workspace.path().join("billing");
+    write(&billing.join("openapi.json"), &spec(&[CHARGES, GET_CHARGE]));
+    let server = "import express from \"express\";\nimport charges from \"./charges\";\nconst app = express();\napp.post(\"/v1/charges\", (req, res) => res.json({ id: \"ch_1\" }));\napp.use(\"/v1/charges\", charges);\n";
+    let charges = "import { Router } from \"express\";\nconst router = Router();\nrouter.get(\"/:id\", show);\nexport default router;\n";
+    write(&billing.join("src/server.ts"), server);
+    write(&billing.join("src/charges.ts"), charges);
+    commit(&billing, "get a charge");
+    web_looks_charges_up(workspace.path());
+
+    let found = warnings(workspace.path());
+
+    assert!(
+        !found
+            .iter()
+            .any(|finding| finding.starts_with("route_without_operation")
+                || finding.starts_with("operation_without_route")),
+        "{found:#?}"
+    );
+}
+
+#[test]
 fn a_route_a_generated_server_registers_is_read() {
     let workspace = shop();
     let billing = workspace.path().join("billing");
