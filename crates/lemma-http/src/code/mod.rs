@@ -851,6 +851,13 @@ impl Walk<'_> {
             "keyword_argument" => node
                 .child_by_field_name("name")
                 .map(|name| self.text(name).to_owned()),
+            // `readPage(body)`: a function called by name, as `x.readPage()`
+            // is mentioned through its member, so rules can follow the call
+            // into the function.
+            "call_expression" | "call" => node
+                .child_by_field_name("function")
+                .filter(|function| function.kind() == "identifier")
+                .map(|function| self.text(function).to_owned()),
             "subscript" | "subscript_expression" => {
                 let index = node.child_by_field_name(if self.dialect == Dialect::Python {
                     "subscript"
@@ -1397,6 +1404,23 @@ mod tests {
                 ("POST", "/charges", true),
                 ("POST", "/refunds", true)
             ]
+        );
+    }
+
+    #[test]
+    fn a_function_called_by_name_is_mentioned_in_its_caller() {
+        let source = "export function charge(body) {\n  return readPage(body);\n}\n";
+
+        let found = facts("charge.ts", source);
+
+        let mentioned: Vec<(&str, Option<&str>)> = found
+            .mentions
+            .iter()
+            .map(|mention| (mention.name.as_str(), mention.function.as_deref()))
+            .collect();
+        assert!(
+            mentioned.contains(&("readPage", Some("charge"))),
+            "{mentioned:?}"
         );
     }
 

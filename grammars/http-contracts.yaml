@@ -112,22 +112,27 @@ rules:
   - own_operation(f, op) :- part_of_service(f, s), operation@base(s, op, _, _).
   - calls(c, op, f, l) :- references_operation(c, op, f, l), !own_operation(f, op).
 
+  # Functions consumer c calls by name: in its own file, and in a file its
+  # file imports, where an SDK often keeps the code that builds a request or
+  # reads a response (`transformListResponse`).
+  - local_callee(c, g) :- in_file(c, f), in_file(g, f), named(g, n), mentions(c, n), c != g.
+  - imported_callee(c, g) :- in_file(c, f), imports(f, h), in_file(g, h), named(g, n), mentions(c, n).
+
   # Evidence that consumer c uses name n, for findings that rest on a use:
-  # its own function, or declarations outside functions (schemas, types,
-  # constants) in its file or a file its file imports. Other functions do
-  # not count; they often reuse common names for other things.
+  # its own function, the functions it calls in its file or an imported one,
+  # or declarations outside functions (schemas, types, constants) in its file
+  # or a file its file imports. Functions it does not call do not count; they
+  # often reuse common names for other things.
   - uses(c, n) :- mentions(c, n).
   - uses(c, n) :- in_file(c, f), mentions(f, n).
   - uses(c, n) :- in_file(c, f), imports(f, g), mentions(g, n).
+  - uses(c, n) :- local_callee(c, g), mentions(g, n).
+  - uses(c, n) :- imported_callee(c, g), mentions(g, n).
 
   # Evidence that consumer c sends name n, for findings that rest on a name
-  # being absent from a request: what it uses, and what the functions of
-  # its file it calls name, where a request body is often built. Other
-  # functions of the file do not count: a script naming a field in one
-  # function says nothing about the request another sends.
-  - local_callee(c, g) :- in_file(c, f), in_file(g, f), named(g, n), mentions(c, n), c != g.
+  # being absent from a request: what it uses. A script naming a field in a
+  # function the consumer never calls says nothing about the request it sends.
   - sends(c, n) :- uses(c, n).
-  - sends(c, n) :- local_callee(c, g), mentions(g, n).
 
   # What changed between the base and head of the change. Parameter and
   # field changes count only on operations the change kept; a removed

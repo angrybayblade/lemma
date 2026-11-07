@@ -57,8 +57,9 @@ HTTP contracts between services, their generated clients and consumers.
 - rule `references_operation`: `(c: Text, op: Text, f: Text, l: Int)`
 - rule `own_operation`: `(f: Text, op: Text)`
 - rule `calls`: `(c: Text, op: Text, f: Text, l: Int)`
-- rule `uses`: `(c: Text, n: Text)`
 - rule `local_callee`: `(c: Text, g: Text)`
+- rule `imported_callee`: `(c: Text, g: Text)`
+- rule `uses`: `(c: Text, n: Text)`
 - rule `sends`: `(c: Text, n: Text)`
 - rule `removed_operation`: `(op: Text)`
 - rule `kept_operation`: `(op: Text)`

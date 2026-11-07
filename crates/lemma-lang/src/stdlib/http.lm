@@ -81,26 +81,9 @@ export rule calls(c: Text, op: Text, f: Text, l: Int) {
         !own_operation(f, op)
 }
 
-// Evidence that consumer c uses name n, for findings that rest on a use:
-// its own function, or declarations outside functions (schemas, types,
-// constants) in its file or a file its file imports. Other functions do
-// not count; they often reuse common names for other things.
-export rule uses(c: Text, n: Text) {
-    (c, n) :- mentions(c, n)
-    (c, n) :-
-        in_file(c, f),
-        mentions(f, n)
-    (c, n) :-
-        in_file(c, f),
-        imports(f, g),
-        mentions(g, n)
-}
-
-// Evidence that consumer c sends name n, for findings that rest on a name
-// being absent from a request: what it uses, and what the functions of
-// its file it calls name, where a request body is often built. Other
-// functions of the file do not count: a script naming a field in one
-// function says nothing about the request another sends.
+// Functions consumer c calls by name: in its own file, and in a file its
+// file imports, where an SDK often keeps the code that builds a request or
+// reads a response (`transformListResponse`).
 export rule local_callee(c: Text, g: Text) {
     (c, g) :-
         in_file(c, f),
@@ -110,11 +93,43 @@ export rule local_callee(c: Text, g: Text) {
         c != g
 }
 
-export rule sends(c: Text, n: Text) {
-    (c, n) :- uses(c, n)
+export rule imported_callee(c: Text, g: Text) {
+    (c, g) :-
+        in_file(c, f),
+        imports(f, h),
+        in_file(g, h),
+        named(g, n),
+        mentions(c, n)
+}
+
+// Evidence that consumer c uses name n, for findings that rest on a use:
+// its own function, the functions it calls in its file or an imported one,
+// or declarations outside functions (schemas, types, constants) in its file
+// or a file its file imports. Functions it does not call do not count; they
+// often reuse common names for other things.
+export rule uses(c: Text, n: Text) {
+    (c, n) :- mentions(c, n)
+    (c, n) :-
+        in_file(c, f),
+        mentions(f, n)
+    (c, n) :-
+        in_file(c, f),
+        imports(f, g),
+        mentions(g, n)
     (c, n) :-
         local_callee(c, g),
         mentions(g, n)
+    (c, n) :-
+        imported_callee(c, g),
+        mentions(g, n)
+}
+
+// Evidence that consumer c sends name n, for findings that rest on a name
+// being absent from a request: what it uses. A script naming a field in a
+// function the consumer never calls says nothing about the request it sends.
+
+export rule sends(c: Text, n: Text) {
+    (c, n) :- uses(c, n)
 }
 
 // What changed between the base and head of the change. Parameter and
