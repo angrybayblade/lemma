@@ -90,12 +90,34 @@ fn resolve(checked: &Checked, request: &Request<'_>) -> anyhow::Result<Scaffold>
         .through
         .map(|link| link_through(model, entry, link))
         .transpose()?;
+    let interpreter = (language == ScriptLanguage::Python)
+        .then(|| service_python(model, entry, &handler.reference))
+        .flatten();
     Ok(Scaffold {
         name: request.name.to_owned(),
         handler,
         through,
         language,
+        interpreter,
     })
+}
+
+/// The `runtime.python` of the service holding the operation `reference`
+/// names, which has the service's dependencies installed.
+fn service_python(model: &Model, entry: &str, reference: &str) -> Option<String> {
+    let (service, _) = reference.rsplit_once('.')?;
+    let declared = model.services.iter().find(|declared| {
+        declared.address.module == entry && declared.address.dotted_path() == service
+    })?;
+    let Value::Record(runtime) = declared.fields.get("runtime")? else {
+        return None;
+    };
+    runtime
+        .iter()
+        .find_map(|(name, value)| match (name.as_str(), value) {
+            ("python", Value::Text(python)) => Some(python.clone()),
+            _ => None,
+        })
 }
 
 /// Fails unless `name` is an identifier no behavior or checker of the

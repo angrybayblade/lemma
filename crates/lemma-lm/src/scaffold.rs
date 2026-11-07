@@ -76,6 +76,9 @@ pub(crate) struct Scaffold {
     pub handler: Code,
     pub through: Option<Through>,
     pub language: ScriptLanguage,
+    /// The interpreter the handler's service runs with, such as its
+    /// `runtime.python`; the language's usual one when `None`.
+    pub interpreter: Option<String>,
 }
 
 impl Scaffold {
@@ -119,7 +122,10 @@ impl Scaffold {
              because \"TODO: why this must hold when {handler} runs\"\n}}\n",
             handler = self.handler.reference,
             script = self.script_path(),
-            program = self.language.program(),
+            program = self
+                .interpreter
+                .as_deref()
+                .unwrap_or(self.language.program()),
             name = self.name,
         )
     }
@@ -270,6 +276,7 @@ mod tests {
                 provider: "api.createCharge".to_owned(),
             }),
             language: ScriptLanguage::Python,
+            interpreter: None,
         }
     }
 
@@ -298,6 +305,18 @@ mod tests {
 
         assert!(script.contains("setattr(owner, name, reply)"));
         assert!(script.contains("\"calls\": calls"));
+    }
+
+    #[test]
+    fn the_services_interpreter_runs_the_script() {
+        let scaffold = Scaffold {
+            interpreter: Some(".venv/bin/python".to_owned()),
+            ..orders(false)
+        };
+
+        let text = scaffold.module_text();
+
+        assert!(text.contains("command: [\".venv/bin/python\", \"tools/declined_charge.py\"]"));
     }
 
     #[test]
