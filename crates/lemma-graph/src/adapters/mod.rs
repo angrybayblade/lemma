@@ -18,6 +18,7 @@ mod registry;
 pub(crate) use cache::{commit_state, working_state};
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use lemma_verify::GeneratedDocument;
@@ -148,11 +149,14 @@ impl<'a> Adapter<'a> {
             );
             return read_generated(&output);
         }
-        log::info!(
-            "adapter: reading {} in its working directory",
-            root.display()
-        );
-        remembering_failure(&output, || self.run(root, root, &output))?;
+        let context = failure_context(root, std::env::vars_os());
+        remembering_failure(&output, &context, || {
+            log::info!(
+                "adapter: reading {} in its working directory",
+                root.display()
+            );
+            self.run(root, root, &output)
+        })?;
         read_generated(&output)
     }
 
@@ -176,7 +180,8 @@ impl<'a> Adapter<'a> {
                 "adapter: {} at {short}: working directory is that commit; reading it there",
                 root.display()
             );
-            remembering_failure(&output, || self.run(root, root, &output))?;
+            let context = failure_context(root, std::env::vars_os());
+            remembering_failure(&output, &context, || self.run(root, root, &output))?;
             return read_generated(&output).map(Some);
         }
         if build == Build::KeptOnly {
@@ -187,12 +192,13 @@ impl<'a> Adapter<'a> {
             );
             return Ok(None);
         }
-        log::info!(
-            "adapter: {} at {short}: no kept document; building it in Lemma's worktree",
-            root.display()
-        );
-        let worktree = repos::SharedWorktree::check_out(root, commit, cache)?;
-        remembering_failure(&output, || {
+        let context = failure_context(root, std::env::vars_os());
+        remembering_failure(&output, &context, || {
+            log::info!(
+                "adapter: {} at {short}: no kept document; building it in Lemma's worktree",
+                root.display()
+            );
+            let worktree = repos::SharedWorktree::check_out(root, commit, cache)?;
             self.set_up(worktree.path())?;
             self.run(root, worktree.path(), &output)
         })?;
@@ -557,25 +563,70 @@ pub fn contract(
     })
 }
 
-/// How many of a failure's last lines are shown; the rest stay in its log.
-const FAILURE_TAIL_LINES: usize = 6;
+/// How many error lines of a failure are shown; the rest stay in its log.
+const FAILURE_ERROR_LINES: usize = 4;
+
+/// Variables that change how a toolchain builds: where programs are, and
+/// the settings and caches of Go, Node and its package managers, Python,
+/// Rust and Java.
+const TOOLCHAIN_VARIABLES: [&str; 13] = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "XDG_CACHE_HOME",
+    "GO",
+    "CGO_",
+    "NODE",
+    "NPM_",
+    "PNPM_",
+    "BUN_",
+    "PYTHON",
+    "VIRTUAL_ENV",
+    "CARGO",
+];
+
+/// What a remembered failure is bound to besides the code: the clone it
+/// happened in, whose untracked dependencies (`node_modules`) the code's
+/// state does not cover, and the toolchain environment. A failure in a
+/// sandbox with a broken cache, or before dependencies were installed, is
+/// then tried again elsewhere.
+fn failure_context(root: &Path, variables: impl Iterator<Item = (OsString, OsString)>) -> String {
+    let mut relevant: Vec<String> = variables
+        .filter_map(|(name, value)| {
+            let name = name.to_str()?.to_owned();
+            let is_toolchain = TOOLCHAIN_VARIABLES
+                .iter()
+                .any(|prefix| name == *prefix || name.starts_with(prefix));
+            is_toolchain.then(|| format!("{name}={}", value.to_string_lossy()))
+        })
+        .collect();
+    relevant.sort();
+    let described = format!("{}\n{}", root.display(), relevant.join("\n"));
+    lemma_model::content_hash(described.as_bytes())
+}
 
 /// Runs `attempt`, which writes the document kept at `output`, unless it
-/// already failed for that same key, and remembers a failure beside where
-/// the document would go.
+/// already failed for that same key in the same `context`, and remembers a
+/// failure beside where the document would go.
 ///
-/// The key names the code and the adapter, so running again would only fail
-/// again, costing a build each time: the failure stands until the code or
-/// the adapter changes, or its log is deleted (after fixing a toolchain,
-/// say).
+/// The key names the code and the adapter, so running again in the same
+/// clone and environment would only fail again, costing a build each time:
+/// the failure stands until the code, the adapter, the clone or the
+/// toolchain changes, or its log is deleted.
 fn remembering_failure(
     output: &Path,
+    context: &str,
     attempt: impl FnOnce() -> Result<(), GraphError>,
 ) -> Result<(), GraphError> {
     let log = output.with_extension("failed");
-    if let Ok(earlier) = std::fs::read_to_string(&log) {
+    let header = format!("context {context}\n");
+    if let Some(earlier) = std::fs::read_to_string(&log)
+        .ok()
+        .and_then(|text| text.strip_prefix(&header).map(str::to_owned))
+    {
+        log::info!("adapter: failed the same way here before; not run again");
         return Err(GraphError::AdapterFailedBefore {
-            summary: abbreviate(&earlier, FAILURE_TAIL_LINES),
+            summary: summarize(&earlier, FAILURE_ERROR_LINES),
             log,
         });
     }
@@ -583,7 +634,7 @@ fn remembering_failure(
         return Ok(());
     };
     let full = error.to_string();
-    if let Err(source) = std::fs::write(&log, &full) {
+    if let Err(source) = std::fs::write(&log, format!("{header}{full}")) {
         // Without a log the failure is not remembered and the next run
         // tries again; the failure itself is still reported in full.
         log::warn!(
@@ -593,25 +644,47 @@ fn remembering_failure(
         return Err(error);
     }
     Err(GraphError::AdapterFailed {
-        summary: abbreviate(&full, FAILURE_TAIL_LINES),
+        summary: summarize(&full, FAILURE_ERROR_LINES),
         log,
     })
 }
 
-/// `text`'s first line, which says what failed, and its last `tail` lines,
-/// which usually say why; the lines between are counted, not shown.
-fn abbreviate(text: &str, tail: usize) -> String {
+/// `text`'s first line, which says what failed, and its lines that say
+/// why: up to `most` lines naming an error, or else its last lines. A
+/// package manager's progress and notices are left in the log.
+fn summarize(text: &str, most: usize) -> String {
     let lines: Vec<&str> = text.trim_end().lines().collect();
-    if lines.len() <= tail + 2 {
-        return lines.join("\n");
+    let Some((first, rest)) = lines.split_first() else {
+        return String::new();
+    };
+    let is_error = |line: &&&str| {
+        let lower = line.to_ascii_lowercase();
+        [
+            "err",
+            "fatal",
+            "panic",
+            "cannot",
+            "undefined",
+            "not found",
+            "failed",
+        ]
+        .iter()
+        .any(|word| lower.contains(word))
+    };
+    let mut shown: Vec<&str> = rest.iter().filter(is_error).take(most).copied().collect();
+    if shown.is_empty() {
+        let tail = rest.len().saturating_sub(most);
+        shown = rest[tail..].to_vec();
     }
-    let hidden = lines.len() - 1 - tail;
-    let last = &lines[lines.len() - tail..];
-    format!(
-        "{}\n... {hidden} more lines ...\n{}",
-        lines[0],
-        last.join("\n")
-    )
+    let hidden = rest.len() - shown.len();
+    let summary = std::iter::once(*first)
+        .chain(shown)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if hidden == 0 {
+        return summary;
+    }
+    format!("{summary}\n({hidden} more lines in the log)")
 }
 
 #[cfg(test)]
@@ -621,18 +694,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_long_failure_keeps_its_first_and_last_lines() {
-        let text = (1..=20)
-            .map(|n| format!("line {n}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+    fn a_failure_shows_what_failed_and_its_error_line_without_progress() {
+        let text = "setup `pnpm install` failed\nProgress: resolved 1, reused 0\nProgress: resolved 900, reused 899\n ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with frozen-lockfile\nDone in 2s";
 
-        let short = abbreviate(&text, 3);
+        let short = summarize(text, 4);
 
         assert_eq!(
             short,
-            "line 1\n... 16 more lines ...\nline 18\nline 19\nline 20"
+            "setup `pnpm install` failed\n ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with frozen-lockfile\n(3 more lines in the log)"
         );
+    }
+
+    #[test]
+    fn a_failure_naming_no_error_shows_its_last_lines() {
+        let text = "build failed\none\ntwo\nthree";
+
+        let short = summarize(text, 2);
+
+        assert_eq!(short, "build failed\ntwo\nthree\n(1 more lines in the log)");
+    }
+
+    #[test]
+    fn the_context_counts_the_clone_and_toolchain_variables_only() {
+        let variables = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+                .collect::<Vec<_>>()
+                .into_iter()
+        };
+        let here = failure_context(
+            Path::new("/clone"),
+            variables(&[("GOCACHE", "/a"), ("PWD", "/x")]),
+        );
+
+        let moved = failure_context(
+            Path::new("/clone"),
+            variables(&[("GOCACHE", "/a"), ("PWD", "/y")]),
+        );
+        let other_cache = failure_context(Path::new("/clone"), variables(&[("GOCACHE", "/b")]));
+        let other_clone = failure_context(Path::new("/fresh"), variables(&[("GOCACHE", "/a")]));
+
+        assert_eq!(here, moved);
+        assert_ne!(here, other_cache);
+        assert_ne!(here, other_clone);
     }
 
     #[test]
@@ -644,10 +749,10 @@ mod tests {
                 message: "build failed".to_owned(),
             })
         };
-        let first = remembering_failure(&output, failing);
+        let first = remembering_failure(&output, "here", failing);
         let mut ran_again = false;
 
-        let second = remembering_failure(&output, || {
+        let second = remembering_failure(&output, "here", || {
             ran_again = true;
             Ok(())
         });
@@ -658,6 +763,27 @@ mod tests {
             Err(GraphError::AdapterFailedBefore { .. })
         ));
         assert!(!ran_again);
+    }
+
+    #[test]
+    fn a_failure_elsewhere_is_tried_again() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let output = directory.path().join("key.json");
+        let failing = || {
+            Err(GraphError::Adapter {
+                message: "build failed".to_owned(),
+            })
+        };
+        let _ = remembering_failure(&output, "sandbox", failing);
+        let mut ran_again = false;
+
+        let second = remembering_failure(&output, "fresh clone", || {
+            ran_again = true;
+            Ok(())
+        });
+
+        assert!(second.is_ok());
+        assert!(ran_again);
     }
 
     #[test]
