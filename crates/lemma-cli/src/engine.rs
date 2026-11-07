@@ -184,31 +184,31 @@ impl Engine {
                 )
             }
             Command::Symbols(args) => {
-                self.refresh_index(&request);
+                self.refresh_index(&request, Indexing::FilesOnly);
                 self.symbols(&request, args, out)
             }
             Command::Outline { path } => {
-                self.refresh_index(&request);
+                self.refresh_index(&request, Indexing::FilesOnly);
                 self.outline(&request, &path, out)
             }
             Command::Refs(args) => {
-                self.refresh_index(&request);
+                self.refresh_index(&request, Indexing::Refresh);
                 self.references(&request, args, out)
             }
             Command::Definition(args) => {
-                self.refresh_index(&request);
+                self.refresh_index(&request, Indexing::FilesOnly);
                 self.definition(&request, &args, out)
             }
             Command::Implementations(args) => {
-                self.refresh_index(&request);
+                self.refresh_index(&request, refresh_for(&args.target));
                 self.implementations(&request, args, out)
             }
             Command::Signature(args) => {
-                self.refresh_index(&request);
+                self.refresh_index(&request, refresh_for(&args.target));
                 self.signature(&request, args, out)
             }
             Command::Graph(args) => {
-                self.refresh_index(&request);
+                self.refresh_index(&request, Indexing::Refresh);
                 self.graph(&request, args, out)
             }
             Command::Providers => self.providers(&request, out),
@@ -227,7 +227,7 @@ impl Engine {
     /// `lemma index`. Files whose size and times are unchanged cost a `stat`
     /// each. An index given with `--db` is left as it is: what it indexes is
     /// not known from its location.
-    fn refresh_index(&mut self, request: &Request<'_>) {
+    fn refresh_index(&mut self, request: &Request<'_>, indexing: Indexing) {
         if request.db.is_some() {
             return;
         }
@@ -242,7 +242,7 @@ impl Engine {
         // A refresh that fails (a `lemma.yaml` mid-edit, a pin that needs a
         // fetch while offline) leaves the index as it was: the query still
         // answers from it, and reports any file that changed as stale.
-        let _ = self.index(request, &root, Indexing::Refresh, &mut io::sink());
+        let _ = self.index(request, &root, indexing, &mut io::sink());
     }
 
     fn index(
@@ -266,6 +266,10 @@ impl Engine {
             Some(db) => db.clone(),
             None => default_index_path(&root)?,
         };
+        if matches!(indexing, Indexing::FilesOnly) {
+            self.index_files(&db_path, &root, source.as_ref())?;
+            return Ok(0);
+        }
         let indexed = self.index_repository(&db_path, &root, source.as_ref())?;
         if let Indexing::Command(retention) = indexing {
             self.apply_retention(&db_path, &root, retention)?;
@@ -307,6 +311,23 @@ impl Engine {
         root: &Path,
         source: Option<&lemma_graph::config::LemmaFile>,
     ) -> anyhow::Result<Indexed> {
+        let summary = self.index_files(db_path, root, source)?;
+        let store = store_for_writing(&mut self.stores, db_path)?;
+        let exports = match source {
+            Some(source) => update_exports(store, &summary, source, root)?,
+            None => clear_exports(store, &summary)?,
+        };
+        Ok(Indexed { summary, exports })
+    }
+
+    /// Indexes the files `source`'s services are made of under `root` into
+    /// `db_path`, leaving exports alone.
+    fn index_files(
+        &mut self,
+        db_path: &Path,
+        root: &Path,
+        source: Option<&lemma_graph::config::LemmaFile>,
+    ) -> anyhow::Result<lemma_index::IndexSummary> {
         let selection = match source {
             Some(source) => selection::repository_selection(source)?,
             None => lemma_index::Selection::everything(),
@@ -332,12 +353,7 @@ impl Engine {
             .live_indexes
             .get_mut(&key)
             .context("the live index was lost")?;
-        let summary = live.index(store)?;
-        let exports = match source {
-            Some(source) => update_exports(store, &summary, source, root)?,
-            None => clear_exports(store, &summary)?,
-        };
-        Ok(Indexed { summary, exports })
+        Ok(live.index(store)?)
     }
 
     /// Indexes every repository a workspace composes into its own index,
@@ -353,6 +369,14 @@ impl Engine {
         let root = lemma_path.parent().unwrap_or(Path::new("."));
         let cache = lemma_graph::repos::cache_directory();
         let members = lemma_graph::compose::members(lemma_path, &cache)?;
+        if matches!(indexing, Indexing::FilesOnly) {
+            for member in &members {
+                let indexed_root = member_root(member, &cache)?;
+                let db_path = default_index_path(&member.root)?;
+                self.index_files(&db_path, &indexed_root, Some(&member.file))?;
+            }
+            return Ok(0);
+        }
         let mut workspace = WorkspaceIndex::default();
         for member in &members {
             let result = self.index_member(member, &cache);
@@ -423,14 +447,7 @@ impl Engine {
         member: &lemma_graph::compose::Member,
         cache: &Path,
     ) -> anyhow::Result<(StoredMember, Indexed)> {
-        let indexed_root = match &member.commit {
-            Some(commit) => lemma_graph::repos::Checkout {
-                root: member.root.clone(),
-                commit: Some(commit.clone()),
-            }
-            .worktree(cache)?,
-            None => member.root.clone(),
-        };
+        let indexed_root = member_root(member, cache)?;
         let db_path = default_index_path(&member.root)?;
         let indexed = self.index_repository(&db_path, &indexed_root, Some(&member.file))?;
         let stored = StoredMember {
@@ -1104,6 +1121,27 @@ fn workspace_file(db_path: &Path) -> Option<PathBuf> {
     file.exists().then_some(file)
 }
 
+/// Where a member is indexed: a worktree at its pin, or its clone.
+fn member_root(member: &lemma_graph::compose::Member, cache: &Path) -> anyhow::Result<PathBuf> {
+    let Some(commit) = &member.commit else {
+        return Ok(member.root.clone());
+    };
+    let checkout = lemma_graph::repos::Checkout {
+        root: member.root.clone(),
+        commit: Some(commit.clone()),
+    };
+    Ok(checkout.worktree(cache)?)
+}
+
+/// How to refresh before a query about `target`: an export's address is
+/// resolved through the exports, so they are brought up to date too.
+fn refresh_for(target: &SymbolTarget) -> Indexing {
+    if addresses::as_address(&target.symbol).is_some() {
+        return Indexing::Refresh;
+    }
+    Indexing::FilesOnly
+}
+
 /// Why an index is being brought up to date.
 #[derive(Clone, Copy)]
 enum Indexing {
@@ -1113,6 +1151,11 @@ enum Indexing {
     /// Before a query: indexes changed files and nothing more, keeping
     /// whatever snapshots the last `lemma index` kept.
     Refresh,
+    /// Before a query that reads no exports (an outline, a definition):
+    /// as `Refresh`, but leaves exports as they were, sparing the adapters
+    /// a changed file would run. The next query that reads them updates
+    /// them.
+    FilesOnly,
 }
 
 /// What indexing one repository produced.
