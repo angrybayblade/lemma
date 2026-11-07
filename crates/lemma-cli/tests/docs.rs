@@ -54,6 +54,11 @@ fn the_behaviors_tutorial_runs_as_written() {
     run_page("tutorials/4-behaviors.md");
 }
 
+#[test]
+fn the_features_tutorial_runs_as_written() {
+    run_page("tutorials/5-features.md");
+}
+
 /// Runs a page, and the pages it comes after, in a fresh directory.
 fn run_page(page: &str) {
     let scratch = tempfile::tempdir().unwrap();

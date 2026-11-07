@@ -223,4 +223,4 @@ behavior orders::passes_on_retriable: stale (1 of 3 cases held, 0 of 2 evidence 
 
 At level `check`, only violated behaviors fail. At level `strict` (`config: { level: strict }` or `--level strict`), unknown and stale ones fail too.
 
-Next: [set up your editor](5-editors.md).
+Next: [add a feature](5-features.md).

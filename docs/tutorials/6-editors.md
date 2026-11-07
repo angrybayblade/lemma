@@ -1,4 +1,4 @@
-# 5. Set up your editor
+# 6. Set up your editor
 
 With your editor set up, a `.lm` file is highlighted, its mistakes are underlined as you type (saved or not), hovering a name shows its type or signature, go-to-definition jumps to declarations in other repositories and in the standard library, and the outline lists the file's declarations. Completion offers the names in scope, and after a `.` the members of a module or service. Formatting lays the file out in the one standard layout.
 
