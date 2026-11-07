@@ -1609,8 +1609,20 @@ fn select_symbol(
         return addresses::resolve_export(store, snapshot, &address);
     }
     // A member's ids are its own index's, so `#billing:607` copied from
-    // the workspace names the same symbol inside billing.
-    if let Some((_, id)) = qualified_id(symbol) {
+    // the workspace names the same symbol inside billing, and nothing in
+    // another repository, where 607 is some other symbol.
+    if let Some((repository, id)) = qualified_id(symbol) {
+        let here = Path::new(&snapshot.snapshot.root)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !is_same_repository(&repository, &here) {
+            bail!(
+                "`{symbol}` is an id in {repository}, but this index is of `{here}`: ids are \
+                 numbered per repository, so ask from the workspace or inside {repository}, or \
+                 use an id this repository's `lemma symbols` shows"
+            );
+        }
         let found = store
             .symbol(snapshot.id, id)?
             .filter(|found| matches_filters(found, &filters));
@@ -1680,6 +1692,18 @@ fn narrow_to_implementable(resolution: SymbolResolution) -> SymbolResolution {
         1 => SymbolResolution::Resolved(kept.remove(0)),
         _ => SymbolResolution::Ambiguous(kept),
     }
+}
+
+/// Whether a workspace's name for a member (`#web_app`) names the
+/// repository in directory `directory` (`web-app`): workspaces write
+/// names with `_` where directories often have `-`.
+fn is_same_repository(name: &str, directory: &str) -> bool {
+    let normal = |text: &str| {
+        text.trim_start_matches('#')
+            .to_ascii_lowercase()
+            .replace('-', "_")
+    };
+    normal(name) == normal(directory)
 }
 
 /// Whether `symbol` passes `filters`, as a symbol found by name must.
@@ -1955,6 +1979,13 @@ mod tests {
         let narrowed = narrow_to_implementable(ambiguous);
 
         assert!(matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == 1));
+    }
+
+    #[test]
+    fn a_members_name_matches_its_directory_with_dashes_or_underscores() {
+        assert!(is_same_repository("#web_app", "web-app"));
+        assert!(is_same_repository("#functions", "functions"));
+        assert!(!is_same_repository("#platform", "functions"));
     }
 
     #[test]
