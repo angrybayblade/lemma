@@ -210,6 +210,15 @@ fn print_behaviors(out: &mut dyn Write, report: &Report) -> std::io::Result<()> 
             behavior.outcome,
             behavior.cases.len()
         )?;
+        for case in &behavior.cases {
+            if let Some(at_base) = &case.at_base {
+                writeln!(
+                    out,
+                    "        fixed {}: at the base, {at_base}",
+                    case.identity
+                )?;
+            }
+        }
     }
     for change in &report.requirement_changes {
         writeln!(out, "requirement {} {}", change.requirement, change.change)?;

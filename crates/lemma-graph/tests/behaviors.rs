@@ -458,6 +458,13 @@ fn a_change_that_fixes_the_worker_reports_its_cases_fixed_when_the_base_runs() {
         forwards.cases[1..].iter().all(|case| case.fixed),
         "{forwards:#?}"
     );
+    assert!(
+        forwards.cases[1..].iter().all(|case| case
+            .at_base
+            .as_deref()
+            .is_some_and(|ended| ended.contains("retriable"))),
+        "{forwards:#?}"
+    );
 }
 
 #[test]

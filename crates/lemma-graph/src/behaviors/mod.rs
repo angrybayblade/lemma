@@ -70,6 +70,10 @@ pub struct CaseReport {
     /// holds at the head. Known only when the base ran its checkers or
     /// kept the evidence it needs.
     pub fixed: bool,
+    /// For a case the change fixed, how it ended at the base: the failed
+    /// expression with its operands' values there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_base: Option<String>,
     /// The reason of the allowance covering it, if one does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed: Option<String>,
@@ -532,6 +536,10 @@ fn report(
                     .map(|problem| problem_report(problem, checked)),
                 introduced: !has_change || (case.outcome != Outcome::Satisfied && !was_there),
                 fixed,
+                at_base: before
+                    .filter(|_| fixed)
+                    .and_then(|before| before.problem.as_ref())
+                    .map(problem_line),
                 allowed: None,
             }
         })
@@ -555,6 +563,20 @@ fn report(
             })
             .collect(),
     }
+}
+
+/// A problem in one line: what happened, which names the expression, and
+/// each operand's value.
+fn problem_line(problem: &eval::Problem) -> String {
+    let operands: Vec<String> = problem
+        .operands
+        .iter()
+        .map(|(operand, value)| format!("{operand} = {value}"))
+        .collect();
+    if operands.is_empty() {
+        return problem.message.clone();
+    }
+    format!("{}; {}", problem.message, operands.join(", "))
 }
 
 fn problem_report(problem: &eval::Problem, checked: &Checked) -> ProblemReport {
