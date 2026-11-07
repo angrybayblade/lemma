@@ -89,12 +89,20 @@ pub enum GraphError {
     },
     /// `--select` names a check the parent module does not declare, or the
     /// parent is a `lemma.yaml`, which declares none.
-    #[error("{module} declares no check `{name}`")]
+    #[error("{module} declares no check `{name}`, and no behavior or requirement is named so")]
     UnknownCheck {
         /// The parent's entry module.
         module: String,
         /// The check asked for.
         name: String,
+    },
+    /// `--select` names a behavior or requirement by a name several share.
+    #[error("`{name}` names several behaviors and requirements: {}; select one by its address", candidates.join(", "))]
+    AmbiguousSelection {
+        /// The name asked for.
+        name: String,
+        /// The addresses it could mean.
+        candidates: Vec<String>,
     },
     /// A service in a `lemma.yaml` contradicts its name.
     #[error("invalid {}", path.display())]

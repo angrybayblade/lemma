@@ -17,8 +17,9 @@ use std::path::Path;
 
 use lemma_lang::Checked;
 use lemma_lang::eval::{self, BehaviorResult, Demand, Facts, Outcome, StatedFacts, World};
-use lemma_lang::model::{Check, Model, Predicate};
+use lemma_lang::model::{Check, Model, Predicate, Run};
 use lemma_lang::syntax::ast::Snapshot;
+use lemma_lang::types::Address;
 
 use self::encode::Encoder;
 use self::evidence::{Place, Request, Store};
@@ -218,9 +219,9 @@ pub(crate) fn program_grammar(
     };
     let program = Program::load(repos, &manifest, HEAD, cache)?;
     let checked = &program.checked;
-    let main =
-        selected_check(checked, options.select.as_deref())?.map(|check| check.runs.as_slice());
-    lemma_grammar::lm::grammar_file(&checked.model, &checked.loaded.entry, main)
+    let main = selected_check(checked, options.select.as_deref())?;
+    let runs = main.as_ref().map(|check| check.runs.as_slice());
+    lemma_grammar::lm::grammar_file(&checked.model, &checked.loaded.entry, runs)
         .map(Some)
         .map_err(|source| GraphError::Grammar {
             path: repos[SELF].checkouts[HEAD].root.join(&manifest),
@@ -321,7 +322,7 @@ impl Program {
             places: BTreeMap::new(),
         };
         let main = selected_check(&self.checked, selected)?;
-        Ok(eval::run_check(model, main, &mut world))
+        Ok(eval::run_check(model, main.as_ref(), &mut world))
     }
 }
 
@@ -416,24 +417,73 @@ impl World for CheckWorld<'_> {
     }
 }
 
-/// The entry module's check named `selected`, which must exist, or its
-/// `check main` if it has one.
-fn selected_check<'c>(
-    checked: &'c Checked,
-    selected: Option<&str>,
-) -> Result<Option<&'c Check>, GraphError> {
+/// The entry module's check named `selected`, or else a check running just
+/// the behavior or requirement it names; without `selected`, its `check
+/// main` if it has one.
+fn selected_check(checked: &Checked, selected: Option<&str>) -> Result<Option<Check>, GraphError> {
     let name = selected.unwrap_or("main");
     let found =
         checked.model.checks.iter().find(|check| {
             check.address.module == checked.loaded.entry && check.address.name() == name
         });
-    if found.is_none() && selected.is_some() {
-        return Err(GraphError::UnknownCheck {
-            module: checked.loaded.entry.clone(),
-            name: name.to_owned(),
-        });
+    if let Some(found) = found {
+        return Ok(Some(found.clone()));
     }
-    Ok(found)
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let address = named_runnable(&checked.model, selected).map_err(|candidates| {
+        if candidates.is_empty() {
+            return GraphError::UnknownCheck {
+                module: checked.loaded.entry.clone(),
+                name: selected.to_owned(),
+            };
+        }
+        GraphError::AmbiguousSelection {
+            name: selected.to_owned(),
+            candidates,
+        }
+    })?;
+    Ok(Some(Check {
+        address: Address::top(&checked.loaded.entry, selected),
+        runs: vec![Run {
+            requirement: address,
+            severity: None,
+            arguments: Vec::new(),
+        }],
+    }))
+}
+
+/// The behavior (one taking no arguments) or requirement `selected` names:
+/// by its address (`checks::retries`, `checks.retries`), or by its name
+/// alone when one thing has it. Otherwise the addresses it could mean,
+/// empty when none.
+fn named_runnable(model: &Model, selected: &str) -> Result<Address, Vec<String>> {
+    let behaviors = model
+        .behaviors
+        .iter()
+        .filter(|behavior| behavior.parameters.is_empty())
+        .map(|behavior| &behavior.address);
+    let requirements = model
+        .requirements
+        .iter()
+        .map(|requirement| &requirement.address);
+    let runnable: Vec<&Address> = behaviors.chain(requirements).collect();
+    let written = |address: &Address| {
+        address.to_string() == selected
+            || format!("{}.{}", address.module, address.dotted_path()) == selected
+    };
+    if let Some(address) = runnable.iter().find(|address| written(address)) {
+        return Ok((*address).clone());
+    }
+    let named: Vec<&&Address> = runnable
+        .iter()
+        .filter(|address| address.dotted_path() == selected)
+        .collect();
+    match named[..] {
+        [address] => Ok((*address).clone()),
+        _ => Err(named.iter().map(ToString::to_string).collect()),
+    }
 }
 
 fn entry_repository(checked: &Checked) -> String {

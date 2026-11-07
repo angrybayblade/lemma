@@ -229,7 +229,7 @@ Checks a change against every repository composed by a parent `lemma.yaml`: decl
 | `--base <commit>`, `--head <commit>` | The commits before and with the change. |
 | `--level <level>` | `audit` (problems are warnings), `check` (problems and violated behaviors are errors) or `strict` (error-severity behaviors that are unknown or stale are errors too). Overrides the graph's level. |
 | `--all` | List informational findings too, not just their count. |
-| `--select <check>` | Run this check of a parent `mod.lm` instead of its `check main`. |
+| `--select <name>` | Run this check of a parent `mod.lm` instead of its `check main`; or, when no check has the name, just the behavior or requirement it names, by address (`checks::retries`, `lemma.http.operation_without_consumer`) or by name alone when only one thing has it. A behavior that takes arguments runs only from a check. |
 | `--no-run` | Run no checkers: behaviors use the evidence already kept in Lemma's cache. A case whose inputs changed since is `stale`; one never run is `unknown`. |
 | `--run-base` | With `--change`, also run checkers at the base, so a case that ended violated before the change and holds after it is reported as fixed: the behavior's line ends with `N fixed by this change`. Without it, the base uses kept evidence only and a fix is reported only when that evidence was kept. Doubles the checkers' runs when nothing is kept. |
 | `--engine <name>` | The rule engine for inferred links: `souffle` or `reference`. Default: Soufflé if installed. |
