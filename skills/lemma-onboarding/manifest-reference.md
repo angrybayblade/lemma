@@ -68,7 +68,7 @@ jobs:
       - uses: actions/checkout@v4
         with: { repository: your-org/web, path: web, token: ${{ secrets.READ_TOKEN }} }
       - name: Install lemma
-        env: { LEMMA_VERSION: v0.1.0-rc0 }
+        env: { LEMMA_VERSION: v0.1.0-rc1 }
         run: |
           curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"

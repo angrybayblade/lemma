@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
 #
 # Settings, all optional:
-#   LEMMA_VERSION      release tag to install, such as v0.1.0-rc0 (default: the newest, pre-releases included)
+#   LEMMA_VERSION      release tag to install, such as v0.1.0-rc1 (default: the newest, pre-releases included)
 #   LEMMA_INSTALL_DIR  where to put the binaries (default: ~/.local/bin)
 #   LEMMA_SKILLS       1 to also install the agent skills (default: 0)
 #   LEMMA_SKILLS_DIR   where skills go (default: ~/.claude/skills)

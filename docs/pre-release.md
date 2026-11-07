@@ -9,8 +9,8 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the man
 | Candidate | Focus | State |
 | --- | --- | --- |
 | 0.1.0-rc0 | Internal launch: code intelligence in four languages, `lemma verify` across repositories, install script, agent skills | Released |
-| 0.1.0-rc1 | A general framework: no assumptions about any one API's layout (see [Changes in rc1](#changes-in-rc1)); CI stability; release builds verified on all four platforms; install script tested from a clean machine | Planned |
-| 0.1.0-rc2 and later | Fixes from internal use; items below as they are resolved | Planned |
+| 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up (see [New in rc1](#new-in-rc1) and [Changes in rc1](#changes-in-rc1)) | Released |
+| 0.1.0-rc2 and later | Fixes from internal use; CI green for two weeks; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
 
 ## What is ready
 
@@ -18,7 +18,9 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the man
 | --- | --- | --- |
 | Code intelligence: TypeScript, TSX, JavaScript, Python, Go, Rust | Daily use by people and agents | Symbols, outlines, references, definitions, implementations and signatures, each through the language's own server. Across 241 random symbols in five repositories, 96% of reported lines were real references ([comparison](comparison.md)); 1-3 ms once cached ([performance](performance.md)). |
 | MCP server | Agents in Claude Code and other MCP clients | Agent benchmark rounds r0-r6 ([results](agent-benchmark.md)) |
-| `lemma verify` for HTTP contracts | Internal use, errors gating CI after a reporting period | In rc0, 318 historical changes replayed on a production system of ten repositories with no false error; every error matched a real break. To be measured again with rc1's general rules. |
+| `lemma verify` for HTTP contracts | Internal use, errors gating CI after a reporting period | In rc0, 318 historical changes replayed on a production system of ten repositories with no false error; every error matched a real break. |
+| `lemma check` across a system's repositories | Internal use, errors gating CI after a reporting period | On a production system of six repositories, for rc1: 54 past contract changes replayed with every finding, severity and trace as reviewed; synthetic breaks found every known caller (47 of 47 for new required fields, 33 of 33 for removed operations) and no other; change-driven evaluation gave the same findings as reading all code on 34 changes and 30 breaks, in about 60% of the time. On a generated system of 100,000 files, a warm change-driven check took 2.2 s and 192 MB. |
+| `.lm` modules and `lm` | Describing systems, requirements, behaviors and allowances | The tutorials run as written in CI; a production system's six modules give the same `lemma check` findings as its `lemma.yaml` files. Editor support through `lm lsp`. |
 | Grammars in YAML | Teams adding, removing and tuning checks | [Grammars](grammar.md) |
 
 ## Known limitations
@@ -52,6 +54,10 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 | Types are followed within the files read (Go and Rust: the anchored file's directory; TypeScript: relative imports; Python without Pydantic: the anchored file's directory) | Fields under types from elsewhere are not compared; each such type is reported as informational | Anchor schemas where their types are defined |
 | Tracing reads the call graph by name | `affects` can list functions that only share a name with a caller, and misses routes whose paths are built at run time | Treat `affects` as where to look |
 | Language servers are not used yet | Schemas and the call graph come from Tree-sitter and each language's own resolver | None needed for now |
+| Routes are read from Express, Fastify, Hono and Koa routers, FastAPI and Flask decorators, route objects, Go and Rust routers; NestJS and other class-decorator frameworks are not | Such a service's routes are not compared with its spec (`operation_without_route`, `route_without_operation` stay quiet) | Declare its operations from the spec only; report the framework |
+| A route Lemma cannot read is given the benefit of the doubt | An operation counts as still served while any route code writes its path, so a removal next to a leftover path string is missed | Review route removals in the pull request |
+| A `{ method, path }` object in a service's route code counts as a route, as `createRoute({ method, path, request })` defines one | A table of another service's endpoints kept in route code reads as routes the spec leaves out (informational, or a warning when added) | Keep such tables outside the service's `routes` directories |
+| Memory on large systems | One internal report saw a check of six repositories peak near 6.7 GB; measured runs of the same system stay under 1 GB, and a 100,000-file system under 1.5 GB reading all code | Report the command and system size if a check uses more |
 
 ### Code intelligence
 
@@ -68,8 +74,17 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 | --- | --- | --- |
 | Binaries are unstripped | Larger downloads | Fine for now |
 | No Windows build | — | Use WSL |
-| CI is new in rc0 | Checks may be flaky until rc1 | Run `cargo fmt`, `cargo clippy` and `cargo test` locally ([CONTRIBUTING](../CONTRIBUTING.md)) |
+| CI's macOS jobs moved to `macos-15` runners in rc1, after GitHub stopped running `macos-14` ones | Until a run passes on them, macOS builds and tests are unproven in CI | Run `cargo fmt`, `cargo clippy` and `cargo test` locally ([CONTRIBUTING](../CONTRIBUTING.md)) |
 | Soufflé is optional and not bundled | `lemma verify` is about six times slower without it, same results | `brew install souffle` |
+
+## New in rc1
+
+- **`lemma check`**: composable `lemma.yaml` files or `.lm` modules describe a system; links between services are declared or inferred from specs and calling code, their schemas compared, and what a break affects traced up through the services that pass it on. Only the code a change's findings can rest on is read. Without `--base`, the work in progress since the branch left the default branch is checked.
+- **Is it wired up?** Warnings for an operation a change adds that no route serves or no code calls, and a route a change adds that its spec leaves out; an error for a call of an operation whose route the change removed.
+- **Adapters** read a service's operations from its code (built in: Hono with zod-openapi, FastAPI, Express, Flask and Go routers; any other through a script), remember a failure per clone and environment, and fail a `--level strict` check when they cannot run.
+- **`.lm` modules and `lm`**: typed modules for services, links, rules, requirements, behaviors (requirements checked by running checkers) and allowances; `lm check`, `lm fmt`, `lm convert`, `lm new behavior` to scaffold a behavior and its checker, and `lm lsp` with VS Code and Zed extensions.
+- **Code intelligence**: `lemma graph` shows what uses a symbol and what it uses, across a workspace; warnings where a language server leaves files out of references; workspaces index each repository and answer by name or export address from the workspace's root.
+- **MCP**: `check` and `graph` tools, and guidance for agents to check their edits as they build.
 
 ## Changes in rc1
 
@@ -85,9 +100,9 @@ rc0 carried assumptions from the first system Lemma was built against. rc1 remov
 
 ## Before 0.1.0
 
-- [ ] CI green on every pull request for two weeks (rc1).
-- [ ] Release builds checked on macOS arm64, macOS x86_64, Linux x86_64 and Linux arm64 (rc1).
-- [ ] Install script run on a clean macOS and Linux machine (rc1).
+- [ ] CI green on every pull request for two weeks (rc2).
+- [ ] Release builds checked on macOS arm64, macOS x86_64, Linux x86_64 and Linux arm64 (rc2).
+- [ ] Install script run on a clean macOS and Linux machine (rc2).
 - [ ] `lemma verify` reporting on real pull requests for two weeks; every error checked by hand; no false error.
 - [ ] A decision on read-versus-write evidence for response-field warnings, from what internal use shows.
 - [ ] Field type and enum value changes compared, or kept out of 0.1 explicitly.
