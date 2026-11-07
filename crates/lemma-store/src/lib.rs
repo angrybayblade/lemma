@@ -227,6 +227,9 @@ pub enum Question {
     Locations(LocationQuery),
     /// What the provider shows for a symbol.
     Hover,
+    /// Lemma's own warnings about files a provider leaves out of a
+    /// symbol's references; costly to find, so kept with the answers.
+    UnseenFiles,
 }
 
 impl Question {
@@ -235,6 +238,7 @@ impl Question {
         match self {
             Self::Locations(query) => query.as_str(),
             Self::Hover => "hover",
+            Self::UnseenFiles => "unseen_files",
         }
     }
 }

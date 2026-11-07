@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
-use lemma_model::{Location, LocationQuery, Outcome, Reference};
+use lemma_model::{Location, LocationQuery, Outcome, ProviderAnswer, Reference};
 use lemma_providers::SourcePoint;
-use lemma_store::{FactStore, StoredSymbol};
+use lemma_store::{AnswerKey, FactStore, Question, StoredSymbol};
 
 use crate::QueryError;
 use crate::lookup::{Answered, LookupContext, ask_providers};
@@ -64,13 +64,53 @@ pub fn find_references(
             });
         }
     };
-    let root = Path::new(&context.snapshot.snapshot.root);
-    let warnings = unseen_files(&*store, snapshot_id, root, &symbol, found)?;
+    let warnings = cached_unseen_files(store, context, &symbol, found)?;
     Ok(SymbolReport {
         symbol,
         answer,
         warnings,
     })
+}
+
+/// Warnings about files the provider left out of `symbol`'s references,
+/// kept with the snapshot's answers: finding them reads every file of the
+/// symbol's language, and they hold until the code or the answer changes.
+fn cached_unseen_files(
+    store: &mut dyn FactStore,
+    context: &LookupContext<'_>,
+    symbol: &StoredSymbol,
+    references: &[Reference],
+) -> Result<Vec<String>, QueryError> {
+    let mut listed: Vec<&str> = references
+        .iter()
+        .map(|reference| reference.path.as_str())
+        .collect();
+    listed.sort_unstable();
+    listed.dedup();
+    let answer = lemma_model::content_hash(listed.join("\n").as_bytes());
+    let key = AnswerKey {
+        snapshot_id: context.snapshot.id,
+        question: Question::UnseenFiles,
+        path: &symbol.path,
+        position: symbol.symbol.name_span.start,
+        provider_id: "lemma",
+        config_fingerprint: &answer,
+    };
+    if let Some(kept) = store.cached_text(&key)? {
+        let ProviderAnswer::Found(text) = kept.answer else {
+            return Ok(Vec::new());
+        };
+        return Ok(text.lines().map(str::to_owned).collect());
+    }
+    let root = Path::new(&context.snapshot.snapshot.root);
+    let warnings = unseen_files(&*store, context.snapshot.id, root, symbol, references)?;
+    let kept = if warnings.is_empty() {
+        ProviderAnswer::Empty
+    } else {
+        ProviderAnswer::Found(warnings.join("\n"))
+    };
+    store.save_text(&key, None, &kept)?;
+    Ok(warnings)
 }
 
 /// Where providers are asked about a symbol: the start of its name.

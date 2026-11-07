@@ -83,7 +83,8 @@ pub(crate) fn unseen_files(
         Language::Go => {
             let go_files = files.iter().filter(|file| file.language == Language::Go);
             let name = &symbol.symbol.name;
-            tagged_go_warning(root, name, go_files.map(|file| file.path.as_str()))
+            let paths = go_files.map(|file| file.path.as_str());
+            tagged_go_warning(root, name, unlisted(paths, references).into_iter())
         }
         Language::TypeScript | Language::Tsx => {
             let scripts = files.iter().filter(|file| is_script(file.language));
@@ -97,6 +98,14 @@ pub(crate) fn unseen_files(
         _ => None,
     };
     Ok(warning.into_iter().collect())
+}
+
+/// The paths no reference is in. A tagged Go file the answer lists was
+/// read, its tags named by the server's build flags, so it is not unseen.
+fn unlisted<'p>(paths: impl Iterator<Item = &'p str>, references: &[Reference]) -> Vec<&'p str> {
+    paths
+        .filter(|path| !references.iter().any(|reference| reference.path == *path))
+        .collect()
 }
 
 fn is_script(language: Language) -> bool {
@@ -325,6 +334,24 @@ mod tests {
         let header = "package store\n//go:build integration\n";
 
         assert_eq!(custom_build_tags(header), None);
+    }
+
+    #[test]
+    fn a_file_the_answer_lists_is_not_unseen() {
+        let reference = Reference {
+            path: "store/integration_test.go".to_owned(),
+            span: lemma_model::Span {
+                start: lemma_model::Position { line: 3, column: 4 },
+                end: lemma_model::Position { line: 3, column: 9 },
+            },
+            is_external: false,
+            enclosing_symbol: None,
+        };
+        let paths = ["store/integration_test.go", "store/other_test.go"];
+
+        let left = unlisted(paths.into_iter(), &[reference]);
+
+        assert_eq!(left, ["store/other_test.go"]);
     }
 
     #[test]
