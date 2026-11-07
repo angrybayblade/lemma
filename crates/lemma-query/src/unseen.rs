@@ -103,8 +103,15 @@ pub(crate) fn unseen_files(
 /// The paths no reference is in. A tagged Go file the answer lists was
 /// read, its tags named by the server's build flags, so it is not unseen.
 fn unlisted<'p>(paths: impl Iterator<Item = &'p str>, references: &[Reference]) -> Vec<&'p str> {
-    paths
-        .filter(|path| !references.iter().any(|reference| reference.path == *path))
+    let listed = listed_paths(references);
+    paths.filter(|path| !listed.contains(path)).collect()
+}
+
+/// The files the references are in, to look up without scanning them.
+fn listed_paths(references: &[Reference]) -> std::collections::HashSet<&str> {
+    references
+        .iter()
+        .map(|reference| reference.path.as_str())
         .collect()
 }
 
@@ -201,14 +208,21 @@ fn dynamic_import_warning<'p>(
     paths: impl Iterator<Item = &'p str>,
     references: &[Reference],
 ) -> Option<String> {
+    let listed = listed_paths(references);
+    let module = module_name(target);
     let mut importers = Vec::new();
     for path in paths {
-        if path == target || references.iter().any(|reference| reference.path == path) {
+        if path == target || listed.contains(path) {
             continue;
         }
         let Ok(source) = fs::read_to_string(root.join(path)) else {
             continue;
         };
+        // Any specifier naming the target names its file or directory: a
+        // file without that name is passed over with one search.
+        if !source.contains(module) {
+            continue;
+        }
         if imports_dynamically(path, &source, target) {
             importers.push(path);
         }
@@ -278,6 +292,17 @@ fn names_module(importer: &str, specifier: &str, target: &str) -> bool {
     let ending = format!("/{path}");
     let module = target.strip_suffix("/index").unwrap_or(target);
     target.ends_with(&ending) || module.ends_with(&ending)
+}
+
+/// The name a specifier naming `target` ends with: its file's name, or its
+/// directory's for an index file (`./charges` for `charges/index.ts`).
+fn module_name(target: &str) -> &str {
+    let stem = without_extension(target);
+    let (directory, name) = stem.rsplit_once('/').unwrap_or(("", stem));
+    if name != "index" {
+        return name;
+    }
+    directory.rsplit('/').next().unwrap_or(name)
 }
 
 fn without_extension(path: &str) -> &str {
