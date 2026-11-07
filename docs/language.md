@@ -204,7 +204,7 @@ check main {
 
 A workspace's `check main` selects the requirements and behaviors `lemma check` runs; `lemma check --select <name>` runs another check. Without one, every requirement of every loaded module runs, and every behavior without parameters. `lemma.http` is always loaded, so a `check main` that names only behaviors runs no HTTP contract check; add `run lemma.http.*` to keep them.
 
-The level (the workspace's `config: { level: ... }` or `lemma check --level`) decides what fails: `audit` fails on nothing, `check` fails on error-severity findings and violated behaviors, and `strict` also fails on error-severity behaviors that are unknown or stale. With a change, only what the change introduced counts: a behavior's case counts unless the base, run on kept evidence, ended it the same way. The report also lists requirements and behaviors the change added, removed or changed.
+The level (the workspace's `config: { level: ... }` or `lemma check --level`) decides what fails: `audit` fails on nothing, `check` fails on error-severity findings and violated behaviors, and `strict` also fails on error-severity behaviors that are unknown or stale, and on code an adapter could not read, whose committed documents stood in for it. With a change, only what the change introduced counts: a behavior's case counts unless the base, run on kept evidence, ended it the same way. The report also lists requirements and behaviors the change added, removed or changed.
 
 ## Commands
 

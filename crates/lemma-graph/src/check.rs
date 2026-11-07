@@ -268,6 +268,7 @@ pub fn check<E: Engine>(
     let listings = Arc::new(lemma_http::Listings::default());
     let shared = Shared::new(options, &listings, root_file, &repos)?;
     let (inferred_links, walkable) = infer(&repos, &shared, engine, level, &mut findings)?;
+    fail_unread_contracts(level, &mut findings);
     seeds.extend(walkable.seeds.iter().cloned());
     let facts = options.facts_cache.as_ref();
     let reading = affects::CodeReading {
@@ -1131,6 +1132,23 @@ fn push_once(findings: &mut Vec<Finding>, finding: Finding) {
     }
 }
 
+/// At level `strict`, code an adapter could not read, whole or in part, is
+/// an error: its committed documents stood in for it, so a change only the
+/// code shows (in CI without the dependencies the adapter needs, say)
+/// would otherwise pass.
+fn fail_unread_contracts(level: Level, findings: &mut [Finding]) {
+    if !matches!(level, Level::Strict) {
+        return;
+    }
+    for finding in findings
+        .iter_mut()
+        .filter(|finding| finding.check == "adapter")
+    {
+        finding.severity = Severity::Error;
+        finding.introduced = true;
+    }
+}
+
 /// A warning that a service's contract was not fully read from its code.
 fn adapter_warning(entry: &str, message: String) -> Finding {
     Finding {
@@ -1922,4 +1940,32 @@ fn describe(error: &GraphError) -> String {
         source = cause.source();
     }
     message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn at_level_strict_unread_code_is_an_error_the_change_counts() {
+        let mut findings = vec![
+            adapter_warning("#billing:api", "could not read api's operations".to_owned()),
+            Finding {
+                severity: Severity::Warning,
+                link: "#web:web".to_owned(),
+                check: "request".to_owned(),
+                message: "a field".to_owned(),
+                introduced: true,
+                affects: Vec::new(),
+                allowed: None,
+                values: BTreeMap::new(),
+            },
+        ];
+
+        fail_unread_contracts(Level::Strict, &mut findings);
+
+        assert_eq!(findings[0].severity, Severity::Error);
+        assert!(findings[0].introduced);
+        assert_eq!(findings[1].severity, Severity::Warning);
+    }
 }
