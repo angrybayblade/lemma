@@ -795,9 +795,13 @@ fn service(
             .iter()
             .any(|directory| path.starts_with(directory.as_str()))
     };
+    // A generated file declares no routes: a client generated inside the
+    // service describes another service's.
+    let declares_routes =
+        |path: &str, facts: &lemma_http::CodeFacts| is_route_file(path) && !facts.is_generated;
     let written = read
         .iter()
-        .filter(|(path, _)| is_route_file(path))
+        .filter(|(path, facts)| declares_routes(path, facts))
         .flat_map(|(_, facts)| written_routes(facts))
         .collect();
     let mut route_aliases = lemma_http::implied_aliases(&documents, &written);
@@ -812,7 +816,7 @@ fn service(
     };
     for (path, facts) in &read {
         schema_facts(&scope, path, facts, writer);
-        if !is_route_file(path) {
+        if !declares_routes(path, facts) {
             continue;
         }
         for route in facts.method_paths.iter().filter(|item| item.method != "*") {
