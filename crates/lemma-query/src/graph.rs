@@ -17,7 +17,7 @@ use lemma_store::{FactStore, StoredSymbol};
 use crate::QueryError;
 use crate::lookup::LookupContext;
 use crate::navigation::find_definitions;
-use crate::references::find_references;
+use crate::references::ask_references;
 use crate::sessions::SessionPool;
 
 /// Which way to follow uses from the symbol.
@@ -458,7 +458,7 @@ struct ServerNeighbours<'a, 'b> {
 
 impl Neighbours for ServerNeighbours<'_, '_> {
     fn callers(&mut self, of: &StoredSymbol) -> Result<Found, QueryError> {
-        let report = find_references(&mut *self.store, self.context, of.clone(), false, self.pool)?;
+        let report = ask_references(&mut *self.store, self.context, of.clone(), false, self.pool)?;
         let references = match report.answer.outcome {
             Outcome::Found(references) => references,
             Outcome::Empty => return Ok(Found::default()),

@@ -208,7 +208,13 @@ impl Engine {
                 self.signature(&request, args, out)
             }
             Command::Graph(args) => {
-                self.refresh_index(&request, Indexing::Refresh);
+                // Callers read the exports only as `refs` does, for what
+                // links to the symbol; callees follow every export's links.
+                let indexing = match args.direction {
+                    GraphDirection::Callers => refresh_for(&args.target),
+                    _ => Indexing::Refresh,
+                };
+                self.refresh_index(&request, indexing);
                 self.graph(&request, args, out)
             }
             Command::Providers => self.providers(&request, out),

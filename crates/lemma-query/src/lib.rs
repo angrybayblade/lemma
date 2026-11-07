@@ -20,7 +20,7 @@ pub use lookup::{Answered, LookupContext, LookupOptions};
 pub use navigation::{
     DefinitionReport, ImplementationReport, Target, find_definitions, find_implementations,
 };
-pub use references::{ReferenceReport, SymbolReport, find_references};
+pub use references::{ReferenceReport, SymbolReport, ask_references, find_references};
 pub use resolve::{SymbolResolution, SymbolSelector, resolve_symbol, symbols_in_file};
 pub use search::SymbolSearch;
 pub use sessions::{FilesError, IdlePolicy, ServerState, SessionPool, SessionStatus, WarmUp};

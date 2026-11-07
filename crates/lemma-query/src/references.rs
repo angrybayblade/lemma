@@ -39,6 +39,26 @@ pub fn find_references(
     include_declaration: bool,
     pool: &mut SessionPool,
 ) -> Result<ReferenceReport, QueryError> {
+    let mut report = ask_references(store, context, symbol, include_declaration, pool)?;
+    let found: &[Reference] = match &report.answer.outcome {
+        Outcome::Found(references) => references,
+        Outcome::Empty => &[],
+        _ => return Ok(report),
+    };
+    report.warnings = cached_unseen_files(store, context, &report.symbol, found)?;
+    Ok(report)
+}
+
+/// The references providers give for `symbol`, without warnings about
+/// files they leave out: for walks that read only the answer, as a graph's
+/// callers do, since finding those files reads every file of the language.
+pub fn ask_references(
+    store: &mut dyn FactStore,
+    context: &LookupContext<'_>,
+    symbol: StoredSymbol,
+    include_declaration: bool,
+    pool: &mut SessionPool,
+) -> Result<ReferenceReport, QueryError> {
     let at = name_of(&symbol);
     let answer = ask_providers(store, context, at, pool, &LocationQuery::References)?;
     let snapshot_id = context.snapshot.id;
@@ -53,22 +73,10 @@ pub fn find_references(
             locations,
         )?))
     })?;
-    let found: &[Reference] = match &answer.outcome {
-        Outcome::Found(references) => references,
-        Outcome::Empty => &[],
-        _ => {
-            return Ok(SymbolReport {
-                symbol,
-                answer,
-                warnings: Vec::new(),
-            });
-        }
-    };
-    let warnings = cached_unseen_files(store, context, &symbol, found)?;
     Ok(SymbolReport {
         symbol,
         answer,
-        warnings,
+        warnings: Vec::new(),
     })
 }
 
