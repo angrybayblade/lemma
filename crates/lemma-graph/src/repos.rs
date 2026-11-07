@@ -31,17 +31,20 @@ impl Checkout {
 
     /// A directory holding the repository's files at this checkout: the
     /// clone itself for the working directory, otherwise a worktree in
-    /// `cache`, created once per commit.
+    /// `cache`, created once per commit. Adding one removes all but the
+    /// most recently used [`KEPT_WORKTREES`].
     pub fn worktree(&self, cache: &Path) -> Result<PathBuf, GraphError> {
         let Some(commit) = &self.commit else {
             return Ok(self.root.clone());
         };
+        let worktrees = cache.join("worktrees");
         let name = format!("{}-{commit}", directory_name(&self.root));
-        let directory = cache.join("worktrees").join(name);
+        let directory = worktrees.join(&name);
         if directory.exists() {
+            mark_used(&worktrees, &name);
             return Ok(directory);
         }
-        std::fs::create_dir_all(cache.join("worktrees")).map_err(|source| GraphError::Io {
+        std::fs::create_dir_all(&worktrees).map_err(|source| GraphError::Io {
             path: cache.to_owned(),
             source,
         })?;
@@ -50,7 +53,57 @@ impl Checkout {
             &self.root,
             &["worktree", "add", "--detach", "--quiet", &target, commit],
         )?;
+        mark_used(&worktrees, &name);
+        remove_unused_worktrees(&worktrees, KEPT_WORKTREES);
         Ok(directory)
+    }
+}
+
+/// How many worktrees at past commits the cache keeps. Each is a full
+/// checkout, so a monorepo's can take gigabytes, and a check at a new base
+/// adds one.
+pub const KEPT_WORKTREES: usize = 8;
+
+/// Where the last use of each worktree is recorded, beside them so a
+/// worktree's own files stay as Git checked them out.
+const USES: &str = ".used";
+
+/// Records that the worktree `name` was just used. Failing to only makes it
+/// look older.
+fn mark_used(worktrees: &Path, name: &str) {
+    let uses = worktrees.join(USES);
+    let _ = std::fs::create_dir_all(&uses);
+    let _ = std::fs::write(uses.join(name), "");
+}
+
+/// Removes all but the `kept` most recently used worktrees in `worktrees`,
+/// through Git so their clones forget them. A worktree Git cannot remove
+/// (its clone is gone) is deleted outright.
+fn remove_unused_worktrees(worktrees: &Path, kept: usize) {
+    let Ok(entries) = std::fs::read_dir(worktrees) else {
+        return;
+    };
+    let marks = worktrees.join(USES);
+    let mut found: Vec<(std::time::SystemTime, PathBuf, String)> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir() && entry.file_name() != USES)
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let used = std::fs::metadata(marks.join(&name))
+                .or_else(|_| entry.metadata())
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (used, entry.path(), name)
+        })
+        .collect();
+    found.sort_by(|left, right| right.cmp(left));
+    for (_, path, name) in found.into_iter().skip(kept) {
+        let target = path.to_string_lossy().into_owned();
+        let removed = git(&path, &["worktree", "remove", "--force", &target]);
+        if removed.is_err() || path.exists() {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+        let _ = std::fs::remove_file(marks.join(name));
     }
 }
 
@@ -495,6 +548,47 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&lock).unwrap(),
             std::process::id().to_string()
+        );
+    }
+
+    #[test]
+    fn adding_a_worktree_keeps_only_the_most_recently_used() {
+        let directory = repository();
+        let root = directory.path();
+        commit(root, "second");
+        let cache = tempfile::tempdir().unwrap();
+        let commits: Vec<String> = git(root, &["rev-list", "HEAD"])
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let at = |commit: &String| Checkout {
+            root: root.to_owned(),
+            commit: Some(commit.clone()),
+        };
+        let first = at(&commits[0]).worktree(cache.path()).unwrap();
+        let second = at(&commits[1]).worktree(cache.path()).unwrap();
+        let used = |name: &Path, seconds: u64| {
+            let mark = cache
+                .path()
+                .join("worktrees")
+                .join(USES)
+                .join(name.file_name().unwrap());
+            let file = std::fs::File::options().write(true).open(mark).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(seconds))
+                .unwrap();
+        };
+        used(&first, 2_000);
+        used(&second, 1_000);
+
+        remove_unused_worktrees(&cache.path().join("worktrees"), 1);
+
+        assert!(first.exists());
+        assert!(!second.exists());
+        assert!(
+            !git(root, &["worktree", "list"])
+                .unwrap()
+                .contains(&*second.to_string_lossy())
         );
     }
 
