@@ -128,10 +128,13 @@ pub(crate) struct CheckArgs {
     pub manifest: PathBuf,
     /// The repository that changed, as the workspace names it (`billing`;
     /// `#billing` in a lemma.yaml), or `self` for the workspace's own
-    /// repository. Needs `--base`.
-    #[arg(long, requires = "base")]
+    /// repository.
+    #[arg(long)]
     pub change: Option<String>,
-    /// The commit before the change.
+    /// The commit before the change. Default: where the repository's
+    /// checked-out commit left its default branch (`origin/HEAD`, `main` or
+    /// `master`), so a branch's commits and uncommitted work are checked
+    /// together.
     #[arg(long, requires = "change")]
     pub base: Option<String>,
     /// The commit with the change; the working directory, uncommitted

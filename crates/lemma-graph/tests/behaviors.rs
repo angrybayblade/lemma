@@ -395,7 +395,7 @@ fn a_change_that_breaks_the_worker_introduces_its_violations_and_lists_new_behav
     let options = CheckOptions {
         change: Some(lemma_graph::Change {
             repository: "self".to_owned(),
-            base: "HEAD~1".to_owned(),
+            base: Some("HEAD~1".to_owned()),
             head: Some("HEAD".to_owned()),
         }),
         level: Some(Level::Check),
@@ -433,7 +433,7 @@ fn fixing_change(runs_base_checkers: bool) -> Report {
     let options = CheckOptions {
         change: Some(lemma_graph::Change {
             repository: "self".to_owned(),
-            base: "HEAD~1".to_owned(),
+            base: Some("HEAD~1".to_owned()),
             head: Some("HEAD".to_owned()),
         }),
         level: Some(Level::Check),
@@ -497,7 +497,7 @@ fn a_checker_reads_other_repositories_at_the_commit_checked() {
     let options = CheckOptions {
         change: Some(lemma_graph::Change {
             repository: "functions".to_owned(),
-            base: "HEAD~1".to_owned(),
+            base: Some("HEAD~1".to_owned()),
             head: Some("HEAD".to_owned()),
         }),
         level: Some(Level::Check),

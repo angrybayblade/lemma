@@ -100,7 +100,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
     let options = CheckOptions {
         change: Some(Change {
             repository: "#billing".to_owned(),
-            base: "HEAD~1".to_owned(),
+            base: Some("HEAD~1".to_owned()),
             head: Some("HEAD".to_owned()),
         }),
         level: Some(Level::Check),
@@ -180,7 +180,7 @@ fn checks_of(workspace: &Path) -> Vec<(Severity, String)> {
     let options = CheckOptions {
         change: Some(Change {
             repository: "#billing".to_owned(),
-            base: "HEAD~1".to_owned(),
+            base: Some("HEAD~1".to_owned()),
             head: Some("HEAD".to_owned()),
         }),
         level: Some(Level::Check),
@@ -256,7 +256,7 @@ fn select_runs_another_check_and_an_unknown_one_is_refused() {
     let options = |select: &str| CheckOptions {
         change: Some(Change {
             repository: "#billing".to_owned(),
-            base: "HEAD~1".to_owned(),
+            base: Some("HEAD~1".to_owned()),
             head: Some("HEAD".to_owned()),
         }),
         level: Some(Level::Check),
@@ -301,7 +301,7 @@ fn a_change_may_name_its_repository_as_a_module_does() {
     let options = CheckOptions {
         change: Some(Change {
             repository: "billing".to_owned(),
-            base: "HEAD~1".to_owned(),
+            base: Some("HEAD~1".to_owned()),
             head: Some("HEAD".to_owned()),
         }),
         level: Some(Level::Check),

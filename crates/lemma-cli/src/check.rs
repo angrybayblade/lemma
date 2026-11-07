@@ -20,7 +20,7 @@ const EXIT_VIOLATED: u8 = 4;
 pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCode {
     let change = args.change.as_ref().map(|repository| Change {
         repository: repository.clone(),
-        base: args.base.clone().unwrap_or_default(),
+        base: args.base.clone(),
         head: args.head.clone(),
     });
     let options = CheckOptions {

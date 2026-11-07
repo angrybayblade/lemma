@@ -225,8 +225,8 @@ Checks a change against every repository composed by a parent `lemma.yaml`: decl
 
 | Option | Meaning |
 | --- | --- |
-| `--change <name>` | The changed repository, as the workspace names it (`billing`, or `#billing` as a `lemma.yaml` writes it), or `self`. Needs `--base` and `--head`. |
-| `--base <commit>`, `--head <commit>` | The commits before and with the change. |
+| `--change <name>` | The changed repository, as the workspace names it (`billing`, or `#billing` as a `lemma.yaml` writes it), or `self`. |
+| `--base <commit>`, `--head <commit>` | The commits before and with the change. Without `--head`, the working directory, uncommitted edits included. Without `--base`, where the checked-out commit left the repository's default branch (the branch `origin/HEAD` names, else `origin/main`, `origin/master`, `main` or `master`): on a feature branch, everything the branch adds; on the default branch, only uncommitted edits. So `lemma check --change billing` checks the work in progress. |
 | `--level <level>` | `audit` (problems are warnings), `check` (problems and violated behaviors are errors) or `strict` (error-severity behaviors that are unknown or stale are errors too). Overrides the graph's level. |
 | `--all` | List informational findings too, not just their count. |
 | `--select <name>` | Run this check of a parent `mod.lm` instead of its `check main`; or, when no check has the name, just the behavior or requirement it names, by address (`checks::retries`, `lemma.http.operation_without_consumer`) or by name alone when only one thing has it. A behavior that takes arguments runs only from a check. |

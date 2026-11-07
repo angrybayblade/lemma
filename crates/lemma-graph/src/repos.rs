@@ -184,6 +184,32 @@ pub fn resolve_commit(root: &Path, reference: &str) -> Result<String, GraphError
     Ok(output.trim().to_owned())
 }
 
+/// Where the checked-out commit left the repository's default branch: its
+/// merge base with the branch `origin/HEAD` names, or else the first of
+/// `origin/main`, `origin/master`, `main` and `master` that exists. On the
+/// default branch itself that is the checked-out commit, so only
+/// uncommitted work is the change; in a repository with none of them, too.
+pub fn fork_point(root: &Path) -> Result<String, GraphError> {
+    let remote_default = git(
+        root,
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    )
+    .ok()
+    .map(|reference| reference.trim().to_owned());
+    let candidates = remote_default
+        .into_iter()
+        .chain(["origin/main", "origin/master", "main", "master"].map(str::to_owned));
+    for candidate in candidates {
+        if resolve_commit(root, &candidate).is_err() {
+            continue;
+        }
+        if let Ok(base) = git(root, &["merge-base", "HEAD", &candidate]) {
+            return Ok(base.trim().to_owned());
+        }
+    }
+    resolve_commit(root, "HEAD")
+}
+
 /// The local clone of a `git` source, cloned into `cache` on first use and
 /// fetched when `reference` is not there yet.
 pub fn clone_remote(
@@ -403,6 +429,58 @@ fn sanitize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A repository on `main` with one commit, made with a fixed author.
+    fn repository() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        git(root, &["init", "-q", "-b", "main"]).unwrap();
+        commit(root, "first");
+        directory
+    }
+
+    fn commit(root: &Path, message: &str) {
+        std::fs::write(root.join("file.txt"), message).unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(
+            root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_branch_forks_where_it_left_main() {
+        let directory = repository();
+        let root = directory.path();
+        let main = resolve_commit(root, "main").unwrap();
+        git(root, &["checkout", "-q", "-b", "feature"]).unwrap();
+        commit(root, "second");
+        commit(root, "third");
+
+        let fork = fork_point(root).unwrap();
+
+        assert_eq!(fork, main);
+    }
+
+    #[test]
+    fn on_main_the_fork_point_is_the_checked_out_commit() {
+        let directory = repository();
+        let root = directory.path();
+
+        let fork = fork_point(root).unwrap();
+
+        assert_eq!(fork, resolve_commit(root, "HEAD").unwrap());
+    }
 
     #[test]
     fn a_lock_left_by_a_process_that_is_gone_is_taken_over() {

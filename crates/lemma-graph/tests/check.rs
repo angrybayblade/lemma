@@ -125,7 +125,7 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
     let options = CheckOptions {
         change: Some(Change {
             repository: "#provider".to_owned(),
-            base: "HEAD~1".to_owned(),
+            base: Some("HEAD~1".to_owned()),
             head: Some("HEAD".to_owned()),
         }),
         level: Some(Level::Check),
@@ -358,7 +358,7 @@ fn errors_after_rename(says_previously: bool) -> usize {
     let options = CheckOptions {
         change: Some(Change {
             repository: "#provider".to_owned(),
-            base: "HEAD~1".to_owned(),
+            base: Some("HEAD~1".to_owned()),
             head: Some("HEAD".to_owned()),
         }),
         level: Some(Level::Check),

@@ -90,7 +90,7 @@ fn warnings(workspace: &Path) -> Vec<String> {
         let options = CheckOptions {
             change: Some(Change {
                 repository: "billing".to_owned(),
-                base: "HEAD~1".to_owned(),
+                base: Some("HEAD~1".to_owned()),
                 head: Some("HEAD".to_owned()),
             }),
             level: Some(Level::Check),

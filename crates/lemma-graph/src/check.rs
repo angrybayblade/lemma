@@ -23,7 +23,7 @@ use crate::behaviors::{BehaviorReport, RequirementChange};
 use crate::compare::{Difference, compare};
 use crate::config::{LEMMA_FILE, LemmaFile, Level, Operation, SchemaSource, Service, parse};
 use crate::infer;
-use crate::repos::{Checkout, clone_remote, resolve_commit};
+use crate::repos::{Checkout, clone_remote, fork_point, resolve_commit};
 use crate::schema::{self, Context, Role};
 
 /// The name of the repository holding the parent `lemma.yaml`.
@@ -38,8 +38,10 @@ pub struct Change {
     /// The external service's name (`#billing`), or `self` for the
     /// repository holding the parent `lemma.yaml`.
     pub repository: String,
-    /// The commit before the change.
-    pub base: String,
+    /// The commit before the change; when absent, where the repository's
+    /// checked-out commit left its default branch (see
+    /// [`crate::repos::fork_point`]), so a branch's work is checked as a whole.
+    pub base: Option<String>,
     /// The commit with the change; the working directory, uncommitted
     /// changes included, when absent.
     pub head: Option<String>,
@@ -1428,7 +1430,11 @@ fn checkouts(
             .as_deref()
             .map(|head| resolve_commit(root, head))
             .transpose()?;
-        return Ok([at(Some(resolve_commit(root, &change.base)?)), at(head)]);
+        let base = match &change.base {
+            Some(base) => resolve_commit(root, base)?,
+            None => fork_point(root)?,
+        };
+        return Ok([at(Some(base)), at(head)]);
     }
     let commit = reference
         .map(|reference| resolve_commit(root, reference))
