@@ -7,6 +7,7 @@
 //! consumer. The caller interprets it by the repository's role.
 
 mod go;
+mod nesting;
 mod registration;
 mod routers;
 mod rust;
@@ -16,7 +17,7 @@ use std::collections::BTreeMap;
 
 pub use zod::{SchemaUnion, SchemaUse};
 
-use lemma_model::{Language, Symbol, SymbolKind};
+use lemma_model::{Language, SymbolKind};
 use lemma_syntax::Extractor;
 use tree_sitter::{Node, Parser};
 
@@ -293,7 +294,10 @@ pub fn extract(
     let mut walk = Walk {
         file,
         source,
-        symbols: &symbols,
+        symbols: nesting::Nesting::new(&symbols, |_| true),
+        functions: nesting::Nesting::new(&symbols, |symbol| {
+            matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method)
+        }),
         options,
         dialect: Dialect::of(language),
         facts: CodeFacts::default(),
@@ -430,7 +434,10 @@ impl Dialect {
 struct Walk<'a> {
     file: &'a str,
     source: &'a str,
-    symbols: &'a [Symbol],
+    /// Every symbol of the file, for the innermost holding a location.
+    symbols: nesting::Nesting<'a>,
+    /// The file's functions and methods, for the innermost holding a name.
+    functions: nesting::Nesting<'a>,
     options: &'a CodeOptions,
     dialect: Dialect,
     facts: CodeFacts,
@@ -1453,14 +1460,7 @@ impl Walk<'_> {
         let point = lemma_model::Position { line, column };
         let symbol = self
             .symbols
-            .iter()
-            .filter(|symbol| symbol.span.start <= point && point < symbol.span.end)
-            .min_by_key(|symbol| {
-                (
-                    symbol.span.end.line - symbol.span.start.line,
-                    symbol.span.end.column,
-                )
-            })
+            .innermost(point)
             .map(|symbol| symbol.qualified_name.clone());
         Location {
             file: self.file.to_owned(),
@@ -1475,16 +1475,8 @@ impl Walk<'_> {
         let line = u32::try_from(node.start_position().row).unwrap_or(u32::MAX);
         let column = u32::try_from(node.start_position().column).unwrap_or(u32::MAX);
         let point = lemma_model::Position { line, column };
-        self.symbols
-            .iter()
-            .filter(|symbol| matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method))
-            .filter(|symbol| symbol.span.start <= point && point < symbol.span.end)
-            .min_by_key(|symbol| {
-                (
-                    symbol.span.end.line - symbol.span.start.line,
-                    symbol.span.end.column,
-                )
-            })
+        self.functions
+            .innermost(point)
             .map(|symbol| symbol.qualified_name.clone())
     }
 
