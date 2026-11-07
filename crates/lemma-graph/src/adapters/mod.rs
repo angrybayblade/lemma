@@ -567,9 +567,9 @@ pub fn contract(
 const FAILURE_ERROR_LINES: usize = 4;
 
 /// Variables that change how a toolchain builds: where programs are, and
-/// the settings and caches of Go, Node and its package managers, Python,
-/// Rust and Java.
-const TOOLCHAIN_VARIABLES: [&str; 13] = [
+/// the settings and caches of Go, Node and its package managers, Python
+/// and its package managers, Rust and Java.
+const TOOLCHAIN_VARIABLES: [&str; 22] = [
     "PATH",
     "HOME",
     "TMPDIR",
@@ -579,10 +579,34 @@ const TOOLCHAIN_VARIABLES: [&str; 13] = [
     "NODE",
     "NPM_",
     "PNPM_",
+    "YARN_",
     "BUN_",
     "PYTHON",
     "VIRTUAL_ENV",
+    "PIP_",
+    "UV_",
+    "POETRY_",
     "CARGO",
+    "RUSTUP_",
+    "JAVA_HOME",
+    "GRADLE_",
+    "MAVEN_",
+    "M2_HOME",
+];
+
+/// Words in a failure that say the network failed it rather than the code:
+/// such a failure is not remembered, as it may pass the next time.
+const NETWORK_FAILURES: [&str; 10] = [
+    "etimedout",
+    "econnreset",
+    "econnrefused",
+    "enotfound",
+    "eai_again",
+    "temporary failure in name resolution",
+    "tls handshake timeout",
+    "i/o timeout",
+    "503 service unavailable",
+    "502 bad gateway",
 ];
 
 /// What a remembered failure is bound to besides the code: the clone it
@@ -612,13 +636,17 @@ fn failure_context(root: &Path, variables: impl Iterator<Item = (OsString, OsStr
 /// The key names the code and the adapter, so running again in the same
 /// clone and environment would only fail again, costing a build each time:
 /// the failure stands until the code, the adapter, the clone or the
-/// toolchain changes, or its log is deleted.
+/// toolchain changes, or its log is deleted. Each context keeps its own
+/// log, so a daemon and a shell with different environments do not take
+/// turns forgetting each other's failures. A failure the network caused
+/// is logged but not remembered.
 fn remembering_failure(
     output: &Path,
     context: &str,
     attempt: impl FnOnce() -> Result<(), GraphError>,
 ) -> Result<(), GraphError> {
-    let log = output.with_extension("failed");
+    let short_context = context.get(..16).unwrap_or(context);
+    let log = output.with_extension(format!("{short_context}.failed"));
     let header = format!("context {context}\n");
     if let Some(earlier) = std::fs::read_to_string(&log)
         .ok()
@@ -634,6 +662,14 @@ fn remembering_failure(
         return Ok(());
     };
     let full = error.to_string();
+    let lower = full.to_ascii_lowercase();
+    let is_network = NETWORK_FAILURES.iter().any(|word| lower.contains(word));
+    // A header no run matches keeps the log to read without remembering it.
+    let header = if is_network {
+        format!("network failure, tried again next time; {header}")
+    } else {
+        header
+    };
     if let Err(source) = std::fs::write(&log, format!("{header}{full}")) {
         // Without a log the failure is not remembered and the next run
         // tries again; the failure itself is still reported in full.
@@ -659,20 +695,38 @@ fn summarize(text: &str, most: usize) -> String {
     };
     let is_error = |line: &&&str| {
         let lower = line.to_ascii_lowercase();
-        // Whole markers, not letters: `err` alone is in "overrides".
-        [
-            "error",
-            "err_",
-            "err!",
-            "fatal",
-            "panic",
-            "cannot",
-            "undefined",
-            "not found",
-            "failed",
+        // Progress naming a package (`go: downloading .../pkg/errors`).
+        let is_progress = [
+            "go: downloading",
+            "go: finding",
+            "go: extracting",
+            "downloading ",
         ]
         .iter()
-        .any(|word| lower.contains(word))
+        .any(|prefix| lower.trim_start().starts_with(prefix));
+        // Whole words, not letters: `err` is in "overrides", "error" in
+        // "go-multierror".
+        let words: Vec<&str> = lower
+            .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '!')))
+            .collect();
+        let names_an_error = words.iter().any(|word| {
+            [
+                "error",
+                "errors",
+                "err!",
+                "fatal",
+                "panic",
+                "cannot",
+                "undefined",
+                "failed",
+            ]
+            .contains(word)
+                || word.starts_with("err_")
+        });
+        let says_missing = ["not found", "no required module", "no such file"]
+            .iter()
+            .any(|phrase| lower.contains(phrase));
+        !is_progress && (names_an_error || says_missing)
     };
     let mut shown: Vec<&str> = rest.iter().filter(is_error).take(most).copied().collect();
     if shown.is_empty() {
@@ -716,6 +770,36 @@ mod tests {
 
         assert!(!short.contains("WARN"), "{short}");
         assert!(short.contains("ERR_PNPM_NO_OFFLINE_TARBALL"), "{short}");
+    }
+
+    #[test]
+    fn a_package_downloaded_is_no_error_though_its_name_holds_the_word() {
+        let text = "build failed\ngo: downloading github.com/pkg/errors v0.9.1\ngo: downloading github.com/hashicorp/go-multierror v1.1.1\nmain.go:3:8: no required module provides package example.com/missing";
+
+        let short = summarize(text, 4);
+
+        assert!(!short.contains("downloading"), "{short}");
+        assert!(short.contains("no required module"), "{short}");
+    }
+
+    #[test]
+    fn a_failure_the_network_caused_is_tried_again() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let output = directory.path().join("key.json");
+        let _ = remembering_failure(&output, "here", || {
+            Err(GraphError::Adapter {
+                message: "npm ERR! code ETIMEDOUT".to_owned(),
+            })
+        });
+        let mut ran_again = false;
+
+        let second = remembering_failure(&output, "here", || {
+            ran_again = true;
+            Ok(())
+        });
+
+        assert!(second.is_ok());
+        assert!(ran_again);
     }
 
     #[test]
@@ -794,9 +878,11 @@ mod tests {
             ran_again = true;
             Ok(())
         });
+        let back = remembering_failure(&output, "sandbox", || Ok(()));
 
         assert!(second.is_ok());
         assert!(ran_again);
+        assert!(matches!(back, Err(GraphError::AdapterFailedBefore { .. })));
     }
 
     #[test]
