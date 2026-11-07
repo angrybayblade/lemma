@@ -132,9 +132,11 @@ pub(crate) struct CheckArgs {
     #[arg(long)]
     pub change: Option<String>,
     /// The commit before the change. Default: where the repository's
-    /// checked-out commit left its default branch (`origin/HEAD`, `main` or
-    /// `master`), so a branch's commits and uncommitted work are checked
-    /// together.
+    /// checked-out commit left its default branch (a remote's `HEAD`, or
+    /// `main`, `master`, `develop` or `trunk`), so a branch's commits and
+    /// uncommitted work are checked together; a merge commit's first parent
+    /// when no such branch shares its history. A clean checkout with
+    /// neither is an error, rather than an empty change.
     #[arg(long, requires = "change")]
     pub base: Option<String>,
     /// The commit with the change; the working directory, uncommitted

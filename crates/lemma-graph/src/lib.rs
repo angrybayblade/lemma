@@ -131,6 +131,16 @@ pub enum GraphError {
         /// What Git printed.
         message: String,
     },
+    /// Nothing tells where a clean checkout left its default branch, so a
+    /// change without a base would be empty and check nothing.
+    #[error(
+        "could not tell where {} left its default branch: no remote's HEAD, main, master, develop or trunk shares its history (a shallow clone has too little); pass --base",
+        directory.display()
+    )]
+    NoForkPoint {
+        /// The repository.
+        directory: PathBuf,
+    },
     /// A commit, branch or tag is not in a repository.
     #[error("`{reference}` is not a commit, branch or tag in {}", directory.display())]
     UnknownReference {

@@ -238,21 +238,16 @@ pub fn resolve_commit(root: &Path, reference: &str) -> Result<String, GraphError
 }
 
 /// Where the checked-out commit left the repository's default branch: its
-/// merge base with the branch `origin/HEAD` names, or else the first of
-/// `origin/main`, `origin/master`, `main` and `master` that exists. On the
-/// default branch itself that is the checked-out commit, so only
-/// uncommitted work is the change; in a repository with none of them, too.
+/// merge base with the first default branch found (see
+/// [`default_branches`]). On the default branch itself that is the
+/// checked-out commit, so only uncommitted work is the change.
+///
+/// Without one that shares its history, the checked-out commit's first
+/// parent when it is a merge, as CI checks a pull request out; else the
+/// checked-out commit when there is uncommitted work to check, and an
+/// error otherwise, since the change would be empty and pass unchecked.
 pub fn fork_point(root: &Path) -> Result<String, GraphError> {
-    let remote_default = git(
-        root,
-        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
-    )
-    .ok()
-    .map(|reference| reference.trim().to_owned());
-    let candidates = remote_default
-        .into_iter()
-        .chain(["origin/main", "origin/master", "main", "master"].map(str::to_owned));
-    for candidate in candidates {
+    for candidate in default_branches(root) {
         if resolve_commit(root, &candidate).is_err() {
             continue;
         }
@@ -260,7 +255,45 @@ pub fn fork_point(root: &Path) -> Result<String, GraphError> {
             return Ok(base.trim().to_owned());
         }
     }
-    resolve_commit(root, "HEAD")
+    if resolve_commit(root, "HEAD^2").is_ok() {
+        return resolve_commit(root, "HEAD^1");
+    }
+    let head = resolve_commit(root, "HEAD")?;
+    let status = git(root, &["status", "--porcelain"])?;
+    if !status.trim().is_empty() {
+        return Ok(head);
+    }
+    Err(GraphError::NoForkPoint {
+        directory: root.to_owned(),
+    })
+}
+
+/// The branches that may be the repository's default, most telling first:
+/// what each remote's `HEAD` names, then `main`, `master`, `develop`,
+/// `trunk` and `init.defaultBranch` on each remote (`origin` first), then
+/// the same locally.
+fn default_branches(root: &Path) -> Vec<String> {
+    let lines = |args: &[&str]| -> Vec<String> {
+        git(root, args)
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    let mut names: Vec<String> = ["main", "master", "develop", "trunk"]
+        .map(str::to_owned)
+        .to_vec();
+    names.extend(lines(&["config", "--get", "init.defaultBranch"]));
+    let mut remotes = lines(&["remote"]);
+    remotes.sort_by_key(|remote| remote != "origin");
+    let mut branches = lines(&["for-each-ref", "--format=%(symref)", "refs/remotes/*/HEAD"]);
+    for remote in &remotes {
+        branches.extend(names.iter().map(|name| format!("{remote}/{name}")));
+    }
+    branches.extend(names);
+    branches
 }
 
 /// The local clone of a `git` source, cloned into `cache` on first use and
@@ -519,6 +552,67 @@ mod tests {
         git(root, &["checkout", "-q", "-b", "feature"]).unwrap();
         commit(root, "second");
         commit(root, "third");
+
+        let fork = fork_point(root).unwrap();
+
+        assert_eq!(fork, main);
+    }
+
+    #[test]
+    fn a_clean_checkout_with_no_default_branch_has_no_fork_point() {
+        let directory = repository();
+        let root = directory.path();
+        git(root, &["checkout", "-q", "--detach"]).unwrap();
+        git(root, &["branch", "-q", "-D", "main"]).unwrap();
+
+        let fork = fork_point(root);
+
+        assert!(
+            matches!(fork, Err(GraphError::NoForkPoint { .. })),
+            "{fork:?}"
+        );
+    }
+
+    #[test]
+    fn a_merge_commit_forks_from_its_first_parent() {
+        let directory = repository();
+        let root = directory.path();
+        git(root, &["checkout", "-q", "-b", "feature"]).unwrap();
+        commit(root, "feature work");
+        git(root, &["checkout", "-q", "main"]).unwrap();
+        std::fs::write(root.join("other.txt"), "main work").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(
+            root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "main work",
+            ],
+        )
+        .unwrap();
+        let main = resolve_commit(root, "main").unwrap();
+        git(root, &["checkout", "-q", "--detach"]).unwrap();
+        git(
+            root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "merge",
+                "-q",
+                "--no-edit",
+                "feature",
+            ],
+        )
+        .unwrap();
+        git(root, &["branch", "-q", "-D", "main", "feature"]).unwrap();
 
         let fork = fork_point(root).unwrap();
 
