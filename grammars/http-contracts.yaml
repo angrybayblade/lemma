@@ -38,6 +38,10 @@ relations:
     args: [Text]                       # service
     attributes: { method: Text, path: Text, file: Text, line: Number }
     sources: [syntax]
+  code_names_path:
+    args: [Text]                       # service
+    attributes: { path: Text }
+    sources: [syntax]                  # a spec path its route code names, whole or as a router prefix and a path under it
   client_operation:
     args: [Text]                       # client
     attributes: { chain: Text, method: Text, path: Text, file: Text, line: Number }
@@ -200,10 +204,11 @@ rules:
   - calls_at_head(c, op, f, l) :- calls_client(c, ch, f, l), client_operation(_, ch, m, p, _, _), operation@head(s, op, m, p), !part_of_service(f, s).
   - called_at_head(op) :- calls_at_head(_, op, _, _).
   # An operation the spec still declares whose route the change removed: the
-  # handler is gone though callers are told it is there. Only for services
-  # whose routes are still read, so moving route code out of reach is not
-  # every route removed.
-  - unrouted_operation(op) :- operation@head(s, op, m, p), routed_before(s, m, p), !routed(s, m, p), reads_routes(s).
+  # handler is gone though callers are told it is there. Only where no route
+  # code still names the path, so a route moved to where Lemma cannot read
+  # it (under a router's prefix, into a helper) is not taken for removed,
+  # and only for services whose routes are still read at all.
+  - unrouted_operation(op) :- operation@head(s, op, m, p), routed_before(s, m, p), !routed(s, m, p), !code_names_path(s, p), reads_routes(s).
 
 requirements:
   consumer_calls_unserved_operation:
@@ -272,7 +277,7 @@ requirements:
     explain: "{c} calls {op}, whose route the change removed though the spec still declares it ({f}:{l})"
 
   operation_without_route:
-    when: added_operation(s, op, m, p), reads_routes(s), !routed(s, m, p)
+    when: added_operation(s, op, m, p), reads_routes(s), !routed(s, m, p), !code_names_path(s, p)
     severity: warning
     explain: "{s} adds {op} to its spec, but no route in its code serves it"
 

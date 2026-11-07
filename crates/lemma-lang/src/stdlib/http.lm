@@ -19,6 +19,9 @@ export relation request_field(operation: Text, field: Text, leaf: Text)
 export relation required_request_field(operation: Text, field: Text, leaf: Text)
 export relation response_field(operation: Text, field: Text, leaf: Text)
 export relation route(service: Text, method: Text, path: Text, file: Text, line: Int)
+// A path of a service's spec its route code names, whole or as a router's
+// prefix and a path under it, whether or not a route is read from it.
+export relation code_names_path(service: Text, path: Text)
 export relation client_operation(client: Text, chain: Text, method: Text, path: Text, file: Text, line: Int)
 export relation client_parameter(client: Text, method: Text, path: Text, name: Text, location: Text, file: Text, line: Int)
 export relation calls_path(consumer: Text, method: Text, path: Text, file: Text, line: Int)
@@ -341,14 +344,16 @@ export rule called_at_head(op: Text) {
 }
 
 // An operation the spec still declares whose route the change removed: the
-// handler is gone though callers are told it is there. Only for services
-// whose routes are still read, so moving route code out of reach is not
-// every route removed.
+// handler is gone though callers are told it is there. Only where no route
+// code still names the path, so a route moved to where Lemma cannot read
+// it (under a router's prefix, into a helper) is not taken for removed,
+// and only for services whose routes are still read at all.
 export rule unrouted_operation(op: Text) {
     (op) :-
         operation@head(s, op, m, p),
         routed_before(s, m, p),
         !routed(s, m, p),
+        !code_names_path(s, p),
         reads_routes(s)
 }
 
@@ -472,7 +477,8 @@ export require operation_without_route {
     when:
         added_operation(s, op, m, p),
         reads_routes(s),
-        !routed(s, m, p)
+        !routed(s, m, p),
+        !code_names_path(s, p)
     message: "{s} adds {op} to its spec, but no route in its code serves it"
 }
 

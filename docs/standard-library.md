@@ -36,6 +36,7 @@ HTTP contracts between services, their generated clients and consumers.
 - relation `required_request_field`: `(operation: Text, field: Text, leaf: Text)`
 - relation `response_field`: `(operation: Text, field: Text, leaf: Text)`
 - relation `route`: `(service: Text, method: Text, path: Text, file: Text, line: Int)`
+- relation `code_names_path`: `(service: Text, path: Text)`
 - relation `client_operation`: `(client: Text, chain: Text, method: Text, path: Text, file: Text, line: Int)`
 - relation `client_parameter`: `(client: Text, method: Text, path: Text, name: Text, location: Text, file: Text, line: Int)`
 - relation `calls_path`: `(consumer: Text, method: Text, path: Text, file: Text, line: Int)`

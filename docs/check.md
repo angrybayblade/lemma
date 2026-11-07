@@ -171,7 +171,7 @@ A change that adds to a service breaks nothing, so the checks above stay quiet e
 
 | Requirement | Warns when |
 | --- | --- |
-| `operation_without_route` | The change adds an operation to a spec, and no route in the service's code serves it. Only for services whose routes Lemma reads (`index.include` holding route code it recognises). |
+| `operation_without_route` | The change adds an operation to a spec, and no route in the service's code serves it. Only for services whose routes Lemma reads (`index.include` holding route code it recognises), and only when the service's route code never writes the path, whole or as a router's prefix and a path under it: a route Lemma cannot read, such as one registered in a helper, is given the benefit of the doubt. |
 | `route_without_operation` | The change adds a route its service's spec does not declare. |
 | `operation_without_consumer` | The change adds an operation that no code in the workspace calls, directly or through a generated client. |
 

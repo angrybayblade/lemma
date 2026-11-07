@@ -214,6 +214,24 @@ fn a_called_operation_whose_route_was_removed_is_an_error() {
 }
 
 #[test]
+fn a_route_moved_where_no_route_is_read_from_it_is_not_taken_for_removed() {
+    let workspace = shop();
+    let billing = workspace.path().join("billing");
+    let mounted = "import express from \"express\";\nimport { create } from \"./handlers\";\nconst app = express();\napp.get(\"/v1/health\", (req, res) => res.sendStatus(200));\nconst charges = express.Router();\nmount(charges);\napp.use(\"/v1/charges\", charges);\nfunction mount(r) {\n  r.post(\"/\", create);\n}\n";
+    write(&billing.join("src/server.ts"), mounted);
+    commit(&billing, "serve charges from a router");
+
+    let found = warnings(workspace.path());
+
+    assert!(
+        !found
+            .iter()
+            .any(|finding| finding.starts_with("consumer_calls_unrouted_operation")),
+        "{found:#?}"
+    );
+}
+
+#[test]
 fn a_generated_client_inside_a_service_adds_no_routes() {
     let workspace = shop();
     let billing = workspace.path().join("billing");

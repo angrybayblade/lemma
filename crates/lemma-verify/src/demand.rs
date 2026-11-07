@@ -60,8 +60,9 @@ const SCOPED_INPUTS: [&str; 3] = ["mentions", "in_file", "named"];
 
 /// Inputs written only from services' route and schema code, which is
 /// always read whole. `imports` rows keyed by such a file are complete too.
-const SERVICE_INPUTS: [&str; 5] = [
+const SERVICE_INPUTS: [&str; 6] = [
     "route",
+    "code_names_path",
     "route_schema",
     "inline_strict_route",
     "strict_schema",

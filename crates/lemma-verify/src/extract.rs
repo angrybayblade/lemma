@@ -771,24 +771,17 @@ fn service(
     }
     let documents = write_operations(service_name, repository, snapshot, writer)?;
     // Without route directories there is no route code to read; an empty
-    // list would otherwise mean the whole repository. Routes are read at
-    // the head, and at the base too when the grammar reads them there (a
-    // requirement over routes telling what was there before the change).
-    let code_snapshots: Vec<&str> = snapshots
-        .iter()
-        .copied()
-        .filter(|snapshot| {
-            *snapshot == "head"
-                || SERVICE_CODE_RELATIONS
-                    .iter()
-                    .any(|relation| writer.wants(relation, snapshot))
-        })
-        .collect();
+    // list would otherwise mean the whole repository.
+    let code_snapshots = service_code_snapshots(snapshots, writer);
     if repository.routes.is_empty() || code_snapshots.is_empty() {
         return Ok(());
     }
     let files = route_and_schema_files(repository, snapshot)?;
-    let read = extractor.read(&repository.path, commit, &files, &CodeOptions::default())?;
+    let options = CodeOptions {
+        keeps_written_paths: true,
+        ..CodeOptions::default()
+    };
+    let read = extractor.read(&repository.path, commit, &files, &options)?;
     let is_route_file = |path: &str| {
         repository
             .routes
@@ -814,6 +807,13 @@ fn service(
         route_aliases: &route_aliases,
         imports: read_import_aliases(repository, commit, snapshot.specs)?,
     };
+    let route_files = read.iter().filter(|(path, _)| is_route_file(path));
+    named_path_facts(
+        &scope,
+        &documents,
+        route_files.map(|(_, facts)| &**facts),
+        writer,
+    );
     for (path, facts) in &read {
         schema_facts(&scope, path, facts, writer);
         if !declares_routes(path, facts) {
@@ -859,10 +859,68 @@ fn written_routes(facts: &CodeFacts) -> impl Iterator<Item = (String, String)> +
         .map(|item| (item.method.clone(), item.path.clone()))
 }
 
+/// The snapshots a service's code facts are written to: the head, and the
+/// base too when the grammar reads them there (a requirement over routes
+/// telling what was there before the change).
+fn service_code_snapshots<'a>(snapshots: &[&'a str], writer: &FactWriter<'_>) -> Vec<&'a str> {
+    snapshots
+        .iter()
+        .copied()
+        .filter(|snapshot| {
+            *snapshot == "head"
+                || SERVICE_CODE_RELATIONS
+                    .iter()
+                    .any(|relation| writer.wants(relation, snapshot))
+        })
+        .collect()
+}
+
+/// Which of a service's spec paths its route files name.
+fn named_path_facts<'a>(
+    scope: &ServiceScope<'_>,
+    documents: &[Vec<(String, String)>],
+    route_files: impl Iterator<Item = &'a CodeFacts>,
+    writer: &mut FactWriter<'_>,
+) {
+    let written: BTreeSet<String> = route_files
+        .flat_map(|facts| &facts.written_paths)
+        .flat_map(|path| scope.route_paths(path))
+        .collect();
+    for path in named_spec_paths(documents, &written) {
+        let args = [Arg::Text(scope.service), Arg::Text(path)];
+        writer.add("code_names_path", scope.snapshots, &args);
+    }
+}
+
+/// The paths of a service's specs its route code names: whole, or as a
+/// prefix and the rest of the path, as a router mounted under a prefix
+/// writes them (`app.use("/v1/charges", charges)`, `charges.get("/{id}")`).
+/// Naming a path is no proof of serving it, but a path no code names is
+/// surely not served.
+fn named_spec_paths<'a>(
+    documents: &'a [Vec<(String, String)>],
+    written: &BTreeSet<String>,
+) -> BTreeSet<&'a str> {
+    let is_named = |path: &str| {
+        written.contains(path)
+            || path
+                .match_indices('/')
+                .skip(1)
+                .any(|(at, _)| written.contains(&path[..at]) && written.contains(&path[at..]))
+    };
+    documents
+        .iter()
+        .flatten()
+        .map(|(_, path)| path.as_str())
+        .filter(|path| is_named(path))
+        .collect()
+}
+
 /// What every route file of one service shares.
 /// The relations a service's route and schema code is written to.
-const SERVICE_CODE_RELATIONS: [&str; 6] = [
+const SERVICE_CODE_RELATIONS: [&str; 7] = [
     "route",
+    "code_names_path",
     "route_schema",
     "inline_strict_route",
     "strict_schema",
@@ -1188,6 +1246,7 @@ fn consumer(
             client_receivers: repository.client_receivers.clone(),
             client_modules: repository.client_modules.clone(),
             path_markers: snapshot.system.markers.clone(),
+            keeps_written_paths: false,
         },
         system: snapshot.system,
         clients: snapshot.clients,
@@ -2530,6 +2589,27 @@ fn join(directory: &Path, specifier: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_spec_path_is_named_whole_or_as_a_prefix_and_the_rest() {
+        let operation = |path: &str| ("GET".to_owned(), path.to_owned());
+        let documents = [vec![
+            operation("/v1/charges"),
+            operation("/v1/charges/{}"),
+            operation("/v1/refunds/{}"),
+        ]];
+        let written: BTreeSet<String> = ["/v1/charges", "/{}", "/v1"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+
+        let named = named_spec_paths(&documents, &written);
+
+        assert_eq!(
+            named.into_iter().collect::<Vec<_>>(),
+            ["/v1/charges", "/v1/charges/{}"]
+        );
+    }
 
     #[test]
     fn a_parameter_is_placed_at_the_client_method_sending_its_operation() {

@@ -156,6 +156,11 @@ pub struct CodeFacts {
     /// EDIT`): a generated client's request objects are not routes.
     #[serde(default)]
     pub is_generated: bool,
+    /// Every string written as a path from `/`, canonical, when the options
+    /// ask for them: in route code, the routes and router prefixes it
+    /// names, whether or not Lemma reads a route from them. Sorted, unique.
+    #[serde(default)]
+    pub written_paths: Vec<String>,
 }
 
 /// What to look for.
@@ -172,6 +177,10 @@ pub struct CodeOptions {
     /// checked serve, such as `/v1/` (see [`crate::path_markers`]). Paths
     /// written beside a method, as in route declarations, need none.
     pub path_markers: Vec<String>,
+    /// Whether to keep every string written as a path from `/`
+    /// ([`CodeFacts::written_paths`]), as a service's route code names the
+    /// paths and prefixes it serves.
+    pub keeps_written_paths: bool,
 }
 
 /// Why a file could not be read.
@@ -218,6 +227,8 @@ fn sorted(mut facts: CodeFacts) -> CodeFacts {
     facts.strict_schemas.sort();
     facts.strict_schemas.dedup();
     facts.schema_unions.sort();
+    facts.written_paths.sort();
+    facts.written_paths.dedup();
     facts
 }
 
@@ -1092,6 +1103,7 @@ impl Walk<'_> {
             return;
         }
         if is_string_kind(node.kind()) {
+            self.keep_written_path(node);
             // A path searched for or compared against (an error message
             // checked for the path it names, a request routed by its
             // path) is looked for, not requested.
@@ -1103,6 +1115,20 @@ impl Walk<'_> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             self.collect_strings(child);
+        }
+    }
+
+    /// Keeps a string written as a path from `/`, when the options ask.
+    fn keep_written_path(&mut self, node: Node<'_>) {
+        if !self.options.keeps_written_paths {
+            return;
+        }
+        let path = self
+            .string_value(node)
+            .filter(|text| text.starts_with('/') && !text.starts_with("//"))
+            .and_then(|text| canonical_route(&text));
+        if let Some(path) = path {
+            self.facts.written_paths.push(path);
         }
     }
 
@@ -1336,6 +1362,7 @@ mod tests {
             client_receivers: vec!["client".to_owned(), "_client".to_owned()],
             client_modules: vec!["generated/billing".to_owned()],
             path_markers: vec!["/v1/".to_owned()],
+            ..CodeOptions::default()
         };
         extract(file, source, &options, &mut Extractor::new().unwrap()).unwrap()
     }

@@ -55,7 +55,7 @@ Every command takes `--json`. Positions in JSON are zero-based.
 | `client_declares_removed_parameter` | error | A generated client still declares a removed parameter |
 | `client_calls_removed_operation` | error | A generated client method calls a removed operation |
 | `consumer_calls_changed_operation` | info | A consumer calls an operation whose request changed, but never names the changed field |
-| `consumer_calls_unrouted_operation` | error | A consumer calls an operation whose route the change removed, though the spec still declares it |
+| `consumer_calls_unrouted_operation` | error | A consumer calls an operation whose route the change removed, though the spec still declares it. Only when no route code still writes the path, so a route moved where Lemma cannot read it is not reported |
 | `operation_without_route` | warning | The change adds a spec operation no route serves |
 | `route_without_operation` | warning | The change adds a route the spec does not declare |
 | `operation_without_consumer` | warning | The change adds an operation nothing in the workspace calls (exempt if in `public_operation`) |
