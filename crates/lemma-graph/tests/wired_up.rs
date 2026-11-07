@@ -232,6 +232,24 @@ fn a_route_moved_where_no_route_is_read_from_it_is_not_taken_for_removed() {
 }
 
 #[test]
+fn a_route_a_generated_server_registers_is_read() {
+    let workspace = shop();
+    let billing = workspace.path().join("billing");
+    let routes = "/* WARNING: This file was auto-generated with tsoa. Do not modify it manually. */\nimport express from \"express\";\nexport function RegisterRoutes(app: express.Router) {\n  app.post(\"/v1/payouts\", function PayoutsController_create(request, response) {});\n}\n";
+    write(&billing.join("src/generated/routes.ts"), routes);
+    commit(&billing, "generate the payout routes");
+
+    let found = warnings(workspace.path());
+
+    assert!(
+        found.iter().any(|finding| finding.starts_with(
+            "route_without_operation: #billing:api adds a route for POST /v1/payouts"
+        )),
+        "{found:#?}"
+    );
+}
+
+#[test]
 fn a_generated_client_inside_a_service_adds_no_routes() {
     let workspace = shop();
     let billing = workspace.path().join("billing");

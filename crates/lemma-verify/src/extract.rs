@@ -788,13 +788,9 @@ fn service(
             .iter()
             .any(|directory| path.starts_with(directory.as_str()))
     };
-    // A generated file declares no routes: a client generated inside the
-    // service describes another service's.
-    let declares_routes =
-        |path: &str, facts: &lemma_http::CodeFacts| is_route_file(path) && !facts.is_generated;
     let written = read
         .iter()
-        .filter(|(path, facts)| declares_routes(path, facts))
+        .filter(|(path, _)| is_route_file(path))
         .flat_map(|(_, facts)| written_routes(facts))
         .collect();
     let mut route_aliases = lemma_http::implied_aliases(&documents, &written);
@@ -816,10 +812,10 @@ fn service(
     );
     for (path, facts) in &read {
         schema_facts(&scope, path, facts, writer);
-        if !declares_routes(path, facts) {
+        if !is_route_file(path) {
             continue;
         }
-        for route in facts.method_paths.iter().filter(|item| item.method != "*") {
+        for route in served_routes(facts) {
             route_facts(&scope, path, route, writer);
         }
     }
@@ -850,13 +846,21 @@ fn write_operations(
     Ok(documents)
 }
 
-/// The routes a file's code writes, as method and canonical path.
-fn written_routes(facts: &CodeFacts) -> impl Iterator<Item = (String, String)> + '_ {
+/// The routes a route file's code serves. In a generated file only those
+/// it registers with a handler: its other method-and-path objects are a
+/// generated client's, describing another service's routes, while a
+/// generated server (tsoa's routes, a gateway) registers its own.
+fn served_routes(facts: &CodeFacts) -> impl Iterator<Item = &lemma_http::MethodPath> {
     facts
         .method_paths
         .iter()
         .filter(|item| item.method != "*")
-        .map(|item| (item.method.clone(), item.path.clone()))
+        .filter(|item| item.is_registration || !facts.is_generated)
+}
+
+/// The routes a file's code serves, as method and canonical path.
+fn written_routes(facts: &CodeFacts) -> impl Iterator<Item = (String, String)> + '_ {
+    served_routes(facts).map(|item| (item.method.clone(), item.path.clone()))
 }
 
 /// The snapshots a service's code facts are written to: the head, and the
