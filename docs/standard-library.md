@@ -52,6 +52,8 @@ HTTP contracts between services, their generated clients and consumers.
 - relation `union_member`: `(file: Text, union: Text, member: Text)`
 - relation `part_of_service`: `(file: Text, service: Text)`
 - relation `addressed_to`: `(path: Text, service: Text)`
+- relation `public_operation`: `(operation: Text)`
+- relation `public_service`: `(service: Text)`
 - rule `references_operation`: `(c: Text, op: Text, f: Text, l: Int)`
 - rule `own_operation`: `(f: Text, op: Text)`
 - rule `calls`: `(c: Text, op: Text, f: Text, l: Int)`
@@ -78,6 +80,13 @@ HTTP contracts between services, their generated clients and consumers.
 - rule `specified`: `(s: Text, m: Text, p: Text)`
 - rule `routed`: `(s: Text, m: Text, p: Text)`
 - rule `specified_route`: `(s: Text, m: Text, f: Text, l: Int)`
+- rule `served_before`: `(s: Text, m: Text, p: Text)`
+- rule `added_operation`: `(s: Text, op: Text, m: Text, p: Text)`
+- rule `routed_before`: `(s: Text, m: Text, p: Text)`
+- rule `added_route`: `(s: Text, m: Text, p: Text, f: Text, l: Int)`
+- rule `reads_routes`: `(s: Text)`
+- rule `calls_at_head`: `(c: Text, op: Text, f: Text, l: Int)`
+- rule `called_at_head`: `(op: Text)`
 - requirement `consumer_calls_unserved_operation`: `requirement`
 - requirement `consumer_calls_removed_operation`: `requirement`
 - requirement `consumer_misses_new_required_parameter`: `requirement`
@@ -90,6 +99,9 @@ HTTP contracts between services, their generated clients and consumers.
 - requirement `consumer_calls_changed_operation`: `requirement`
 - requirement `client_declares_removed_parameter`: `requirement`
 - requirement `client_calls_removed_operation`: `requirement`
+- requirement `operation_without_route`: `requirement`
+- requirement `route_without_operation`: `requirement`
+- requirement `operation_without_consumer`: `requirement`
 - requirement `route_not_in_spec`: `requirement`
 
 ## `lemma.links`

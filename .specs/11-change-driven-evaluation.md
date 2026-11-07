@@ -53,6 +53,7 @@ The grammar already tags every relation with its sources (`spec`, `syntax`, `dec
 - **Anchored requirement.** A requirement whose body has a positive literal over a phase-1 relation with an operation variable `op`, where every selected-relation literal (positive or negated, directly or through derived relations) is connected to that `op` through a positive `calls`, `references_operation` or `client_operation` literal. **Δ is computed, not declared:** it is the union of the `op` values of every anchoring phase-1 literal over all requirements. So for every operation an anchored requirement can fire on, the callers are guaranteed to be loaded.
 - **Change-local requirement.** Its selected literals are guarded by a negated literal over the same code relation at `@base` with the same consumer variable. The built-in example is `unserved_call` with `!called_before(c, m, p)`. Such a requirement can only fire on facts that differ between base and head, which means files the change edited.
 - **Always-read requirement.** It uses only phase-1, spec, declared and always-read relations, for example `route_not_in_spec`, `client_declares_removed_parameter` and `client_calls_removed_operation` for hand-written clients.
+- **Anchored absence.** It says an operation is called by nothing: a negated literal over a relation each rule of which copies the operation column of one call (`called_at_head(op) :- calls_at_head(_, op, _, _)`), whose `op` a positive phase-1 literal holds, and no other selected literal. Its anchor joins Δ, so every caller of those operations is loaded and the absence is complete. The built-in example is `operation_without_consumer`, anchored by `added_operation`.
 - **Anything else** makes the whole grammar run in full mode. The reason is reported under `--explain`.
 
 **Context reach.** Negated selected literals such as `!sends(c, leaf)` are complete only if every fact the rules for `sends` can reach for `c` is loaded. The compiler computes that reach from the rules:
@@ -77,6 +78,8 @@ The selection loads exactly that reach.
 | `client_calls_removed_operation` | anchored: `removed_operation`; generated clients' `client_operation` rows come from the consumer files that call them, which are selected through the name index |
 | `consumer_calls_unserved_operation` | change-local |
 | `route_not_in_spec` | always-read |
+| `operation_without_route` / `route_without_operation` | always-read |
+| `operation_without_consumer` | anchored absence: `added_operation` |
 
 So the built-in grammar runs change-driven with no annotations.
 

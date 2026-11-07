@@ -88,7 +88,7 @@ One clone can appear under several names, such as a service and a consumer of an
 | From | Facts |
 | --- | --- |
 | A service's OpenAPI documents, at both commits | operations, parameters (and whether required), request and response fields as dotted paths (`items[].lines.amount`), whether the request rejects unknown fields |
-| A service's route code | routes declared with a method and path (TypeScript objects and calls, Go `net/http`, gorilla/mux, chi, gin and echo, Rust axum, actix-web and Rocket); which request schemas are zod `.strict()`, in the route's file, a file it imports, or a union of them |
+| A service's route code | routes declared with a method and path (TypeScript objects and calls; Express, Fastify, Hono and Koa routers given a handler, as in `app.post("/charges", handler)`; FastAPI and Flask decorators; Go `net/http`, gorilla/mux, chi, gin and echo; Rust axum, actix-web and Rocket); which request schemas are zod `.strict()`, in the route's file, a file it imports, or a union of them |
 | A client's specs | the functions it exposes, named by `call_names`; the parameters it declares |
 | A consumer's code (TypeScript, JavaScript, Python, Go, Rust) | paths in strings and requests, with the HTTP method where the call shows it; calls through clients (`this.client.invoices.list()`) and functions imported from client modules; the field names each function and file uses; imports, including `tsconfig.json` path aliases |
 
@@ -110,7 +110,10 @@ A string in code counts as a path only if it contains a leading segment some ser
 | `client_declares_removed_parameter` | error | A generated client still declares a parameter the service removed. |
 | `client_calls_removed_operation` | error | A client function calls an operation the change removed. |
 | `consumer_calls_changed_operation` | info | A consumer calls an operation whose request changed, but never names the changed field. |
-| `route_not_in_spec` | info | The service serves a route its spec does not declare. Public specs often leave internal routes out on purpose. |
+| `operation_without_route` | warning | The change adds an operation to a spec, and no route in the service's code serves it. Only for services whose routes are read. |
+| `route_without_operation` | warning | The change adds a route its spec does not declare. |
+| `operation_without_consumer` | warning | The change adds an operation no code calls, directly or through a generated client. An operation stated in `public_operation`, or of a service in `public_service`, is exempt. |
+| `route_not_in_spec` | info | The service serves a route its spec does not declare, one that was there before the change. Public specs often leave internal routes out on purpose. |
 
 "Names a field" means the field's last name appears as an object key, member, keyword argument, dictionary key, struct field or JSON tag, in the calling function itself or in declarations outside functions (schemas, types, constants) in its file or a file it imports. Other functions of the same file do not count, since they often reuse common names for other things. Findings that rest on a name being absent, such as a new required field the consumer never sets, search the whole file and its imports instead. It is evidence, not proof: a consumer that builds requests dynamically can use a field without naming it, and a common name can appear for another reason. Without that evidence a field change is informational, so a change most consumers never touch does not produce a wall of errors.
 

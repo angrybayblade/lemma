@@ -47,6 +47,11 @@ export relation union_member(file: Text, union: Text, member: Text)
 export relation part_of_service(file: Text, service: Text)
 // A path called in code, and a service whose path prefixes it is under.
 export relation addressed_to(path: Text, service: Text)
+// An operation called from outside the workspace, so a new one with no
+// consumer in it is expected. Stated in a graph.
+export relation public_operation(operation: Text)
+// A service whose operations are all called from outside the workspace.
+export relation public_service(service: Text)
 
 // What consumers call, matched against the operations they were written
 // for. A service's own code naming its own operations (route declarations,
@@ -269,6 +274,57 @@ export rule specified_route(s: Text, m: Text, f: Text, l: Int) {
         specified(s, m, p)
 }
 
+// Whether what a change adds is wired up: an operation it adds to a spec
+// is served by a route and called by some consumer, and a route it adds is
+// in the spec. Only additions count, so a system's older gaps stay quiet.
+export rule served_before(s: Text, m: Text, p: Text) {
+    (s, m, p) :- operation@base(s, _, m, p)
+}
+
+export rule added_operation(s: Text, op: Text, m: Text, p: Text) {
+    (s, op, m, p) :-
+        operation@head(s, op, m, p),
+        !served_before(s, m, p)
+}
+
+export rule routed_before(s: Text, m: Text, p: Text) {
+    (s, m, p) :- route@base(s, m, p, _, _)
+}
+
+export rule added_route(s: Text, m: Text, p: Text, f: Text, l: Int) {
+    (s, m, p, f, l) :-
+        route@head(s, m, p, f, l),
+        !routed_before(s, m, p)
+}
+
+// A service whose routes Lemma reads from its code: for any other, a
+// missing route says nothing.
+export rule reads_routes(s: Text) {
+    (s) :- route(s, _, _, _, _)
+}
+
+// Calls matched against the operations after the change, so a call of an
+// operation the change adds counts. A service's own code is not a caller.
+export rule calls_at_head(c: Text, op: Text, f: Text, l: Int) {
+    (c, op, f, l) :-
+        calls_path(c, m, p, f, l),
+        operation@head(s, op, m, p),
+        !part_of_service(f, s)
+    (c, op, f, l) :-
+        calls_path(c, "*", p, f, l),
+        operation@head(s, op, _, p),
+        !part_of_service(f, s)
+    (c, op, f, l) :-
+        calls_client(c, ch, f, l),
+        client_operation(_, ch, m, p, _, _),
+        operation@head(s, op, m, p),
+        !part_of_service(f, s)
+}
+
+export rule called_at_head(op: Text) {
+    (op) :- calls_at_head(_, op, _, _)
+}
+
 export require consumer_calls_unserved_operation {
     severity: error
     when: unserved_call(c, m, p, f, l)
@@ -376,11 +432,40 @@ export require client_calls_removed_operation {
     message: "{cl} method `{ch}` calls {op}, which no longer exists ({f}:{l})"
 }
 
-// Informational: public specs leave out internal routes on purpose.
+export require operation_without_route {
+    severity: warning
+    when:
+        added_operation(s, op, m, p),
+        reads_routes(s),
+        !routed(s, m, p)
+    message: "{s} adds {op} to its spec, but no route in its code serves it"
+}
+
+export require route_without_operation {
+    severity: warning
+    when:
+        added_route(s, m, p, f, l),
+        !specified_route(s, m, f, l)
+    message: "{s} adds a route for {m} {p} ({f}:{l}) that its spec does not declare"
+}
+
+export require operation_without_consumer {
+    severity: warning
+    when:
+        added_operation(s, op, m, p),
+        !called_at_head(op),
+        !public_operation(op),
+        !public_service(s)
+    message: "{s} adds {op}, which no code in the workspace calls; if code outside it does, add \"{op}\" to a graph of lemma.http.public_operation"
+}
+
+// Informational: public specs leave out internal routes on purpose. A route
+// the change adds is reported by route_without_operation instead.
 export require route_not_in_spec {
     severity: info
     when:
         route(s, m, p, f, l),
+        routed_before(s, m, p),
         !specified_route(s, m, f, l)
     message: "{s} serves {m} {p} ({f}:{l}) but its spec does not declare it"
 }

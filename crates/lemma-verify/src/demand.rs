@@ -16,7 +16,11 @@
 //!   its own file, the functions in it, and the files it imports;
 //! - **change-local**: each consumer fact it rests on is guarded by the
 //!   negation of the same row at the base (`!called_before(c, m, p)`), so it
-//!   can only hold for code the change edits.
+//!   can only hold for code the change edits;
+//! - **anchored absence**: it says an operation held by such a relation is
+//!   called by nothing (`!called_at_head(op)`, a projection of calls onto
+//!   their operation). Every caller of an anchored operation is read, so
+//!   the absence is as complete as in full evaluation.
 //!
 //! A grammar with any other requirement is evaluated in full.
 
@@ -186,6 +190,9 @@ struct Kinds<'a> {
     /// Relations about one scope, with the columns whose values stay within
     /// the scope's file (and its imports) and how many imports they reach.
     scoped: BTreeMap<String, Scope>,
+    /// Relations holding just the operation of calls: one column, every
+    /// rule copying it from column 1 of a single call.
+    called_operations: BTreeSet<String>,
     /// Relations holding only for code a change edits.
     change_local: BTreeSet<String>,
 }
@@ -216,9 +223,11 @@ impl<'a> Kinds<'a> {
             consumer,
             calls: BTreeSet::new(),
             scoped: BTreeMap::new(),
+            called_operations: BTreeSet::new(),
             change_local: BTreeSet::new(),
         };
         kinds.calls = kinds.call_relations();
+        kinds.called_operations = kinds.called_operation_relations();
         kinds.scoped = kinds.scoped_relations();
         kinds.change_local = kinds.change_local_relations();
         kinds
@@ -266,6 +275,20 @@ impl<'a> Kinds<'a> {
             }
             calls = found;
         }
+    }
+
+    /// Relations every rule of which is `called(op) :- call(_, op, _, ...)`:
+    /// the operations something calls, and nothing else.
+    fn called_operation_relations(&self) -> BTreeSet<String> {
+        self.consumer
+            .keys()
+            .filter(|relation| {
+                let mut defining = self.defining(relation).peekable();
+                defining.peek().is_some()
+                    && defining.all(|rule| copies_called_operation(rule, |r| self.is_call(r)))
+            })
+            .cloned()
+            .collect()
     }
 
     /// Whether an atom's rows are calls.
@@ -351,7 +374,12 @@ impl<'a> Kinds<'a> {
             .copied()
             .filter(|atom| self.is_call(&atom.relation))
             .collect();
-        if calls.is_empty()
+        let absences: Vec<&Atom> = body
+            .iter()
+            .filter_map(negative)
+            .filter(|atom| self.called_operations.contains(&atom.relation))
+            .collect();
+        if (calls.is_empty() && absences.is_empty())
             || body
                 .iter()
                 .filter_map(negative)
@@ -359,7 +387,16 @@ impl<'a> Kinds<'a> {
         {
             return None;
         }
-        let mut anchors = Vec::new();
+        let mut anchors = self.absence_anchors(&absences, &positive)?;
+        if calls.is_empty() {
+            // Nothing is read about the calling code of an absent call, so
+            // no other consumer fact may be.
+            let reads_other = body
+                .iter()
+                .filter_map(atom)
+                .any(|atom| self.is_selected(&atom.relation) && !absences.contains(&atom));
+            return (!reads_other).then_some((anchors, 0));
+        }
         for call in &calls {
             let operation = call_operation(call, &positive)?;
             let holding: Vec<String> = positive
@@ -376,15 +413,44 @@ impl<'a> Kinds<'a> {
             }
             anchors.extend(holding);
         }
-        let depth = self.calling_code_depth(body, &calls)?;
+        let depth = self.calling_code_depth(body, &calls, &absences)?;
         Some((anchors, depth))
+    }
+
+    /// The relations holding the operation of each absent call: derived
+    /// without consumer facts and sharing its variable. `None` when one is
+    /// held by none, since its callers would not all be read.
+    fn absence_anchors(&self, absences: &[&Atom], positive: &[&Atom]) -> Option<Vec<String>> {
+        let mut anchors = Vec::new();
+        for absence in absences {
+            let operation = variable_at(absence, 0)?;
+            let holding: Vec<String> = positive
+                .iter()
+                .filter(|atom| {
+                    self.is_derived(&atom.relation)
+                        && !self.is_selected(&atom.relation)
+                        && variables(atom).any(|variable| variable == operation)
+                })
+                .map(|atom| atom.relation.clone())
+                .collect();
+            if holding.is_empty() {
+                return None;
+            }
+            anchors.extend(holding);
+        }
+        Some(anchors)
     }
 
     /// How many levels of imports the body's consumer facts other than its
     /// calls reach from the calling code, when all of them are about it:
     /// its consumer, its file, or what `in_file` and `imports` reach from
     /// those.
-    fn calling_code_depth(&self, body: &[Literal], calls: &[&Atom]) -> Option<usize> {
+    fn calling_code_depth(
+        &self,
+        body: &[Literal],
+        calls: &[&Atom],
+        absences: &[&Atom],
+    ) -> Option<usize> {
         let mut reach = Reach::default();
         let calling_code = calls
             .iter()
@@ -396,7 +462,11 @@ impl<'a> Kinds<'a> {
         let others: Vec<&Atom> = body
             .iter()
             .filter_map(atom)
-            .filter(|atom| self.is_selected(&atom.relation) && !self.is_call(&atom.relation))
+            .filter(|atom| {
+                self.is_selected(&atom.relation)
+                    && !self.is_call(&atom.relation)
+                    && !absences.contains(atom)
+            })
             .collect();
         reach.spread(&others, &self.scoped);
         let mut depth = 0;
@@ -553,6 +623,18 @@ fn derives_call(rule: &Rule, calls: &BTreeSet<String>, is_selected: impl Fn(&str
             || reads_only_membership_of(atom, &files)
     });
     operation_bound && caller_bound && only_calls
+}
+
+/// Whether `rule` is `called(op) :- call(_, op, ...)`: one column, copied
+/// from the operation column of its one atom, a call.
+fn copies_called_operation(rule: &Rule, is_call: impl Fn(&str) -> bool) -> bool {
+    let [Literal::Positive(call)] = &rule.body[..] else {
+        return false;
+    };
+    let [Term::Variable(operation)] = &rule.head.terms[..] else {
+        return false;
+    };
+    is_call(&call.relation) && variable_at(call, 1) == Some(operation.as_str())
 }
 
 /// Whether `atom` is service membership (or a relation over it, keyed in
@@ -898,6 +980,7 @@ mod tests {
             "new_required_parameter",
             "removed_request_field",
             "removed_response_field",
+            "added_operation",
         ] {
             assert!(
                 plan.anchors.contains(anchor),
@@ -907,6 +990,32 @@ mod tests {
         }
         assert!(plan.reads_changed_files);
         assert_eq!(plan.import_depth, 1);
+    }
+
+    #[test]
+    fn an_operation_called_by_nothing_is_anchored_by_the_relation_holding_it() {
+        let grammar = with("", "removed_operation(op), !called_at_head(op)");
+
+        let plan = change_driven_plan(&grammar).unwrap();
+
+        assert!(plan.anchors.contains("removed_operation"));
+    }
+
+    #[test]
+    fn an_absent_call_of_any_operation_is_evaluated_in_full() {
+        let grammar = with("", "operation(s, op, m, p), !called_at_head(op)");
+
+        assert!(refused(&grammar).contains("extra"));
+    }
+
+    #[test]
+    fn an_absent_call_beside_other_consumer_facts_is_evaluated_in_full() {
+        let grammar = with(
+            "",
+            "removed_operation(op), !called_at_head(op), mentions(c, op)",
+        );
+
+        assert!(refused(&grammar).contains("extra"));
     }
 
     #[test]

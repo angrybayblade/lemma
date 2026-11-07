@@ -95,6 +95,12 @@ relations:
   addressed_to:
     args: [Text, Text]                 # a path called in code, a service whose path prefixes it is under
     sources: [syntax, spec]
+  public_operation:
+    args: [Text]                       # an operation called from outside the workspace
+    sources: [declared]
+  public_service:
+    args: [Text]                       # a service whose operations are all called from outside the workspace
+    sources: [declared]
 
 rules:
   # What consumers call, matched against the operations they were written
@@ -172,6 +178,23 @@ rules:
   # it is in the spec if any of them is.
   - specified_route(s, m, f, l) :- route(s, m, p, f, l), specified(s, m, p).
 
+  # Whether what a change adds is wired up: an operation it adds to a spec
+  # is served by a route and called by some consumer, and a route it adds is
+  # in the spec. Only additions count, so a system's older gaps stay quiet.
+  - served_before(s, m, p) :- operation@base(s, _, m, p).
+  - added_operation(s, op, m, p) :- operation@head(s, op, m, p), !served_before(s, m, p).
+  - routed_before(s, m, p) :- route@base(s, m, p, _, _).
+  - added_route(s, m, p, f, l) :- route@head(s, m, p, f, l), !routed_before(s, m, p).
+  # A service whose routes Lemma reads from its code: for any other, a
+  # missing route says nothing.
+  - reads_routes(s) :- route(s, _, _, _, _).
+  # Calls matched against the operations after the change, so a call of an
+  # operation the change adds counts. A service's own code is not a caller.
+  - calls_at_head(c, op, f, l) :- calls_path(c, m, p, f, l), operation@head(s, op, m, p), !part_of_service(f, s).
+  - calls_at_head(c, op, f, l) :- calls_path(c, "*", p, f, l), operation@head(s, op, _, p), !part_of_service(f, s).
+  - calls_at_head(c, op, f, l) :- calls_client(c, ch, f, l), client_operation(_, ch, m, p, _, _), operation@head(s, op, m, p), !part_of_service(f, s).
+  - called_at_head(op) :- calls_at_head(_, op, _, _).
+
 requirements:
   consumer_calls_unserved_operation:
     when: unserved_call(c, m, p, f, l)
@@ -233,8 +256,24 @@ requirements:
     severity: error
     explain: "{cl} method `{ch}` calls {op}, which no longer exists ({f}:{l})"
 
-  # Informational: public specs leave out internal routes on purpose.
+  operation_without_route:
+    when: added_operation(s, op, m, p), reads_routes(s), !routed(s, m, p)
+    severity: warning
+    explain: "{s} adds {op} to its spec, but no route in its code serves it"
+
+  route_without_operation:
+    when: added_route(s, m, p, f, l), !specified_route(s, m, f, l)
+    severity: warning
+    explain: "{s} adds a route for {m} {p} ({f}:{l}) that its spec does not declare"
+
+  operation_without_consumer:
+    when: added_operation(s, op, m, p), !called_at_head(op), !public_operation(op), !public_service(s)
+    severity: warning
+    explain: "{s} adds {op}, which no code in the workspace calls; if code outside it does, add \"{op}\" to a graph of lemma.http.public_operation"
+
+  # Informational: public specs leave out internal routes on purpose. A route
+  # the change adds is reported by route_without_operation instead.
   route_not_in_spec:
-    when: route(s, m, p, f, l), !specified_route(s, m, f, l)
+    when: route(s, m, p, f, l), routed_before(s, m, p), !specified_route(s, m, f, l)
     severity: info
     explain: "{s} serves {m} {p} ({f}:{l}) but its spec does not declare it"

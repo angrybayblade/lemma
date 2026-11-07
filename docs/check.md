@@ -165,6 +165,28 @@ With a change, only problems the change introduced count; what was already there
 
 Inferred links are checked by `lemma verify`'s grammar. Its errors are problems; its warnings stay warnings. Inference reads only the code that may call an operation the change touches, with the files it imports and the files the change edits (see `--evaluation` in [verify](verify.md)), so the count of inferred links is of calls to those operations. A trace asks for the callers of each further operation it reaches as it reaches it.
 
+### Is it wired up?
+
+A change that adds to a service breaks nothing, so the checks above stay quiet even when it is only half done. Three requirements of `lemma.http` look at what a change adds, and only at that, so a system's older gaps stay out of the report:
+
+| Requirement | Warns when |
+| --- | --- |
+| `operation_without_route` | The change adds an operation to a spec, and no route in the service's code serves it. Only for services whose routes Lemma reads (`index.include` holding route code it recognises). |
+| `route_without_operation` | The change adds a route its service's spec does not declare. |
+| `operation_without_consumer` | The change adds an operation that no code in the workspace calls, directly or through a generated client. |
+
+A call in another repository's working directory counts, so a feature built across a service and its consumer checks clean once both halves are written, committed or not. An operation meant for callers outside the workspace is stated in a graph, and then needs no caller:
+
+```lm
+import { public_operation, public_service } from lemma.http
+
+graph public : public_operation {
+    "GET /v1/charges/{}"
+}
+```
+
+Operations are written as the findings print them: the method, then the path with each parameter as `{}`. `public_service` marks every operation of a service (`"#billing:api"`). A call the change adds to an operation no spec declares is `consumer_calls_unserved_operation`, an error.
+
 ### What a problem affects
 
 Each problem lists what it affects further up, nearest first: the operations whose handlers reach the failing call, the code in other repositories that calls those operations, and so on. The call graph is read by name: a function calls another if its body mentions the other's name, and a method is reached through its type. Names that several functions share, and names so many functions mention that reaching one through them is no evidence (an error helper every handler uses), are not followed. A route's handler is found as exports find it: the call its registration names, the constant holding the registration, a helper its path is passed to, or an inline function, which counts only if its own code reaches the failing call. A walk stops at a route's registration (the code declaring the route, or a constant holding it): code that collects or documents routes, such as an OpenAPI generator, reads them without calling their handlers, and each route's operation is reached through the route itself. A trace is an approximation, so it is shown with a problem and never raises one.
