@@ -142,16 +142,21 @@ pub(crate) struct Evaluated {
 
 /// The behaviors of the program whose entry module is `manifest` in the
 /// parent repository; `None` when the parent's manifest is not a module.
+/// `loaded` is the head's program if inference already checked it.
 pub(crate) fn run(
     manifest: &str,
     repos: &BTreeMap<String, Repo>,
     options: &CheckOptions,
+    loaded: Option<HeadProgram>,
 ) -> Result<Option<Evaluated>, GraphError> {
     let (cache, has_change) = (options.cache.as_path(), options.change.is_some());
     let Some(manifest) = parent_module(manifest, repos)? else {
         return Ok(None);
     };
-    let head = Program::load(repos, &manifest, HEAD, cache)?;
+    let head = match loaded {
+        Some(HeadProgram(program)) => program,
+        None => Program::load(repos, &manifest, HEAD, cache)?,
+    };
     // A base that does not load (one from before the repository had
     // modules, or with errors since fixed) only means nothing is compared.
     let base = has_change
@@ -211,18 +216,23 @@ pub(crate) fn run(
     }))
 }
 
+/// The parent's program checked at the head, kept from lowering its grammar
+/// for running its behaviors.
+pub(crate) struct HeadProgram(Program);
+
 /// The grammar the parent's `.lm` program lowers to: the relations, rules
 /// and requirements of every module it loads, `lemma.http` always among
-/// them, as its `check main` selects them. `None` when the parent's
-/// manifest is not a module, and the built-in grammar runs.
-// TODO(release): lemma check checks the parent's program up to four times:
-// lowering each repository at both snapshots, here, and for behaviors at
-// head and base. Check it once per snapshot and share it.
+/// them, as its `check main` selects them, with the program checked at the
+/// head for its behaviors. `None` when the parent's manifest is not a
+/// module, and the built-in grammar runs.
+// TODO(release): lemma check still checks the parent's program three
+// times: lowering each repository at both snapshots, and for behaviors at
+// the base. Check it once per snapshot and share it.
 pub(crate) fn program_grammar(
     root_file: &Path,
     repos: &BTreeMap<String, Repo>,
     options: &CheckOptions,
-) -> Result<Option<lemma_grammar::GrammarFile>, GraphError> {
+) -> Result<Option<(lemma_grammar::GrammarFile, HeadProgram)>, GraphError> {
     let cache = options.cache.as_path();
     let manifest = root_file.file_name().map_or_else(
         || crate::config::LEMMA_FILE.to_owned(),
@@ -235,12 +245,12 @@ pub(crate) fn program_grammar(
     let checked = &program.checked;
     let main = selected_check(checked, options.select.as_deref())?;
     let runs = main.as_ref().map(|check| check.runs.as_slice());
-    lemma_grammar::lm::grammar_file(&checked.model, &checked.loaded.entry, runs)
-        .map(Some)
+    let grammar = lemma_grammar::lm::grammar_file(&checked.model, &checked.loaded.entry, runs)
         .map_err(|source| GraphError::Grammar {
             path: repos[SELF].checkouts[HEAD].root.join(&manifest),
             source,
-        })
+        })?;
+    Ok(Some((grammar, HeadProgram(program))))
 }
 
 /// The parent's entry module, if its manifest is one.

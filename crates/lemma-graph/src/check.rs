@@ -266,31 +266,25 @@ pub fn check<E: Engine>(
     // Verification and tracing read the same repositories; each is listed
     // once.
     let listings = Arc::new(lemma_http::Listings::default());
-    let shared = Shared::new(options, &listings, root_file, &repos)?;
+    let mut shared = Shared::new(options, &listings, root_file, &repos)?;
     let (inferred_links, walkable) = infer(&repos, &shared, engine, level, &mut findings)?;
+    let head_program = shared.program.take();
     fail_unread_contracts(level, &mut findings);
     seeds.extend(walkable.seeds.iter().cloned());
-    let facts = options.facts_cache.as_ref();
-    let reading = affects::CodeReading {
-        facts,
-        listings: &listings,
-    };
-    let mut fetch = |operations: &BTreeSet<String>| {
-        fetch_calls(
-            walkable.partial.as_ref(),
-            operations,
-            engine,
-            facts,
-            &listings,
-        )
-    };
-    let mut source = affects::CallSource {
+    let tracing = Tracing {
+        repos: &repos,
         walkable: &walkable,
-        fetch: &mut fetch,
+        listings: &listings,
+        facts: options.facts_cache.as_ref(),
     };
-    affects::attach(&mut findings, &seeds, &mut source, &repos, &reading)?;
-    let (behaviors, requirement_changes) =
-        evaluate_behaviors(root_file, &repos, options, level, &mut findings)?;
+    tracing.attach(&mut findings, &seeds, engine)?;
+    let (behaviors, requirement_changes) = evaluate_behaviors(
+        (root_file, head_program),
+        &repos,
+        options,
+        level,
+        &mut findings,
+    )?;
     sort_findings(&mut findings);
     log_outcome(&findings, started);
     Ok(Report {
@@ -305,20 +299,61 @@ pub fn check<E: Engine>(
     })
 }
 
+/// What tracing what problems affect reads.
+struct Tracing<'a> {
+    repos: &'a BTreeMap<String, Repo>,
+    walkable: &'a Walkable,
+    listings: &'a Arc<lemma_http::Listings>,
+    facts: Option<&'a lemma_verify::FactsCache>,
+}
+
+impl Tracing<'_> {
+    /// Adds to each problem among `findings` with a seed what it affects,
+    /// asking `engine` for the calls inference did not read.
+    fn attach<E: Engine>(
+        &self,
+        findings: &mut [Finding],
+        seeds: &[(usize, crate::impact::Seed)],
+        engine: &E,
+    ) -> Result<(), GraphError> {
+        let reading = affects::CodeReading {
+            facts: self.facts,
+            listings: self.listings,
+        };
+        let mut fetch = |operations: &BTreeSet<String>| {
+            fetch_calls(
+                self.walkable.partial.as_ref(),
+                operations,
+                engine,
+                self.facts,
+                self.listings,
+            )
+        };
+        let mut source = affects::CallSource {
+            walkable: self.walkable,
+            fetch: &mut fetch,
+        };
+        affects::attach(findings, seeds, &mut source, self.repos, &reading)
+    }
+}
+
 /// Runs the behaviors of the parent's `.lm` program and adds what they
 /// found; their reports and what the change did to requirements.
+/// `program` is the parent's: where its manifest is, and the head's
+/// program if inference already checked it.
 fn evaluate_behaviors(
-    root_file: &Path,
+    program: (&Path, Option<crate::behaviors::HeadProgram>),
     repos: &BTreeMap<String, Repo>,
     options: &CheckOptions,
     level: Level,
     findings: &mut Vec<Finding>,
 ) -> Result<(Vec<BehaviorReport>, Vec<RequirementChange>), GraphError> {
+    let (root_file, head_program) = program;
     let manifest = root_file.file_name().map_or_else(
         || LEMMA_FILE.to_owned(),
         |name| name.to_string_lossy().into_owned(),
     );
-    let evaluated = crate::behaviors::run(&manifest, repos, options)?;
+    let evaluated = crate::behaviors::run(&manifest, repos, options, head_program)?;
     let Some(mut evaluated) = evaluated else {
         return Ok((Vec::new(), Vec::new()));
     };
@@ -617,6 +652,9 @@ struct Shared<'a> {
     listings: &'a Arc<lemma_http::Listings>,
     /// The grammar the parent's `.lm` program lowers to, if it is one.
     grammar: Option<lemma_grammar::GrammarFile>,
+    /// The program the grammar was lowered from, checked at the head, for
+    /// its behaviors to run without checking it again.
+    program: Option<crate::behaviors::HeadProgram>,
 }
 
 impl<'a> Shared<'a> {
@@ -628,7 +666,8 @@ impl<'a> Shared<'a> {
         root_file: &Path,
         repos: &BTreeMap<String, Repo>,
     ) -> Result<Self, GraphError> {
-        let grammar = crate::behaviors::program_grammar(root_file, repos, options)?;
+        let (grammar, program) =
+            crate::behaviors::program_grammar(root_file, repos, options)?.unzip();
         if let (None, Some(name)) = (&grammar, &options.select) {
             return Err(GraphError::UnknownCheck {
                 module: root_file.display().to_string(),
@@ -639,6 +678,7 @@ impl<'a> Shared<'a> {
             options,
             listings,
             grammar,
+            program,
         })
     }
 }
