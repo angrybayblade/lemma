@@ -192,7 +192,7 @@ impl Engine {
                 self.outline(&request, &path, out)
             }
             Command::Refs(args) => {
-                self.refresh_index(&request, Indexing::Refresh);
+                self.refresh_index(&request, refresh_for(&args.target));
                 self.references(&request, args, out)
             }
             Command::Definition(args) => {
@@ -1134,7 +1134,11 @@ fn member_root(member: &lemma_graph::compose::Member, cache: &Path) -> anyhow::R
 }
 
 /// How to refresh before a query about `target`: an export's address is
-/// resolved through the exports, so they are brought up to date too.
+/// resolved through the exports, so they are brought up to date too. A
+/// symbol named otherwise leaves them as the last refresh did, sparing a
+/// query after an edit the adapters' run; what `refs` lists as linked is
+/// then as of that refresh, which only a lemma.yaml or adapter change
+/// makes out of date.
 fn refresh_for(target: &SymbolTarget) -> Indexing {
     if addresses::as_address(&target.symbol).is_some() {
         return Indexing::Refresh;
