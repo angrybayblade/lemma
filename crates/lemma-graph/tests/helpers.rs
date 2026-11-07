@@ -138,3 +138,19 @@ fn a_field_read_in_a_helper_the_consumer_never_calls_is_no_use() {
         "{checks:?}"
     );
 }
+
+#[test]
+fn a_library_method_of_the_same_name_is_no_call_of_a_helper() {
+    let workspace = shop(
+        "export function parse(row: { next_cursor?: string }) {\n  return row.next_cursor;\n}\n",
+    );
+    let charge = "import { parse } from \"./page\";\n\nexport async function charge() {\n  const response = await fetch(\"/v1/charges\", { method: \"POST\" });\n  return JSON.parse(await response.text());\n}\n";
+    write(&workspace.path().join("web/src/charge.ts"), charge);
+
+    let checks = found(workspace.path());
+
+    assert!(
+        !checks.contains(&"consumer_uses_removed_response_field".to_owned()),
+        "{checks:?}"
+    );
+}

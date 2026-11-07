@@ -28,6 +28,9 @@ export relation calls_path(consumer: Text, method: Text, path: Text, file: Text,
 export relation calls_client(consumer: Text, chain: Text, file: Text, line: Int)
 // The function a name is mentioned in, or the file outside functions.
 export relation mentions(scope: Text, name: Text)
+// The function a function is called by, named on its own or through
+// `this`, `self` or an imported module; or the file outside functions.
+export relation calls_function(scope: Text, name: Text)
 // A consumer or function, and its file.
 export relation in_file(function: Text, file: Text)
 // A function and its simple name: `update` for `Accounts.update`.
@@ -92,7 +95,7 @@ export rule local_callee(c: Text, g: Text) {
         in_file(c, f),
         in_file(g, f),
         named(g, n),
-        mentions(c, n),
+        calls_function(c, n),
         c != g
 }
 
@@ -102,7 +105,7 @@ export rule imported_callee(c: Text, g: Text) {
         imports(f, h),
         in_file(g, h),
         named(g, n),
-        mentions(c, n)
+        calls_function(c, n)
 }
 
 // Evidence that consumer c uses name n, for findings that rest on a use:

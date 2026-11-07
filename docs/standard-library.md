@@ -42,6 +42,7 @@ HTTP contracts between services, their generated clients and consumers.
 - relation `calls_path`: `(consumer: Text, method: Text, path: Text, file: Text, line: Int)`
 - relation `calls_client`: `(consumer: Text, chain: Text, file: Text, line: Int)`
 - relation `mentions`: `(scope: Text, name: Text)`
+- relation `calls_function`: `(scope: Text, name: Text)`
 - relation `in_file`: `(function: Text, file: Text)`
 - relation `named`: `(function: Text, simple_name: Text)`
 - relation `imports`: `(file: Text, imported: Text)`

@@ -62,6 +62,10 @@ relations:
     args: [Text]                       # the function it is in, or the file outside functions
     attributes: { name: Text }
     sources: [syntax]
+  calls_function:
+    args: [Text]                       # the function calling, or the file outside functions
+    attributes: { name: Text }         # the function called, by name or through this, self or an imported module
+    sources: [syntax]
   in_file:
     args: [Text, Text]                 # a consumer or function, its file
     sources: [syntax]
@@ -119,8 +123,8 @@ rules:
   # Functions consumer c calls by name: in its own file, and in a file its
   # file imports, where an SDK often keeps the code that builds a request or
   # reads a response (`transformListResponse`).
-  - local_callee(c, g) :- in_file(c, f), in_file(g, f), named(g, n), mentions(c, n), c != g.
-  - imported_callee(c, g) :- in_file(c, f), imports(f, h), in_file(g, h), named(g, n), mentions(c, n).
+  - local_callee(c, g) :- in_file(c, f), in_file(g, f), named(g, n), calls_function(c, n), c != g.
+  - imported_callee(c, g) :- in_file(c, f), imports(f, h), in_file(g, h), named(g, n), calls_function(c, n).
 
   # Evidence that consumer c uses name n, for findings that rest on a use:
   # its own function, the functions it calls in its file or an imported one,

@@ -1605,6 +1605,15 @@ fn consumer_file(
         );
         scopes.insert(mention_scope);
     }
+    for called in &facts.called {
+        let caller = consumer_id(&file_id, called.function.as_ref());
+        writer.add(
+            "calls_function",
+            scope.snapshots,
+            &[Arg::Text(&caller), Arg::Text(&called.name)],
+        );
+        scopes.insert(caller);
+    }
     for function_scope in &scopes {
         writer.add(
             "in_file",
@@ -2918,6 +2927,11 @@ mod tests {
             writer.add("mentions", &BOTH, &[Arg::Text(scope), Arg::Text(name)]);
             writer.add("in_file", &BOTH, &[Arg::Text(scope), Arg::Text("d:f")]);
         }
+        writer.add(
+            "calls_function",
+            &BOTH,
+            &[Arg::Text("d:f::Api.update"), Arg::Text("build_body")],
+        );
         writer.add(
             "named",
             &BOTH,

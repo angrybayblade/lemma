@@ -159,6 +159,13 @@ pub struct CodeFacts {
     /// Names the file uses as object keys, member names, keyword arguments
     /// or dictionary keys: the fields it may send or read. Sorted, unique.
     pub mentions: Vec<Mention>,
+    /// Functions called by their own name, in each function: `readPage(x)`,
+    /// `this.readPage(x)`, `self.read_page(x)`, or `utils.readPage(x)` with
+    /// `utils` imported. A method of another value (`JSON.parse`) is not
+    /// one, so a function of the same name is not taken for called.
+    /// Sorted, unique.
+    #[serde(default)]
+    pub called: Vec<Mention>,
     /// Import specifiers as written: relative ones (`../types/x`, `.models`)
     /// and, outside Python, bare ones that may be path aliases (`@/lib/x`).
     pub imports: Vec<String>,
@@ -227,6 +234,8 @@ fn sorted(mut facts: CodeFacts) -> CodeFacts {
     facts.client_calls.sort();
     facts.mentions.sort();
     facts.mentions.dedup();
+    facts.called.sort();
+    facts.called.dedup();
     facts.imports.sort();
     facts.imports.dedup();
     facts.imported_names = facts
@@ -566,7 +575,10 @@ impl Walk<'_> {
             "required_parameter" | "optional_parameter" | "typed_parameter" => {
                 self.router_parameter(node);
             }
-            "call_expression" | "call" => self.call(node),
+            "call_expression" | "call" => {
+                self.called_function(node);
+                self.call(node);
+            }
             "import_statement" | "import_from_statement" => self.import(node),
             "export_statement" => self.export(node),
             "short_var_declaration" | "assignment_statement" => self.go_router_prefix(node),
@@ -1043,6 +1055,44 @@ impl Walk<'_> {
         if let Some(name) = name.filter(|name| is_identifier(name)) {
             let function = self.enclosing_function(node);
             self.facts.mentions.push(Mention { name, function });
+        }
+    }
+
+    /// Records the function a call names, if it names one of its own: by
+    /// name, through `this`, `self` or `cls`, or through an imported module.
+    fn called_function(&mut self, node: Node<'_>) {
+        let Some(function) = node.child_by_field_name("function") else {
+            return;
+        };
+        let name = match function.kind() {
+            "identifier" => Some(function),
+            "member_expression" | "attribute" => {
+                let object = function.child_by_field_name("object");
+                let is_own = object.is_some_and(|object| {
+                    let receiver = self.text(object);
+                    object.kind() == "this"
+                        || matches!(receiver, "self" | "cls")
+                        || self
+                            .facts
+                            .import_bindings
+                            .iter()
+                            .any(|binding| binding.local == receiver)
+                });
+                let property = if self.dialect == Dialect::Python {
+                    "attribute"
+                } else {
+                    "property"
+                };
+                function.child_by_field_name(property).filter(|_| is_own)
+            }
+            _ => None,
+        };
+        let Some(name) = name.map(|name| self.text(name).to_owned()) else {
+            return;
+        };
+        if is_identifier(&name) {
+            let function = self.enclosing_function(node);
+            self.facts.called.push(Mention { name, function });
         }
     }
 
