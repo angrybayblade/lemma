@@ -199,6 +199,11 @@ rules:
   - calls_at_head(c, op, f, l) :- calls_path(c, "*", p, f, l), operation@head(s, op, _, p), !part_of_service(f, s).
   - calls_at_head(c, op, f, l) :- calls_client(c, ch, f, l), client_operation(_, ch, m, p, _, _), operation@head(s, op, m, p), !part_of_service(f, s).
   - called_at_head(op) :- calls_at_head(_, op, _, _).
+  # An operation the spec still declares whose route the change removed: the
+  # handler is gone though callers are told it is there. Only for services
+  # whose routes are still read, so moving route code out of reach is not
+  # every route removed.
+  - unrouted_operation(op) :- operation@head(s, op, m, p), routed_before(s, m, p), !routed(s, m, p), reads_routes(s).
 
 requirements:
   consumer_calls_unserved_operation:
@@ -260,6 +265,11 @@ requirements:
     when: client_operation(cl, ch, m, p, f, l), operation@base(_, op, m, p), removed_operation(op)
     severity: error
     explain: "{cl} method `{ch}` calls {op}, which no longer exists ({f}:{l})"
+
+  consumer_calls_unrouted_operation:
+    when: calls(c, op, f, l), unrouted_operation(op)
+    severity: error
+    explain: "{c} calls {op}, whose route the change removed though the spec still declares it ({f}:{l})"
 
   operation_without_route:
     when: added_operation(s, op, m, p), reads_routes(s), !routed(s, m, p)

@@ -88,6 +88,7 @@ HTTP contracts between services, their generated clients and consumers.
 - rule `reads_routes`: `(s: Text)`
 - rule `calls_at_head`: `(c: Text, op: Text, f: Text, l: Int)`
 - rule `called_at_head`: `(op: Text)`
+- rule `unrouted_operation`: `(op: Text)`
 - requirement `consumer_calls_unserved_operation`: `requirement`
 - requirement `consumer_calls_removed_operation`: `requirement`
 - requirement `consumer_misses_new_required_parameter`: `requirement`
@@ -100,6 +101,7 @@ HTTP contracts between services, their generated clients and consumers.
 - requirement `consumer_calls_changed_operation`: `requirement`
 - requirement `client_declares_removed_parameter`: `requirement`
 - requirement `client_calls_removed_operation`: `requirement`
+- requirement `consumer_calls_unrouted_operation`: `requirement`
 - requirement `operation_without_route`: `requirement`
 - requirement `route_without_operation`: `requirement`
 - requirement `operation_without_consumer`: `requirement`

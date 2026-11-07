@@ -194,3 +194,21 @@ fn a_route_added_without_its_spec_entry_is_reported_at_its_line() {
         ]
     );
 }
+
+#[test]
+fn a_called_operation_whose_route_was_removed_is_an_error() {
+    let workspace = shop();
+    let billing = workspace.path().join("billing");
+    let kept = "import express from \"express\";\nconst app = express();\napp.get(\"/v1/health\", (req, res) => res.sendStatus(200));\n";
+    write(&billing.join("src/server.ts"), kept);
+    commit(&billing, "drop the charge handler");
+
+    let found = warnings(workspace.path());
+
+    assert!(
+        found.iter().any(|finding| finding.starts_with(
+            "consumer_calls_unrouted_operation: #web:web:src/charge.ts::charge calls POST /v1/charges, whose route the change removed"
+        )),
+        "{found:#?}"
+    );
+}

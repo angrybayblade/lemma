@@ -340,6 +340,18 @@ export rule called_at_head(op: Text) {
     (op) :- calls_at_head(_, op, _, _)
 }
 
+// An operation the spec still declares whose route the change removed: the
+// handler is gone though callers are told it is there. Only for services
+// whose routes are still read, so moving route code out of reach is not
+// every route removed.
+export rule unrouted_operation(op: Text) {
+    (op) :-
+        operation@head(s, op, m, p),
+        routed_before(s, m, p),
+        !routed(s, m, p),
+        reads_routes(s)
+}
+
 export require consumer_calls_unserved_operation {
     severity: error
     when: unserved_call(c, m, p, f, l)
@@ -445,6 +457,14 @@ export require client_calls_removed_operation {
         operation@base(_, op, m, p),
         removed_operation(op)
     message: "{cl} method `{ch}` calls {op}, which no longer exists ({f}:{l})"
+}
+
+export require consumer_calls_unrouted_operation {
+    severity: error
+    when:
+        calls(c, op, f, l),
+        unrouted_operation(op)
+    message: "{c} calls {op}, whose route the change removed though the spec still declares it ({f}:{l})"
 }
 
 export require operation_without_route {

@@ -80,6 +80,7 @@ The selection loads exactly that reach.
 | `route_not_in_spec` | always-read |
 | `operation_without_route` / `route_without_operation` | always-read |
 | `operation_without_consumer` | anchored absence: `added_operation` |
+| `consumer_calls_unrouted_operation` | anchored: `unrouted_operation`, which reads routes, always read |
 
 So the built-in grammar runs change-driven with no annotations.
 
