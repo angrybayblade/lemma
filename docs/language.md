@@ -213,6 +213,7 @@ The level (the workspace's `config: { level: ... }` or `lemma check --level`) de
 - `lm check [mod.lm]` loads a module and everything it imports, and lists every problem as `file:line:column`.
 - `lm fmt [paths...] [--check]` rewrites `.lm` files in one canonical layout, keeping line breaks and comments; with `--check`, it lists the files that are not formatted instead. With no paths, it formats the `.lm` files under the current directory.
 - `lm convert [lemma.yaml] [--module name] [--write]` writes a `lemma.yaml` as a root module. With `--write`, it writes `mod.lm` beside the file.
+- `lm new behavior <name> --handler <operation> [--through <link>]` adds a checker, a behavior and the checker's script for one of the module's operations, to fill in from `TODO`s ([tutorial 4](tutorials/4-behaviors.md#start-from-a-template)).
 - `lm lsp` serves modules to an editor (diagnostics as you type, hovers, go to definition, symbols, completion, formatting).
 - `lemma check` reads `mod.lm` when a repository has no `lemma.yaml`, and takes a `.lm` workspace module as its argument; then it also runs the workspace's requirements, behaviors and allowances (`--select`, `--no-run`, `--level strict`).
 

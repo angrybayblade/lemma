@@ -223,4 +223,22 @@ behavior orders::passes_on_retriable: stale (1 of 3 cases held, 0 of 2 evidence 
 
 At level `check`, only violated behaviors fail. At level `strict` (`config: { level: strict }` or `--level strict`), unknown and stale ones fail too.
 
+## Start from a template
+
+The next behavior need not start from a blank file. `lm new behavior` writes the checker, the behavior and the checker's script for one of a module's operations, and with `--through` the script replaces the call that link makes, as `replay.py` does:
+
+```console
+$ lm new behavior keeps_the_customer --handler orders.place_order --through "orders.charge -> api.createCharge" --module orders/mod.lm
+added checker keeps_the_customer_run and behavior keeps_the_customer to orders/mod.lm
+wrote orders/tools/keeps_the_customer.py
+next:
+  1. in orders/tools/keeps_the_customer.py, fill in the TODOs: the input a case sends and what the replaced call answers
+  2. in the behavior, say what must hold, then remove `severity: warning`
+  3. run it alone: lemma check --select keeps_the_customer
+$ lm check
+[..]2 behaviors, 2 checkers, 0 allowances; 0 errors
+```
+
+The script finds the handler and the call to replace from its arguments; what it cannot know, the input a case sends and what the replaced call answers, is marked `TODO`. The behavior starts at `severity: warning`, so it reports without failing the check until it says what must hold. A Python handler gets a script that runs it in place, a TypeScript one a script for Bun, and a Go one a script that says which test to write. `lemma check --select keeps_the_customer` runs that behavior alone while you work on it.
+
 Next: [add a feature](5-features.md).

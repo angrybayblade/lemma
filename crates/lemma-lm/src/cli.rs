@@ -60,4 +60,32 @@ pub(crate) enum Command {
     /// Serve `.lm` modules to an editor over the Language Server Protocol,
     /// on standard input and output.
     Lsp,
+    /// Add a declaration to a module from a template.
+    New {
+        #[command(subcommand)]
+        what: New,
+    },
+}
+
+/// What `lm new` adds.
+#[derive(Subcommand)]
+pub(crate) enum New {
+    /// A behavior for one of the module's operations: a checker that runs
+    /// it, the checker's script (Python, TypeScript with Bun, or a stub for
+    /// Go) under `tools/`, and a behavior demanding its evidence. With
+    /// `--through`, the script replaces the call that link makes.
+    Behavior {
+        /// The behavior's name, such as `passes_on_retriable`.
+        name: String,
+        /// The operation to run, as the module names it: `orders.place_order`.
+        #[arg(long)]
+        handler: String,
+        /// A link the operation's code calls through, as a graph of the
+        /// module writes it: `"orders.charge -> api.createCharge"`.
+        #[arg(long)]
+        through: Option<String>,
+        /// The module to add it to.
+        #[arg(long, default_value = "mod.lm")]
+        module: PathBuf,
+    },
 }

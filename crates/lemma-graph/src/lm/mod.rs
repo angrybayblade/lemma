@@ -307,6 +307,14 @@ pub(crate) fn implementation_path(implementation: &Value) -> Option<String> {
     code_path(implementation, "an implementation").ok()
 }
 
+/// The file and symbol of a declared operation's `implementation`, as a
+/// checker receives them; `None` without one.
+pub fn operation_code(operation: &lemma_lang::model::Operation) -> Option<(String, String)> {
+    let path = implementation_path(operation.fields.get("implementation")?)?;
+    let (file, symbol) = path.split_once(':')?;
+    Some((file.to_owned(), symbol.to_owned()))
+}
+
 /// `file:Symbol` for a resolution request.
 fn code_path(implementation: &Value, what: &str) -> Result<String, LowerError> {
     let Value::Request { function, .. } = implementation else {

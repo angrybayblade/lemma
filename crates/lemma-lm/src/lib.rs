@@ -11,13 +11,15 @@ mod cli;
 mod convert;
 mod format;
 mod logging;
+mod new;
+mod scaffold;
 
 use std::process::ExitCode;
 
 use clap::Parser;
 use lemma_graph::repos::cache_directory;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, New};
 
 /// Runs `lm` with the process's arguments; its exit code.
 pub fn run() -> ExitCode {
@@ -33,6 +35,20 @@ pub fn run() -> ExitCode {
             write,
         } => convert::run(file, module.as_deref(), *write).map(|()| ExitCode::SUCCESS),
         Command::Lsp => serve().map(|()| ExitCode::SUCCESS),
+        Command::New {
+            what:
+                New::Behavior {
+                    name,
+                    handler,
+                    through,
+                    module,
+                },
+        } => new::run(&new::Request {
+            name,
+            handler,
+            through: through.as_deref(),
+            module,
+        }),
     };
     match outcome {
         Ok(code) => code,

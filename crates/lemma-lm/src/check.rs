@@ -9,8 +9,9 @@ use anyhow::Context;
 use lemma_graph::repos::{Checkout, cache_directory};
 use lemma_lang::{Checked, Severity, check_program};
 
-/// Loads and checks the program `file` is the entry module of.
-fn load(file: &Path) -> anyhow::Result<(Checked, PathBuf)> {
+/// Loads and checks the program `file` is the entry module of; the
+/// checked program and the directory `file` is in.
+pub(crate) fn load(file: &Path) -> anyhow::Result<(Checked, PathBuf)> {
     let absolute =
         std::path::absolute(file).with_context(|| format!("cannot find {}", file.display()))?;
     let root = absolute.parent().map(Path::to_path_buf).unwrap_or_default();
