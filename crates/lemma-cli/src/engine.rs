@@ -1690,12 +1690,25 @@ fn narrow_to_implementable(resolution: SymbolResolution) -> SymbolResolution {
         .cloned()
         .collect();
     // An interface is what implementations are asked about: a struct or
-    // class of the same name (Go's `Backend` beside `type Backend
-    // interface`) implements, rather than is implemented.
-    if kept
+    // class of the same name beside it (Go's `Backend` in the package of
+    // `type Backend interface`) implements, rather than is implemented.
+    // One elsewhere is unrelated, and the name stays ambiguous.
+    let directory = |symbol: &StoredSymbol| {
+        Path::new(&symbol.path)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default()
+    };
+    let interface_directories: Vec<PathBuf> = kept
         .iter()
-        .any(|symbol| symbol.symbol.kind == SymbolKind::Interface)
-    {
+        .filter(|symbol| symbol.symbol.kind == SymbolKind::Interface)
+        .map(directory)
+        .collect();
+    let is_beside_its_interface = |symbol: &StoredSymbol| {
+        symbol.symbol.kind == SymbolKind::Interface
+            || interface_directories.contains(&directory(symbol))
+    };
+    if !interface_directories.is_empty() && kept.iter().all(is_beside_its_interface) {
         kept.retain(|symbol| symbol.symbol.kind == SymbolKind::Interface);
     }
     match kept.len() {
@@ -2050,6 +2063,20 @@ mod tests {
         let narrowed = narrow_to_implementable(ambiguous);
 
         assert!(matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == 2));
+    }
+
+    #[test]
+    fn a_struct_in_another_package_leaves_the_name_ambiguous() {
+        let mut elsewhere = candidate(1, "Backend", SymbolKind::Struct);
+        elsewhere.path = "storage/backend.go".to_owned();
+        let ambiguous = SymbolResolution::Ambiguous(vec![
+            elsewhere,
+            candidate(2, "Backend", SymbolKind::Interface),
+        ]);
+
+        let narrowed = narrow_to_implementable(ambiguous);
+
+        assert!(matches!(narrowed, SymbolResolution::Ambiguous(several) if several.len() == 2));
     }
 
     #[test]
