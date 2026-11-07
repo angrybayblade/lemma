@@ -92,12 +92,44 @@ impl Runner {
     }
 
     fn run(&mut self, args: Vec<String>) -> Finished {
+        if runs_in_own_process(&args) {
+            return self.run_as_child(&args);
+        }
         if self.uses_daemon
             && let Some(finished) = forward(args.clone(), self.cwd.clone())
         {
             return finished;
         }
         self.run_in_process(args)
+    }
+
+    /// Runs `lemma` with `args` as a child process, as a terminal would.
+    fn run_as_child(&self, args: &[String]) -> Finished {
+        let executable = match std::env::current_exe() {
+            Ok(executable) => executable,
+            Err(error) => {
+                return failure(format!(
+                    "error: could not find the lemma executable: {error}"
+                ));
+            }
+        };
+        let output = std::process::Command::new(executable)
+            .args(args)
+            .current_dir(&self.cwd)
+            .stdin(std::process::Stdio::null())
+            .output();
+        match output {
+            Ok(output) => Finished {
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                exit_code: output
+                    .status
+                    .code()
+                    .and_then(|code| u8::try_from(code).ok())
+                    .unwrap_or(1),
+            },
+            Err(error) => failure(format!("error: could not run lemma: {error}")),
+        }
     }
 
     fn run_in_process(&mut self, args: Vec<String>) -> Finished {
@@ -127,6 +159,13 @@ impl Runner {
             engine.shutdown();
         }
     }
+}
+
+/// Whether a command runs in a process of its own, never in the daemon or
+/// a long-lived engine: `check` and `verify` read whole systems and run
+/// checkers, so each gets a fresh process, as from a terminal.
+fn runs_in_own_process(args: &[String]) -> bool {
+    matches!(args.first().map(String::as_str), Some("check" | "verify"))
 }
 
 #[cfg(unix)]
