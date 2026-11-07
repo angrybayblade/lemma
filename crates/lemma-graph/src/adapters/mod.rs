@@ -659,8 +659,11 @@ fn summarize(text: &str, most: usize) -> String {
     };
     let is_error = |line: &&&str| {
         let lower = line.to_ascii_lowercase();
+        // Whole markers, not letters: `err` alone is in "overrides".
         [
-            "err",
+            "error",
+            "err_",
+            "err!",
             "fatal",
             "panic",
             "cannot",
@@ -703,6 +706,16 @@ mod tests {
             short,
             "setup `pnpm install` failed\n ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with frozen-lockfile\n(3 more lines in the log)"
         );
+    }
+
+    #[test]
+    fn a_word_holding_err_is_no_error() {
+        let text = "install failed\napps/support | WARN The field pnpm.overrides will not take effect\n ERR_PNPM_NO_OFFLINE_TARBALL missing";
+
+        let short = summarize(text, 4);
+
+        assert!(!short.contains("WARN"), "{short}");
+        assert!(short.contains("ERR_PNPM_NO_OFFLINE_TARBALL"), "{short}");
     }
 
     #[test]
