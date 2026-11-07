@@ -1078,37 +1078,65 @@ fn client(
     let methods: Vec<&ClientMethod> = snapshot.clients.methods_of(name).collect();
     for spec in &repository.specs {
         for operation in spec_operations(repository, snapshot, spec)? {
-            let (file, line) = declaring_method(&methods, &operation.method, &operation.path)
-                .map_or((spec.as_str(), 0), |method| {
-                    (method.file.as_str(), method.line)
-                });
-            for parameter in &operation.parameters {
-                let args = [
-                    Arg::Text(name),
-                    Arg::Text(&operation.method),
-                    Arg::Text(&operation.path),
-                    Arg::Text(&parameter.name),
-                    Arg::Text(&parameter.location),
-                    Arg::Text(file),
-                    Arg::Number(i64::from(line)),
-                ];
-                writer.add("client_parameter", both, &args);
-            }
+            let places = parameter_places(spec, &operation, &methods);
+            client_parameters(name, &operation, &places, writer, both);
         }
     }
     Ok(())
 }
 
-/// The client method that sends `method` `path`, where a parameter it
-/// declares is written; without one, a finding points at the client's spec.
-fn declaring_method<'m>(
-    methods: &[&'m ClientMethod],
-    method: &str,
-    path: &str,
-) -> Option<&'m ClientMethod> {
+/// Where a client declares `operation`'s parameters: every client method
+/// sending it, or `spec` without one.
+fn parameter_places<'a>(
+    spec: &'a str,
+    operation: &Operation,
+    methods: &[&'a ClientMethod],
+) -> Vec<(&'a str, u32)> {
+    let places: Vec<(&str, u32)> = declaring_methods(methods, &operation.method, &operation.path)
+        .map(|method| (method.file.as_str(), method.line))
+        .collect();
+    if places.is_empty() {
+        return vec![(spec, 0)];
+    }
+    places
+}
+
+/// The parameters `client`'s spec declares for `operation`, each at every
+/// one of `places`.
+fn client_parameters(
+    client: &str,
+    operation: &Operation,
+    places: &[(&str, u32)],
+    writer: &mut FactWriter<'_>,
+    snapshots: &[&str],
+) {
+    for parameter in &operation.parameters {
+        for (file, line) in places {
+            let args = [
+                Arg::Text(client),
+                Arg::Text(&operation.method),
+                Arg::Text(&operation.path),
+                Arg::Text(&parameter.name),
+                Arg::Text(&parameter.location),
+                Arg::Text(file),
+                Arg::Number(i64::from(*line)),
+            ];
+            writer.add("client_parameter", snapshots, &args);
+        }
+    }
+}
+
+/// The client methods that send `method` `path`, where a parameter they
+/// declare is written: one per language a client is generated in, say.
+/// Without one, a finding points at the client's spec.
+fn declaring_methods<'m, 'a>(
+    methods: &'a [&'m ClientMethod],
+    method: &'a str,
+    path: &'a str,
+) -> impl Iterator<Item = &'m ClientMethod> + 'a {
     methods
         .iter()
-        .find(|candidate| candidate.method == method && candidate.path == path)
+        .filter(move |candidate| candidate.method == method && candidate.path == path)
         .copied()
 }
 
@@ -2517,9 +2545,11 @@ mod tests {
         let post = method("POST", "/v3/session_options", 140);
         let methods = [&post, &get];
 
-        let found = declaring_method(&methods, "GET", "/v3/session_options");
+        let found: Vec<u32> = declaring_methods(&methods, "GET", "/v3/session_options")
+            .map(|method| method.line)
+            .collect();
 
-        assert_eq!(found.map(|method| method.line), Some(96));
+        assert_eq!(found, [96]);
     }
 
     fn http_contracts() -> CompiledGrammar {
