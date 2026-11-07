@@ -405,7 +405,7 @@
   },
   {
     "name": "check",
-    "description": "Checks that repositories still agree: callers against the operations they call, with their schemas, and the requirements and behaviors a lemma.yaml or mod.lm declares. With `change`, `base` and `head`, reports only what a change to one repository breaks, such as a client still sending a parameter the server removed. Behaviors may run their checkers, which run code.",
+    "description": "Checks that repositories still agree, and that what a change adds is wired up: callers against the operations they call and their schemas, an operation added with no route or no caller, a route added that no spec declares, and the requirements and behaviors a lemma.yaml or mod.lm declares. Call it with `change` after editing a repository to see what the edit breaks or leaves unwired; uncommitted edits count. Behaviors may run their checkers, which run code.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -415,11 +415,11 @@
         },
         "change": {
           "type": "string",
-          "description": "The repository that changed, as the workspace names it, such as `billing`. Needs `base`."
+          "description": "The repository that changed, as the workspace names it, such as `billing`."
         },
         "base": {
           "type": "string",
-          "description": "The commit before the change."
+          "description": "The commit before the change. Default: where the checked-out commit left the default branch, so a branch's commits and uncommitted edits are checked together."
         },
         "head": {
           "type": "string",
@@ -440,7 +440,7 @@
         },
         "select": {
           "type": "string",
-          "description": "The check of a mod.lm to run instead of `check main`."
+          "description": "Run only this: a check of the mod.lm, or one behavior or requirement by name or address, such as `passes_on_retriable` or `lemma.http.operation_without_consumer`. Much faster than everything when iterating on one behavior."
         },
         "all": {
           "type": "boolean",

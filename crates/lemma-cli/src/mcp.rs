@@ -32,7 +32,8 @@ names; use text search for strings, configuration and other files.\n\n\
 Workflow: `search_symbols` (or `outline` for a file) gives each definition an id like `#415`, or \
 `#billing:415` in a workspace, where ids are numbered per repository; pass the id as shown to \
 `references`, `implementations`, `signature` or `graph`. `definition` takes a file, line and column. \
-`check` reports what a change to one repository breaks in the others. The \
+`check` with `change` reports what your edits to a repository break in the others, and what they \
+add without wiring up (an operation with no route or caller); run it as you build a feature. The \
 index refreshes itself before every query; an id keeps naming its definition across edits while \
 the definition keeps its name and kind. \"No references found\" means the server \
 saw nothing, not that the code is unused.";
@@ -490,6 +491,24 @@ mod tests {
         assert_eq!(
             args,
             ["check", "--change", "billing", "--base", "HEAD~1", "--all"]
+        );
+    }
+
+    #[test]
+    fn a_check_of_work_in_progress_names_only_the_repository() {
+        let call = json!({ "change": "billing", "select": "passes_on_retriable" });
+
+        let args = command_for("check", &arguments(&call)).unwrap();
+
+        assert_eq!(
+            args,
+            [
+                "check",
+                "--change",
+                "billing",
+                "--select",
+                "passes_on_retriable"
+            ]
         );
     }
 
