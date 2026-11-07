@@ -322,16 +322,20 @@ pub fn attach(
 /// The calls fetched for operations inference did not read every call of,
 /// by operation, kept for all of a check's traces.
 #[derive(Default)]
-struct KnownCalls {
+pub(crate) struct KnownCalls {
     fetched: BTreeMap<String, Vec<Call>>,
     /// The first fetch that failed; its operations count as uncalled.
-    failure: Option<GraphError>,
+    pub(crate) failure: Option<GraphError>,
 }
 
 impl KnownCalls {
     /// The calls of `operations`: from inference where it read them all,
     /// otherwise fetched, once per operation.
-    fn of(&mut self, operations: &BTreeSet<String>, source: &mut CallSource<'_>) -> Vec<Call> {
+    pub(crate) fn of(
+        &mut self,
+        operations: &BTreeSet<String>,
+        source: &mut CallSource<'_>,
+    ) -> Vec<Call> {
         let walkable = source.walkable;
         let is_covered = |operation: &String| {
             walkable

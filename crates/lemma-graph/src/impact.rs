@@ -220,7 +220,8 @@ fn trace(
 pub type CallsOf<'a> = dyn FnMut(&BTreeSet<String>) -> Vec<Call> + 'a;
 
 /// Calls of operations from `calls`, all of which are known.
-pub fn known_calls(calls: &[Call]) -> impl FnMut(&BTreeSet<String>) -> Vec<Call> + '_ {
+#[cfg(test)]
+fn known_calls(calls: &[Call]) -> impl FnMut(&BTreeSet<String>) -> Vec<Call> + '_ {
     move |operations| {
         calls
             .iter()

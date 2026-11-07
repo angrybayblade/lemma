@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::Arc;
 
 use lemma_logic::Engine;
 use lemma_model::{GraphNode, Use};
@@ -165,7 +166,8 @@ pub fn trace_through_system<E: Engine>(
             ..SystemTrace::default()
         });
     };
-    let walkable = current_inference(&repos, engine, caches.facts)?;
+    let listings = Arc::new(lemma_http::Listings::default());
+    let walkable = current_inference(&repos, engine, caches.facts, &listings)?;
     let routes = affects::read_routes(&walkable.routes, &repos)?;
     let in_repository = |file: &str| join(&offset, file);
     let start = Start::Reached {
@@ -175,22 +177,30 @@ pub fn trace_through_system<E: Engine>(
             .map(|function| (in_repository(&function.file), function.line))
             .collect(),
     };
-    let listings = lemma_http::Listings::default();
     let reading = affects::CodeReading {
         facts: caches.facts,
         listings: &listings,
     };
     let mut code = Code::new(&repos, &reading);
     let mut functions = |name: &str| code.functions(name);
+    let mut fetch = |operations: &BTreeSet<String>| {
+        check::fetch_calls(
+            walkable.partial.as_ref(),
+            operations,
+            engine,
+            caches.facts,
+            &listings,
+        )
+    };
+    let mut source = affects::CallSource {
+        walkable: &walkable,
+        fetch: &mut fetch,
+    };
+    let mut known = affects::KnownCalls::default();
+    let mut calls = |operations: &BTreeSet<String>| known.of(operations, &mut source);
     let mut tracing = impact::Tracing::default();
-    let (_, links) = impact::trace_links(
-        &mut tracing,
-        &start,
-        &mut functions,
-        &routes,
-        &mut impact::known_calls(&walkable.calls),
-    );
-    if let Some(error) = code.into_failure() {
+    let (_, links) = impact::trace_links(&mut tracing, &start, &mut functions, &routes, &mut calls);
+    if let Some(error) = known.failure.take().or_else(|| code.into_failure()) {
         return Err(error);
     }
     let reached_ids: BTreeMap<(String, u32), &str> = reached
@@ -238,14 +248,17 @@ fn join(offset: &str, file: &str) -> String {
     format!("{offset}/{file}")
 }
 
-/// Inference over the system as it is now: the calls and routes every
-/// repository's code shows. One repository is named as changed, at the
-/// same commit before and after, because inference reads a change; a
-/// pinned one is preferred, so working directories are read as they are.
+/// Inference over the system as it is now: the routes every repository's
+/// code shows, and how to ask for the calls of each operation a trace
+/// reaches, reading only the code that may make them. One repository is
+/// named as changed, at the same commit before and after, because
+/// inference reads a change; a pinned one is preferred, so working
+/// directories are read as they are.
 fn current_inference<E: Engine>(
     repos: &BTreeMap<String, Repo>,
     engine: &E,
     facts: Option<&lemma_verify::FactsCache>,
+    listings: &Arc<lemma_http::Listings>,
 ) -> Result<Walkable, GraphError> {
     let files = repos
         .values()
@@ -284,12 +297,25 @@ fn current_inference<E: Engine>(
             explain: false,
             relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
             facts_cache: facts.cloned(),
-            // Tracing reads every call, not only the change's.
-            evaluation: lemma_verify::Evaluation::Full,
+            evaluation: lemma_verify::Evaluation::Demand,
         };
-        let report = lemma_verify::verify(&inferred.manifest, engine, &options)
-            .map_err(|source| GraphError::Inference { source })?;
-        return Ok(affects::walkable(&report.relations, &inferred.repositories));
+        // The calls of no operation: routes and operations, with calls
+        // fetched as the trace reaches their operations.
+        let report = lemma_verify::calls_of(
+            &inferred.manifest,
+            engine,
+            &options,
+            listings,
+            &BTreeSet::new(),
+        )
+        .map_err(|source| GraphError::Inference { source })?;
+        let mut walkable = affects::walkable(&report.relations, &inferred.repositories);
+        walkable.partial = report.covered.map(|covered| affects::PartialCalls {
+            covered: covered.into_iter().collect(),
+            manifest: inferred.manifest.clone(),
+            owners: inferred.repositories.clone(),
+        });
+        return Ok(walkable);
     }
     Ok(Walkable::default())
 }

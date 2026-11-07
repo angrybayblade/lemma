@@ -522,7 +522,7 @@ fn sort_findings(findings: &mut [Finding]) {
 
 /// The calls of `operations` the inference behind `partial` did not read:
 /// verified again, reading only the code that may make them.
-fn fetch_calls<E: Engine>(
+pub(crate) fn fetch_calls<E: Engine>(
     partial: Option<&affects::PartialCalls>,
     operations: &BTreeSet<String>,
     engine: &E,
