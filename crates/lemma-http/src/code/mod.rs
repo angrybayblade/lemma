@@ -7,6 +7,7 @@
 //! consumer. The caller interprets it by the repository's role.
 
 mod go;
+mod registration;
 mod rust;
 mod zod;
 
@@ -47,6 +48,11 @@ pub struct MethodPath {
     pub template: String,
     /// Where.
     pub location: Location,
+    /// Whether code registers it as a route it serves, with a handler
+    /// (`app.post("/charges", handler)`), rather than describing a request
+    /// or a route in data: never a call.
+    #[serde(default)]
+    pub is_registration: bool,
 }
 
 /// A string naming an API path outside a method-and-path object.
@@ -525,6 +531,13 @@ impl Walk<'_> {
         if self.dialect == Dialect::Rust && self.rust_call(&parts, arguments) {
             return;
         }
+        if let Some((methods, path_node)) = self.route_registration(node, &parts, arguments) {
+            let template = self.string_value(path_node).unwrap_or_default();
+            for method in methods {
+                self.add_registered_route(&method, &template, path_node);
+            }
+            return;
+        }
         let strings: Vec<Node<'_>> = {
             let mut cursor = arguments.walk();
             arguments
@@ -785,6 +798,24 @@ impl Walk<'_> {
             path,
             template: template.to_owned(),
             location,
+            is_registration: false,
+        });
+    }
+
+    /// A route the code registers with its handler, at any path written
+    /// from `/`: a path beside a router needs no marker.
+    fn add_registered_route(&mut self, method: &str, template: &str, path_node: Node<'_>) {
+        let Some(path) = canonical_route(template) else {
+            return;
+        };
+        self.consumed.push(path_node.id());
+        let location = self.location(path_node);
+        self.facts.method_paths.push(MethodPath {
+            method: canonical_method(method),
+            path,
+            template: template.to_owned(),
+            location,
+            is_registration: true,
         });
     }
 
@@ -1313,6 +1344,60 @@ mod tests {
             ("GET", "/v1/users")
         );
         assert_eq!(found.path_references, []);
+    }
+
+    fn routes(found: &CodeFacts) -> Vec<(&str, &str, bool)> {
+        found
+            .method_paths
+            .iter()
+            .map(|route| {
+                (
+                    route.method.as_str(),
+                    route.path.as_str(),
+                    route.is_registration,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_express_route_with_its_handler_is_a_registration() {
+        let source = "app.post(\"/charges\", (req, res) => res.json({}));\nv1Router.get(\"/charges/:id\", auth, getCharge);\n";
+
+        let found = facts("server.ts", source);
+
+        assert_eq!(
+            routes(&found),
+            [("GET", "/charges/{}", true), ("POST", "/charges", true)]
+        );
+        assert_eq!(found.path_references, []);
+    }
+
+    #[test]
+    fn a_request_with_a_body_is_not_a_registration() {
+        let source =
+            "await axios.post(\"/v1/charges\", body);\nawait api.get(\"/v1/charges\", (r) => r);\n";
+
+        let found = facts("client.ts", source);
+
+        assert_eq!(routes(&found), []);
+        assert_eq!(found.path_references.len(), 2);
+    }
+
+    #[test]
+    fn python_decorators_register_routes() {
+        let source = "@router.post(\"/charges\")\nasync def create():\n    pass\n\n@app.route(\"/refunds\", methods=[\"GET\", \"POST\"])\ndef refunds():\n    pass\n";
+
+        let found = facts("api.py", source);
+
+        assert_eq!(
+            routes(&found),
+            [
+                ("GET", "/refunds", true),
+                ("POST", "/charges", true),
+                ("POST", "/refunds", true)
+            ]
+        );
     }
 
     #[test]

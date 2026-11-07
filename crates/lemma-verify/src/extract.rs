@@ -1462,9 +1462,11 @@ fn write_calls(
         .path_references
         .iter()
         .map(|reference| (&reference.method, &reference.path, &reference.location));
+    // A route the file registers is served, not called.
     let descriptors = facts
         .method_paths
         .iter()
+        .filter(|item| !item.is_registration)
         .map(|item| (&item.method, &item.path, &item.location));
     for (method, call_path, location) in calls.chain(descriptors) {
         let consumer = consumer_id(file_id, location.symbol.as_ref());
