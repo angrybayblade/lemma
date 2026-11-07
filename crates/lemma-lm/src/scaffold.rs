@@ -79,6 +79,10 @@ pub(crate) struct Scaffold {
     /// The interpreter the handler's service runs with, such as its
     /// `runtime.python`; the language's usual one when `None`.
     pub interpreter: Option<String>,
+    /// For a Go handler, the directory of its own Go module (the nearest
+    /// `go.mod`) relative to the repository, empty at its root: `go test`
+    /// runs there.
+    pub go_module: Option<String>,
 }
 
 impl Scaffold {
@@ -239,7 +243,7 @@ impl Scaffold {
              # handler that runs it for one case and prints what it observed as JSON,\n\
              # {{\"observed\": {{\"response\": ...}}}}, then run that test here, for example:\n\
              #\n\
-             #   go test ./{package} -run TestLemma -count=1 -v > \"$LEMMA_OUTPUT\"\n\
+             #   {command} -run TestLemma -count=1 -v > \"$LEMMA_OUTPUT\"\n\
              #\n\
              # $LEMMA_INPUT holds the checker's arguments as JSON.\n\
              echo \"{script}: write the test that runs {symbol}, then run it here\" >&2\n\
@@ -248,13 +252,31 @@ impl Scaffold {
             handler = self.handler.reference,
             symbol = self.handler.symbol,
             file = self.handler.file,
-            package = self
-                .handler
-                .file
-                .rsplit_once('/')
-                .map_or(".", |(directory, _)| directory),
+            command = self.go_test(),
             script = self.script_path(),
         )
+    }
+
+    /// `go test` for the handler's package, run in its own Go module.
+    fn go_test(&self) -> String {
+        let package = self
+            .handler
+            .file
+            .rsplit_once('/')
+            .map_or("", |(directory, _)| directory);
+        let module = self.go_module.as_deref().unwrap_or("");
+        let inside = package
+            .strip_prefix(module)
+            .map_or(package, |rest| rest.trim_start_matches('/'));
+        let package = if inside.is_empty() {
+            ".".to_owned()
+        } else {
+            format!("./{inside}")
+        };
+        if module.is_empty() {
+            return format!("go test {package}");
+        }
+        format!("cd {module} && go test {package}")
     }
 }
 
@@ -277,6 +299,7 @@ mod tests {
             }),
             language: ScriptLanguage::Python,
             interpreter: None,
+            go_module: None,
         }
     }
 
@@ -317,6 +340,27 @@ mod tests {
         let text = scaffold.module_text();
 
         assert!(text.contains("command: [\".venv/bin/python\", \"tools/declined_charge.py\"]"));
+    }
+
+    #[test]
+    fn a_go_handler_in_a_nested_module_is_tested_from_that_module() {
+        let scaffold = Scaffold {
+            handler: Code {
+                reference: "worker.setup_monitor".to_owned(),
+                file: "apps/worker/lib/tools/setup.go".to_owned(),
+                symbol: "SetupMonitor".to_owned(),
+            },
+            language: ScriptLanguage::Go,
+            go_module: Some("apps/worker".to_owned()),
+            ..orders(false)
+        };
+
+        let script = scaffold.script_text();
+
+        assert!(
+            script.contains("cd apps/worker && go test ./lib/tools -run"),
+            "{script}"
+        );
     }
 
     #[test]

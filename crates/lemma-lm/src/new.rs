@@ -25,7 +25,7 @@ pub(crate) struct Request<'a> {
 pub(crate) fn run(request: &Request<'_>) -> anyhow::Result<ExitCode> {
     let (checked, root) = crate::check::load(request.module)?;
     refuse_errors(&checked)?;
-    let scaffold = resolve(&checked, request)?;
+    let scaffold = resolve(&checked, &root, request)?;
     let script = root.join(scaffold.script_path());
     if script.exists() {
         bail!(
@@ -74,7 +74,7 @@ fn refuse_errors(checked: &Checked) -> anyhow::Result<()> {
 }
 
 /// The scaffold for `request`, from what the module declares.
-fn resolve(checked: &Checked, request: &Request<'_>) -> anyhow::Result<Scaffold> {
+fn resolve(checked: &Checked, root: &Path, request: &Request<'_>) -> anyhow::Result<Scaffold> {
     let model = &checked.model;
     let entry = checked.loaded.entry.as_str();
     is_free_name(model, entry, request.name)?;
@@ -88,10 +88,16 @@ fn resolve(checked: &Checked, request: &Request<'_>) -> anyhow::Result<Scaffold>
     };
     let through = request
         .through
-        .map(|link| link_through(model, entry, link))
+        .map(|link| {
+            let source = std::fs::read_to_string(request.module).unwrap_or_default();
+            link_through(model, entry, &source, link)
+        })
         .transpose()?;
     let interpreter = (language == ScriptLanguage::Python)
         .then(|| service_python(model, entry, &handler.reference))
+        .flatten();
+    let go_module = (language == ScriptLanguage::Go)
+        .then(|| go_module(root, &handler.file))
         .flatten();
     Ok(Scaffold {
         name: request.name.to_owned(),
@@ -99,7 +105,21 @@ fn resolve(checked: &Checked, request: &Request<'_>) -> anyhow::Result<Scaffold>
         through,
         language,
         interpreter,
+        go_module,
     })
+}
+
+/// The directory, relative to `root`, of the Go module holding `file`:
+/// the nearest directory above it with a `go.mod`.
+fn go_module(root: &Path, file: &str) -> Option<String> {
+    let mut directory = Path::new(file).parent();
+    while let Some(candidate) = directory {
+        if root.join(candidate).join("go.mod").exists() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+        directory = candidate.parent();
+    }
+    None
 }
 
 /// The `runtime.python` of the service holding the operation `reference`
@@ -159,21 +179,7 @@ fn handler_code(model: &Model, entry: &str, reference: &str) -> anyhow::Result<C
         .iter()
         .find(|operation| operation.address.dotted_path() == reference)
     else {
-        let known: Vec<String> = own
-            .iter()
-            .filter(|operation| !operation.is_client)
-            .map(|operation| operation.address.dotted_path())
-            .collect();
-        bail!(
-            "the module declares no operation `{reference}`; its operations: {}. An operation \
-             only a document describes says nothing of its code: declare it in its service with \
-             `export operation <name> {{ implementation: <file>.symbol(\"<handler>\") }}` to run it",
-            if known.is_empty() {
-                "none".to_owned()
-            } else {
-                known.join(", ")
-            }
-        );
+        bail!("{}", unknown_handler(reference, &own));
     };
     let Some((file, symbol)) = lemma_graph::lm::operation_code(operation) else {
         bail!("{reference} has no `implementation`, so there is no code to run");
@@ -185,21 +191,57 @@ fn handler_code(model: &Model, entry: &str, reference: &str) -> anyhow::Result<C
     })
 }
 
+/// Why `reference` names none of the module's operations, listing them.
+fn unknown_handler(reference: &str, own: &[&Operation]) -> String {
+    let listed = |is_client: bool| {
+        let names: Vec<String> = own
+            .iter()
+            .filter(|operation| operation.is_client == is_client)
+            .map(|operation| operation.address.dotted_path())
+            .collect();
+        if names.is_empty() {
+            return "none".to_owned();
+        }
+        names.join(", ")
+    };
+    format!(
+        "the module declares no operation `{reference}`. Its operations: {}. Its client \
+         operations, calls it makes to other services, which can be a handler too: {}. An \
+         operation only a document describes says nothing of its code: declare it in its service \
+         with `export operation <name> {{ implementation: <file>.symbol(\"<handler>\") }}` to run it",
+        listed(false),
+        listed(true)
+    )
+}
+
 /// The link `written` names (`orders.charge -> api.createCharge`), in a
 /// graph of the module.
-fn link_through(model: &Model, entry: &str, written: &str) -> anyhow::Result<Through> {
+///
+/// The provider may be another repository's, which the module names
+/// through an import alias (`functions_serverless.submit_task` for
+/// functions' `serverless.submit_task`), so it is matched by its own
+/// name, and written in the scaffold as the module's graph writes it.
+fn link_through(
+    model: &Model,
+    entry: &str,
+    source: &str,
+    written: &str,
+) -> anyhow::Result<Through> {
     let Some((caller, provider)) = written.split_once("->") else {
         bail!("`{written}` is not a link: write `caller -> provider`, as a graph does");
     };
     let (caller, provider) = (caller.trim(), provider.trim());
-    // A declared operation, or one a service's documents describe
-    // (`api.createCharge`, or `api["POST /v1/charges"]` by route).
+    let wanted = operation_name(provider);
+    // The caller is the module's own operation; the provider a declared
+    // operation, or one a service's documents describe (`api.createCharge`,
+    // or `api["POST /v1/charges"]` by route).
     let names = |value: &Value, name: &str| match value {
         Value::Operation(address) => address.dotted_path() == name,
-        Value::Discovered { service, key } => {
-            let service = service.dotted_path();
-            name == format!("{service}.{key}") || name == format!("{service}[\"{key}\"]")
-        }
+        _ => false,
+    };
+    let is_wanted = |value: &Value| match value {
+        Value::Operation(address) => address.path.last().map(String::as_str) == Some(wanted),
+        Value::Discovered { key, .. } => key == wanted,
         _ => false,
     };
     let graph = model
@@ -211,7 +253,7 @@ fn link_through(model: &Model, entry: &str, written: &str) -> anyhow::Result<Thr
                 let [from, to] = &row[..] else {
                     return false;
                 };
-                names(from, caller) && names(to, provider)
+                names(from, caller) && is_wanted(to)
             })
         });
     let Some(graph) = graph else {
@@ -220,10 +262,34 @@ fn link_through(model: &Model, entry: &str, written: &str) -> anyhow::Result<Thr
              `export graph links : Link {{ {caller} -> {provider} }}`"
         );
     };
+    let provider = written_provider(source, caller, wanted).unwrap_or_else(|| provider.to_owned());
     Ok(Through {
         graph: graph.address.dotted_path(),
         caller: caller.to_owned(),
-        provider: provider.to_owned(),
+        provider,
+    })
+}
+
+/// An operation's own name in a reference: `submit_task` in
+/// `functions_serverless.submit_task`, the route in `api["POST /x"]`.
+fn operation_name(reference: &str) -> &str {
+    if let Some(route) = reference
+        .split_once("[\"")
+        .and_then(|(_, rest)| rest.strip_suffix("\"]"))
+    {
+        return route;
+    }
+    reference.rsplit('.').next().unwrap_or(reference)
+}
+
+/// How the module's source writes the provider of a link from `caller` to
+/// an operation named `wanted`: the right side of its graph row, which is
+/// in scope in the module.
+fn written_provider(source: &str, caller: &str, wanted: &str) -> Option<String> {
+    source.lines().find_map(|line| {
+        let (from, to) = line.split_once("->")?;
+        let to = to.trim().trim_end_matches(',');
+        (from.trim() == caller && operation_name(to) == wanted).then(|| to.to_owned())
     })
 }
 
@@ -331,6 +397,54 @@ mod tests {
 
         assert!(error.contains("no operation `orders.refund`"), "{error}");
         assert_eq!(std::fs::read_to_string(&module).unwrap(), ORDERS);
+    }
+
+    /// The orders module importing billing's service under an alias.
+    fn aliased_shop(directory: &Path) -> std::path::PathBuf {
+        let module = shop(directory);
+        let aliased = ORDERS
+            .replace(
+                "import { api } from billing",
+                "import { api as billing_api } from billing",
+            )
+            .replace(
+                "orders.charge -> api.createCharge",
+                "orders.charge -> billing_api.createCharge",
+            );
+        std::fs::write(&module, aliased).unwrap();
+        module
+    }
+
+    #[test]
+    fn a_link_to_another_repository_is_found_through_its_import_alias() {
+        let directory = tempfile::tempdir().unwrap();
+        let module = aliased_shop(directory.path());
+
+        run(&request(
+            &module,
+            Some("orders.charge -> billing_api.createCharge"),
+        ))
+        .unwrap();
+
+        let text = std::fs::read_to_string(&module).unwrap();
+        assert!(
+            text.contains("links[orders.charge, billing_api.createCharge]"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_provider_written_by_its_own_name_is_written_as_the_graph_writes_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let module = aliased_shop(directory.path());
+
+        run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
+
+        let text = std::fs::read_to_string(&module).unwrap();
+        assert!(
+            text.contains("links[orders.charge, billing_api.createCharge]"),
+            "{text}"
+        );
     }
 
     #[test]
