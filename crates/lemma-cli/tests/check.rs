@@ -316,3 +316,82 @@ fn a_query_does_not_clone() {
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     assert!(!scratch.path().join("web/.cache/lemma/repos").exists());
 }
+
+const OPENAPI: &str = r#"{ "openapi": "3.0.0", "info": { "title": "B", "version": "1" }, "paths": { "/v1/charges": { "post": { "operationId": "createCharge", "responses": { "200": { "description": "ok" } } } } } }"#;
+
+/// Billing's document, and web calling it from code, with the operation
+/// then removed; the workspace's directory is `root`.
+fn inferred_break(root: &Path) {
+    let billing = root.join("billing");
+    write(&billing.join("openapi.json"), OPENAPI);
+    write(
+        &billing.join("mod.lm"),
+        "module billing\n\nimport * as http from lemma.http\n\nexport service api {\n    operations: http.openapi(\"openapi.json\")\n}\n",
+    );
+    commit_all(&billing);
+    let web = root.join("web");
+    write(
+        &web.join("src/charge.ts"),
+        "export async function charge() {\n  return fetch(\"/v1/charges\", { method: \"POST\" });\n}\n",
+    );
+    write(
+        &web.join("mod.lm"),
+        "module web\n\nexport service web {\n    index: { include: [\"src\"] }\n}\n",
+    );
+    commit_all(&web);
+    write(
+        &root.join("mod.lm"),
+        "module shop\n\nworkspace {\n    repo billing = local(\"billing\")\n    repo web = local(\"web\")\n    config: { level: check }\n}\n",
+    );
+    write(
+        &billing.join("openapi.json"),
+        &OPENAPI.replace("/v1/charges", "/v1/payments"),
+    );
+}
+
+#[test]
+fn evaluating_both_ways_reports_the_same_findings() {
+    let scratch = tempfile::tempdir().unwrap();
+    inferred_break(scratch.path());
+
+    let output = lemma(
+        scratch.path(),
+        &[
+            "check",
+            "--change",
+            "billing",
+            "--base",
+            "HEAD",
+            "--no-daemon",
+            "--evaluation",
+            "both",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(4), "{}", text(&output));
+}
+
+#[test]
+fn explain_says_why_an_inferred_finding_holds() {
+    let scratch = tempfile::tempdir().unwrap();
+    inferred_break(scratch.path());
+    let args = [
+        "check",
+        "--change",
+        "billing",
+        "--base",
+        "HEAD",
+        "--no-daemon",
+    ];
+
+    let plain = text(&lemma(scratch.path(), &args));
+    let explained = text(&lemma(
+        scratch.path(),
+        &[&args[..], &["--explain"]].concat(),
+    ));
+
+    assert!(
+        explained.lines().count() > plain.lines().count(),
+        "{explained}"
+    );
+}

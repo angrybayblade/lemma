@@ -135,6 +135,7 @@ fn trace_options(cache: &Path) -> CheckOptions {
         cache: cache.to_path_buf(),
         // A trace answers a query, which must not start a clone.
         cloning: crate::repos::Cloning::Forbidden,
+        explain: false,
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Full,
         list_links: false,

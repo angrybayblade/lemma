@@ -257,6 +257,8 @@ fn finding(link: &str, severity: Severity, message: String) -> Finding {
         affects: Vec::new(),
         allowed: None,
         values: std::collections::BTreeMap::new(),
+
+        derivation: None,
     }
 }
 

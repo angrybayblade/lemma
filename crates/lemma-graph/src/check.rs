@@ -51,12 +51,18 @@ pub struct Change {
 
 /// What to check, and where to cache clones and worktrees.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each switch is independent of the others"
+)]
 pub struct CheckOptions {
     /// The change; without one, every repository is read once and links are
     /// checked as they stand.
     pub change: Option<Change>,
     /// Overrides the `graph`'s level.
     pub level: Option<Level>,
+    /// Whether each inferred finding says why it holds.
+    pub explain: bool,
     /// Lemma's cache directory.
     pub cache: PathBuf,
     /// Whether a repository not in the cache may be cloned.
@@ -190,6 +196,9 @@ pub struct Finding {
     /// allowances read.
     #[serde(skip)]
     pub values: BTreeMap<String, String>,
+    /// Why an inferred finding holds, when [`CheckOptions::explain`] asks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derivation: Option<String>,
 }
 
 /// Something a problem affects further up.
@@ -576,6 +585,7 @@ fn infer_at_head<E: Engine>(
             facts_cache: options.facts_cache.as_ref(),
             listings: shared.listings,
             evaluation: lemma_verify::Evaluation::Full,
+            explain: false,
         };
         let mut ignored = Vec::new();
         if let Some(found) = infer_links(repos, &run, Level::Audit, engine, &mut ignored)? {
@@ -706,6 +716,7 @@ struct Inference<'a> {
     facts_cache: Option<&'a lemma_verify::FactsCache>,
     listings: &'a Arc<lemma_http::Listings>,
     evaluation: lemma_verify::Evaluation,
+    explain: bool,
 }
 
 /// What every inference in one check shares: its options, and the
@@ -774,6 +785,7 @@ fn infer_change<E: Engine>(
         facts_cache: options.facts_cache.as_ref(),
         listings,
         evaluation: evaluation_of(options),
+        explain: options.explain,
     };
     infer_links(repos, &run, level, engine, findings)
 }
@@ -818,6 +830,7 @@ fn infer_drift<E: Engine>(
             facts_cache: options.facts_cache.as_ref(),
             listings,
             evaluation: options.evaluation,
+            explain: options.explain,
         };
         if let Some(found) = infer_links(repos, &run, level, engine, findings)? {
             inferred = Some(found);
@@ -896,7 +909,7 @@ fn verify_inferred<E: Engine>(
 ) -> Result<lemma_verify::Report, GraphError> {
     let (base, head) = (run.base, run.head);
     let options = lemma_verify::Options {
-        explain: false,
+        explain: run.explain,
         relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
         facts_cache: run.facts_cache.cloned(),
         // Tracing asks for the calls of further operations as it reaches
@@ -1209,6 +1222,7 @@ fn unsupported_documents(repos: &BTreeMap<String, Repo>) -> Result<Vec<Finding>,
             affects: Vec::new(),
             allowed: None,
             values: BTreeMap::new(),
+            derivation: None,
         });
     }
     Ok(warnings)
@@ -1263,6 +1277,8 @@ fn adapter_warning(entry: &str, message: String) -> Finding {
         affects: Vec::new(),
         allowed: None,
         values: BTreeMap::new(),
+
+        derivation: None,
     }
 }
 
@@ -1329,6 +1345,7 @@ fn inferred_finding(found: &lemma_verify::Finding, level: Level, has_change: boo
         affects: Vec::new(),
         allowed: None,
         values: found.values.clone(),
+        derivation: found.derivation.clone(),
     }
 }
 
@@ -2070,6 +2087,7 @@ impl Checker<'_> {
             affects: Vec::new(),
             allowed: None,
             values: BTreeMap::new(),
+            derivation: None,
         };
         if !self.findings.contains(&finding) {
             self.findings.push(finding);
@@ -2134,6 +2152,7 @@ mod tests {
                 affects: Vec::new(),
                 allowed: None,
                 values: BTreeMap::new(),
+                derivation: None,
             },
         ];
 

@@ -705,6 +705,7 @@ pub(crate) fn findings(reports: &[BehaviorReport], level: Level) -> Vec<Finding>
                 affects: Vec::new(),
                 allowed: None,
                 values: std::collections::BTreeMap::new(),
+                derivation: None,
             });
         }
         let worst_case = report.cases.iter().map(|case| rank(case.outcome)).max();
@@ -723,6 +724,7 @@ pub(crate) fn findings(reports: &[BehaviorReport], level: Level) -> Vec<Finding>
                 affects: Vec::new(),
                 allowed: None,
                 values: std::collections::BTreeMap::new(),
+                derivation: None,
             });
         }
     }

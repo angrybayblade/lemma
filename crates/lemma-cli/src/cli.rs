@@ -174,9 +174,13 @@ pub(crate) struct CheckArgs {
     #[arg(long)]
     pub engine: Option<String>,
     /// How much consumer code inference reads: `demand` (the code a finding
-    /// can rest on, the default) or `full`.
-    #[arg(long, value_parser = ["demand", "full"])]
+    /// can rest on, the default) or `full`. `both` runs each and fails if
+    /// their findings differ.
+    #[arg(long, value_parser = ["demand", "full", "both"])]
     pub evaluation: Option<String>,
+    /// Show why each inferred finding holds.
+    #[arg(long)]
+    pub explain: bool,
     /// Also list every link: those declared, and each call from code to a
     /// documented operation, by calling repository and the service called.
     /// Reads all consumer code; without `--change`, at head.

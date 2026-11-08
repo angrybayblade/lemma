@@ -34,7 +34,12 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
         }
     };
     let options = check_options(args, cloning);
-    let report = match check(args, &options, lsp) {
+    let checked = if args.evaluation.as_deref() == Some("both") {
+        check_both(args, &options, lsp)
+    } else {
+        check(args, &options, lsp)
+    };
+    let report = match checked {
         Ok(report) => report,
         Err(error) => {
             eprintln!("error: {error:#}");
@@ -86,6 +91,7 @@ fn check_options(args: &CheckArgs, cloning: lemma_graph::repos::Cloning) -> Chec
         }),
         cache: lemma_graph::repos::cache_directory(),
         cloning,
+        explain: args.explain,
         facts_cache: crate::verify::facts_cache(),
         evaluation: match args.evaluation.as_deref() {
             Some("full") => lemma_verify::Evaluation::Full,
@@ -156,6 +162,57 @@ fn check(
     Ok(report?)
 }
 
+/// Checks with full and with change-driven evaluation, and fails if they
+/// found different things: a selection that missed a file a finding rests
+/// on. The change-driven report, otherwise.
+fn check_both(
+    args: &CheckArgs,
+    options: &CheckOptions,
+    lsp: &LanguageServers,
+) -> anyhow::Result<Report> {
+    let evaluated = |evaluation| CheckOptions {
+        evaluation,
+        ..options.clone()
+    };
+    let full = check(args, &evaluated(lemma_verify::Evaluation::Full), lsp)?;
+    let demand = check(args, &evaluated(lemma_verify::Evaluation::Demand), lsp)?;
+    let differences = findings_only_in_one(&full, &demand);
+    anyhow::ensure!(
+        differences.is_empty(),
+        "change-driven evaluation found other findings than full evaluation:{differences}"
+    );
+    Ok(demand)
+}
+
+/// The findings of one report and not the other, a line each.
+fn findings_only_in_one(full: &Report, demand: &Report) -> String {
+    let described = |report: &Report| -> std::collections::BTreeSet<String> {
+        report
+            .findings
+            .iter()
+            .map(|finding| {
+                let origin = if finding.introduced {
+                    ""
+                } else {
+                    " (already there)"
+                };
+                format!(
+                    "{:?} {} {} {}{origin}",
+                    finding.severity, finding.check, finding.link, finding.message
+                )
+            })
+            .collect()
+    };
+    let (full_findings, demand_findings) = (described(full), described(demand));
+    let missed = full_findings
+        .difference(&demand_findings)
+        .map(|finding| format!("\n  only in full: {finding}"));
+    let extra = demand_findings
+        .difference(&full_findings)
+        .map(|finding| format!("\n  only in demand: {finding}"));
+    missed.chain(extra).collect()
+}
+
 fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Result<()> {
     let level = match report.level {
         Level::Audit => "audit",
@@ -198,6 +255,9 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
             "        [{}] {}  ({origin})",
             finding.check, finding.link
         )?;
+        for line in finding.derivation.iter().flat_map(|text| text.lines()) {
+            writeln!(out, "        {line}")?;
+        }
         print_affects(out, &finding.affects, all)?;
     }
     print_not_checked(out, report)?;

@@ -44,6 +44,7 @@ pub fn composition(
         level: None,
         cache: cache.to_path_buf(),
         cloning,
+        explain: false,
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
