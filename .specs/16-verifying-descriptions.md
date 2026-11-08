@@ -1,6 +1,6 @@
 # `lemma verify`: does the description match the code?
 
-**Status: proposal, 2026-11-08.** The rows marked *decided* under [Decisions](#decisions) were settled in discussion. Everything else is proposal. Nothing here is implemented. Statements marked *observed* were run on 2026-11-08 against build 8541531, on a small probe workspace. Numbers marked *target* are unmeasured.
+**Status: step 1 of the [rollout](#rollout) implemented, 2026-11-08; the rest is proposal.** The rows marked *decided* under [Decisions](#decisions) were settled in discussion. Statements marked *observed* were run on 2026-11-08 against build 8541531, on a small probe workspace, before this work. Numbers marked *target* are unmeasured. Findings name a location as a repository and service, not yet a file and line.
 
 This depends on [document 15](15-one-description-format.md), which removes YAML. `lemma verify` then only ever has to understand `.lm`.
 

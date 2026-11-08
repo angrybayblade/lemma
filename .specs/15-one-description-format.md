@@ -1,6 +1,6 @@
 # One description format: removing YAML
 
-**Status: proposal, 2026-11-08.** The rows marked *decided* under [Decisions](#decisions) were settled in discussion. Everything else is proposal. Nothing here is implemented. Statements marked *observed* were run on 2026-11-08 against build 8541531, on small probe workspaces unless stated otherwise. Code references describe that tree.
+**Status: implemented, 2026-11-08.** Statements marked *observed* were run that day against build 8541531, on small probe workspaces unless stated otherwise, and describe the tree before this work. Code references describe that tree. On the private gates the implementation matches unmodified `main` on YAML: every replayed change gives the same findings, and mutation recall misses the same callers.
 
 This builds on [the `.lm` grammar](13-lm-grammar.md), whose first phase lowered `.lm` into the structures YAML already used. It removes the other half. [Document 16](16-verifying-descriptions.md) gives `lemma verify` a new job, which is what lets its YAML manifest go.
 
@@ -34,7 +34,7 @@ After this work, a Lemma description is always `.lm`. Every command reads it the
 | No compatibility period, aliases or migration hints. Lemma has no external users yet | *decided* |
 | `lemma verify` stops checking changes and checks descriptions instead ([document 16](16-verifying-descriptions.md)), so its manifest is deleted, not ported | *decided* |
 | Implementation starts after the agent benchmark round in progress | *decided* |
-| Implementation also waits for the sentry and pre-launch branches to merge | proposal |
+| Implementation does not wait for the sentry and pre-launch branches | *decided* |
 | A leftover `lemma.yaml` is an ordinary unread file | proposal |
 | Every command loads a description with the one loader `lemma check` uses, type-checking included | proposal |
 | A link naming a declared operation that no longer exists is a finding, not a load failure | proposal |
