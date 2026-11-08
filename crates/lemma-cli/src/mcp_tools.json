@@ -138,7 +138,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Only symbols whose file path contains this text."
+          "description": "Picks the symbol by the file defining it: only symbols whose file path contains this text. Not a filter on the results, and ignored for an id."
         },
         "refresh": {
           "type": "boolean",
@@ -235,7 +235,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Only symbols whose file path contains this text."
+          "description": "Picks the symbol by the file defining it: only symbols whose file path contains this text. Not a filter on the results, and ignored for an id."
         },
         "refresh": {
           "type": "boolean",
@@ -290,7 +290,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Only symbols whose file path contains this text."
+          "description": "Picks the symbol by the file defining it: only symbols whose file path contains this text. Not a filter on the results, and ignored for an id."
         },
         "refresh": {
           "type": "boolean",
@@ -345,7 +345,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Only symbols whose file path contains this text."
+          "description": "Picks the symbol by the file defining it: only symbols whose file path contains this text. Not a filter on the results, and ignored for an id."
         },
         "refresh": {
           "type": "boolean",

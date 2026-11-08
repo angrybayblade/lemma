@@ -1648,9 +1648,9 @@ fn select_symbol(
                  use an id this repository's `lemma symbols` shows"
             );
         }
-        let found = store
-            .symbol(snapshot.id, id)?
-            .filter(|found| matches_filters(found, &filters));
+        // An id names one symbol already: a filter given with it is about
+        // something else, such as where its uses are, and must not hide it.
+        let found = store.symbol(snapshot.id, id)?;
         return Ok(found.map_or(SymbolResolution::Unresolved, SymbolResolution::Resolved));
     }
     if let Some(id) = symbol.strip_prefix('#') {
@@ -1660,9 +1660,7 @@ fn select_symbol(
                  workspace member"
             )
         })?;
-        let found = store
-            .symbol(snapshot.id, id)?
-            .filter(|found| matches_filters(found, &filters));
+        let found = store.symbol(snapshot.id, id)?;
         return Ok(found.map_or(SymbolResolution::Unresolved, SymbolResolution::Resolved));
     }
     let prefers_implementable = filters.prefers_implementable;
@@ -1811,18 +1809,6 @@ fn member_filter(member: &StoredMember, filter: &SymbolFilter) -> Option<SymbolF
                 ..filter.clone()
             })
         })
-}
-
-/// Whether `symbol` passes `filters`, as a symbol found by name must.
-fn matches_filters(symbol: &StoredSymbol, filters: &crate::cli::Filters) -> bool {
-    filters.kind.is_none_or(|kind| symbol.symbol.kind == kind)
-        && filters
-            .language
-            .is_none_or(|language| symbol.language == language)
-        && filters
-            .path
-            .as_deref()
-            .is_none_or(|path| symbol.path.contains(path))
 }
 
 /// A repository-qualified symbol id: `#billing:607`, also written
@@ -2074,6 +2060,49 @@ mod tests {
                 name_span: span,
             },
         }
+    }
+
+    #[test]
+    fn an_id_names_its_symbol_whatever_filters_come_with_it() {
+        let mut store = Store::open_in_memory().unwrap();
+        let snapshot = lemma_model::Snapshot {
+            root: "/repo".to_owned(),
+            revision: None,
+            is_dirty: false,
+            fingerprint: "fp".to_owned(),
+        };
+        let execute = candidate(0, "Tools.execute", SymbolKind::Method).symbol;
+        let files = [lemma_store::StampedFile {
+            file: lemma_model::IndexedFile {
+                path: "src/models/tools.py".to_owned(),
+                language: Language::Python,
+                content_hash: "hash".to_owned(),
+                has_syntax_errors: false,
+                symbols: vec![execute],
+            },
+            stamp: lemma_store::FileStamp::default(),
+        }];
+        store
+            .replace_snapshot(&lemma_store::NewSnapshot {
+                snapshot: &snapshot,
+                extractor_version: "1",
+                indexed_at_ns: 0,
+                files: &files,
+                uncommitted_paths: &[],
+            })
+            .unwrap();
+        let stored = store.snapshot_for_root("/repo").unwrap().unwrap();
+        let id = store.symbol_keys(stored.id).unwrap()[0].id;
+        let filters = crate::cli::Filters {
+            kind: None,
+            language: None,
+            path: Some("test".to_owned()),
+            prefers_implementable: false,
+        };
+
+        let found = select_symbol(&store, &stored, &format!("#{id}"), filters).unwrap();
+
+        assert!(matches!(found, SymbolResolution::Resolved(symbol) if symbol.id == id));
     }
 
     #[test]
