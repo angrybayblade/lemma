@@ -1,6 +1,6 @@
 ---
 name: lemma-onboarding
-description: Set Lemma up for a team's repositories - install the binary and language servers, index each repository, connect agents over MCP, write the `lemma verify` manifest that maps services, generated clients and consumers, calibrate it on past changes, and add it to CI. Use when asked to install, configure or roll out Lemma, write or fix a Lemma manifest, or add contract checks across repositories.
+description: Set Lemma up for a team's repositories - install the binary and language servers, index each repository, connect agents over MCP, write the `mod.lm` descriptions that map services, generated clients and calling code, calibrate them on past changes, and add `lemma check` to CI. Use when asked to install, configure or roll out Lemma, write or fix a `mod.lm`, or add contract checks across repositories.
 ---
 
 # Onboarding a team to Lemma
@@ -19,7 +19,7 @@ If missing, install the newest release:
 curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | LEMMA_SKILLS=1 sh
 ```
 
-It installs into `~/.local/bin`; make sure that is on `PATH`. Suggest `brew install souffle` (macOS) for faster verification; it is optional.
+It installs `lemma` and `lm` into `~/.local/bin`; make sure that is on `PATH`. Suggest `brew install souffle` (macOS) for faster checks; it is optional.
 
 ## 2. Language servers and indexes
 
@@ -32,41 +32,64 @@ Run `lemma providers` and install what the repositories need:
 | Go | `go install golang.org/x/tools/gopls@latest` |
 | Rust | `rustup component add rust-analyzer` |
 
-In each repository: install its dependencies, write a `lemma.yaml` with a service per part of the repository and the code each is made of (`index.include`), run `lemma index .`, add `.lemma/` to `.gitignore`, and try `lemma symbols <a known name>` and `lemma refs <it>`.
+In each repository: install its dependencies, write a `mod.lm` with a service per part of the repository and the code each is made of (`index: { include: [...] }`), run `lemma index .`, add `.lemma/` to `.gitignore`, and try `lemma symbols <a known name>` and `lemma refs <it>`. A repository's name is its root module's, an identifier: the directory `web-app` holds `module web_app`.
 
 ## 3. Agents
 
 In each repository agents work in: `claude mcp add lemma -- lemma mcp` (Claude Code), or the same command in another MCP client. Add one line to the agent instructions (`CLAUDE.md`, `AGENTS.md`): "Use Lemma's tools for references, definitions, implementations and impact; use text search for strings and one-off lookups."
 
-## 4. Write the manifest
+## 4. Write the description
 
 Find the system's parts before writing anything:
 
-1. **Services**: repositories with committed OpenAPI documents. `git ls-files | grep -iE 'openapi|swagger' | grep -E '\.json$'`. Note the route directories (`pages/api`, `routes`, `handlers`, `router`).
+1. **Services**: repositories with committed OpenAPI documents. `git ls-files | grep -iE 'openapi|swagger' | grep -E '\.(json|ya?ml)$'`. Note the route directories (`pages/api`, `routes`, `handlers`, `router`).
 2. **Generated clients**: clients generated from a service's spec, committed or built at build time (look for `openapi-ts`, `openapi-generator`, Stainless or similar in build scripts, and gitignored `generated/` directories). Note how they name functions from `operationId`s: as written, camel case, Pascal case or snake case, with any fixed suffix.
-3. **Consumers**: code calling the services: request paths, `fetch`, `requests`, `http.NewRequest`, `reqwest`, or calls through a client object (`this.client.x.y()`).
+3. **Calling code**: code calling the services: request paths, `fetch`, `requests`, `http.NewRequest`, `reqwest`, or calls through a client object (`this.client.x.y()`).
 
-Then write `manifest.yaml` from [manifest-template.yaml](manifest-template.yaml), one repository at a time, running `lemma verify manifest.yaml --all` after each addition. Field meanings and pitfalls are in [manifest-reference.md](manifest-reference.md).
+Then write them, one repository at a time, running `lm check` after each addition. `lm` is the `.lm` command installed beside `lemma`; it reports mistakes (a link to an operation that does not exist, an unknown field) with their line, and editors get the same from `lm lsp`. Field meanings are in [the `.lm` reference](../lemma-audit/reference.md).
+
+```lm
+module billing
+
+import * as http from lemma.http
+
+export service api {
+    index: { include: ["src"] }                  // its code: routes, and calls it makes
+    operations: http.openapi("openapi.json")     // calls to these are inferred everywhere
+}
+```
+
+- In each repository serving an API, add a service with what it is made of and its OpenAPI documents; calls to it are then inferred everywhere. A service reading its operations from code uses an adapter: `hono.app(...)`, `fastapi.app(...)` or `http.adapter(...)`.
+- In each repository calling others, add a service with its `index`.
+- A generated client is a service with `client: http.generated_client(generated_from: [...], call_names: [...])`.
+- For a call inference cannot see (function runtimes, queues, RPC), declare an operation on each side (`export operation`, and `export client operation` on the caller) with `implementation` and schemas, and a link in the caller's `export graph links : Link { ... }`.
+- Write the workspace, in a repository of its own, with a `repo` per repository and a pin for each `git(...)`:
+
+  ```lm
+  module system
+
+  workspace {
+      repo billing = local("../billing")
+      repo web = local("../web")
+      config: { level: check }
+  }
+  ```
+
+Check it against the code, and fix every finding:
+
+```sh
+lemma verify
+```
+
+This is what makes a description done: it finds an `include` matching nothing, a document that does not exist, an `implementation` that does not resolve, and the rest. It compares what the description says with the code; it does not look for what the description leaves out. Run the `lemma-audit` skill for that.
 
 Check coverage before trusting findings:
 
 ```sh
-lemma verify manifest.yaml --relation calls --json | jq -r '.relations.calls[] | "\(.[1])\t\(.[2])"' | sort -u
+lemma verify --relation calls --json | jq -r '.relations.calls[] | "\(.[1])\t\(.[2])"' | sort -u
 ```
 
-Pick three or four calls you can see in the code and confirm they appear. If one is missing: is its directory in `include`? Is the client variable in `client_receivers`? Is the URL built at run time (not supported)?
-
-## 4a. Or: composable lemma.yaml files
-
-For a system with calls inference cannot see (function runtimes, queues, RPC), or to compare schemas field by field, describe each repository in its own `lemma.yaml` and compose them from a parent in a workspace repository; check with `lemma check` instead of `lemma verify`. The format and checks are in [Checking links](https://github.com/angrybayblade/lemma/blob/main/docs/check.md).
-
-The same description can be a typed `mod.lm` module per repository, which `lemma check` reads when there is no `lemma.yaml`: `lm convert lemma.yaml --write` writes one from an existing file, and `lm check` reports mistakes (a link to an operation that does not exist, an unknown field) with their line. `lm` is the `.lm` command installed beside `lemma`; editors get diagnostics and completion from `lm lsp`. See [The `.lm` language](https://github.com/angrybayblade/lemma/blob/main/docs/language.md).
-
-1. In each repository serving an API, add a service with what it is made of (`index.include`) and its OpenAPI documents (`exports.openapi`); calls to it are then inferred everywhere.
-2. In each repository calling others, add a service with its `index.include`.
-3. For each call inference cannot see, declare an operation on both sides in `exports.operations` with `schema` sources, and a link in the caller's `graph.links`.
-4. Write the parent: one `#name` service per repository with `path` or `git` and a pinned `ref`, and `graph.level`.
-5. Run the `lemma-audit` skill to find what the files miss, then replay history as in step 5 with `lemma check --change '#repo' --base <commit>^ --head <commit>`.
+Pick three or four calls you can see in the code and confirm they appear. If one is missing: is its directory in `include`? Do `call_names` match the generator? Is the URL built at run time (not supported)?
 
 ## 5. Calibrate on history
 
@@ -76,24 +99,24 @@ Replay 20-50 past changes to a service's spec before gating anything:
 git -C <service> log --format='%h %cI %s' -- <spec file> | head -50
 ```
 
-For each: copy the manifest, set `change` to `<commit>^..<commit>` (or pass `--base <commit>^ --head <commit>`), pin every consumer's `commit` to `git -C <consumer> rev-list -1 --before=<commit date> HEAD`, and run `lemma verify`. For every error and warning, read the pull request and the consumer's history: was it a real break, fixed by a follow-up? Report a table of change, findings, and verdict to the user. False errors are worth a bug report; false warnings on common names are a known limitation.
+For each: pin every other repository in the workspace to `local("../<repo>", rev: "<commit>")`, the commit given by `git -C <repo> rev-list -1 --before=<commit date> HEAD`, and run `lemma check --change <repo> --base <commit>^ --head <commit>`. For every error and warning, read the pull request and the calling code's history: was it a real break, fixed by a follow-up? Report a table of change, findings, and whether each was real to the user. False errors are worth a bug report; false warnings on common names are a known limitation.
 
 ## 6. CI
 
-Add a job to each service repository that checks out the workspace repository holding the manifest and every consumer, installs Lemma, and runs:
+Add a job to each service repository that checks out the workspace repository and every other repository where the workspace expects them, installs Lemma, and runs:
 
 ```sh
-lemma verify manifest.yaml --base "$BASE_SHA" --head "$HEAD_SHA"
+lemma check workspace/mod.lm --change <repo> --base "$BASE_SHA" --head "$HEAD_SHA"
 ```
 
-The service checkout needs full history (`fetch-depth: 0`). Start with the job not failing the build (`continue-on-error: true`); after a few weeks of correct findings, let exit code 4 (an error finding) fail it. Keep warnings advisory. A complete GitHub Actions example is in [manifest-reference.md](manifest-reference.md#ci).
+The service checkout needs full history (`fetch-depth: 0`). Start with the job not failing the build (`continue-on-error: true`); after a few weeks of correct findings, let exit code 4 (an error finding) fail it. Keep warnings advisory. Run `lemma verify` when a pull request touches a `.lm` file and on a schedule. A complete GitHub Actions example is in [Onboarding](https://github.com/angrybayblade/lemma/blob/main/docs/onboarding.md#7-run-in-ci).
 
 ## Done when
 
 - `lemma refs` answers in every repository.
 - Agents have the MCP server and the instruction line.
-- The manifest lists every service, client and consumer, and a coverage check finds the calls you sampled.
+- `lemma verify` is clean, and a coverage check finds the calls you sampled.
 - At least 20 historical changes were replayed and every error was confirmed real.
-- CI runs `lemma verify` on pull requests to each service.
+- CI runs `lemma check` on pull requests to each service.
 
-Tell the user about the limitations that matter for their code: field types and enum values are not compared, run-time URLs are not matched, warnings about common field names can be wrong, and only HTTP contracts are checked.
+Tell the user about the limitations that matter for their code: field types and enum values are not compared, run-time URLs are not matched, warnings about common field names can be wrong, and only HTTP contracts are inferred.

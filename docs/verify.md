@@ -1,142 +1,84 @@
-# Verifying changes across repositories
+# Verifying descriptions
 
-`lemma verify` checks a change in one repository against the repositories that depend on it. It extracts facts from every repository in a manifest, evaluates a grammar's rules and requirements over them, and reports each requirement a change violates, with the evidence behind it.
+`lemma verify` answers one question: does this description still match the code? It reads the description and one snapshot of the code, and reports what the description says that the code does not bear out.
 
-The built-in grammar covers HTTP contracts: services that publish operations (described by OpenAPI documents and route code), clients generated from their specs, and consumers that call them.
+| Command | Question | Reads |
+| --- | --- | --- |
+| `lm check` | Is this module valid? | `.lm` files only |
+| `lemma verify` | Does this description still match the code? | The code at one snapshot |
+| `lemma check` | Does this change break anything? | The code before and with a change |
+
+`lemma verify` never compares two commits and never reports a contract disagreement. Whether a caller's schema agrees with its provider's is [`lemma check`](check.md)'s question, even at a single snapshot. A clean `lemma check` on an incomplete description looks exactly like a clean `lemma check` on a complete one, which is why this command exists.
 
 ## Example
 
-A billing service renames the request field `memo` to `note` on `POST /v1/invoices`. Its request schema sets `additionalProperties: false`, so a request that still sends `memo` is rejected. A web app calls the endpoint with `fetch`; a Python SDK calls it through a client generated from the spec.
-
 ```text
-$ lemma verify manifest.yaml
-change billing HEAD~1..HEAD  (61 facts, souffle engine)
-error   sdk:billing_sdk/invoices.py::Invoices.create calls POST /v1/invoices and names `memo`; request field `memo` was removed and POST /v1/invoices now rejects requests that send it (sdk:billing_sdk/invoices.py:6)
-        [consumer_sends_rejected_field]
-error   web:src/invoices.ts::createInvoice calls POST /v1/invoices and names `memo`; request field `memo` was removed and POST /v1/invoices now rejects requests that send it (web:src/invoices.ts:4)
-        [consumer_sends_rejected_field]
-2 errors, 0 warnings, 0 informational
+$ lemma verify
+error   #billing:api  exports `gone.json`, which does not exist
+        [document_missing]
+error   #billing:api  `nope` matches no tracked file
+        [include_matches_nothing]
+error   #web_app:services.web.send_charge -> #billing:services.api.receive_charge  the provider operation #billing:services.api.receive_charge's code anchor `src/app.ts:nothing` does not resolve
+        [anchor_unresolved]
+3 errors, 0 warnings, 0 informational
 ```
 
-`--explain` shows why each finding holds, down to the facts it rests on:
+Each finding has its severity, what is described wrongly as `#repo:service` or the link it is about (without a file and line), what was found, and its name in brackets.
 
-```text
-calls(web:src/invoices.ts::createInvoice, POST /v1/invoices, web:src/invoices.ts, 4)
-  references_operation(...)
-    calls_path(web:src/invoices.ts::createInvoice, POST, /v1/invoices, web:src/invoices.ts, 4)
-    operation@base(billing, POST /v1/invoices, POST, /v1/invoices)
-removed_request_field(POST /v1/invoices, memo, memo)
-  request_field@base(POST /v1/invoices, memo, memo)
-  not request_field(POST /v1/invoices, memo, memo)
-uses(web:src/invoices.ts::createInvoice, memo)
-  mentions(web:src/invoices.ts::createInvoice, memo)
-rejects_unknown(POST /v1/invoices)
-  strict_request(POST /v1/invoices)
+## Command
+
+```sh
+lemma verify [mod.lm] [--all] [--links] [--relation <name>] [--json]
 ```
 
-## The manifest
-
-```yaml
-grammar: contracts.yaml                    # optional; the built-in HTTP contracts grammar otherwise
-change: { repository: billing, base: HEAD~1, head: HEAD }
-repositories:
-  billing:
-    path: ../billing
-    role: service
-    specs: [openapi.json]
-    routes: [src/routes]
-  billing-client:                          # the client the SDK generates from billing's spec
-    path: ../billing
-    commit: main
-    role: client
-    generated_from: [openapi.json]
-    call_names: ["{snake}"]                # createInvoice is called as create_invoice
-  web:
-    path: ../web
-    role: consumer
-    include: [src]
-  sdk:
-    path: ../sdk
-    role: consumer
-    include: [billing_sdk]
-    client_receivers: [_client]
-```
-
-| Field | Meaning |
+| Option | Meaning |
 | --- | --- |
-| `change` | The repository that changed and the commits before (`base`) and with (`head`) the change: a service, or a consumer whose new calls are checked against the services. `--base` and `--head` override the commits. |
-| `path` | The repository's clone, relative to the manifest. Files are read from Git at the commit, without a checkout. |
-| `commit` | The commit to read for repositories other than the changed one, the same before and after the change; the working directory if absent. |
-| `role` | `service`, `client` or `consumer`. |
-| `specs` | OpenAPI documents: a service's contract, or a client's copy of it. |
-| `service` | On a service: the name used in findings. On a consumer: the service its code belongs to; its references to that service's own operations (route declarations) are not calls. |
-| `routes` | For a service: directories with its route code, for checking the spec against the code and telling which request schemas reject unknown fields. |
-| `schemas` | For a service: further directories with schemas its routes import. |
-| `route_aliases` | For a service: path prefixes it also serves routes under, such as `{ /v1/: /v2/ }`; each route counts at both paths. Rarely needed: when most of a spec's operations have no route of their own but one under another spec's prefix, Lemma infers the alias. |
-| `path_prefixes` | For a service: the path prefixes it owns, such as `/v1/billing/`. A changed consumer's new call to an unserved path under one is reported. If absent, derived from each spec: the prefix its paths share, or, where another service's paths start with that too, the prefixes that tell them apart. Rarely needed. |
-| `rejects_unknown_fields` | For a service: requests with fields it does not know fail, as with strict validation, even where its spec and schemas do not say so. |
-| `generated_from` | For a client: OpenAPI documents it is generated from, one function per operation. |
-| `call_names` | For a client: how it names an operation's function, from the `operationId`: templates with `{operationId}`, `{camel}`, `{pascal}` or `{snake}`, such as `["{camel}"]` or `["{pascal}.Invoke"]`. The `operationId` as written if absent. |
-| `include` | For a consumer: directories with its code; the whole repository if absent. |
-| `client_receivers` | For a consumer: names it calls its clients through, such as `client`. |
-| `client_modules` | For a consumer: modules of generated clients, such as `generated/billing`; functions imported from them are client calls. |
+| `--all` | List every informational finding, not just the first ten. |
+| `--links` | Also list every link, declared and inferred. |
+| `--relation <name>` | Also print every row of a relation `lemma.http` or a module derives, such as `calls`. Repeatable. Relations that compare the code before and after a change are empty, since there is no change. |
+| `--json` | Print findings, and the links and relations asked for, as JSON. |
 
-One clone can appear under several names, such as a service and a consumer of another service in the same repository. Every entry for the changed repository's clone is read at both commits of the change, unless it sets its own `commit`: pinning a consumer to an older commit asks how the change meets code from before it.
+The entry module sets the scope. A workspace verifies every repository it composes. A repository's root module verifies that repository alone. There is no `--change`, `--base` or `--head`: it reads the working directory, and CI verifies what it checked out.
 
-## What is extracted
+A repository that is not cloned follows [the `clone` setting](commands.md#repositories-that-are-not-cloned), and one it stops without is listed as `not looked at`.
 
-| From | Facts |
-| --- | --- |
-| A service's OpenAPI documents, at both commits | operations, parameters (and whether required), request and response fields as dotted paths (`items[].lines.amount`), whether the request rejects unknown fields |
-| A service's route code | routes declared with a method and path (TypeScript objects and calls; Express, Fastify, Hono and Koa routers given a handler, as in `app.post("/charges", handler)`, a router known by how it is made or typed (`express.Router()`, `r: Router`) whatever its name; FastAPI and Flask decorators; each route under its router's prefix, whether the router is made with one (`APIRouter(prefix=...)`, `Blueprint(url_prefix=...)`, `new Router({ prefix })`, `basePath`) or mounted under one (`app.use("/v1", charges)`, `app.route`, `register(..., { prefix })`, `include_router(..., prefix=...)`, `register_blueprint`), in the same file or one importing the router; in a file its generator's banner marks as generated, only routes registered with a handler; Go `net/http`, gorilla/mux, chi, gin and echo; Rust axum, actix-web and Rocket); which request schemas are zod `.strict()`, in the route's file, a file it imports, or a union of them |
-| A client's specs | the functions it exposes, named by `call_names`; the parameters it declares |
-| A consumer's code (TypeScript, JavaScript, Python, Go, Rust) | paths in strings and requests, with the HTTP method where the call shows it; calls through clients (`this.client.invoices.list()`) and functions imported from client modules; the field names each function and file uses; imports, including `tsconfig.json` path aliases |
+The whole workspace is read with full evaluation, so a run takes about as long as a `lemma check` that reads every repository. It runs what the description says to run (adapter commands and schema resolvers), as `lemma check` does, so it needs a repository's dependencies installed. Run it when a description changes, on a schedule, and when `lemma check` finds fewer links than expected, not after every edit. A description that does not load is a failure, and prints the same errors as `lm check`.
 
-A string in code counts as a path only if it contains a leading segment some service in the manifest serves, such as `/v1/`; everything before it (a base URL, `${API}`) is dropped. Paths compare in one form, so `{id}`, `${id}`, `:id`, `[id]` and `%s` are the same parameter. Test files in consumers are skipped.
+Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
+
+The MCP server has a `verify` tool with the arguments `module`, `all` and `links`, so agents reach it the same way ([Commands](commands.md#lemma-mcp)).
 
 ## Findings
 
-| Requirement | Severity | Meaning |
+### Wrong configuration
+
+| Finding | Severity | Meaning |
 | --- | --- | --- |
-| `consumer_calls_removed_operation` | error | A consumer calls an operation the change removed. |
-| `consumer_calls_unserved_operation` | error | A changed consumer adds a call to a path under a service's prefixes that no service serves, such as an endpoint not yet deployed. |
-| `consumer_misses_new_required_parameter` | error | An operation a consumer calls now requires a parameter. |
-| `consumer_misses_new_required_field` | error | An operation now requires a request field the consumer's code never names. |
-| `consumer_sends_removed_parameter` | error | A consumer names a parameter the change removed, and the operation rejects parameters it does not know. |
-| `consumer_sends_ignored_parameter` | warning | As above, where the operation ignores unknown parameters. |
-| `consumer_sends_rejected_field` | error | A consumer names a request field the change removed, and the operation rejects fields it does not know: its spec says `additionalProperties: false`, its route's zod schema is `.strict()`, or its service sets `rejects_unknown_fields`. |
-| `consumer_uses_removed_request_field` | warning | A consumer names a request field the change removed or renamed; the operation now ignores it, so whatever it set no longer takes effect. |
-| `consumer_uses_removed_response_field` | warning | A consumer names a response field the change removed or renamed. |
-| `client_declares_removed_parameter` | error | A generated client still declares a parameter the service removed. |
-| `client_calls_removed_operation` | error | A client function calls an operation the change removed. |
-| `consumer_calls_changed_operation` | info | A consumer calls an operation whose request changed, but never names the changed field. |
-| `consumer_calls_unrouted_operation` | error | A consumer calls an operation the spec still declares whose route the change removed: a deleted handler. Only for services whose routes are read. |
-| `operation_without_route` | warning | The change adds an operation to a spec, and no route in the service's code serves it. Only for services whose routes are read. |
-| `route_without_operation` | warning | The change adds a route its spec does not declare. |
-| `operation_without_consumer` | warning | The change adds an operation no code calls, directly or through a generated client. An operation stated in `public_operation`, or of a service in `public_service`, is exempt. |
-| `route_not_in_spec` | info | The service serves a route its spec does not declare. Public specs often leave internal routes out on purpose. A route the change adds is also warned about by `route_without_operation`. |
+| `include_matches_nothing` | error | An `include` or `exclude` pattern matches no tracked file. |
+| `document_missing` | error | A document a service exports does not exist. |
+| `document_unreadable` | error | A document does not parse, or describes no operations. |
+| `schema_unresolved` | error | A type or document location does not resolve, or a schema command fails. |
+| `schema_open` | informational | A schema uses types Lemma could not follow, so the fields under them go uncompared. |
+| `runtime_missing` | error | An interpreter or toolchain the service's `runtime` names does not exist. |
+| `external_unpinned` | warning | A repository named by `git(...)` has no pinned commit, so what it is read at can change. |
+| `service_empty` | error | A service reads no files and offers nothing. |
 
-"Names a field" means the field's last name appears as an object key, member, keyword argument, dictionary key, struct field or JSON tag, in the calling function itself, in a function it calls by name in its file or in a file it imports (an SDK's `transformListResponse`), or in declarations outside functions (schemas, types, constants) in its file or a file it imports. Functions it does not call do not count, since they often reuse common names for other things. Findings that rest on a name being absent, such as a new required field the consumer never sets, search the whole file and its imports instead. It is evidence, not proof: a consumer that builds requests dynamically can use a field without naming it, and a common name can appear for another reason. Without that evidence a field change is informational, so a change most consumers never touch does not produce a wall of errors.
+### Outdated links
 
-`lemma verify` exits with 4 if any finding is an error, so CI can gate on it. `--json` prints the findings with their values. `--relation calls` also prints every row of a derived relation, here which consumer calls which operation, for inspecting what the rules concluded.
+| Finding | Severity | Meaning |
+| --- | --- | --- |
+| `operation_not_documented` | error | A link names an operation its service's documents do not describe, or that is no longer declared. |
+| `anchor_unresolved` | error | An operation's `implementation` does not resolve. |
+| `anchor_uncalled` | warning | Nothing outside its type calls an anchored method, while a sibling method of the same type in the same file is called. The anchor probably names the wrong method (a generated client's `Invoke` where the code calls `InvokeWithRuntimeEnv`), and every trace from it is empty. |
+| `previously_still_present` | warning | An operation says what it used to be named (`previously`), and that name is still declared, so the claim of a rename is false. |
+| `link_redundant` | informational | A declared link is one inference finds too, and says nothing more. |
 
-By default `lemma verify` reads only the consumer code a finding can rest on (`--evaluation demand`): files that may call an operation the change touches (found through an index of what each file calls, kept with its facts), the files those import, and the files the change edits. A large system's check then reads a few files rather than all of them. Lemma works out from the grammar's requirements whether that is safe; when a requirement could rest on other code, it reads everything and the report's `evaluation` says why. With `--relation` it reads everything, so the rows are complete, unless `--evaluation demand` is given; `--evaluation full` reads everything regardless, and `--evaluation both` runs both ways and fails if their findings differ.
+`lm check` reports a link naming an operation its service does not have when the service discovers no operations. A service with `operations:` might discover the name, so `lm check` cannot rule it out; this command can.
 
-## Grammars
+To find `anchor_uncalled`, Lemma asks language servers who calls each link's caller anchor. A repository whose language has no server installed is reported as not checked. When the Lemma daemon is running, its language servers answer, and stay warm for the next command; without one (or with `--no-daemon`), `lemma verify` starts its own, which takes seconds per repository.
 
-Requirements live in a grammar, not in Lemma's code. The built-in one is [`grammars/http-contracts.yaml`](../grammars/http-contracts.yaml); copy it and point a manifest's `grammar` at the copy to add or change requirements. See [Grammars](grammar.md).
+## What it does not find
 
-## Engines
+A clean result does not mean nothing is missing. `lemma verify` compares what a description says with the code; it does not yet look for what a description leaves out, such as an OpenAPI document no service exports, route code no service includes, or a call over a queue no operation describes. The [`lemma-audit` skill](../skills/lemma-audit/SKILL.md) works through those by hand.
 
-Rules run on [Soufflé](https://souffle-lang.github.io) when it is installed (`brew install souffle`), otherwise on Lemma's built-in reference engine; `--engine souffle` or `--engine reference` picks one. Both give the same results. Soufflé's numbers are 32-bit; Lemma reports values that do not fit instead of truncating them.
-
-## Limits of this version
-
-- Only HTTP contracts described by OpenAPI.
-- Field changes compare names, not types or enum values: a field whose allowed values change is not reported.
-- Calls whose URL is built at run time from values the code does not show are not matched to an operation.
-- "Names a field" cannot tell a field read from a response apart from a consumer's own object that reuses the name, so warnings about common names (`id`, `slug`) can be wrong.
-- Only direct contracts are checked: a change is traced to the callers of the changed service, not on through services that pass its data along.
-- Consumers are matched to operations by path and method; a consumer is reported against the operation it was written for (the base snapshot).
-
-See the [pre-release checklist](pre-release.md) for the full list.
+There is no way yet to accept a finding with an `allow`.

@@ -2,16 +2,19 @@
 
 A service's committed OpenAPI documents say what it served when someone last regenerated them. Its code says what it serves now. An adapter reads the code: it imports the service the way the framework does, in a separate process, and writes the OpenAPI document the framework itself generates. `lemma check` checks consumers against that document, and `lemma index` places each endpoint at the code that registers it.
 
-```yaml
-services:
-  api:
-    index:
-      include: [src]
-    exports:
-      openapi: [openapi.json]          # optional: the committed documents
-      operations_from:
-        adapter: hono-zod-openapi
-        entry: [src/index.ts#app, src/routes]
+```lm
+module billing
+
+import * as http from lemma.http
+import * as hono from lemma.hono
+
+export service api {
+    index: { include: ["src"] }
+    operations: [
+        http.openapi("openapi.json"), // optional: the committed documents
+        hono.app(entry: ["src/index.ts#app", "src/routes"]),
+    ]
+}
 ```
 
 ## Built-in adapters
@@ -24,7 +27,7 @@ services:
 | `flask-routes` | Flask apps, routes only: every rule of the URL map, through blueprints, nested blueprints, `add_url_rule` and class-based views, each placed at its view function or `MethodView` method; apps mounted with werkzeug's `DispatcherMiddleware` under their mount path. Runs with the service's Python. | `module:attribute`: an app, a function making one (`app:create_app`), or a `DispatcherMiddleware`; or a module whose top-level apps are all read. |
 | `go-http-routes` | Go services routed with `gorilla/mux` or `net/http`'s `ServeMux`, routes only. Runs with `go run`: it builds a temporary program inside the service's module that calls the entry with zero values (pointers to zero values if that panics) and lists the routers it gets, each route placed at its handler's definition; it removes what it wrote and leaves `go.mod` and `go.sum` as they were. | What builds the router: `./internal/http#NewRouter` (a `*mux.Router` or `*http.ServeMux` parameter gets a fresh router, read after the call), `./pkg#Server.Routes`, `./pkg#Router` (a variable), or `./cmd/api` (its `init` functions and `http.DefaultServeMux`). Files tagged `//go:build lemma` are built in, for a constructor written for Lemma. |
 
-Any other framework can be read by a script in the repository that follows the protocol below, named by its path: `adapter: tools/lemma-adapter.ts`. Its extension decides what runs it: `.ts` Bun, `.js` Node, `.py` the service's Python, `.go` `go run`. A `command` runs anything else, such as a binary printing utoipa's document.
+Any other framework can be read by a command that follows the protocol below: `http.adapter_command(command: "bun tools/lemma-adapter.ts", entry: ["src"])` runs a script in the repository, and the same runs anything else, such as a binary printing utoipa's document.
 
 A framework that knows its routes but not their schemas (Express, Flask, `gorilla/mux`) can still be read: its adapter says so with `x-lemma-schemas: false`, the committed documents keep the schemas, and the code says which routes exist and where each is handled.
 
@@ -32,7 +35,7 @@ A framework that knows its routes but not their schemas (Express, Flask, `gorill
 
 | Field | Meaning |
 | --- | --- |
-| `adapter` or `command` | A built-in adapter's name, a script in the repository by its path, or a command run with `sh -c`. |
+| The adapter | `hono.app(...)` or `fastapi.app(...)`, `http.adapter("express-routes", ...)` for another built-in adapter by name, or `http.adapter_command(command: ...)` for a command run with `sh -c`. |
 | `entry` | What the adapter reads, relative to `directory`; given as `$LEMMA_ENTRY`, one per line. |
 | `exclude` | Glob patterns of files under `entry` not to import, such as scripts that do work when imported; `$LEMMA_EXCLUDE`, one per line. |
 | `directory` | Where the adapter runs, relative to the repository root and inside it; the root if absent. |
@@ -48,7 +51,7 @@ Importing code runs it, so Lemma reads code where it already runs: the working d
 2. **Read in place.** A commit that is the working directory unchanged is read there.
 3. **Built.** Any other commit of the changed repository is checked out in one worktree Lemma keeps per repository, `setup` runs, and the adapter reads it. What earlier builds installed stays, so installing again is mostly a check. The document is then kept.
 
-Other repositories in a check are read where they are checked out. A pinned repository (`ref`, or a `git` source) uses a kept document if there is one and its committed documents otherwise; Lemma never runs another repository's `setup`.
+Other repositories in a check are read where they are checked out. A pinned repository (`local(..., rev: ...)` or `git(...)`) uses a kept document if there is one and its committed documents otherwise; Lemma never runs another repository's `setup`.
 
 In Python, a build imports the worktree's code before any installed copy of it. An adapter that imports a module from outside the code it is reading (an editable install of the main checkout) fails rather than describe today's code as a past commit's.
 
@@ -92,7 +95,7 @@ The document is cached by the adapter's configuration, its script, the runtime i
 
 ## Adding a built-in adapter
 
-A built-in adapter is a script under `crates/lemma-graph/adapters/` and a row in `crates/lemma-graph/src/adapters/registry.rs` naming it and the interpreter it runs with. Until it is built in, the same script works from a repository by its path.
+A built-in adapter is a script under `crates/lemma-graph/adapters/` and a row in `crates/lemma-graph/src/adapters/registry.rs` naming it and the interpreter it runs with. Until it is built in, the same script works from a repository through `http.adapter_command`.
 
 ## Limits
 

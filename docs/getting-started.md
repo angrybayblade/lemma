@@ -63,16 +63,21 @@ Language servers work best when the project's own dependencies are installed (`n
 
 ## 3. Index a project
 
-Lemma indexes what a project's `lemma.yaml` says it is made of; without one it indexes every supported file and warns. To scope it, create one at the project's root with a service for each part of it, listing the directories its code is in:
+Lemma indexes what a project's description says it is made of; without one it indexes every supported file and warns. To scope it, create a `mod.lm` at the project's root with a service for each part of it, listing the directories its code is in:
 
-```yaml
-# ~/code/my-project/lemma.yaml
-services:
-  api:
-    index:
-      include: [src, scripts]
-      exclude: ["**/generated/**"]
+```lm
+// ~/code/my-project/mod.lm
+module my_project
+
+export service api {
+    index: {
+        include: ["src", "scripts"]
+        exclude: ["**/generated/**"]
+    }
+}
 ```
+
+A module's name is an identifier, so a directory called `my-project` has the module `my_project`.
 
 The same file later describes what each service offers and how it relates to others (see [Checking links](check.md)). Then:
 

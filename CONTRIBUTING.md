@@ -123,7 +123,7 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | adapter | Code that translates one provider or format into Lemma types | driver, plugin, wrapper |
 | operation | Something a service provides or calls, with a request and response | endpoint, function, method |
 | link | A relationship between two operations, caller to provider, checked for persistence and schema agreement | edge, binding, connection |
-| external service | Another repository's `lemma.yaml`, named `#name` and pinned | remote, dependency, import |
+| external service | Another repository's description, named `#name` and pinned | remote, dependency, import |
 | change-driven evaluation | Reading only the consumer code a change's findings can rest on, when the grammar's requirements allow it | demand-driven, incremental, lazy |
 | anchor | A relation, computed without consumer facts, holding the operations a requirement's calls must be of | seed, root, trigger |
 | index term | A string a file's code facts are indexed by, standing for calls the file may make | key, tag, token |

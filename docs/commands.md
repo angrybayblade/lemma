@@ -20,13 +20,11 @@ Every command runs in a background daemon that keeps the index open, watches ind
 
 ## `lemma index [path]`
 
-`path` is a directory holding a `lemma.yaml`, or a `lemma.yaml` itself.
+`path` is a directory holding a `mod.lm`, or a module itself. Reads the source files that `path`'s description (default: the current directory's `mod.lm`) says its services are made of, and records their definitions in a snapshot. Re-indexing is incremental: only new or changed files are read and parsed, so running it after every edit is cheap (see [How Lemma works](concepts.md#re-indexing-is-incremental)).
 
-Reads the source files that `path`'s `lemma.yaml` (default: the current directory's) says its services are made of, and records their definitions in a snapshot. Re-indexing is incremental: only new or changed files are read and parsed, so running it after every edit is cheap (see [How Lemma works](concepts.md#re-indexing-is-incremental)).
-
-- Without a `lemma.yaml`, every supported file is indexed, with a warning; exports, links and workspaces need one. With one, each local service's `index` section selects files: under `include`, not matching `exclude`, in `languages` if given. A file any service selects is indexed. A service without `index.include` adds nothing; if no service has one, indexing fails. Changing the selection (adding, editing or removing `lemma.yaml`) re-indexes from scratch on the next run, dropping files no longer selected, and a removed `lemma.yaml` takes its exports and links with it.
-- Each service's exports are stored with the snapshot: declared operations at their code anchors, operations its OpenAPI documents describe at their route handlers (the function a route's line names, or the function around the route), and the top-level definitions of its public modules. Links in `graph.links` are stored too. They are rebuilt when `lemma.yaml` or the code changes. The summary counts them, including how many documented operations a handler was found for; routes whose paths are built at run time are not found.
-- A `lemma.yaml` with no services of its own, only repositories it composes (`#name`), is a workspace. Each repository is indexed into its own `.lemma/index.db`: at its pinned `ref` through a Git worktree in `~/.cache/lemma/worktrees` (the cache keeps the 8 most recently used worktrees, and checks at past commits use the same ones; kept beside its working-directory snapshot, so language servers read the pinned code), or as its working directory. A repository whose `lemma.yaml` selects nothing is skipped and says why. The workspace's own `.lemma/index.db` then records the members and every member's exports and links, with addresses made absolute (`#platform:services.worker.submit_task`). Symbols stay in the members' indexes; `lemma symbols` run from the workspace's directory searches them all, each path prefixed with its repository.
+- Without a `mod.lm`, every supported file is indexed, with a warning; exports, links and workspaces need one. With one, each service's `index` selects files: under `include`, not matching `exclude`, in `languages` if given. A file any service selects is indexed. A description where no service names its code, or with no services at all, has every supported file indexed, keeps its exports, and warns; a workspace reports that warning under the member. Changing the selection (adding, editing or removing `mod.lm`) re-indexes from scratch on the next run, dropping files no longer selected, and a removed `mod.lm` takes its exports and links with it.
+- Each service's exports are stored with the snapshot: declared operations at their code anchors, operations its OpenAPI documents describe at their route handlers (the function a route's line names, or the function around the route), and the top-level definitions of its public modules (`symbols`). Links in a graph of `Link` are stored too. They are rebuilt when the description or the code changes, including an edit to a module the root module imports. The summary counts them, including how many documented operations a handler was found for; routes whose paths are built at run time are not found.
+- A `mod.lm` with a `workspace` block composes repositories. Each repository is indexed into its own `.lemma/index.db`: at its pinned `rev` through a Git worktree in `~/.cache/lemma/worktrees` (the cache keeps the 8 most recently used worktrees, and checks at past commits use the same ones; kept beside its working-directory snapshot, so language servers read the pinned code), or as its working directory. The workspace's own `.lemma/index.db` then records the members and every member's exports and links, with addresses made absolute (`#platform:services.worker.submit_task`). Symbols stay in the members' indexes; `lemma symbols` run from the workspace's directory searches them all, each path prefixed with its repository.
 - A repository's index keeps its working directory's snapshot always, and snapshots of pinned commits while they are among the `--keep` most recently indexed (default 5) and were indexed within `--ttl` (default `14d`; `never` to keep them until `--keep` pushes them out). A dropped snapshot's worktree is removed too.
 - Supported files: `.ts`, `.mts`, `.cts`, `.tsx`, `.py`, `.pyi`, `.go`, `.rs`.
 - Skipped even when selected: anything matched by `.gitignore`, hidden files and directories (including `.lemma/`), and `node_modules`.
@@ -37,6 +35,10 @@ Reads the source files that `path`'s `lemma.yaml` (default: the current director
 `revision` is the checked-out commit; "uncommitted changes" means supported source files differ from it, including new untracked ones.
 
 The summary mentions files Lemma could only partly read: files with syntax errors (their symbols are still indexed, but some may be missing) and files that are not valid UTF-8 (skipped).
+
+A `mod.lm` that does not load fails `lemma index` with exit 1. Queries index first, and a query whose refresh fails answers from the last index and prints a warning, so a half-edited description does not stop navigation. With `--json`, and `lemma graph --format dot` or `mermaid`, the warning goes to the log instead (`-l warn`). `lemma graph` run from a workspace follows callers across it and turns a failure there into a note on the graph; with `--workspace`, it is an error.
+
+`--no-clone` never clones a repository: see [Repositories that are not cloned](#repositories-that-are-not-cloned).
 
 ## `lemma symbols <query>`
 
@@ -67,9 +69,9 @@ Finds references to one symbol by asking a language server for its language.
 - a name, such as `delete`;
 - a qualified name, such as `Router.delete`;
 - an id from `lemma symbols`, such as `'#415'`. Quote it, because `#` starts a comment in most shells;
-- an export's address from `lemma.yaml`, such as `services.worker.submit_task` (a declared operation) or `services.gateway.listProducts` (an `operationId`): the symbol implementing it. An address in another repository (`'#functions:services.serverless.submit_task'`) is resolved from inside a workspace's directory, through its index, in the member's index at its pin. From a workspace's directory, a plain name is looked up in every member: one match is used, and a name several members define is listed with each one's repository (`#platform:apps/...`); narrow it with `--path`.
+- an export's address from a description, such as `services.worker.submit_task` (a declared operation) or `services.gateway.listProducts` (an `operationId`): the symbol implementing it. An address in another repository (`'#functions:services.serverless.submit_task'`) is resolved from inside a workspace's directory, through its index, in the member's index at its pin. From a workspace's directory, a plain name is looked up in every member: one match is used, and a name several members define is listed with each one's repository (`#platform:apps/...`); narrow it with `--path`.
 
-When the symbol implements an export that `graph.links` links to or from, `refs` lists those links after the server's references (`linked by lemma.yaml`, and `linked` in JSON), resolved to the code on the other end when a workspace index knows it.
+When the symbol implements an export that a graph of `Link` links to or from, `refs` lists those links after the server's references (`linked by the description`, and `linked` in JSON), resolved to the code on the other end when a workspace index knows it.
 
 Names must match exactly. The same filters as `lemma symbols` narrow a name: `--kind`, `--language`, `--path`.
 
@@ -143,18 +145,18 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`, and the `source` it was found by), `notes` and `truncated`. |
 | `--max-nodes <n>` | The most nodes to include. Default: 200. |
 | `--only <kinds>` | Only symbols of these kinds besides the symbol itself, comma-separated: `--only function,method` shows the calls without the fields, types and constants a body uses. The top level of a file always counts as a caller. |
-| `--workspace <lemma.yaml>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations. See below. |
+| `--workspace <mod.lm>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations. See below. |
 | `--across <calls>` | Across a workspace, how many calls from other code to follow: `1` (the default) stops at the code calling the operations the handlers serve; each more goes on through that code to its own operations and their callers. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
 
-References from a file's top-level code appear as the file; imports are left out. A symbol implementing an export that `graph.links` links to another operation uses that operation, which appears by address (`linked operation`). Questions the server could not answer, such as a stale file or a missing server, are listed as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
+References from a file's top-level code appear as the file; imports are left out. A symbol implementing an export that a graph of `Link` links to another operation uses that operation, which appears by address (`linked operation`). Questions the server could not answer, such as a stale file or a missing server, are listed as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
 
 ### Across repositories
 
-Run from a workspace's directory, a graph does this without being asked. With `--workspace`, the callers found in the symbol's repository are followed on to the routes they handle, using the workspace `lemma.yaml` (see [Checking links](check.md)): each route's operation becomes a node and the code in other repositories that calls it comes next. There the tree stops; `--across 2` goes on to the operations that code serves and their callers, and so on.
+Run from a workspace's directory, a graph does this without being asked. With `--workspace`, the callers found in the symbol's repository are followed on to the routes they handle, using the workspace's `mod.lm` (see [Checking links](check.md)): each route's operation becomes a node and the code in other repositories that calls it comes next. There the tree stops; `--across 2` goes on to the operations that code serves and their callers, and so on.
 
 ```text
-$ lemma graph DispatchTask --direction callers --workspace ../workspace/lemma.yaml --across 2
+$ lemma graph DispatchTask --direction callers --workspace ../workspace/mod.lm --across 2
 DispatchTask  (function, lib/tools/execute.go:50)
   used by
   └─ DispatchTaskHandler.handleTaskDispatch  (method, handlers/tools/execute.go:98)
@@ -166,7 +168,7 @@ DispatchTask  (function, lib/tools/execute.go:50)
                     └─ executeOnce  (caller, #dashboard:src/server/clients/task-router/build-session-tasks.ts)
 ```
 
-Code reached in other repositories is a `caller`: it was found by the requests it sends, without reading what kind of definition it is. The last line counts relationships by how they were found when there is more than one way: `lsp` or `names` for the symbol's own repository, `route` from an operation to the code serving it, `call` from code to an operation it requests, `name` from one function to another whose name its body mentions (an approximation, as in [Checking links](check.md#what-a-problem-affects)), `type` when the body names only a method's type (it may call another method of that type; the tree marks these `through its type`, and a use found only by `name` `by name`), and `declared` for links a `lemma.yaml` declares.
+Code reached in other repositories is a `caller`: it was found by the requests it sends, without reading what kind of definition it is. The last line counts relationships by how they were found when there is more than one way: `lsp` or `names` for the symbol's own repository, `route` from an operation to the code serving it, `call` from code to an operation it requests, `name` from one function to another whose name its body mentions (an approximation, as in [Checking links](check.md#what-a-problem-affects)), `type` when the body names only a method's type (it may call another method of that type; the tree marks these `through its type`, and a use found only by `name` `by name`), and `declared` for links a description declares.
 
 - The index's directory must be inside one of the repositories the workspace composes.
 - Within the symbol's repository, callers come from `--source`. From there to a route's handler (a constructor registered for a handler type, say), and within every other repository, they are followed by name: approximate, within one language, skipping names several functions share.
@@ -192,7 +194,8 @@ Serves Lemma to agents as an [MCP](https://modelcontextprotocol.io) server over 
 | `implementations` | `lemma implementations` | `symbol`, `kind`, `language`, `path`, `refresh` |
 | `signature` | `lemma signature` | `symbol`, `kind`, `language`, `path`, `refresh` |
 | `graph` | `lemma graph` | `symbol`, `kind`, `language`, `path`, `refresh`, `direction`, `depth`, `source`, `max_nodes`, `only`, `workspace`, `across` |
-| `check` | `lemma check` | `manifest`, `change`, `base`, `head`, `level`, `no_run`, `select`, `all`, `links` |
+| `check` | `lemma check` | `manifest` (the entry module), `change`, `base`, `head`, `level`, `no_run`, `select`, `all` |
+| `verify` | `lemma verify` | `module`, `all`, `links` |
 
 Each tool returns the command's text output, as the terminal shows it: the same facts and ids as its [JSON output](json-output.md), in a fraction of the size. A command that ran but found no answer (an ambiguous name, a stale file, no server) is a normal result that says why, and so is a check that found errors; only a command that failed, such as a missing index, is returned as an error. `check` can run behaviors' checkers, which run code, so it is not marked read-only.
 
@@ -204,42 +207,41 @@ claude mcp add lemma -- lemma mcp
 
 Other clients take the same command, `lemma mcp`, started in the project directory.
 
-## `lemma verify <manifest>`
+## `lemma verify [mod.lm]`
 
-Checks a change across the repositories listed in a manifest and reports what it breaks. See [Verifying changes](verify.md).
+Compares a description with the code at one snapshot: patterns that match no file, documents that do not exist, anchors that do not resolve, links that no longer hold. It does not compare commits or report contract disagreements. See [Verifying descriptions](verify.md).
 
 | Option | Meaning |
 | --- | --- |
-| `--explain` | Show why each finding holds, down to the facts it rests on. |
-| `--engine <name>` | `souffle` or `reference`. Default: Soufflé if installed, otherwise the reference engine. |
-| `--all` | List informational findings too, not just their count. |
-| `--base <commit>`, `--head <commit>` | Check these commits instead of the manifest's `change.base` and `change.head`, as in CI. |
-| `--relation <name>` | Also print every row of a relation the grammar derives, such as `calls`. Repeatable. |
-| `--evaluation <how>` | `demand` reads only the consumer code a finding can rest on; `full` reads everything; `both` runs the two and fails if their findings differ. Default: `demand`, or `full` with `--relation`. |
+| `--all` | List every informational finding, not just the first ten. |
+| `--links` | Also list every link: those declared, then the calls inference found from code to documented operations, by calling repository and the service called, with each group's count and first ten calls (`--all` lists every call). With `--json`, the list is `link_list`: `declared` (`caller -> provider`) and `inferred` (`repository`, `location`, `operation`, `service`). |
+| `--relation <name>` | Also print every row of a derived relation, such as `calls`. Repeatable. |
 
 Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
-## `lemma check [lemma.yaml]`
+## `lemma check [mod.lm]`
 
-Checks a change against every repository composed by a parent `lemma.yaml`: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Checking links](check.md). The parent may be a `.lm` workspace module instead, and without an argument, `mod.lm` is read when there is no `lemma.yaml`; a repository with only `mod.lm` is read too. A module parent's own requirements run beside the HTTP contracts, its behaviors run (with their checkers), and its allowances apply, as its `check main` selects them. See [The `.lm` language](language.md).
+Checks a change against every repository the entry module composes: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Checking links](check.md). The entry module's own requirements run beside the HTTP contracts, its behaviors run (with their checkers), and its allowances apply, as its `check main` selects them. See [The `.lm` language](language.md).
 
 | Option | Meaning |
 | --- | --- |
-| `--change <name>` | The changed repository, as the workspace names it (`billing`, or `#billing` as a `lemma.yaml` writes it), or `self`. |
+| `--change <name>` | The changed repository: its name (`billing`), its directory (`web-app`, for the repository named `web_app`), or `self`. |
 | `--base <commit>`, `--head <commit>` | The commits before and with the change. Without `--head`, the working directory, uncommitted edits included. Without `--base`, where the checked-out commit left the repository's default branch (the branch a remote's `HEAD` names, else `main`, `master`, `develop`, `trunk` or `init.defaultBranch` on a remote, `origin` first, then locally): on a feature branch, everything the branch adds; on the default branch, only uncommitted edits. When no such branch shares the commit's history, as in a shallow CI checkout, a merge commit's first parent is the base (CI checks a pull request out as a merge); otherwise a clean checkout is an error naming `--base`, since the change would be empty and pass unchecked. So `lemma check --change billing` checks the work in progress. |
-| `--level <level>` | `audit` (problems are warnings), `check` (problems and violated behaviors are errors) or `strict` (error-severity behaviors that are unknown or stale are errors too, and so is code an adapter could not read, whole or in part: in CI, a job without the dependencies an adapter needs fails instead of checking committed documents only). Overrides the graph's level. |
+| `--level <level>` | `audit` (problems are warnings), `check` (problems and violated behaviors are errors) or `strict` (error-severity behaviors that are unknown or stale are errors too, and so is code an adapter could not read, whole or in part: in CI, a job without the dependencies an adapter needs fails instead of checking committed documents only). Overrides the workspace's `level`. |
 | `--all` | List informational findings too, not just their count. |
 | `--select <name>` | Run this check of a parent `mod.lm` instead of its `check main`; or, when no check has the name, just the behavior or requirement it names, by address (`checks::retries`, `lemma.http.operation_without_consumer`) or by name alone when only one thing has it. A behavior that takes arguments runs only from a check. |
 | `--no-run` | Run no checkers: behaviors use the evidence already kept in Lemma's cache. A case whose inputs changed since is `stale`; one never run is `unknown`. |
 | `--run-base` | With `--change`, also run checkers at the base, so a case that ended violated before the change and holds after it is reported as fixed: the behavior's line ends with `N fixed by this change`, and each fixed case follows with how it ended at the base, its operands' values there included. Without it, the base uses kept evidence only and a fix is reported only when that evidence was kept. Doubles the checkers' runs when nothing is kept. |
 | `--engine <name>` | The rule engine for inferred links: `souffle` or `reference`. Default: Soufflé if installed. |
-| `--evaluation <how>` | `demand` (the default) reads only the consumer code inferred findings can rest on, asking for more callers as traces reach further operations; `full` reads everything. |
-| `--links` | Also list every link found: those declared, then the calls inference found from code to documented operations, by calling repository and the service called, with each group's count and first ten calls (`--all` lists every call). Inference then reads all consumer code, and, without `--change`, runs once at head without adding findings. With `--json`, the list is `link_list`: `declared` (`caller -> provider`) and `inferred` (`repository`, `location`, `operation`, `service`). |
-| `--anchors` | Also ask language servers who calls each link's caller anchor, and warn when nothing calls an anchored method while a sibling method is called. Uses the running daemon's warm servers, or starts its own without one. |
+| `--evaluation <how>` | `demand` (the default) reads only the consumer code inferred findings can rest on, asking for more callers as traces reach further operations; `full` reads everything; `both` runs the two and fails if their findings differ. |
+| `--explain` | Show why each inferred finding holds, down to the facts it rests on. |
+| `--no-clone` | Never clone a repository: check those that are here, and exit 5 if that is not all of them. |
 
 Each behavior is printed as `behavior <identity>: <outcome> (<held> of <cases> cases held, <reused> of <n> evidence reused)`, evidence reused being what checkers kept from an earlier run with the same inputs, and each case that did not hold is a finding naming the expression, its file and line, each operand's value and the `because` text. A finding an allowance covers ends with `(allowed: <reason>)` and is informational. With `--json`, `behaviors` lists every behavior with its cases (`identity`, `outcome`, `problem`, `introduced`, `fixed`, `at_base` for a fixed case, `allowed`) and the evidence each used (`checker`, `case`, `key`, `reused`, `unavailable`); `requirement_changes` lists what a change added, removed or changed; findings carry `allowed`.
 
-Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
+An operation a link still names that the change removed is a `link` finding (introduced, exit 4), and the other repositories are still checked. A change that deletes a document a service exports, or leaves an `include` matching nothing, is reported (`document_missing`, `include_matches_nothing`).
+
+Exits with 0 when no finding is an error, 4 when one is, 5 when it finished but a `git(...)` repository was not cloned, and 1 on failure.
 
 ## `lemma daemon`
 
@@ -305,7 +307,7 @@ clone = "ask"              # "ask", "always" or "never"
 
 ## `lm`
 
-`.lm` modules have their own command, `lm`, installed beside `lemma`. It checks, formats and converts modules and serves them to editors; `lemma check` and `lemma verify` run what they declare. Every `lm` command runs in its own process, without Lemma's daemon or index.
+`.lm` modules have their own command, `lm`, installed beside `lemma`. It checks and formats modules and serves them to editors; `lemma check` and `lemma verify` use what they declare. Every `lm` command runs in its own process, without Lemma's daemon or index.
 
 ```text
 lm [--json] [-l <level>] <command>
@@ -317,6 +319,5 @@ See [The `.lm` language](language.md).
 | --- | --- |
 | `lm check [mod.lm]` | Loads a module and everything it imports, and prints every problem as `file:line:column: severity: message`, then a summary. With `--json`, `diagnostics` lists each with its `module`, `path`, `line` and `column`. Exits with 1 if any is an error. |
 | `lm fmt [paths...]` | Rewrites `.lm` files in the canonical layout ([spec 13, Layout](../.specs/13-lm-grammar.md#layout)): four-space indentation by brackets and continued lines, one space around operators and after `,` and `:`, at most one blank line in a row. Line breaks and comments are kept. Each path is a file or a directory to search; with none, the current directory is searched, skipping hidden directories, `target` and `node_modules`. A file with syntax errors is left alone and its errors are printed; a fragment without a `module` line is formatted. `--check` lists the files that are not formatted instead of rewriting them. Exits with 1 if a file has syntax errors or, with `--check`, is not formatted. |
-| `lm convert [lemma.yaml]` | Writes a `lemma.yaml` as an `.lm` root module. `--module <name>` names it (the directory's name by default); `--write` writes `mod.lm` beside the file, refusing to replace one. |
 | `lm new behavior <name> --handler <operation> [--through <link>] [--module mod.lm]` | Adds a checker named `<name>_run` and a behavior named `<name>` to the module, and writes the checker's script under the module's `tools/`. `--handler` is one of the module's operations with an `implementation`, as the module names it (`orders.place_order`); `--through` is a link a graph of the module holds (`"orders.charge -> api.createCharge"`), whose call the script replaces. The script follows the handler's language: Python runs the handler in place with the call replaced, with the service's `runtime.python` when it declares one; TypeScript runs it with Bun; Go gets a script saying which test to write. What a case sends and what the replaced call answers are marked `TODO`, and the behavior starts at `severity: warning`. Refuses a name already declared, a script that exists, and a module with errors, and leaves the module as it was if the result does not check. |
 | `lm lsp` | Serves `.lm` modules to an editor over the Language Server Protocol, on standard input and output. |

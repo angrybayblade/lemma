@@ -104,7 +104,7 @@ main() {
     *) say "add $INSTALL_DIR to your PATH" ;;
   esac
   command -v souffle >/dev/null 2>&1 ||
-    say "optional: install Souffle (brew install souffle) for faster 'lemma verify'"
+    say "optional: install Souffle (brew install souffle) for faster 'lemma check'"
   say "next: lemma providers   (shows which language servers Lemma found)"
 }
 

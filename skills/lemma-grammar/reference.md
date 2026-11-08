@@ -2,7 +2,7 @@
 
 ## Input relations
 
-`lemma verify` writes these input relations, in both snapshots unless noted. A grammar receives the ones it declares and ignores the rest. Operations are named `METHOD /path` with path parameters as `{}`; consumers are `repository:file::Function` (or `repository:file` outside functions); files are `repository:file`.
+`lemma check` fills these input relations of `lemma.http`, in both snapshots unless noted. Operations are named `METHOD /path` with path parameters as `{}`; consumers are `repository:file::Function` (or `repository:file` outside functions); files are `repository:file`.
 
 | Relation | Columns | From |
 | --- | --- | --- |
@@ -18,20 +18,21 @@
 | `inline_strict_route` | service, method, path, part | a route's own schema is `.strict()` (head only) |
 | `strict_schema` | file, name | `const name = z.object(..).strict()` (head only) |
 | `union_member` | file, union, member | `z.union`/`z.discriminatedUnion` members; `*` for a non-strict inline member (head only) |
-| `client_operation` | client, function, method, path, file, line | `generated_from` specs, functions named by `call_names` |
+| `client_operation` | client, function, method, path, file, line | `generated_from` documents of `http.generated_client`, functions named by `call_names` |
 | `client_parameter` | client, method, path, name, location, file, line | client specs; the file and line of the client method sending the operation, or the spec with line 0 |
-| `calls_path` | consumer, method (`*` if unknown), path, file, line | consumer code: path strings and request calls |
-| `calls_client` | consumer, chain, file, line | consumer code: calls through client receivers and imported client functions |
+| `calls_path` | consumer, method (`*` if unknown), path, file, line | service code: path strings and request calls |
+| `calls_client` | consumer, chain, file, line | service code: calls through client receivers and imported client functions |
 | `mentions` | scope, name | names used as fields: object keys, members, keyword arguments, dictionary keys, struct fields, JSON tags |
 | `in_file` | scope, file | which file a consumer or function is in |
 | `imports` | file, imported file | relative and alias imports; for Go, files of one package |
-| `addressed_to` | path, service | a path called in code that is under a prefix the service owns: derived from its specs, or its `path_prefixes` |
-| `part_of_service` | file, service | files of a consumer entry that names its `service` |
-| `rejects_unknown_fields` | service | manifest `rejects_unknown_fields: true` |
+| `addressed_to` | path, service | a path called in code that is under a prefix the service owns, derived from its documents |
+| `part_of_service` | file, service | a service's own files |
+| `rejects_unknown_fields` | service | `rejects_unknown_fields: true` on the service |
+| `public_operation`, `public_service` | operation; service | stated in a graph |
 
-## Derived relations in the built-in grammar
+## Derived relations in `lemma.http`
 
-These come from the rules in `grammars/http-contracts.yaml`; any can be printed with `lemma verify <manifest> --relation <name>` and used in new requirements.
+These come from the rules in the standard library's `lemma.http`; any can be printed with `lemma verify --relation <name>` (at one snapshot, so those comparing snapshots are empty there) and used in new requirements.
 
 | Relation | Columns | Holds when |
 | --- | --- | --- |
@@ -55,4 +56,4 @@ Helper relations used by these: `called_before`, `loose_union`, `own_operation`,
 
 ## Requirement variables
 
-A requirement's variables, in the order they first appear in a positive atom of `when`, become the finding's values (`--json` shows them by name) and fill `{name}` placeholders in `explain`.
+A requirement's variables, in the order they first appear in a positive atom of `when`, become the finding's values (`--json` shows them by name) and fill `{name}` placeholders in `message`.

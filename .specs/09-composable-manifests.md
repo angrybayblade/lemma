@@ -1,5 +1,7 @@
 # Composable manifests, links and schema checks
 
+> A record of its time. YAML has since been removed: a description is always `.lm`. See [document 15](15-one-description-format.md).
+
 Captured: 2026-11-02. Status: **established direction** where marked (decided in discussion, 2026-11-02); syntax shown is **proposal** unless stated.
 
 This replaces the single cross-repository manifest of [document 8](08-relational-grammar-and-verification.md) (repositories with roles `service`, `client`, `consumer`) with composable `lemma.yaml` files. Each repository describes what it is; a parent composes repositories; relationships live in a `graph` section; schemas on both ends of a relationship are resolved to one format and compared. It came out of trying to trace a breaking change in the generic platform's Functions through Worker and Gateway to the dashboard and SDKs, which the rc0 model could not express, and out of removing rc0's generic platform-specific assumptions (PR #5).
