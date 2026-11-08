@@ -462,21 +462,10 @@ fn checked_without_resolver(level: Level) -> Vec<(Severity, String)> {
 }
 
 #[test]
-fn a_resolver_that_cannot_run_here_warns_and_fails_only_a_strict_check() {
+fn a_resolver_that_cannot_run_here_warns_once_and_fails_only_a_strict_check() {
     let checked = checked_without_resolver(Level::Check);
     let strict = checked_without_resolver(Level::Strict);
 
-    assert_ne!(checked, []);
-    assert!(
-        checked
-            .iter()
-            .all(|(severity, check)| *severity == Severity::Warning && check == "resolver"),
-        "{checked:?}"
-    );
-    assert!(
-        strict
-            .iter()
-            .all(|(severity, _)| *severity == Severity::Error),
-        "{strict:?}"
-    );
+    assert_eq!(checked, [(Severity::Warning, "resolver".to_owned())]);
+    assert_eq!(strict, [(Severity::Error, "resolver".to_owned())]);
 }

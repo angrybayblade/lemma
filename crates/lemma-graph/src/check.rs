@@ -596,6 +596,7 @@ fn check_declared(
         reads: schema::Reads::default(),
         findings: Vec::new(),
         has_change: options.change.is_some(),
+        unread: BTreeMap::new(),
     };
     for link in links {
         checker.check_link(link)?;
@@ -603,6 +604,7 @@ fn check_declared(
     // Adapters build in the same shared worktree resolvers ran in.
     checker.reads.release();
     let mut findings = checker.findings;
+    findings.extend(checker.unread.into_values().map(Unread::into_finding));
     findings.extend(unsupported_documents(repos)?);
     Ok(findings)
 }
@@ -1711,6 +1713,47 @@ struct Checker<'a> {
     /// Whether a change is being checked: then only what it introduces is a
     /// problem, and what was already there is context.
     has_change: bool,
+    /// Schemas a resolver could not produce, by its command and directory:
+    /// one resolver that cannot run here leaves every schema it serves
+    /// unread, and that is one thing to fix, so one warning.
+    unread: BTreeMap<(String, PathBuf), Unread>,
+}
+
+/// What one resolver that could not run left unread.
+struct Unread {
+    /// The first link whose schema it was asked for.
+    link: String,
+    /// Why it failed.
+    error: String,
+    /// Each schema it left unread, such as `#billing:services.api.charge's request`.
+    schemas: Vec<String>,
+}
+
+impl Unread {
+    /// The warning: a resolver that cannot run here fails a strict check
+    /// only (see `fail_unread_contracts`).
+    fn into_finding(self) -> Finding {
+        let Self {
+            link,
+            error,
+            schemas,
+        } = self;
+        let first = schemas.first().map_or("", String::as_str);
+        let message = match schemas.len() {
+            1 => format!("could not resolve {first} schema: {error}"),
+            count => format!("could not resolve {count} schemas, such as {first} schema: {error}"),
+        };
+        Finding {
+            severity: Severity::Warning,
+            link,
+            check: "resolver".to_owned(),
+            message,
+            introduced: false,
+            affects: Vec::new(),
+            allowed: None,
+            values: BTreeMap::new(),
+        }
+    }
 }
 
 /// A finding before its severity is decided.
@@ -1956,29 +1999,25 @@ impl Checker<'_> {
         error: &GraphError,
         snapshot: usize,
     ) {
-        let message = format!("could not resolve {schema} schema: {}", describe(error));
-        if matches!(error, GraphError::Resolver { .. }) {
-            self.warn_unread(label, message);
+        if let GraphError::Resolver {
+            command, directory, ..
+        } = error
+        {
+            let unread = self
+                .unread
+                .entry((command.clone(), directory.clone()))
+                .or_insert_with(|| Unread {
+                    link: label.to_owned(),
+                    error: describe(error),
+                    schemas: Vec::new(),
+                });
+            if !unread.schemas.iter().any(|known| known == schema) {
+                unread.schemas.push(schema.to_owned());
+            }
             return;
         }
+        let message = format!("could not resolve {schema} schema: {}", describe(error));
         self.report(label, Note::problem("schema", message, snapshot == HEAD));
-    }
-
-    /// Records that a resolver could not run, once.
-    fn warn_unread(&mut self, link: &str, message: String) {
-        let finding = Finding {
-            severity: Severity::Warning,
-            link: link.to_owned(),
-            check: "resolver".to_owned(),
-            message,
-            introduced: false,
-            affects: Vec::new(),
-            allowed: None,
-            values: BTreeMap::new(),
-        };
-        if !self.findings.contains(&finding) {
-            self.findings.push(finding);
-        }
     }
 
     /// Records a finding: a problem is a warning at level `audit` and an
