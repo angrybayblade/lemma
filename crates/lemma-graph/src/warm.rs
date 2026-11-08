@@ -57,6 +57,19 @@ impl Warm {
         }
     }
 
+    /// [`Warm::forget_working`] for a change to `changed` alone (relative
+    /// to the repository). Only files Git lists are kept past the change:
+    /// what else a check read may be ignored by Git and so never reported.
+    pub fn forget_paths(&self, repository: &Path, changed: &[String]) {
+        self.verify.forget_paths(repository, changed);
+        if let Some((reads, outputs)) = self.lock().as_mut() {
+            reads.forget_working(repository);
+            outputs.retain(|(root, commit, _), _| {
+                !commit.is_empty() || !schema::same_path(Path::new(root), repository)
+            });
+        }
+    }
+
     /// Each interpreter the kept reads asked, with the stamp it had then:
     /// what an answer rests on outside the files watched, since a package
     /// installs under a directory Git ignores.

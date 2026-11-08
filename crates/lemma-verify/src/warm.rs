@@ -52,6 +52,42 @@ impl Warm {
         }
     }
 
+    /// [`Warm::forget_working`] for a change to `changed` alone (relative
+    /// to the repository, files or directories): what was read of its
+    /// other files stays.
+    pub fn forget_paths(&self, repository: &Path, changed: &[String]) {
+        self.listings.forget_working(repository);
+        if let Some(memo) = self.lock().as_mut() {
+            memo.forget_paths(repository, changed);
+        }
+    }
+
+    /// Gets the repository at `repository` ready for the next run, after
+    /// `changed` changed: lists its working directory and parses the code
+    /// among `changed` as the last run read it. Nothing is evaluated. How
+    /// many files were parsed.
+    pub fn prepare(&self, repository: &Path, changed: &[String]) -> usize {
+        let Ok(listing) = self.listings.get(repository, None) else {
+            return 0;
+        };
+        let Some(mut memo) = self.lock().take() else {
+            return 0;
+        };
+        let files: Vec<lemma_http::ListedFile> = listing
+            .iter()
+            .filter(|file| crate::extract::is_code_path(&file.path))
+            .filter(|file| {
+                changed
+                    .iter()
+                    .any(|one| crate::extract::is_at_or_below(&file.path, one))
+            })
+            .cloned()
+            .collect();
+        let parsed = memo.parse_changed(repository, &files);
+        self.put(memo);
+        parsed
+    }
+
     pub(crate) fn take(&self) -> Memo {
         self.lock().take().unwrap_or_default()
     }

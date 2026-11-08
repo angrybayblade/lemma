@@ -89,6 +89,7 @@ pub fn extract_all(
     let memo = warm.map(crate::Warm::take).unwrap_or_default();
     let mut extractor = FactReader::new(options.facts_cache.clone());
     extractor.read = memo.facts;
+    extractor.readings = memo.readings;
     let specs = SpecCache {
         read: RefCell::new(memo.specs),
         listings: Arc::clone(listings),
@@ -102,6 +103,8 @@ pub fn extract_all(
             blobs: specs.blobs.into_inner(),
             on_disk: specs.on_disk.into_inner(),
             facts: std::mem::take(&mut extractor.read),
+            readings: std::mem::take(&mut extractor.readings),
+            facts_cache: options.facts_cache.clone(),
         });
     }
     extracted
@@ -646,7 +649,15 @@ pub(crate) struct Memo {
     blobs: BTreeMap<(PathBuf, String, String), Arc<SourceFile>>,
     on_disk: BTreeMap<(PathBuf, String), Arc<SourceFile>>,
     facts: BTreeMap<String, Arc<CodeFacts>>,
+    /// How each repository's working directory was last read, so a file
+    /// that changes can be read the same way before it is asked for.
+    readings: Readings,
+    facts_cache: Option<crate::FactsCache>,
 }
+
+/// The ways a working directory was read, by repository and options as
+/// text.
+type Readings = BTreeMap<(PathBuf, String), CodeOptions>;
 
 impl Memo {
     /// Drops what was read from the working directory of the repository at
@@ -659,6 +670,56 @@ impl Memo {
         });
         self.on_disk.retain(|(path, _), _| !is_it(path));
     }
+
+    /// [`Memo::forget_working`] for a change to `changed` alone (relative
+    /// to the repository, files or directories): the other files read
+    /// stay, since their contents did not change.
+    pub(crate) fn forget_paths(&mut self, repository: &Path, changed: &[String]) {
+        let on_disk = std::mem::take(&mut self.on_disk);
+        self.forget_working(repository);
+        self.on_disk = on_disk;
+        let is_it = |path: &Path| crate::warm::same_path(path, repository);
+        self.on_disk.retain(|(path, file), _| {
+            !is_it(path) || !changed.iter().any(|one| is_at_or_below(file, one))
+        });
+    }
+
+    /// Reads `files` of the repository at `repository` as it was last
+    /// read, so their facts are known when a check asks for them; how many
+    /// were parsed. A file that cannot be read is left for that check to
+    /// report.
+    pub(crate) fn parse_changed(&mut self, repository: &Path, files: &[ListedFile]) -> usize {
+        let readings: Vec<(PathBuf, CodeOptions)> = self
+            .readings
+            .iter()
+            .filter(|((path, _), _)| crate::warm::same_path(path, repository))
+            .map(|((path, _), options)| (path.clone(), options.clone()))
+            .collect();
+        if readings.is_empty() {
+            return 0;
+        }
+        let mut reader = FactReader::new(self.facts_cache.clone());
+        reader.read = std::mem::take(&mut self.facts);
+        for (path, options) in &readings {
+            let _ = reader.read(path, None, files, options);
+        }
+        self.facts = std::mem::take(&mut reader.read);
+        reader.counts.parsed
+    }
+}
+
+/// Whether `path` is `changed`, or below it when `changed` is a directory.
+pub(crate) fn is_at_or_below(path: &str, changed: &str) -> bool {
+    path == changed
+        || path
+            .strip_prefix(changed)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Whether a path names code Lemma extracts facts from.
+pub(crate) fn is_code_path(path: &str) -> bool {
+    let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
+    CODE_EXTENSIONS.contains(&extension)
 }
 
 impl SpecCache {
@@ -2145,6 +2206,8 @@ struct FactReader {
     kept: Option<Kept>,
     /// Facts read in this run, by unit key.
     read: BTreeMap<String, Arc<CodeFacts>>,
+    /// How working directories were read.
+    readings: Readings,
     /// Units whose terms this run has sent to the cache, which its writer
     /// may not have stored yet.
     termed: BTreeSet<String>,
@@ -2209,6 +2272,7 @@ impl FactReader {
             extractors: ExtractorPool::new(),
             kept,
             read: BTreeMap::new(),
+            readings: Readings::new(),
             termed: BTreeSet::new(),
             counts: ReadCounts::default(),
         }
@@ -2226,6 +2290,10 @@ impl FactReader {
         files: &[ListedFile],
         options: &CodeOptions,
     ) -> Result<Vec<(String, Arc<CodeFacts>)>, VerifyError> {
+        if commit.is_none() {
+            let reading = (repository.to_owned(), format!("{options:?}"));
+            self.readings.insert(reading, options.clone());
+        }
         let (keyed, mut contents) = self.keyed(repository, commit, files, options)?;
         let unknown: Vec<(&ListedFile, &String)> = keyed
             .iter()
@@ -2757,6 +2825,29 @@ fn join(directory: &Path, specifier: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read_file(path: &str) -> Arc<SourceFile> {
+        Arc::new(SourceFile {
+            path: path.to_owned(),
+            contents: String::new(),
+        })
+    }
+
+    #[test]
+    fn a_change_to_some_paths_forgets_only_those_and_what_is_below_them() {
+        let repository = PathBuf::from("/nonexistent/repository");
+        let kept = |path: &str| (repository.clone(), path.to_owned());
+        let mut memo = Memo::default();
+        for path in ["src/a.ts", "src/gen/b.ts", "src/genesis.ts"] {
+            memo.on_disk.insert(kept(path), read_file(path));
+        }
+
+        memo.forget_paths(&repository, &["src/gen".to_owned()]);
+
+        assert!(memo.on_disk.contains_key(&kept("src/a.ts")));
+        assert!(memo.on_disk.contains_key(&kept("src/genesis.ts")));
+        assert!(!memo.on_disk.contains_key(&kept("src/gen/b.ts")));
+    }
 
     #[test]
     fn a_spec_path_is_named_whole_or_as_a_prefix_and_the_rest() {

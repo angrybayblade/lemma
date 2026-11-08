@@ -34,6 +34,12 @@ const ANSWERS_KEPT: usize = 8;
 /// How many answers it holds ready to give again. Each set of options has
 /// its own, so a check of one repository does not displace another's.
 const ANSWERS_HELD: usize = 16;
+/// How long after a repository's first unprepared change it is prepared,
+/// even if changes keep coming.
+const PREPARE_WITHIN: Duration = Duration::from_secs(2);
+/// More changed paths than this are a bulk state: too many to parse one by
+/// one, so a batch only lists the repository again.
+const BULK_PATHS: usize = 1000;
 
 /// A check asked of sentry, with the connection to answer on.
 pub(crate) struct Ask {
@@ -166,17 +172,98 @@ impl Drop for Sentry {
 /// A repository sentry watches.
 struct Watched {
     root: PathBuf,
+    /// The root as a check names it, which is how reads are kept.
+    spelled: PathBuf,
     watch: Option<lemma_index::Watch>,
     /// Why it is not watched, when watching failed.
     failure: Option<String>,
     /// Bumped whenever its files may have changed.
     generation: u64,
+    /// Changes not prepared yet.
+    unprepared: Option<Unprepared>,
+}
+
+/// A repository's changes since it was last prepared.
+struct Unprepared {
+    /// Changed paths, relative to the repository.
+    paths: BTreeSet<String>,
+    /// Whether there are too many to prepare one by one, or some were lost.
+    is_bulk: bool,
+    first: Instant,
+    last: Instant,
+}
+
+impl Watched {
+    /// Takes the reported changes, dropping what is kept of the paths they
+    /// touched; whether there were any, and how many paths.
+    fn take_changes(&mut self, warm: &lemma_graph::Warm, confirming: bool) -> Option<usize> {
+        let watch = self.watch.as_mut()?;
+        if !confirming && !watch.has_pending() {
+            return None;
+        }
+        let observed = watch.changes();
+        if !observed.needs_full_walk && observed.paths.is_empty() {
+            return None;
+        }
+        let changed = relative_paths(&self.root, &observed.paths);
+        if observed.needs_full_walk {
+            warm.forget_working(&self.root);
+        } else {
+            warm.forget_paths(&self.root, &changed);
+        }
+        self.generation += 1;
+        self.note_unprepared(changed, observed.needs_full_walk);
+        Some(observed.paths.len())
+    }
+
+    fn note_unprepared(&mut self, changed: Vec<String>, is_lost: bool) {
+        let now = Instant::now();
+        let unprepared = self.unprepared.get_or_insert_with(|| Unprepared {
+            paths: BTreeSet::new(),
+            is_bulk: false,
+            first: now,
+            last: now,
+        });
+        unprepared.last = now;
+        unprepared.paths.extend(changed);
+        unprepared.is_bulk |= is_lost || unprepared.paths.len() > BULK_PATHS;
+        if unprepared.is_bulk {
+            unprepared.paths.clear();
+        }
+    }
+
+    /// Takes the changes to prepare, once they have settled and Git has
+    /// let go of the repository.
+    fn take_settled(&mut self, now: Instant) -> Option<Unprepared> {
+        let unprepared = self.unprepared.as_ref()?;
+        let is_settled = now.duration_since(unprepared.last) >= BATCH_INTERVAL
+            || now.duration_since(unprepared.first) >= PREPARE_WITHIN;
+        if !is_settled || self.root.join(".git/index.lock").exists() {
+            return None;
+        }
+        self.unprepared.take()
+    }
+}
+
+/// `paths` relative to `root`, with `/`, those outside it and in `.git`
+/// left out: the latter say nothing about a file's contents.
+fn relative_paths(root: &Path, paths: &std::collections::HashSet<PathBuf>) -> Vec<String> {
+    let mut relative: Vec<String> = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(root).ok())
+        .filter(|path| !path.starts_with(".git"))
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .collect();
+    relative.sort();
+    relative
 }
 
 /// How much sentry has done, for status.
 #[derive(Default)]
 struct Counts {
     batches: u64,
+    prepared: u64,
+    parsed_ahead: usize,
     evaluated: u64,
     reused: u64,
     last: Option<(Duration, bool)>,
@@ -258,13 +345,15 @@ impl Worker {
             warm: None,
             environment: None,
         };
-        let roots: Vec<PathBuf> = lemma_graph::repository_roots(&manifest, &options)?
-            .into_iter()
-            .map(|root| root.canonicalize().unwrap_or(root))
+        let spelled = lemma_graph::repository_roots(&manifest, &options)?;
+        let roots: Vec<PathBuf> = spelled
+            .iter()
+            .map(|root| root.canonicalize().unwrap_or_else(|_| root.clone()))
             .collect();
         let watched = roots
             .iter()
-            .map(|root| {
+            .zip(spelled)
+            .map(|(root, spelled)| {
                 // A workspace's directory holds its repositories, each
                 // watched on its own.
                 let inner: Vec<PathBuf> = roots
@@ -272,7 +361,7 @@ impl Worker {
                     .filter(|other| *other != root && other.starts_with(root))
                     .cloned()
                     .collect();
-                watch(root.clone(), &inner)
+                watch(root.clone(), spelled, &inner)
             })
             .collect();
         Ok(Self {
@@ -290,6 +379,7 @@ impl Worker {
     }
 
     fn serve(&mut self, receiver: &Receiver<Message>) {
+        self.prepare_attached();
         loop {
             match receiver.recv_timeout(BATCH_INTERVAL) {
                 Ok(Message::Ask(ask)) => {
@@ -300,37 +390,63 @@ impl Worker {
                 Ok(Message::Status(reply)) => {
                     let _ = reply.send(self.status());
                 }
-                Err(RecvTimeoutError::Timeout) => self.collect(false),
+                Err(RecvTimeoutError::Timeout) => {
+                    self.collect(false);
+                    self.prepare_settled();
+                }
                 Err(RecvTimeoutError::Disconnected) => return,
             }
             self.serve_waiting();
         }
     }
 
-    /// Drops what is kept of each repository whose files changed. On an
-    /// ask, `confirming` waits for every watcher's barrier, so a change
-    /// made just before the ask counts; between asks only repositories with
+    /// Lists each repository, so the first ask does not. Nothing else is
+    /// known before a check says how its repositories are read.
+    fn prepare_attached(&self) {
+        let wanted: Vec<(PathBuf, Option<String>)> = self
+            .watched
+            .iter()
+            .map(|watched| (watched.spelled.clone(), None))
+            .collect();
+        self.warm.verify().listings().prefetch(&wanted);
+    }
+
+    /// Prepares each repository whose changes have settled. Nothing is
+    /// evaluated: only listings and the facts of the files that changed.
+    fn prepare_settled(&mut self) {
+        let now = Instant::now();
+        for watched in &mut self.watched {
+            let Some(unprepared) = watched.take_settled(now) else {
+                continue;
+            };
+            let changed: Vec<String> = unprepared.paths.into_iter().collect();
+            self.counts.parsed_ahead += self.warm.verify().prepare(&watched.spelled, &changed);
+            self.counts.prepared += 1;
+        }
+    }
+
+    /// Drops what is kept of what changed in each repository. On an ask,
+    /// `confirming` waits for every watcher's barrier, so a change made
+    /// just before the ask counts, and leaves nothing to prepare, since
+    /// the ask reads what it needs; between asks only repositories with
     /// reported changes are looked at.
     fn collect(&mut self, confirming: bool) {
         let mut batches = Vec::new();
         for watched in &mut self.watched {
-            let Some(watch) = &mut watched.watch else {
+            if watched.watch.is_none() {
                 // Unwatched: anything may have changed.
                 self.warm.forget_working(&watched.root);
                 watched.generation += 1;
                 continue;
-            };
-            if !confirming && !watch.has_pending() {
-                continue;
             }
-            let observed = watch.changes();
-            if observed.needs_full_walk || !observed.paths.is_empty() {
-                self.warm.forget_working(&watched.root);
-                watched.generation += 1;
+            if let Some(paths) = watched.take_changes(&self.warm, confirming) {
                 batches.push(Event::Batch {
                     repository: watched.root.display().to_string(),
-                    paths: observed.paths.len(),
+                    paths,
                 });
+            }
+            if confirming {
+                watched.unprepared = None;
             }
         }
         for batch in batches {
@@ -634,10 +750,13 @@ impl Worker {
         });
         let _ = writeln!(
             text,
-            "  {} checks answered ({} reused){last}; {} batches of changes; token {}",
+            "  {} checks answered ({} reused){last}; {} batches of changes, {} prepared with {} \
+             files parsed ahead; token {}",
             counts.evaluated + counts.reused,
             counts.reused,
             counts.batches,
+            counts.prepared,
+            counts.parsed_ahead,
             self.token(self.position)
         );
         text
@@ -755,9 +874,9 @@ fn instance() -> String {
     format!("{:08x}", hasher.finish() & 0xffff_ffff)
 }
 
-/// A watcher for the repository at `root` (canonical), leaving out the
-/// repositories `inner` to it, or why there is none.
-fn watch(root: PathBuf, inner: &[PathBuf]) -> Watched {
+/// A watcher for the repository at `root` (canonical), named `spelled` by
+/// checks, leaving out the repositories `inner` to it, or why there is none.
+fn watch(root: PathBuf, spelled: PathBuf, inner: &[PathBuf]) -> Watched {
     let selection = lemma_index::Selection::everything_git_lists();
     let started = lemma_index::Watch::start_without(&root, &selection, inner);
     let (watch, failure) = match started {
@@ -769,9 +888,11 @@ fn watch(root: PathBuf, inner: &[PathBuf]) -> Watched {
     };
     Watched {
         root,
+        spelled,
         watch,
         failure,
         generation: 0,
+        unprepared: None,
     }
 }
 
@@ -1224,6 +1345,45 @@ mod tests {
         git(&billing, &["commit", "-q", "-m", "second document"]);
     }
 
+    /// Lets the worker see its changes and prepare them, as it does between
+    /// asks.
+    fn settle(worker: &mut Worker) {
+        for _ in 0..3 {
+            worker.collect(false);
+            std::thread::sleep(BATCH_INTERVAL);
+            worker.prepare_settled();
+        }
+    }
+
+    /// Runs the worker's turns until it has parsed a file ahead, for a
+    /// busy machine's late reports; gives up after ten seconds.
+    fn settle_until_parsed(worker: &mut Worker) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while worker.counts.parsed_ahead == 0 && Instant::now() < deadline {
+            settle(worker);
+        }
+    }
+
+    #[test]
+    fn a_settled_change_is_parsed_before_it_is_asked_about() {
+        let root = tempfile::tempdir().unwrap();
+        shop(root.path());
+        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let asked = question(root.path());
+        worker.respond(&asked);
+
+        write(
+            &root.path().join("web/src/charge.ts"),
+            "export async function charge() {\n  return fetch(\"/v1/payments\", { method: \"POST\" });\n}\n",
+        );
+        settle_until_parsed(&mut worker);
+        let parsed_ahead = worker.counts.parsed_ahead;
+        let answer = worker.respond(&asked);
+
+        assert_eq!(parsed_ahead, 1);
+        assert_eq!(without_token(&answer), fresh(&asked));
+    }
+
     fn matches_fresh_checks_through(seed: u64, steps: usize) {
         let root = tempfile::tempdir().unwrap();
         let root_path = root.path().canonicalize().unwrap();
@@ -1241,6 +1401,9 @@ mod tests {
         let mut done = Vec::new();
         for step in 0..steps {
             done.push(changes.apply());
+            if step % 2 == 0 {
+                settle(&mut worker);
+            }
             let asked = if step % 3 == 0 { &web } else { &billing };
             let answered = without_token(&worker.respond(asked));
             let expected = fresh(asked);
