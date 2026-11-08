@@ -161,6 +161,11 @@ pub(crate) struct CheckArgs {
     /// one built-in requirement, whose findings alone are listed.
     #[arg(long, value_name = "CHECK")]
     pub select: Option<String>,
+    /// With the daemon's sentry attached: list only the findings that came
+    /// and went since the answer this token (the last line of an earlier
+    /// answer) names, for the same options.
+    #[arg(long, value_name = "TOKEN")]
+    pub since: Option<String>,
     /// Also list informational findings, not just their count.
     #[arg(long)]
     pub all: bool,
@@ -267,6 +272,17 @@ pub(crate) enum SentryCommand {
     Stop,
     /// What it watches and how many checks it answered.
     Status,
+    /// What happened since a token: batches of changes and checks answered,
+    /// a line each, then the latest token.
+    Events {
+        /// A token from an earlier answer or event list; without one, every
+        /// event kept.
+        #[arg(long, value_name = "TOKEN")]
+        since: Option<String>,
+        /// Wait this long for an event when there is none yet, such as `30s`.
+        #[arg(long, value_name = "DURATION")]
+        wait: Option<String>,
+    },
 }
 
 /// `lemma daemon lsp`: the daemon's language servers, by hand.

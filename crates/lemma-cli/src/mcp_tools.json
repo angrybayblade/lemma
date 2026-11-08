@@ -442,6 +442,10 @@
           "type": "string",
           "description": "Run only this: a check of the mod.lm, or one behavior or requirement by name or address, such as `passes_on_retriable` or `lemma.http.operation_without_consumer`. Much faster than everything when iterating on one behavior. From a lemma.yaml workspace: one built-in requirement, such as `consumer_misses_new_required_field`, whose findings alone are listed."
         },
+        "since": {
+          "type": "string",
+          "description": "With the daemon's sentry attached: only the findings that came and went since the answer this token names (the `sentry token:` line of an earlier answer with the same options)."
+        },
         "all": {
           "type": "boolean",
           "description": "Also list informational findings."

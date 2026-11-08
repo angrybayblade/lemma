@@ -25,6 +25,12 @@ description: Prove a change keeps repositories in agreement with `lemma check` -
 5. Before handing over, `lemma check --change <repository> --level strict` fails when an adapter could not read the code, so a pass is not resting on documents alone.
 6. Report each run and its result. A warning you leave in place needs a reason, such as an operation meant for callers outside the workspace (state it in a graph of `lemma.http.public_operation` so the check expects no caller).
 
+## With sentry
+
+When the daemon's sentry is attached to the workspace (`lemma daemon sentry status` says so; `lemma daemon sentry start` attaches it), a check is answered from what earlier checks read: a check after an edit takes about a second, and one with nothing changed is instant. Checking at the end of each unit costs little then, but the rule stands: a half-made change still reports breaks you are about to fix.
+
+Each answer ends with `sentry token: <token>`. After fixing what a check reported, `lemma check --change <repository> --since <token>` (or `since` on the `check` tool) lists only the findings that came and went, so you can see a fix land without reading the whole report again. The same token on a new answer means nothing it reads has changed.
+
 ## When a finding looks wrong
 
 Run with `--all` to see informational findings, and `--links` to see which caller Lemma matched to which operation. A wrong finding is usually one wrong match: a path built at run time matched to the wrong operation, or a common field name counted as a use. Say so in the report rather than working around it in code.

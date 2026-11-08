@@ -48,7 +48,7 @@ fn main() -> ExitCode {
             return manage_servers(&cli);
         }
         if let Some(cli::DaemonAction::Sentry(sentry)) = &args.action {
-            return control_sentry(sentry);
+            return control_sentry(sentry, cli.json);
         }
         return run_daemon(args, logger);
     }
@@ -211,7 +211,7 @@ fn run_daemon(args: &cli::DaemonArgs, logger: &'static logging::Logger) -> ExitC
 }
 
 #[cfg(unix)]
-fn control_sentry(args: &cli::SentryArgs) -> ExitCode {
+fn control_sentry(args: &cli::SentryArgs, json: bool) -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
         eprintln!("error: could not read the current directory");
         return ExitCode::FAILURE;
@@ -222,6 +222,23 @@ fn control_sentry(args: &cli::SentryArgs) -> ExitCode {
         },
         cli::SentryCommand::Stop => daemon::SentryAction::Stop,
         cli::SentryCommand::Status => daemon::SentryAction::Status,
+        cli::SentryCommand::Events { since, wait } => {
+            let wait = match wait.as_deref().map(duration::parse_duration) {
+                None => None,
+                Some(Ok(wait)) => wait,
+                Some(Err(error)) => {
+                    eprintln!("error: --wait: {error:#}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            daemon::SentryAction::Events {
+                since: since.clone(),
+                wait_ms: wait.map_or(0, |wait| {
+                    u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)
+                }),
+                json,
+            }
+        }
     };
     match daemon::sentry_control(action) {
         Ok(Some((stdout, stderr, exit_code))) => {
@@ -244,7 +261,7 @@ fn control_sentry(args: &cli::SentryArgs) -> ExitCode {
 }
 
 #[cfg(not(unix))]
-fn control_sentry(_args: &cli::SentryArgs) -> ExitCode {
+fn control_sentry(_args: &cli::SentryArgs, _json: bool) -> ExitCode {
     eprintln!("error: sentry runs in the lemma daemon, which needs Unix sockets");
     ExitCode::FAILURE
 }

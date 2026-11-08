@@ -368,6 +368,7 @@ fn push_check_command(
             ("head", "--head"),
             ("level", "--level"),
             ("select", "--select"),
+            ("since", "--since"),
         ],
     )?;
     for (field, flag) in [

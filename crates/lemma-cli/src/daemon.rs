@@ -94,6 +94,12 @@ pub(crate) enum SentryAction {
     },
     Stop,
     Status,
+    /// What happened since a token, waiting up to `wait_ms` for something.
+    Events {
+        since: Option<String>,
+        wait_ms: u64,
+        json: bool,
+    },
 }
 
 /// The daemon's reply, one JSON object per line.
@@ -303,6 +309,25 @@ fn route_sentry(
             hand_to_sentry(asked, stream, sentry, settings);
             None
         }
+        Request::Sentry {
+            build,
+            action:
+                SentryAction::Events {
+                    since,
+                    wait_ms,
+                    json,
+                },
+        } if build == build_id() && sentry.is_some() => {
+            if let Some(attached) = sentry.as_ref() {
+                attached.events(crate::sentry::Wait {
+                    since,
+                    limit: Duration::from_millis(wait_ms),
+                    json,
+                    stream,
+                });
+            }
+            None
+        }
         Request::Sentry { build, action } => {
             let reply = control_sentry(&build, action, sentry);
             let _ = send(&mut stream, &reply);
@@ -424,7 +449,7 @@ fn control_sentry(build: &str, action: SentryAction, sentry: &mut Option<Sentry>
             )),
             None => failed("sentry is not attached".to_owned()),
         },
-        SentryAction::Status => match sentry.as_ref() {
+        SentryAction::Status | SentryAction::Events { .. } => match sentry.as_ref() {
             Some(attached) => done(attached.status()),
             None => done("sentry is not attached\n".to_owned()),
         },

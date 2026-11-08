@@ -5,8 +5,12 @@
 //! evaluates nothing ahead of time: a check asked of it runs on what is
 //! kept, after the watcher's barrier confirms every earlier change was
 //! seen, and an answer is given again only when nothing it read changed.
+//!
+//! Every answer and batch has a place in a journal, named by a token: a
+//! check `--since` a token lists what came and went since that answer, and
+//! `lemma daemon sentry events` lists what happened since a token.
 
-use std::collections::{BTreeMap, hash_map::DefaultHasher};
+use std::collections::{BTreeMap, BTreeSet, VecDeque, hash_map::DefaultHasher};
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::os::unix::net::UnixStream;
@@ -16,11 +20,17 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::check::{LanguageServers, Served, Streams};
+use lemma_graph::{Finding, Report, Severity};
+
+use crate::check::{Delta, LanguageServers, SentryNote, Served, Streams};
 use crate::cli::CheckArgs;
 
 /// How often the worker collects changes reported by the watchers.
 const BATCH_INTERVAL: Duration = Duration::from_millis(200);
+/// How many events the journal keeps.
+const JOURNAL_LIMIT: usize = 1000;
+/// How many earlier answers it keeps per set of options, for `--since`.
+const ANSWERS_KEPT: usize = 8;
 
 /// A check asked of sentry, with the connection to answer on.
 pub(crate) struct Ask {
@@ -38,6 +48,14 @@ pub(crate) struct Question {
     pub environment: BTreeMap<String, String>,
 }
 
+/// A wait for events, with the connection to answer on.
+pub(crate) struct Wait {
+    pub since: Option<String>,
+    pub limit: Duration,
+    pub json: bool,
+    pub stream: UnixStream,
+}
+
 /// What the worker answers with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Answer {
@@ -48,6 +66,7 @@ pub(crate) struct Answer {
 
 enum Message {
     Ask(Box<Ask>),
+    Events(Box<Wait>),
     Status(Sender<String>),
 }
 
@@ -100,9 +119,13 @@ impl Sentry {
 
     /// Hands a check to the worker, which answers on its connection.
     pub(crate) fn ask(&self, ask: Ask) {
-        if let Some(sender) = &self.sender {
-            let _ = sender.send(Message::Ask(Box::new(ask)));
-        }
+        self.send(Message::Ask(Box::new(ask)));
+    }
+
+    /// Hands a wait for events to the worker, which answers on its
+    /// connection when there are some or the wait is over.
+    pub(crate) fn events(&self, wait: Wait) {
+        self.send(Message::Events(Box::new(wait)));
     }
 
     /// What it watches and has answered, a line each.
@@ -117,6 +140,12 @@ impl Sentry {
             .flatten()
             .unwrap_or_else(|| "busy\n".to_owned());
         format!("sentry attached to {}\n{detail}", self.manifest.display())
+    }
+
+    fn send(&self, message: Message) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(message);
+        }
     }
 }
 
@@ -150,12 +179,53 @@ struct Counts {
     last: Option<(Duration, bool)>,
 }
 
+/// Something that happened, kept in the journal under its position.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Event {
+    /// A repository's files changed, so what was kept of it was dropped.
+    Batch { repository: String, paths: usize },
+    /// A check was answered.
+    Answer {
+        command: String,
+        errors: usize,
+        warnings: usize,
+        informational: usize,
+        reused: bool,
+        seconds: f64,
+    },
+}
+
+/// The last answer: what it rested on, its place in the journal, and the
+/// report, or the error the check stopped with.
+struct Kept {
+    fingerprint: u64,
+    position: u64,
+    report: Result<Arc<Report>, String>,
+}
+
+/// The connection of a wait for events, and what it waits for.
+struct Waiting {
+    since: Option<u64>,
+    is_reset: bool,
+    deadline: Instant,
+    json: bool,
+    stream: UnixStream,
+}
+
 struct Worker {
     manifest: PathBuf,
     watched: Vec<Watched>,
     warm: Arc<lemma_graph::Warm>,
-    /// The last answer, and the fingerprint of what it read.
-    last: Option<(u64, Answer)>,
+    /// Names this attachment in tokens, so a token from another is known.
+    instance: String,
+    journal: VecDeque<(u64, Event)>,
+    /// The last position given out.
+    position: u64,
+    last: Option<Kept>,
+    /// Earlier answers by their options, for `--since`.
+    answers: BTreeMap<String, VecDeque<(u64, Arc<Report>)>>,
+    waiting: Vec<Waiting>,
     counts: Counts,
 }
 
@@ -195,7 +265,12 @@ impl Worker {
             manifest,
             watched,
             warm: Arc::default(),
+            instance: instance(),
+            journal: VecDeque::new(),
+            position: 0,
             last: None,
+            answers: BTreeMap::new(),
+            waiting: Vec::new(),
             counts: Counts::default(),
         })
     }
@@ -207,12 +282,14 @@ impl Worker {
                     let Ask { question, stream } = *ask;
                     crate::daemon::reply_answer(stream, &self.respond(&question));
                 }
+                Ok(Message::Events(wait)) => self.wait(*wait),
                 Ok(Message::Status(reply)) => {
                     let _ = reply.send(self.status());
                 }
                 Err(RecvTimeoutError::Timeout) => self.collect(false),
                 Err(RecvTimeoutError::Disconnected) => return,
             }
+            self.serve_waiting();
         }
     }
 
@@ -221,6 +298,7 @@ impl Worker {
     /// made just before the ask counts; between asks only repositories with
     /// reported changes are looked at.
     fn collect(&mut self, confirming: bool) {
+        let mut batches = Vec::new();
         for watched in &mut self.watched {
             let Some(watch) = &mut watched.watch else {
                 // Unwatched: anything may have changed.
@@ -235,9 +313,26 @@ impl Worker {
             if observed.needs_full_walk || !observed.paths.is_empty() {
                 self.warm.forget_working(&watched.root);
                 watched.generation += 1;
-                self.counts.batches += 1;
+                batches.push(Event::Batch {
+                    repository: watched.root.display().to_string(),
+                    paths: observed.paths.len(),
+                });
             }
         }
+        for batch in batches {
+            self.counts.batches += 1;
+            self.record(batch);
+        }
+    }
+
+    /// Keeps `event` in the journal; its position.
+    fn record(&mut self, event: Event) -> u64 {
+        self.position += 1;
+        self.journal.push_back((self.position, event));
+        while self.journal.len() > JOURNAL_LIMIT {
+            self.journal.pop_front();
+        }
+        self.position
     }
 
     /// The answer to `question`: the last one again when nothing it read
@@ -245,42 +340,104 @@ impl Worker {
     fn respond(&mut self, question: &Question) -> Answer {
         let started = Instant::now();
         self.collect(true);
-        let fingerprint = self.fingerprint(question);
-        let kept = self
+        let options = options_key(&question.raw);
+        let fingerprint = self.fingerprint(question, &options);
+        let reused = self
             .last
             .as_ref()
-            .filter(|(seen, _)| *seen == fingerprint)
-            .map(|(_, answer)| answer.clone());
-        let reused = kept.is_some();
-        let answer = kept.unwrap_or_else(|| self.evaluate(question));
+            .is_some_and(|kept| kept.fingerprint == fingerprint);
+        if !reused {
+            let report = self.evaluate(question).map(Arc::new);
+            self.last = Some(Kept {
+                fingerprint,
+                position: 0,
+                report,
+            });
+        }
+        self.account(question, &options, started.elapsed(), reused);
+        self.render(question, &options)
+    }
+
+    /// Counts the answer and keeps it in the journal; a new answer's token
+    /// is its event's place there, and a reused one keeps its token.
+    fn account(&mut self, question: &Question, options: &str, took: Duration, reused: bool) {
         if reused {
             self.counts.reused += 1;
         } else {
-            self.last = Some((fingerprint, answer.clone()));
             self.counts.evaluated += 1;
         }
-        self.counts.last = Some((started.elapsed(), reused));
-        answer
+        self.counts.last = Some((took, reused));
+        let report = self
+            .last
+            .as_ref()
+            .and_then(|kept| kept.report.as_ref().ok())
+            .cloned();
+        let count = |severity: Severity| {
+            report.as_ref().map_or(0, |report| {
+                report
+                    .findings
+                    .iter()
+                    .filter(|finding| finding.severity == severity)
+                    .count()
+            })
+        };
+        let event = Event::Answer {
+            command: question.raw.join(" "),
+            errors: count(Severity::Error),
+            warnings: count(Severity::Warning),
+            informational: count(Severity::Info),
+            reused,
+            seconds: took.as_secs_f64(),
+        };
+        let position = self.record(event);
+        if reused {
+            return;
+        }
+        if let Some(kept) = self.last.as_mut() {
+            kept.position = position;
+        }
+        if let Some(report) = report {
+            let earlier = self.answers.entry(options.to_owned()).or_default();
+            earlier.push_back((position, report));
+            while earlier.len() > ANSWERS_KEPT {
+                earlier.pop_front();
+            }
+        }
     }
 
-    fn evaluate(&self, ask: &Question) -> Answer {
-        let manifest = crate::check::entry_manifest_in(&ask.cwd, &ask.args.manifest);
-        let served = Served {
-            manifest: &manifest,
-            warm: Arc::clone(&self.warm),
-            environment: Arc::new(ask.environment.clone()),
+    /// The last answer, printed for `question`: with its token, and with
+    /// what changed since the answer `--since` names.
+    fn render(&self, question: &Question, options: &str) -> Answer {
+        let Some(kept) = &self.last else {
+            return failed("sentry has no answer");
         };
-        let lsp = LanguageServers {
-            asks_daemon: false,
-            providers_file: None,
+        let report = match &kept.report {
+            Ok(report) => report,
+            Err(error) => return failed(&format!("error: {error}")),
+        };
+        let token = self.token(kept.position);
+        let delta = question.args.since.as_deref().map(|since| Delta {
+            since,
+            changes: self
+                .earlier(since, options)
+                .map(|earlier| changes(earlier, report)),
+        });
+        let note = SentryNote {
+            token: &token,
+            delta,
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut streams = Streams {
             out: &mut out,
             err: &mut err,
         };
-        let exit_code =
-            crate::check::answer(&ask.args, &lsp, ask.json, Some(&served), &mut streams);
+        let exit_code = crate::check::print(
+            report,
+            &question.args,
+            question.json,
+            Some(&note),
+            &mut streams,
+        );
         Answer {
             stdout: String::from_utf8_lossy(&out).into_owned(),
             stderr: String::from_utf8_lossy(&err).into_owned(),
@@ -288,14 +445,55 @@ impl Worker {
         }
     }
 
-    /// What an answer rests on besides the files watched: the command, its
-    /// directory and environment, each repository's generation, the
-    /// workspace's own manifests, and the date (allowances expire).
-    fn fingerprint(&self, ask: &Question) -> u64 {
+    /// The report of the answer `token` names, for the same options, if it
+    /// is kept.
+    fn earlier(&self, token: &str, options: &str) -> Option<&Report> {
+        let position = self.position_of(token)?;
+        self.answers
+            .get(options)?
+            .iter()
+            .find(|(kept, _)| *kept == position)
+            .map(|(_, report)| report.as_ref())
+    }
+
+    fn token(&self, position: u64) -> String {
+        format!("{}-{position}", self.instance)
+    }
+
+    /// The journal position `token` names, if it is this attachment's.
+    fn position_of(&self, token: &str) -> Option<u64> {
+        let (instance, position) = token.rsplit_once('-')?;
+        if instance != self.instance {
+            return None;
+        }
+        position.parse().ok()
+    }
+
+    fn evaluate(&self, question: &Question) -> Result<Report, String> {
+        let manifest = crate::check::entry_manifest_in(&question.cwd, &question.args.manifest);
+        let served = Served {
+            manifest: &manifest,
+            warm: Arc::clone(&self.warm),
+            environment: Arc::new(question.environment.clone()),
+        };
+        let lsp = LanguageServers {
+            asks_daemon: false,
+            providers_file: None,
+        };
+        crate::check::evaluate(&question.args, &lsp, Some(&served))
+            .map_err(|error| format!("{error:#}"))
+    }
+
+    /// What an answer rests on besides the files watched: the command
+    /// (without `--since`), its directory and environment, each
+    /// repository's generation, the workspace's own manifests, and the
+    /// date (allowances expire).
+    fn fingerprint(&self, question: &Question, options: &str) -> u64 {
         let mut hasher = DefaultHasher::new();
-        ask.raw.hash(&mut hasher);
-        ask.cwd.hash(&mut hasher);
-        ask.environment.hash(&mut hasher);
+        options.hash(&mut hasher);
+        question.json.hash(&mut hasher);
+        question.cwd.hash(&mut hasher);
+        question.environment.hash(&mut hasher);
         for watched in &self.watched {
             watched.generation.hash(&mut hasher);
         }
@@ -304,29 +502,87 @@ impl Worker {
         hasher.finish()
     }
 
+    /// Waits for events after `wait.since`, answered at the next turn of
+    /// the loop when there are some or the wait is over.
+    fn wait(&mut self, wait: Wait) {
+        let since = wait.since.as_deref().map(|token| self.position_of(token));
+        let is_reset = matches!(since, Some(None));
+        self.waiting.push(Waiting {
+            since: since.flatten(),
+            is_reset,
+            deadline: Instant::now() + wait.limit,
+            json: wait.json,
+            stream: wait.stream,
+        });
+    }
+
+    /// Answers each wait that has events to see or has waited long enough.
+    fn serve_waiting(&mut self) {
+        let now = Instant::now();
+        let pending = std::mem::take(&mut self.waiting);
+        let (ready, waiting): (Vec<Waiting>, Vec<Waiting>) = pending
+            .into_iter()
+            .partition(|waiting| waiting.deadline <= now || self.has_events_after(waiting.since));
+        self.waiting = waiting;
+        for waiting in ready {
+            let answer = Answer {
+                stdout: self.list_events(&waiting),
+                stderr: String::new(),
+                exit_code: 0,
+            };
+            crate::daemon::reply_answer(waiting.stream, &answer);
+        }
+    }
+
+    fn has_events_after(&self, since: Option<u64>) -> bool {
+        self.journal
+            .back()
+            .is_some_and(|(position, _)| since.is_none_or(|since| *position > since))
+    }
+
+    /// The events after a wait's token, as text or JSON, with the latest
+    /// token.
+    fn list_events(&self, waiting: &Waiting) -> String {
+        let events: Vec<&(u64, Event)> = self
+            .journal
+            .iter()
+            .filter(|(position, _)| waiting.since.is_none_or(|since| *position > since))
+            .collect();
+        let latest = self.token(self.position);
+        if waiting.json {
+            let listed: Vec<serde_json::Value> = events
+                .iter()
+                .map(|(position, event)| {
+                    let mut value = serde_json::to_value(event).unwrap_or_default();
+                    value["token"] = serde_json::Value::String(self.token(*position));
+                    value
+                })
+                .collect();
+            let body = serde_json::json!({
+                "events": listed,
+                "token": latest,
+                "reset": waiting.is_reset,
+            });
+            return format!(
+                "{}\n",
+                serde_json::to_string_pretty(&body).unwrap_or_default()
+            );
+        }
+        let mut text = String::new();
+        if waiting.is_reset {
+            text.push_str("the token is not this sentry's, so every event kept follows\n");
+        }
+        for (position, event) in events {
+            let _ = writeln!(text, "{} {}", self.token(*position), describe(event));
+        }
+        let _ = writeln!(text, "sentry token: {latest}");
+        text
+    }
+
     fn status(&self) -> String {
         let mut text = String::new();
         for watched in &self.watched {
-            let line = match (&watched.watch, &watched.failure) {
-                (Some(watch), _) => match watch.report() {
-                    lemma_index::WatchReport::Watching {
-                        directories: Some(count),
-                    } => format!("  watching {}: {count} directories", watched.root.display()),
-                    lemma_index::WatchReport::Watching { directories: None } => {
-                        format!("  watching {}", watched.root.display())
-                    }
-                    lemma_index::WatchReport::Walking { reason } => {
-                        format!("  not watching {}: {reason}", watched.root.display())
-                    }
-                },
-                (None, failure) => format!(
-                    "  not watching {}: {}",
-                    watched.root.display(),
-                    failure.as_deref().unwrap_or("unknown")
-                ),
-            };
-            text.push_str(&line);
-            text.push('\n');
+            let _ = writeln!(text, "  {}", watch_line(watched));
         }
         let counts = &self.counts;
         let last = counts.last.map_or_else(String::new, |(took, reused)| {
@@ -335,13 +591,125 @@ impl Worker {
         });
         let _ = writeln!(
             text,
-            "  {} checks answered ({} reused){last}; {} batches of changes",
+            "  {} checks answered ({} reused){last}; {} batches of changes; token {}",
             counts.evaluated + counts.reused,
             counts.reused,
-            counts.batches
+            counts.batches,
+            self.token(self.position)
         );
         text
     }
+}
+
+/// A failed answer, saying why.
+fn failed(message: &str) -> Answer {
+    Answer {
+        stdout: String::new(),
+        stderr: format!("{message}\n"),
+        exit_code: 1,
+    }
+}
+
+/// What tells two findings apart for a delta.
+type FindingKey = (Severity, String, String, String, bool);
+
+fn finding_key(finding: &Finding) -> FindingKey {
+    (
+        finding.severity,
+        finding.link.clone(),
+        finding.check.clone(),
+        finding.message.clone(),
+        finding.introduced,
+    )
+}
+
+/// The findings in `now` not in `earlier`, then those in `earlier` gone
+/// from `now`, told apart by severity, link, requirement, message and
+/// whether the change introduced them.
+fn changes<'a>(earlier: &'a Report, now: &'a Report) -> (Vec<&'a Finding>, Vec<&'a Finding>) {
+    let before: BTreeSet<FindingKey> = earlier.findings.iter().map(finding_key).collect();
+    let after: BTreeSet<FindingKey> = now.findings.iter().map(finding_key).collect();
+    let new = now
+        .findings
+        .iter()
+        .filter(|finding| !before.contains(&finding_key(finding)))
+        .collect();
+    let gone = earlier
+        .findings
+        .iter()
+        .filter(|finding| !after.contains(&finding_key(finding)))
+        .collect();
+    (new, gone)
+}
+
+/// The command line without `--since` and its token: answers to it with
+/// any token are one set of options.
+fn options_key(raw: &[String]) -> String {
+    let mut words = Vec::new();
+    let mut skips_next = false;
+    for word in raw {
+        if skips_next {
+            skips_next = false;
+            continue;
+        }
+        if word == "--since" {
+            skips_next = true;
+            continue;
+        }
+        if !word.starts_with("--since=") {
+            words.push(word.as_str());
+        }
+    }
+    words.join("\u{0}")
+}
+
+fn describe(event: &Event) -> String {
+    match event {
+        Event::Batch { repository, paths } => format!("changed {repository} ({paths} paths)"),
+        Event::Answer {
+            command,
+            errors,
+            warnings,
+            informational,
+            reused,
+            seconds,
+        } => {
+            let how = if *reused { "reused" } else { "checked" };
+            format!(
+                "lemma {command}: {errors} errors, {warnings} warnings, {informational} \
+                 informational ({how} in {seconds:.2}s)"
+            )
+        }
+    }
+}
+
+fn watch_line(watched: &Watched) -> String {
+    let root = watched.root.display();
+    match (&watched.watch, &watched.failure) {
+        (Some(watch), _) => match watch.report() {
+            lemma_index::WatchReport::Watching {
+                directories: Some(count),
+            } => format!("watching {root}: {count} directories"),
+            lemma_index::WatchReport::Watching { directories: None } => format!("watching {root}"),
+            lemma_index::WatchReport::Walking { reason } => {
+                format!("not watching {root}: {reason}")
+            }
+        },
+        (None, failure) => format!(
+            "not watching {root}: {}",
+            failure.as_deref().unwrap_or("unknown")
+        ),
+    }
+}
+
+/// A name for this attachment, different each time sentry attaches.
+fn instance() -> String {
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let mut hasher = DefaultHasher::new();
+    (started, std::process::id()).hash(&mut hasher);
+    format!("{:08x}", hasher.finish() & 0xffff_ffff)
 }
 
 /// A watcher for the repository at `root` (canonical), leaving out the
@@ -512,6 +880,30 @@ mod tests {
         }
     }
 
+    /// The answer without the token line sentry adds under a report.
+    fn without_token(answer: &Answer) -> Answer {
+        let mut stdout = String::new();
+        for line in answer.stdout.lines() {
+            if !line.starts_with("sentry token: ") {
+                stdout.push_str(line);
+                stdout.push('\n');
+            }
+        }
+        Answer {
+            stdout,
+            ..answer.clone()
+        }
+    }
+
+    fn token_of(answer: &Answer) -> String {
+        answer
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("sentry token: "))
+            .unwrap()
+            .to_owned()
+    }
+
     #[test]
     fn sentry_answers_as_a_fresh_check_reusing_an_answer_only_while_nothing_changes() {
         let root = tempfile::tempdir().unwrap();
@@ -527,10 +919,47 @@ mod tests {
         let after_edit = worker.respond(&asked);
         let fresh_after_edit = fresh(&asked);
 
-        assert_eq!(first, fresh_first);
+        assert_eq!(without_token(&first), fresh_first);
         assert_eq!(again, first);
-        assert_eq!(after_edit, fresh_after_edit);
+        assert_eq!(without_token(&after_edit), fresh_after_edit);
         assert_ne!(after_edit, first);
         assert_eq!((worker.counts.evaluated, worker.counts.reused), (2, 1));
+    }
+
+    #[test]
+    fn a_check_since_a_token_lists_what_came_and_went() {
+        let root = tempfile::tempdir().unwrap();
+        shop(root.path());
+        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let asked = question(root.path());
+        let token = token_of(&worker.respond(&asked));
+
+        let removed = SPEC.replace(r#""/v1/charges""#, r#""/v1/payments""#);
+        write(&root.path().join("billing/openapi.json"), &removed);
+        let mut since = question(root.path());
+        since.args.since = Some(token.clone());
+        since.raw.extend(["--since".to_owned(), token.clone()]);
+        let delta = worker.respond(&since);
+        let waiting = Waiting {
+            since: worker.position_of(&token),
+            is_reset: false,
+            deadline: Instant::now(),
+            json: false,
+            stream: UnixStream::pair().unwrap().0,
+        };
+        let events = worker.list_events(&waiting);
+
+        assert!(
+            delta
+                .stdout
+                .starts_with(&format!("since {token}: 2 new, 0 gone\n"))
+        );
+        assert!(delta.stdout.contains("new  error   #web"));
+        assert_eq!(delta.exit_code, 4);
+        assert!(events.contains("changed "), "{events}");
+        assert!(
+            events.contains("lemma check --change billing --since"),
+            "{events}"
+        );
     }
 }

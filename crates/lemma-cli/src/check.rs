@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use lemma_graph::config::Level;
 use lemma_graph::{
-    Change, CheckOptions, GraphError, Impact, InferredLink, LinkList, Report, Severity,
+    Change, CheckOptions, Finding, GraphError, Impact, InferredLink, LinkList, Report, Severity,
 };
 use lemma_logic::ReferenceEngine;
 use lemma_souffle::SouffleEngine;
@@ -34,7 +34,15 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
         out: &mut stdout,
         err: &mut stderr,
     };
-    ExitCode::from(answer(args, lsp, json, None, &mut streams))
+    let exit_code = answer(args, lsp, json, None, &mut streams);
+    if args.since.is_some() {
+        let _ = writeln!(
+            streams.err,
+            "--since needs the daemon's sentry attached to this workspace \
+             (`lemma daemon sentry start`); the whole report is above"
+        );
+    }
+    ExitCode::from(exit_code)
 }
 
 /// Where a check prints its report and its errors.
@@ -60,25 +68,70 @@ pub(crate) fn answer(
     served: Option<&Served<'_>>,
     streams: &mut Streams<'_>,
 ) -> u8 {
+    match evaluate(args, lsp, served) {
+        Ok(report) => print(&report, args, json, None, streams),
+        Err(error) => {
+            let _ = writeln!(streams.err, "error: {error:#}");
+            1
+        }
+    }
+}
+
+/// The report of the check `args` ask for.
+pub(crate) fn evaluate(
+    args: &CheckArgs,
+    lsp: &LanguageServers,
+    served: Option<&Served<'_>>,
+) -> anyhow::Result<Report> {
     let options = options(args, served);
     let manifest = served.map_or_else(
         || entry_manifest(&args.manifest),
         |served| served.manifest.to_path_buf(),
     );
-    let report = match check(&manifest, args, &options, lsp) {
-        Ok(report) => report,
-        Err(error) => {
-            let _ = writeln!(streams.err, "error: {error:#}");
-            return 1;
-        }
-    };
+    check(&manifest, args, &options, lsp)
+}
+
+/// What sentry adds to a report it answers with: the token naming the
+/// answer, and, when the check asked `--since` an earlier one, what changed.
+pub(crate) struct SentryNote<'a> {
+    pub token: &'a str,
+    pub delta: Option<Delta<'a>>,
+}
+
+/// The findings that came and went since an earlier answer with the same
+/// options, or `None` in `changes` when that answer is not kept.
+pub(crate) struct Delta<'a> {
+    pub since: &'a str,
+    pub changes: Option<(Vec<&'a Finding>, Vec<&'a Finding>)>,
+}
+
+/// Prints `report` to `streams` as text or JSON, with sentry's note when it
+/// answered; the exit code: 4 when a finding is an error.
+pub(crate) fn print(
+    report: &Report,
+    args: &CheckArgs,
+    json: bool,
+    note: Option<&SentryNote<'_>>,
+    streams: &mut Streams<'_>,
+) -> u8 {
     let out = &mut *streams.out;
-    let printed = if json {
-        serde_json::to_writer_pretty(&mut *out, &report)
+    let printed = match (json, note) {
+        (true, None) => serde_json::to_writer_pretty(&mut *out, report)
             .map_err(std::io::Error::other)
-            .and_then(|()| writeln!(out))
-    } else {
-        print_text(out, &report, args.all)
+            .and_then(|()| writeln!(out)),
+        (true, Some(note)) => print_json_noted(out, report, note),
+        (
+            false,
+            Some(SentryNote {
+                token,
+                delta: Some(delta),
+            }),
+        ) if delta.changes.is_some() => print_delta(out, report, delta, args.all)
+            .and_then(|()| writeln!(out, "sentry token: {token}")),
+        (false, note) => print_text(out, report, args.all).and_then(|()| match note {
+            Some(note) => print_note(out, note),
+            None => Ok(()),
+        }),
     };
     if printed.is_err() {
         return 1;
@@ -88,6 +141,72 @@ pub(crate) fn answer(
         .iter()
         .any(|finding| finding.severity == Severity::Error);
     if violated { EXIT_VIOLATED } else { 0 }
+}
+
+/// The token line under a whole report, saying first when `--since` asked
+/// for an answer that is not kept.
+fn print_note(out: &mut dyn Write, note: &SentryNote<'_>) -> std::io::Result<()> {
+    if let Some(delta) = &note.delta {
+        writeln!(
+            out,
+            "since {}: not kept, so the whole report is above",
+            delta.since
+        )?;
+    }
+    writeln!(out, "sentry token: {}", note.token)
+}
+
+/// What changed since an earlier answer: the findings that came and went,
+/// then the counts of the whole report.
+fn print_delta(
+    out: &mut dyn Write,
+    report: &Report,
+    delta: &Delta<'_>,
+    all: bool,
+) -> std::io::Result<()> {
+    let Some((new, gone)) = &delta.changes else {
+        return Ok(());
+    };
+    writeln!(
+        out,
+        "since {}: {} new, {} gone",
+        delta.since,
+        new.len(),
+        gone.len()
+    )?;
+    for finding in new {
+        write!(out, "new  ")?;
+        print_finding(out, finding, all)?;
+    }
+    for finding in gone {
+        write!(out, "gone ")?;
+        print_finding(out, finding, all)?;
+    }
+    print_counts(out, report, all)
+}
+
+/// The report as JSON, with a `sentry` object: the token, and what changed
+/// since the answer `--since` named.
+fn print_json_noted(
+    out: &mut dyn Write,
+    report: &Report,
+    note: &SentryNote<'_>,
+) -> std::io::Result<()> {
+    let mut value = serde_json::to_value(report).map_err(std::io::Error::other)?;
+    let mut sentry = serde_json::json!({ "token": note.token });
+    if let Some(delta) = &note.delta {
+        sentry["since"] = match &delta.changes {
+            Some((new, gone)) => {
+                serde_json::json!({ "token": delta.since, "kept": true, "new": new, "gone": gone })
+            }
+            None => serde_json::json!({ "token": delta.since, "kept": false }),
+        };
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert("sentry".to_owned(), sentry);
+    }
+    serde_json::to_writer_pretty(&mut *out, &value).map_err(std::io::Error::other)?;
+    writeln!(out)
 }
 
 /// What to check, from the command's arguments.
@@ -204,6 +323,39 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
         print_link_list(out, list, all)?;
     }
     print_behaviors(out, report)?;
+    for finding in &report.findings {
+        if finding.severity == Severity::Info && !all {
+            continue;
+        }
+        print_finding(out, finding, all)?;
+    }
+    print_counts(out, report, all)
+}
+
+/// One finding: its severity and message, then its requirement, link and
+/// whether the change introduced it, then what it affects.
+fn print_finding(out: &mut dyn Write, finding: &Finding, all: bool) -> std::io::Result<()> {
+    let label = match finding.severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "info",
+    };
+    let origin = if finding.introduced {
+        "introduced"
+    } else {
+        "already there"
+    };
+    writeln!(out, "{label:<7} {}", finding.message)?;
+    writeln!(
+        out,
+        "        [{}] {}  ({origin})",
+        finding.check, finding.link
+    )?;
+    print_affects(out, &finding.affects, all)
+}
+
+/// The counts of errors, warnings and informational findings.
+fn print_counts(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Result<()> {
     let count = |severity: Severity| {
         report
             .findings
@@ -211,28 +363,6 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
             .filter(|finding| finding.severity == severity)
             .count()
     };
-    for finding in &report.findings {
-        if finding.severity == Severity::Info && !all {
-            continue;
-        }
-        let label = match finding.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-            Severity::Info => "info",
-        };
-        let origin = if finding.introduced {
-            "introduced"
-        } else {
-            "already there"
-        };
-        writeln!(out, "{label:<7} {}", finding.message)?;
-        writeln!(
-            out,
-            "        [{}] {}  ({origin})",
-            finding.check, finding.link
-        )?;
-        print_affects(out, &finding.affects, all)?;
-    }
     let infos = count(Severity::Info);
     let hidden = if all || infos == 0 {
         ""
