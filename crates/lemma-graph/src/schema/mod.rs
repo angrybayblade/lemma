@@ -237,6 +237,14 @@ impl Reads {
         found
     }
 
+    /// Whether a run read the text of `file` in the working directory of
+    /// the repository at `repository`.
+    pub(crate) fn has_text(&self, repository: &Path, file: &str) -> bool {
+        self.texts.keys().any(|(root, commit, read)| {
+            commit.is_none() && read == file && same_path(root, repository)
+        })
+    }
+
     /// Each interpreter asked, with the stamp it had when last asked.
     pub(crate) fn interpreter_stamps(&self) -> BTreeMap<String, String> {
         self.interpreters

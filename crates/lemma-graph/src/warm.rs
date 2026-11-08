@@ -17,11 +17,19 @@ use crate::schema;
 /// directory) and command.
 pub(crate) type Outputs = BTreeMap<(String, String, String), Arc<serde_json::Value>>;
 
+/// The operations one document declares.
+pub(crate) type Documented = Arc<BTreeMap<String, crate::config::Operation>>;
+
+/// How many documents' operations are kept.
+const DOCUMENTS_KEPT: usize = 64;
+
 /// Reads kept from one check for the next. One check uses it at a time.
 #[derive(Default)]
 pub struct Warm {
     verify: Arc<lemma_verify::Warm>,
     kept: Mutex<Option<(schema::Reads, Outputs)>>,
+    /// The operations of documents, by name and contents: never stale.
+    documented: Mutex<BTreeMap<(String, String), Documented>>,
 }
 
 /// Two are equal only if they are the same: what they hold is a cache.
@@ -68,6 +76,43 @@ impl Warm {
                 !commit.is_empty() || !schema::same_path(Path::new(root), repository)
             });
         }
+    }
+
+    /// Whether a check can depend on `path` in the repository at
+    /// `repository`. Test code and prose are read by no check unless a
+    /// description names them, and then the last check has read them; a
+    /// schema or adapter command is taken not to depend on them.
+    pub fn can_depend_on(&self, repository: &Path, path: &str) -> bool {
+        let is_test_code = lemma_http::is_test_file(path) && lemma_verify::is_code_path(path);
+        let is_prose = [".md", ".mdx", ".rst"]
+            .iter()
+            .any(|extension| path.ends_with(extension));
+        if !is_test_code && !is_prose {
+            return true;
+        }
+        self.verify.has_read(repository, path)
+            || self
+                .lock()
+                .as_ref()
+                .is_some_and(|(reads, _)| reads.has_text(repository, path))
+    }
+
+    pub(crate) fn documented(&self, key: &(String, String)) -> Option<Documented> {
+        self.documents().get(key).cloned()
+    }
+
+    pub(crate) fn keep_documented(&self, key: (String, String), operations: Documented) {
+        let mut documents = self.documents();
+        if documents.len() >= DOCUMENTS_KEPT {
+            documents.clear();
+        }
+        documents.insert(key, operations);
+    }
+
+    fn documents(&self) -> std::sync::MutexGuard<'_, BTreeMap<(String, String), Documented>> {
+        self.documented
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Each interpreter the kept reads asked, with the stamp it had then:

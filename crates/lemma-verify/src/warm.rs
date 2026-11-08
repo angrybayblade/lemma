@@ -62,10 +62,18 @@ impl Warm {
         }
     }
 
+    /// Whether the last run read `file` from the working directory of the
+    /// repository at `repository`.
+    pub fn has_read(&self, repository: &Path, file: &str) -> bool {
+        self.lock()
+            .as_ref()
+            .is_some_and(|memo| memo.has_read(repository, file))
+    }
+
     /// Gets the repository at `repository` ready for the next run, after
     /// `changed` changed: lists its working directory and parses the code
     /// among `changed` as the last run read it. Nothing is evaluated. How
-    /// many files were parsed.
+    /// many files' facts are now known.
     pub fn prepare(&self, repository: &Path, changed: &[String]) -> usize {
         let Ok(listing) = self.listings.get(repository, None) else {
             return 0;

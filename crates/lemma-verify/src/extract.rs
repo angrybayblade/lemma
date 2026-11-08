@@ -92,6 +92,7 @@ pub fn extract_all(
     extractor.readings = memo.readings;
     let specs = SpecCache {
         read: RefCell::new(memo.specs),
+        parsed: RefCell::new(memo.parsed),
         listings: Arc::clone(listings),
         blobs: RefCell::new(memo.blobs),
         on_disk: RefCell::new(memo.on_disk),
@@ -100,6 +101,7 @@ pub fn extract_all(
     if let Some(warm) = warm {
         warm.put(Memo {
             specs: specs.read.into_inner(),
+            parsed: within_limit(specs.parsed.into_inner()),
             blobs: specs.blobs.into_inner(),
             on_disk: specs.on_disk.into_inner(),
             facts: std::mem::take(&mut extractor.read),
@@ -630,6 +632,8 @@ type SpecKey = (PathBuf, Option<String>, Option<Option<String>>, String);
 #[derive(Default)]
 struct SpecCache {
     read: RefCell<BTreeMap<SpecKey, Vec<Operation>>>,
+    /// The operations of each document parsed, by its format and contents.
+    parsed: RefCell<ParsedDocuments>,
     /// Each repository's files at a commit or in its working directory.
     listings: Arc<lemma_http::Listings>,
     /// Files read at a commit, by repository, commit and path: the entries
@@ -646,6 +650,7 @@ struct SpecCache {
 #[derive(Default)]
 pub(crate) struct Memo {
     specs: BTreeMap<SpecKey, Vec<Operation>>,
+    parsed: ParsedDocuments,
     blobs: BTreeMap<(PathBuf, String, String), Arc<SourceFile>>,
     on_disk: BTreeMap<(PathBuf, String), Arc<SourceFile>>,
     facts: BTreeMap<String, Arc<CodeFacts>>,
@@ -658,6 +663,22 @@ pub(crate) struct Memo {
 /// The ways a working directory was read, by repository and options as
 /// text.
 type Readings = BTreeMap<(PathBuf, String), CodeOptions>;
+
+/// The operations of documents parsed, by format and contents, so a
+/// document that did not change is not parsed again. Never stale: the key
+/// is the document.
+type ParsedDocuments = BTreeMap<String, Vec<Operation>>;
+
+/// How many parsed documents a long-lived process keeps.
+const PARSED_DOCUMENTS_KEPT: usize = 64;
+
+/// `parsed`, or nothing once it has outgrown what is worth keeping.
+fn within_limit(parsed: ParsedDocuments) -> ParsedDocuments {
+    if parsed.len() > PARSED_DOCUMENTS_KEPT {
+        return ParsedDocuments::new();
+    }
+    parsed
+}
 
 impl Memo {
     /// Drops what was read from the working directory of the repository at
@@ -684,10 +705,18 @@ impl Memo {
         });
     }
 
+    /// Whether the last run read `file` from the working directory of the
+    /// repository at `repository`.
+    pub(crate) fn has_read(&self, repository: &Path, file: &str) -> bool {
+        self.on_disk
+            .keys()
+            .any(|(path, read)| read == file && crate::warm::same_path(path, repository))
+    }
+
     /// Reads `files` of the repository at `repository` as it was last
     /// read, so their facts are known when a check asks for them; how many
-    /// were parsed. A file that cannot be read is left for that check to
-    /// report.
+    /// files' facts were parsed or found kept. A file that cannot be read
+    /// is left for that check to report.
     pub(crate) fn parse_changed(&mut self, repository: &Path, files: &[ListedFile]) -> usize {
         let readings: Vec<(PathBuf, CodeOptions)> = self
             .readings
@@ -704,7 +733,7 @@ impl Memo {
             let _ = reader.read(path, None, files, options);
         }
         self.facts = std::mem::take(&mut reader.read);
-        reader.counts.parsed
+        reader.counts.parsed + reader.counts.kept
     }
 }
 
@@ -717,7 +746,7 @@ pub(crate) fn is_at_or_below(path: &str, changed: &str) -> bool {
 }
 
 /// Whether a path names code Lemma extracts facts from.
-pub(crate) fn is_code_path(path: &str) -> bool {
+pub fn is_code_path(path: &str) -> bool {
     let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
     CODE_EXTENSIONS.contains(&extension)
 }
@@ -2096,6 +2125,10 @@ fn read_spec_operations(
         return Ok(Vec::new());
     };
     let is_yaml = generated.is_none() && lemma_http::is_yaml_document(spec);
+    let key = format!("{is_yaml}{}", lemma_model::content_hash(text.as_bytes()));
+    if let Some(found) = snapshot.specs.parsed.borrow().get(&key) {
+        return Ok(found.clone());
+    }
     let document: serde_json::Value = if is_yaml {
         yaml_serde::from_str(&text).map_err(|source| VerifyError::YamlSpec {
             file: spec.to_owned(),
@@ -2107,7 +2140,13 @@ fn read_spec_operations(
             source,
         })?
     };
-    Ok(lemma_http::operations(&document))
+    let operations = lemma_http::operations(&document);
+    snapshot
+        .specs
+        .parsed
+        .borrow_mut()
+        .insert(key, operations.clone());
+    Ok(operations)
 }
 
 /// A file at the snapshot's commit, or at the change's other commit if the

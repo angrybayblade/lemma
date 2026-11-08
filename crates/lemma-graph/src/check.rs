@@ -1404,7 +1404,7 @@ pub(crate) fn load(
     let mut repos = load_manifests(root_file, options)?;
     for repo in repos.values_mut() {
         for (file, checkout) in repo.files.iter_mut().zip(&repo.checkouts) {
-            add_documented_operations(file, checkout)?;
+            add_documented_operations(file, checkout, options.warm.as_deref())?;
         }
     }
     for (owner, service, route) in routes_named(&repos) {
@@ -1716,7 +1716,11 @@ fn read_language_manifest(
 /// Adds every operation a local service's `OpenAPI` documents declare, at
 /// the checkout, to its operations; one declared by name in `lemma.yaml`
 /// wins. A document missing at the checkout adds nothing.
-fn add_documented_operations(file: &mut LemmaFile, checkout: &Checkout) -> Result<(), GraphError> {
+fn add_documented_operations(
+    file: &mut LemmaFile,
+    checkout: &Checkout,
+    warm: Option<&crate::Warm>,
+) -> Result<(), GraphError> {
     for (name, service) in &mut file.services {
         if name.starts_with('#') {
             continue;
@@ -1725,17 +1729,43 @@ fn add_documented_operations(file: &mut LemmaFile, checkout: &Checkout) -> Resul
             let Some(text) = checkout.read(document_file)? else {
                 continue;
             };
-            let document: serde_json::Value =
-                serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
-                    command: format!("reading {document_file}"),
-                    source,
-                })?;
-            for (id, operation) in crate::openapi::operations(document_file, &document) {
-                service.exports.operations.entry(id).or_insert(operation);
+            let documented = documented_operations(document_file, &text, warm)?;
+            for (id, operation) in documented.iter() {
+                service
+                    .exports
+                    .operations
+                    .entry(id.clone())
+                    .or_insert_with(|| operation.clone());
             }
         }
     }
     Ok(())
+}
+
+/// The operations the document `text` declares; kept in `warm`, if given,
+/// by the document's name and contents, since it can run to megabytes.
+fn documented_operations(
+    document_file: &str,
+    text: &str,
+    warm: Option<&crate::Warm>,
+) -> Result<crate::warm::Documented, GraphError> {
+    let key = (
+        document_file.to_owned(),
+        lemma_model::content_hash(text.as_bytes()),
+    );
+    if let Some(found) = warm.and_then(|warm| warm.documented(&key)) {
+        return Ok(found);
+    }
+    let document: serde_json::Value =
+        serde_json::from_str(text).map_err(|source| GraphError::ResolverOutput {
+            command: format!("reading {document_file}"),
+            source,
+        })?;
+    let operations = Arc::new(crate::openapi::operations(document_file, &document));
+    if let Some(warm) = warm {
+        warm.keep_documented(key, Arc::clone(&operations));
+    }
+    Ok(operations)
 }
 
 /// Every link in every repository's `graph` at head, with addresses made

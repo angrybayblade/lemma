@@ -177,8 +177,11 @@ struct Watched {
     watch: Option<lemma_index::Watch>,
     /// Why it is not watched, when watching failed.
     failure: Option<String>,
-    /// Bumped whenever its files may have changed.
+    /// Bumped whenever a file a check can depend on may have changed.
     generation: u64,
+    /// Bumped when only files no check reads changed. Those matter only to
+    /// an answer that ran a behavior, whose checker can read anything.
+    unread_generation: u64,
     /// Changes not prepared yet.
     unprepared: Option<Unprepared>,
 }
@@ -206,6 +209,15 @@ impl Watched {
             return None;
         }
         let changed = relative_paths(&self.root, &observed.paths);
+        let is_unread = !observed.needs_full_walk
+            && !changed.is_empty()
+            && !changed
+                .iter()
+                .any(|path| warm.can_depend_on(&self.root, path));
+        if is_unread {
+            self.unread_generation += 1;
+            return None;
+        }
         if observed.needs_full_walk {
             warm.forget_working(&self.root);
         } else {
@@ -263,7 +275,7 @@ fn relative_paths(root: &Path, paths: &std::collections::HashSet<PathBuf>) -> Ve
 struct Counts {
     batches: u64,
     prepared: u64,
-    parsed_ahead: usize,
+    read_ahead: usize,
     evaluated: u64,
     reused: u64,
     last: Option<(Duration, bool)>,
@@ -287,13 +299,26 @@ enum Event {
 }
 
 /// An answer held ready: its place in the journal, when it was last given,
-/// the interpreters it read, and the report, or the error the check stopped
-/// with.
+/// the interpreters it read, the changes to unread files it has seen, and
+/// the report, or the error the check stopped with.
 struct Kept {
     position: u64,
     last_given: u64,
     interpreters: BTreeMap<String, String>,
+    unread_generations: u64,
     report: Result<Arc<Report>, String>,
+}
+
+impl Kept {
+    /// Whether it still holds, beyond the fingerprint it is held under.
+    fn holds(&self, unread_generations: u64) -> bool {
+        let ran_behavior = self
+            .report
+            .as_ref()
+            .is_ok_and(|report| !report.behaviors.is_empty());
+        lemma_graph::Warm::stamps_hold(&self.interpreters)
+            && (!ran_behavior || self.unread_generations == unread_generations)
+    }
 }
 
 /// One ask being answered: what was asked, the options that name it, and
@@ -420,7 +445,7 @@ impl Worker {
                 continue;
             };
             let changed: Vec<String> = unprepared.paths.into_iter().collect();
-            self.counts.parsed_ahead += self.warm.verify().prepare(&watched.spelled, &changed);
+            self.counts.read_ahead += self.warm.verify().prepare(&watched.spelled, &changed);
             self.counts.prepared += 1;
         }
     }
@@ -477,10 +502,11 @@ impl Worker {
             options,
             fingerprint,
         };
+        let unread_generations: u64 = self.watched.iter().map(|one| one.unread_generation).sum();
         let reused = self
             .held
             .get(&fingerprint)
-            .is_some_and(|kept| lemma_graph::Warm::stamps_hold(&kept.interpreters));
+            .is_some_and(|kept| kept.holds(unread_generations));
         if !reused {
             let report = self.evaluate(question).map(Arc::new);
             self.held.insert(
@@ -489,6 +515,7 @@ impl Worker {
                     position: 0,
                     last_given: 0,
                     interpreters: self.warm.interpreter_stamps(),
+                    unread_generations,
                     report,
                 },
             );
@@ -751,12 +778,12 @@ impl Worker {
         let _ = writeln!(
             text,
             "  {} checks answered ({} reused){last}; {} batches of changes, {} prepared with {} \
-             files parsed ahead; token {}",
+             files read ahead; token {}",
             counts.evaluated + counts.reused,
             counts.reused,
             counts.batches,
             counts.prepared,
-            counts.parsed_ahead,
+            counts.read_ahead,
             self.token(self.position)
         );
         text
@@ -892,6 +919,7 @@ fn watch(root: PathBuf, spelled: PathBuf, inner: &[PathBuf]) -> Watched {
         watch,
         failure,
         generation: 0,
+        unread_generation: 0,
         unprepared: None,
     }
 }
@@ -1129,16 +1157,18 @@ mod tests {
 
     /// `billing` with a Python operation read through the interpreter at
     /// `.venv/bin/python`, which `web` links to.
-    fn python_shop(root: &Path) {
+    fn python_shop(root: &Path, handlers: &str) {
         let billing = root.join("billing");
         write(&billing.join(".gitignore"), ".venv/\n");
         write(
-            &billing.join("api.py"),
+            &billing.join(handlers),
             "class Req:\n    id: str\n\ndef charge(r: Req) -> Req:\n    return r\n",
         );
         write(
             &billing.join("mod.lm"),
-            "module billing\n\nimport * as python from lemma.python\n\nlet handlers = python.file(\"api.py\")\n\nexport service api {\n    runtime: { python: \".venv/bin/python\" }\n    index: { include: [\"api.py\"] }\n\n    export operation charge {\n        implementation: handlers.symbol(\"charge\")\n        request: handlers.type(\"Req\")\n        response: handlers.type(\"Req\")\n    }\n}\n",
+            &format!(
+                "module billing\n\nimport * as python from lemma.python\n\nlet handlers = python.file(\"{handlers}\")\n\nexport service api {{\n    runtime: {{ python: \".venv/bin/python\" }}\n    index: {{ include: [\"{handlers}\"] }}\n\n    export operation charge {{\n        implementation: handlers.symbol(\"charge\")\n        request: handlers.type(\"Req\")\n        response: handlers.type(\"Req\")\n    }}\n}}\n"
+            ),
         );
         let interpreter = billing.join(".venv/bin/python");
         // One that cannot import Pydantic, so types are read by Tree-sitter.
@@ -1174,7 +1204,7 @@ mod tests {
     #[test]
     fn an_installed_package_keeps_sentry_from_giving_an_answer_again() {
         let root = tempfile::tempdir().unwrap();
-        python_shop(root.path());
+        python_shop(root.path(), "api.py");
         let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
         let asked = question(root.path());
 
@@ -1210,6 +1240,41 @@ mod tests {
 
         assert_eq!(again, first);
         assert_eq!((worker.counts.evaluated, worker.counts.reused), (2, 2));
+    }
+
+    #[test]
+    fn an_edit_to_a_file_no_check_reads_gives_the_answer_again() {
+        let root = tempfile::tempdir().unwrap();
+        shop(root.path());
+        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let asked = question(root.path());
+        let first = worker.respond(&asked);
+
+        write(&root.path().join("web/src/charge.test.ts"), "// a test\n");
+        write(&root.path().join("web/README.md"), "# web\n");
+        let again = worker.respond(&asked);
+
+        assert_eq!(again, first);
+        assert_eq!(without_token(&again), fresh(&asked));
+        assert_eq!((worker.counts.evaluated, worker.counts.reused), (1, 1));
+    }
+
+    #[test]
+    fn a_test_file_a_description_names_is_still_read() {
+        let root = tempfile::tempdir().unwrap();
+        python_shop(root.path(), "src/tests/handlers.py");
+        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let asked = question(root.path());
+        worker.respond(&asked);
+
+        write(
+            &root.path().join("billing/src/tests/handlers.py"),
+            "class Req:\n    id: int\n\ndef charge(r: Req) -> Req:\n    return r\n",
+        );
+        let after_edit = worker.respond(&asked);
+
+        assert_eq!(worker.counts.evaluated, 2);
+        assert_eq!(without_token(&after_edit), fresh(&asked));
     }
 
     /// What a seeded sequence of changes does to a workspace: the things a
@@ -1314,8 +1379,23 @@ mod tests {
             format!("included {include}")
         }
 
+        fn edit_test_file(&mut self) -> String {
+            let call = self.call();
+            write(&self.path("web/src/charge.test.ts"), &call);
+            "edited a test file".to_owned()
+        }
+
+        fn edit_prose(&mut self) -> String {
+            self.written += 1;
+            write(
+                &self.path("web/README.md"),
+                &format!("# {}\n", self.written),
+            );
+            "edited prose".to_owned()
+        }
+
         fn apply(&mut self) -> String {
-            match self.next(11) {
+            match self.next(13) {
                 0 | 1 => self.change_document("billing/openapi.json"),
                 2 => self.change_document("billing/.config/extra.json"),
                 3 | 4 => self.change_call(),
@@ -1324,6 +1404,8 @@ mod tests {
                 7 => self.rename_directory(),
                 8 => self.commit("web"),
                 9 => self.check_out_first_commit("billing"),
+                10 => self.edit_test_file(),
+                11 => self.edit_prose(),
                 _ => self.change_include(),
             }
         }
@@ -1355,11 +1437,11 @@ mod tests {
         }
     }
 
-    /// Runs the worker's turns until it has parsed a file ahead, for a
+    /// Runs the worker's turns until it has read a file ahead, for a
     /// busy machine's late reports; gives up after ten seconds.
-    fn settle_until_parsed(worker: &mut Worker) {
+    fn settle_until_read_ahead(worker: &mut Worker) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while worker.counts.parsed_ahead == 0 && Instant::now() < deadline {
+        while worker.counts.read_ahead == 0 && Instant::now() < deadline {
             settle(worker);
         }
     }
@@ -1376,11 +1458,11 @@ mod tests {
             &root.path().join("web/src/charge.ts"),
             "export async function charge() {\n  return fetch(\"/v1/payments\", { method: \"POST\" });\n}\n",
         );
-        settle_until_parsed(&mut worker);
-        let parsed_ahead = worker.counts.parsed_ahead;
+        settle_until_read_ahead(&mut worker);
+        let read_ahead = worker.counts.read_ahead;
         let answer = worker.respond(&asked);
 
-        assert_eq!(parsed_ahead, 1);
+        assert!(read_ahead >= 1);
         assert_eq!(without_token(&answer), fresh(&asked));
     }
 

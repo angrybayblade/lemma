@@ -23,7 +23,7 @@ use std::sync::Arc;
 use lemma_grammar::{CompiledGrammar, Severity};
 use lemma_logic::{Derivation, Engine, EvaluationError, Fact, Request, Symbols, Value};
 
-pub use extract::operation_key;
+pub use extract::{is_code_path, operation_key};
 pub use manifest::{Change, GeneratedDocument, Manifest, Repository, Role};
 pub use warm::Warm;
 
