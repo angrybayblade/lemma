@@ -106,6 +106,8 @@ Rollout step 0 replaces the recursive watcher per indexed directory with one wat
 - **Only what Lemma reads.** Sentry watches directories in the index's selection, with ignore files respected. It also watches Git's metadata: `HEAD`, the refs, `index.lock`, rebase and merge state, and, for a worktree, the directory its `.git` file names.
   - A directory created later is watched when it appears, if it is selected.
   - `node_modules`, `.venv` and build output are not watched. Their changes do not change what a check reads today either, because resolver outputs are cached by the repository's Git state, which ignores them.
+  - Hidden directories Git does not ignore are watched too, such as `.github`, because a check reads what Git lists. `.git` is followed separately, and `.lemma` never is, since a check writes to it.
+  - A package installed into a virtual environment is not seen as a file change. An answer records the stamps of the interpreters it read, and is given again only while they hold.
 - **Events are hints.** Before an ask, the watcher's barrier confirms that every change made before the ask has been reported. The barrier writes a marker file and waits for its event; reports arrive in order, so every earlier change has been seen. Reported paths are then read and hashed again. A full walk of the repository happens at the next ask when:
   - an event was lost;
   - the queue filled up (`IN_Q_OVERFLOW`);
@@ -227,6 +229,8 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 - Seeded randomized sequences add what replays miss: edits and reverts, a Git checkout mid-sequence, a deleted directory, and simulated lost events.
 - Resource tests check that watches and descriptors return to their baseline after detaching, and after a workspace is deleted.
 
+**Landed, 2026-11-08.** A seeded sequence in `sentry.rs` compares every answer with a check run with nothing kept, and fails if hidden directories go unwatched. The private gate makes each case's change in the working tree of an attached workspace and compares JSON reports. On the final build it ran 384 cases (54 replays, 120 asks on mutations, 180 seeded steps, 20 asks on fixtures, 10 on 10k and 100k systems), plus 214 on the build before preparation: no differences, and every case answered by sentry. Lost events and resource limits are not simulated yet.
+
 ## Rollout
 
 0. **Watcher.** This step is worth doing even without sentry.
@@ -251,6 +255,14 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 4. **An agent benchmark round** of verification-mode agents with and without sentry.
    - Each run gets its own daemon, through its own `TMPDIR`: the daemon's socket lives there, and a daemon attaches only one workspace.
    - Compare time and cost with the same agents before sentry.
+
+   **Ran, 2026-11-08 (build 8541531).** Agents with sentry took no less time and cost no less than agents without it. Time spent in checks fell slightly, and the model took most of every run in both arms. Differences in how many runs were done right are not attributed to sentry: some of the misses came from the benchmark's permissions blocking a code generator.
+
+5. **After that round.**
+   - One answer is held per ask, up to 16, instead of only the last.
+   - A batch drops only the files it touched. Once changes settle, it lists the repository and parses the changed code as the last check read it, and attaching lists each repository. Nothing is evaluated ahead of an ask. Changes settle after 200 ms, or at 2 s; a batch of more than 1,000 paths, or one that lost events, only lists.
+
+   On a five-repository workspace, an ask after an edit takes a median of 1.9 s against 2.7 s for a fresh check, and 2.1 s before this work. An unchanged ask takes 0.01 s. Whether the batch had settled makes no measurable difference (1.94 s settled, 1.92 s raced), since parsing one file takes milliseconds; the gain comes from keeping what did not change. A traced ask after an edit (2.0 s) spends 0.23 s composing manifests, 0.13 s on declared links, 0.28 s before listing, 0.23 s reading documents, 0.08 s on services and clients, 0.25 s in the reference engine, 0.39 s choosing consumer files and reading their facts, and 0.34 s in Soufflé. Preparation covers listings and facts only: the fast and slow batches of section 1, cancellation, and keeping composed manifests and documents are not built. Keeping manifests and documents across batches that do not touch them would save about a quarter of such an ask, and a batch of files no check reads (editing a test file cost 1.8 s) may not need an evaluation at all. On a generated 100k-file system the first ask after attaching took 16 s and the first after an edit 11 s (a fresh check, run second, took 0.5 s and 2.4 s), and later asks about 1.4 s, so the memory it fills is paid for once per attachment.
 
 **Later:**
 
