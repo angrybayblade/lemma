@@ -535,6 +535,8 @@ impl Engine {
     /// workspace's own index has no source snapshot.
     fn index_of_file(&mut self, db_path: PathBuf, file: &Path) -> anyhow::Result<FileIndex> {
         let members = open_store(&mut self.stores, &db_path)?.workspace_members()?;
+        let in_member = file_in_one_member(&members, &db_path, file);
+        let file = in_member.as_deref().unwrap_or(file);
         if let Some((member, relative)) = member_file(&members, file) {
             let member_db = PathBuf::from(&member.database);
             let store = open_store(&mut self.stores, &member_db)?;
@@ -551,6 +553,17 @@ impl Engine {
                 relative,
                 member: Some(member.name.clone()),
             });
+        }
+        if let Some(first) = members.first() {
+            bail!(
+                "{} is in no repository of this workspace: name a file from the workspace \
+                 directory, such as `{}/...`, or from inside one repository when only it has it",
+                file.display(),
+                Path::new(&first.root).file_name().map_or_else(
+                    || first.name.clone(),
+                    |name| name.to_string_lossy().into_owned()
+                )
+            );
         }
         let (_, snapshot) = index_at(&mut self.stores, &db_path)?;
         let relative = relative_to_root(&snapshot, file)?;
@@ -1959,6 +1972,23 @@ fn member_file<'m>(members: &'m [StoredMember], file: &Path) -> Option<(&'m Stor
         .map(|(_, member, relative)| (member, relative))
 }
 
+/// A path written from a workspace directory as if from inside one of its
+/// members (`python/app.py` for `billing/python/app.py`), when the
+/// workspace has no such file and exactly one member does.
+fn file_in_one_member(members: &[StoredMember], db_path: &Path, file: &Path) -> Option<PathBuf> {
+    if members.is_empty() || file.exists() {
+        return None;
+    }
+    let workspace = db_path.parent()?.parent()?;
+    let relative = file.strip_prefix(workspace).ok()?;
+    let mut found = members
+        .iter()
+        .map(|member| Path::new(&member.root).join(relative))
+        .filter(|candidate| candidate.exists());
+    let first = found.next()?;
+    found.next().is_none().then_some(first)
+}
+
 fn relative_to_root(snapshot: &StoredSnapshot, file: &Path) -> anyhow::Result<String> {
     let file = file
         .canonicalize()
@@ -2237,6 +2267,37 @@ mod tests {
         assert_eq!(inside("#platform:apps"), Some(Some("apps".to_owned())));
         assert_eq!(inside("apps/api"), None);
         assert_eq!(inside("platforms"), None);
+    }
+
+    #[test]
+    fn a_path_from_inside_one_member_is_found_from_the_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let db_path = workspace.path().join(".lemma/index.db");
+        let member = |name: &str| {
+            let root = workspace.path().join(name);
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            StoredMember {
+                name: format!("#{name}"),
+                root: root.display().to_string(),
+                revision: None,
+                indexed_root: root.display().to_string(),
+                database: String::new(),
+            }
+        };
+        let members = [member("web"), member("api")];
+        std::fs::write(workspace.path().join("api/src/app.py"), "").unwrap();
+        std::fs::write(workspace.path().join("web/src/main.ts"), "").unwrap();
+        std::fs::write(workspace.path().join("api/src/main.ts"), "").unwrap();
+        let from_workspace =
+            |path: &str| file_in_one_member(&members, &db_path, &workspace.path().join(path));
+
+        assert_eq!(
+            from_workspace("src/app.py"),
+            Some(workspace.path().join("api/src/app.py"))
+        );
+        assert_eq!(from_workspace("src/main.ts"), None);
+        assert_eq!(from_workspace("api/src/app.py"), None);
+        assert_eq!(from_workspace("src/gone.py"), None);
     }
 
     #[test]
