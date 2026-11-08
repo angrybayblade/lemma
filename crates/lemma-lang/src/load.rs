@@ -66,6 +66,27 @@ pub struct Repository {
 pub struct SourceError {
     /// What went wrong, in a sentence.
     pub message: String,
+    /// Whether the repository is known but cannot be read here, which is
+    /// not a fault in the program.
+    pub is_unavailable: bool,
+}
+
+impl SourceError {
+    /// A failure to read, with what went wrong in a sentence.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            is_unavailable: false,
+        }
+    }
+
+    /// A repository that is declared but not here, and may not be fetched.
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            is_unavailable: true,
+        }
+    }
 }
 
 /// Reads module texts. The command line reads working trees and commits;
@@ -104,6 +125,17 @@ pub struct Loaded {
     pub repositories: BTreeMap<String, Repository>,
     /// Problems reading and parsing.
     pub diagnostics: Vec<Diagnostic>,
+    /// The repositories declared but not here. Names imported from them are
+    /// unknown rather than wrong.
+    pub unavailable: BTreeSet<String>,
+}
+
+impl Loaded {
+    /// Whether `module` is in a repository that is not here.
+    pub fn is_unavailable(&self, module: &str) -> bool {
+        let repository = module.split('.').next().unwrap_or(module);
+        self.unavailable.contains(repository)
+    }
 }
 
 /// Loads the program whose entry module is the file `entry_path` of the
@@ -311,6 +343,10 @@ impl Loader<'_> {
             match self.sources.read(repository, &path) {
                 Ok(Some(text)) => found.push((path, text)),
                 Ok(None) => {}
+                Err(error) if error.is_unavailable => {
+                    self.loaded.unavailable.insert(repository.name.clone());
+                    return None;
+                }
                 Err(error) => {
                     self.report_at(request.from.as_ref(), error.to_string());
                     return None;

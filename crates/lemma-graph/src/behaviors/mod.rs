@@ -295,7 +295,10 @@ impl Program {
             })
             .collect();
         let parent = &repos[SELF].checkouts[snapshot];
-        let mut sources = CheckoutSources::new(parent.clone(), cache).with_pins(pins.clone());
+        let mut sources = CheckoutSources::new(parent.clone(), cache)
+            .with_pins(pins.clone())
+            // Loading already cloned whatever the command may clone.
+            .with_cloning(crate::repos::Cloning::Forbidden);
         let checked = lemma_lang::check_program_including(&mut sources, manifest, &[HTTP]);
         let errors = checked.stopping_error_lines();
         if !errors.is_empty() {

@@ -90,6 +90,7 @@ fn found(workspace: &Path) -> Vec<String> {
             }),
             level: Some(Level::Check),
             cache: workspace.join("cache"),
+            cloning: lemma_graph::repos::Cloning::Allowed,
             facts_cache: None,
             evaluation,
             list_links: false,

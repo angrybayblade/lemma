@@ -167,7 +167,7 @@ A `git(...)` repository that is not in the clone cache follows the `clone` setti
 
 Answering no behaves as `"never"` for that run. `"never"` also forbids fetching a revision the cache lacks. It governs both places a repository is cloned, so `lemma index` and `lemma check` agree.
 
-Only `lemma index` and `lemma check` clone or ask. Queries and MCP tools refresh the index constantly and have no terminal, so to them a repository not yet cloned is unavailable: they answer from the last index and warn. `lemma index` runs in the daemon, which has no terminal, so the client asks before handing over.
+Of the `lemma` commands, only `lemma index` and `lemma check` run from a terminal or script clone or ask. Queries and MCP tools have no one to ask, and a symbol search must not start a clone, so to them a repository not yet cloned is unavailable: they answer from the last index and warn. `lm check` and editors read `git(...)` repositories as they always have. `lemma index` runs in the daemon, which has no terminal, so the client asks before handing over.
 
 **Stopping at the repositories it has.** Names imported from an unavailable `git(...)` repository take the type-checker's unknown type instead of being errors. The description still loads, so `index.include` and the repository's own exports hold. Links reaching the absent repository are reported as not checked, by count and repository. A workspace checks the members it has and lists the rest. A `--change` naming an unavailable member is an error, since that is the one thing asked about.
 

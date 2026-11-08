@@ -47,6 +47,52 @@ struct ConfigFile {
     daemon: DaemonSection,
     #[serde(default)]
     servers: ServersSection,
+    #[serde(default)]
+    repositories: RepositoriesSection,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RepositoriesSection {
+    clone: Option<ClonePolicy>,
+}
+
+/// Whether `lemma index` and `lemma check` fetch a `git(...)` repository that
+/// is not in the clone cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ClonePolicy {
+    /// Ask in an interactive terminal, and clone otherwise.
+    #[default]
+    Ask,
+    /// Clone without asking.
+    Always,
+    /// Never clone: stop at the repositories that are here.
+    Never,
+}
+
+/// The clone policy for a description in `directory`: its
+/// `.lemma/config.toml`, then the user's config file.
+pub(crate) fn clone_policy(directory: &Path) -> anyhow::Result<ClonePolicy> {
+    let local = directory.join(".lemma").join("config.toml");
+    if let Some(policy) = repositories_clone(&local)? {
+        return Ok(policy);
+    }
+    let Some(global) = config_path() else {
+        return Ok(ClonePolicy::default());
+    };
+    Ok(repositories_clone(&global)?.unwrap_or_default())
+}
+
+fn repositories_clone(path: &Path) -> anyhow::Result<Option<ClonePolicy>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text =
+        fs::read_to_string(path).with_context(|| format!("could not read {}", path.display()))?;
+    let file: ConfigFile =
+        toml::from_str(&text).with_context(|| format!("invalid {}", path.display()))?;
+    Ok(file.repositories.clone)
 }
 
 #[derive(Deserialize, Default)]

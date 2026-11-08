@@ -296,6 +296,34 @@ fn default_branches(root: &Path) -> Vec<String> {
     branches
 }
 
+/// Whether `url` at `reference` is in the clone cache.
+pub fn is_cloned(url: &str, reference: Option<&str>, cache: &Path) -> bool {
+    let directory = cache.join("repos").join(sanitize(url));
+    directory.exists() && resolve_commit(&directory, reference.unwrap_or("HEAD")).is_ok()
+}
+
+/// Whether a command may clone or fetch a repository it does not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Cloning {
+    /// It may.
+    #[default]
+    Allowed,
+    /// It works with what is in the clone cache, and says what is missing.
+    Forbidden,
+}
+
+/// A repository named by `git(...)` that is not in the clone cache and may
+/// not be fetched.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub struct UnavailableRepository {
+    /// Its name, as loading names it: `#billing`.
+    pub name: String,
+    /// Where it can be cloned from.
+    pub url: String,
+    /// The commit, branch or tag it is pinned to.
+    pub reference: Option<String>,
+}
+
 /// The local clone of a `git` source, cloned into `cache` on first use and
 /// fetched when `reference` is not there yet.
 pub fn clone_remote(

@@ -303,6 +303,7 @@ impl Checker<'_> {
 
     fn entry_value(&mut self, module: &str, entry: &Entry, span: Span) -> Evaluated {
         match entry {
+            Entry::Unavailable(address) => (Type::Unknown, Some(Value::Service(address.clone()))),
             Entry::Namespace(name) => (Type::Namespace(name.clone()), None),
             Entry::Builtin(index) => (
                 Type::Function(Box::new(self.builtins[*index].signature.clone())),
@@ -540,6 +541,10 @@ impl Checker<'_> {
             self.export_of(module, name, &mut std::collections::BTreeSet::new())
         };
         let Some(entry) = entry else {
+            if self.loaded.is_unavailable(module) {
+                let address = Address::top(module, name);
+                return (Type::Unknown, Some(Value::Service(address)));
+            }
             self.error(
                 context.module,
                 span,
@@ -559,6 +564,9 @@ impl Checker<'_> {
         span: Span,
     ) -> Evaluated {
         let Some(&service_id) = self.by_address.get(service) else {
+            if context.is_link_end && self.loaded.is_unavailable(&service.module) {
+                return operation_of(service, name);
+            }
             return (Type::Unknown, None);
         };
         let member = self

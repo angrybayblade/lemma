@@ -10,7 +10,7 @@ use lemma_lang::load::{Repository, RepositorySource, SourceError, Sources};
 
 use crate::GraphError;
 use crate::config::LemmaFile;
-use crate::repos::{Checkout, clone_remote};
+use crate::repos::{Checkout, Cloning, clone_remote, is_cloned};
 
 /// Module texts from checkouts: the entry repository's, and each pinned
 /// repository's, found from its `repo` declaration.
@@ -26,6 +26,7 @@ pub struct CheckoutSources<'c> {
     /// Repositories a composition already pinned, which win over the pins
     /// the modules declare, as a parent's do in `lemma.yaml`.
     pins: BTreeMap<String, Checkout>,
+    cloning: Cloning,
 }
 
 impl<'c> CheckoutSources<'c> {
@@ -38,7 +39,15 @@ impl<'c> CheckoutSources<'c> {
             checkouts: BTreeMap::new(),
             overlay: BTreeMap::new(),
             pins: BTreeMap::new(),
+            cloning: Cloning::Allowed,
         }
+    }
+
+    /// The same sources, cloning repositories only as `cloning` says.
+    #[must_use]
+    pub fn with_cloning(mut self, cloning: Cloning) -> Self {
+        self.cloning = cloning;
+        self
     }
 
     /// The same sources, reading the repositories in `pins` where a
@@ -94,6 +103,13 @@ impl<'c> CheckoutSources<'c> {
                 }
             }
             RepositorySource::Git { url, rev, .. } => {
+                if self.cloning == Cloning::Forbidden && !is_cloned(url, rev.as_deref(), self.cache)
+                {
+                    return Err(SourceError::unavailable(format!(
+                        "repository `{}` is not cloned",
+                        repository.name
+                    )));
+                }
                 let root = clone_remote(url, rev.as_deref(), self.cache)
                     .map_err(|error| source_error(&error))?;
                 Checkout {
@@ -139,9 +155,7 @@ impl Sources for CheckoutSources<'_> {
 }
 
 fn source_error(error: &GraphError) -> SourceError {
-    SourceError {
-        message: error.to_string(),
-    }
+    SourceError::new(error.to_string())
 }
 
 /// `a/b/../c` as `a/c`, without touching the file system.
@@ -166,8 +180,11 @@ pub fn read_manifest(
     manifest: &str,
     cache: &Path,
     pins: &BTreeMap<String, Checkout>,
+    cloning: Cloning,
 ) -> Result<LemmaFile, GraphError> {
-    let mut sources = CheckoutSources::new(checkout.clone(), cache).with_pins(pins.clone());
+    let mut sources = CheckoutSources::new(checkout.clone(), cache)
+        .with_pins(pins.clone())
+        .with_cloning(cloning);
     let checked = check_program(&mut sources, manifest);
     let path = checkout.root.join(manifest);
     let errors = checked.stopping_error_lines();
@@ -213,7 +230,7 @@ mod tests {
             },
         )]);
 
-        let file = read_manifest(&entry, "mod.lm", directory.path(), &pins);
+        let file = read_manifest(&entry, "mod.lm", directory.path(), &pins, Cloning::Allowed);
 
         assert!(file.is_ok(), "{file:?}");
     }

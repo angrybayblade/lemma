@@ -171,17 +171,15 @@ impl Engine {
     ) -> anyhow::Result<u8> {
         let request = Request::new(&cli, invocation);
         match cli.command {
-            Command::Index { path, keep, ttl } => {
-                let retention = lemma_index::retention::Retention {
-                    keep,
-                    ttl: crate::duration::parse_duration(&ttl)?,
-                };
-                self.index(
-                    &request,
-                    &invocation.resolve(&path),
-                    Indexing::Command(retention),
-                    out,
-                )
+            Command::Index {
+                path,
+                keep,
+                ttl,
+                no_clone,
+            } => {
+                let path = invocation.resolve(&path);
+                let indexing = command_indexing(keep, &ttl, no_clone, &path)?;
+                self.index(&request, &path, indexing, out)
             }
             Command::Symbols(args) => {
                 self.refresh_index(&request, Indexing::FilesOnly, out)?;
@@ -282,7 +280,7 @@ impl Engine {
         let (root, lemma_path) = selection::locate(path)?;
         let source = lemma_path
             .as_deref()
-            .map(selection::read_description)
+            .map(|file| selection::read_description(file, indexing.cloning()))
             .transpose()?;
         if let (Some(source), Some(lemma_path)) = (&source, &lemma_path) {
             if selection::is_workspace(source) {
@@ -298,7 +296,7 @@ impl Engine {
             return Ok(0);
         }
         let indexed = self.index_repository(&db_path, &root, source.as_ref())?;
-        if let Indexing::Command(retention) = indexing {
+        if let Indexing::Command(retention, _) = indexing {
             self.apply_retention(&db_path, &root, retention)?;
         }
         let mut warnings: Vec<String> = source
@@ -318,7 +316,7 @@ impl Engine {
             let summary = &indexed.summary;
             // A query's refresh starts no servers: the query starts the one it
             // needs.
-            if matches!(indexing, Indexing::Command(_)) {
+            if matches!(indexing, Indexing::Command(..)) {
                 let languages: Vec<Language> = summary.files_by_language.keys().copied().collect();
                 self.warm_up(&db_path, &root, &languages, &origin)?;
             }
@@ -395,7 +393,9 @@ impl Engine {
     ) -> anyhow::Result<u8> {
         let root = lemma_path.parent().unwrap_or(Path::new("."));
         let cache = lemma_graph::repos::cache_directory();
-        let members = lemma_graph::compose::members(lemma_path, &cache)?;
+        let composition =
+            lemma_graph::compose::composition(lemma_path, &cache, indexing.cloning())?;
+        let members = composition.members;
         if matches!(indexing, Indexing::FilesOnly) {
             for member in &members {
                 let indexed_root = member_root(member, &cache)?;
@@ -407,10 +407,16 @@ impl Engine {
         let mut workspace = WorkspaceIndex::default();
         for member in &members {
             let result = self.index_member(member, &cache);
-            if let (Ok(_), Indexing::Command(retention)) = (&result, indexing) {
+            if let (Ok(_), Indexing::Command(retention, _)) = (&result, indexing) {
                 self.apply_retention(&default_index_path(&member.root)?, &member.root, retention)?;
             }
             workspace.record(member, result)?;
+        }
+        for missing in &composition.unavailable {
+            workspace.lines.push(output::MemberLine::skipped(
+                &missing.name,
+                format!("not cloned ({})", missing.url),
+            ));
         }
         let db_path = match &request.db {
             Some(db) => db.clone(),
@@ -1195,8 +1201,9 @@ fn refresh_for(target: &SymbolTarget) -> Indexing {
 #[derive(Clone, Copy)]
 enum Indexing {
     /// `lemma index`: drops snapshots `retention` no longer keeps, and in the
-    /// daemon starts language servers for what it indexed.
-    Command(Retention),
+    /// daemon starts language servers for what it indexed. Only this may
+    /// clone a repository, as the `Cloning` says.
+    Command(Retention, lemma_graph::repos::Cloning),
     /// Before a query: indexes changed files and nothing more, keeping
     /// whatever snapshots the last `lemma index` kept.
     Refresh,
@@ -1205,6 +1212,31 @@ enum Indexing {
     /// a changed file would run. The next query that reads them updates
     /// them.
     FilesOnly,
+}
+
+/// How `lemma index` on `path` indexes.
+fn command_indexing(
+    keep: usize,
+    ttl: &str,
+    no_clone: bool,
+    path: &Path,
+) -> anyhow::Result<Indexing> {
+    let retention = lemma_index::retention::Retention {
+        keep,
+        ttl: crate::duration::parse_duration(ttl)?,
+    };
+    let cloning = crate::cloning::permitted(no_clone, path)?;
+    Ok(Indexing::Command(retention, cloning))
+}
+
+impl Indexing {
+    /// Whether this indexing may clone: a query must never start one.
+    fn cloning(self) -> lemma_graph::repos::Cloning {
+        match self {
+            Indexing::Command(_, cloning) => cloning,
+            Indexing::Refresh | Indexing::FilesOnly => lemma_graph::repos::Cloning::Forbidden,
+        }
+    }
 }
 
 /// What indexing one repository produced.
@@ -1297,6 +1329,7 @@ fn update_exports(
     // Read every time: a document kept for the code as it is costs a file
     // read, and its warnings are shown on every index, not only the one
     // that rebuilt the exports.
+    warnings.extend(selection::not_cloned_warnings(source));
     let from_code = documents_from_code(source, root, &mut warnings);
     let from_code_digests: Vec<String> = from_code
         .iter()
@@ -1787,7 +1820,12 @@ fn is_composed_as(root: &Path, name: &str) -> bool {
         })
         .filter(|file| file.exists());
     for manifest in manifests {
-        let Ok(members) = lemma_graph::compose::members(&manifest, &cache) else {
+        let composition = lemma_graph::compose::composition(
+            &manifest,
+            &cache,
+            lemma_graph::repos::Cloning::Forbidden,
+        );
+        let Ok(lemma_graph::compose::Composition { members, .. }) = composition else {
             continue;
         };
         let member = members

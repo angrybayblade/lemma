@@ -33,12 +33,10 @@ impl WorkingTrees {
             declaring_file,
         } = source
         else {
-            return Err(SourceError {
-                message: format!(
-                    "repository `{}` comes from git, which only `lemma check` clones",
-                    repository.name
-                ),
-            });
+            return Err(SourceError::new(format!(
+                "repository `{}` comes from git, which only `lemma check` clones",
+                repository.name
+            )));
         };
         let base = self.roots.get(declared_in).unwrap_or(&self.root);
         let directory = Path::new(declaring_file).parent().unwrap_or(Path::new(""));
@@ -54,9 +52,10 @@ impl Sources for WorkingTrees {
         match std::fs::read_to_string(&file) {
             Ok(text) => Ok(Some(text)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(SourceError {
-                message: format!("cannot read {}: {error}", file.display()),
-            }),
+            Err(error) => Err(SourceError::new(format!(
+                "cannot read {}: {error}",
+                file.display()
+            ))),
         }
     }
 }

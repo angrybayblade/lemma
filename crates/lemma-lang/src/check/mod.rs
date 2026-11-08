@@ -207,6 +207,8 @@ impl NodeRef<'_> {
 /// What a name in scope is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Entry {
+    /// A name imported from a repository that is not here.
+    Unavailable(Address),
     Declaration(DeclarationId),
     Namespace(String),
     Builtin(usize),
@@ -436,6 +438,9 @@ impl<'a> Checker<'a> {
     fn import_into(&mut self, scope: &mut Scope, module: &str, import: &ast::Import) {
         let source = import.module.dotted();
         if !self.loaded.modules.contains_key(&source) {
+            if self.loaded.is_unavailable(&source) {
+                self.bind_unavailable(scope, module, &source, &import.selection);
+            }
             return;
         }
         self.refer(module, import.module.span, Target::Module(source.clone()));
@@ -447,6 +452,29 @@ impl<'a> Checker<'a> {
             ImportSelection::Names(names) => {
                 for name in names {
                     self.import_name(scope, module, &source, name);
+                }
+            }
+        }
+    }
+
+    /// Binds what `selection` imports from a module that is not here, so
+    /// that using those names is not reported as a mistake.
+    fn bind_unavailable(
+        &mut self,
+        scope: &mut Scope,
+        module: &str,
+        source: &str,
+        selection: &ImportSelection,
+    ) {
+        match selection {
+            ImportSelection::Module => {}
+            ImportSelection::Namespace(alias) => {
+                self.bind_import(scope, module, alias, Entry::Namespace(source.to_owned()));
+            }
+            ImportSelection::Names(names) => {
+                for name in names {
+                    let address = Address::top(source, &name.name.text);
+                    self.bind_import(scope, module, name.local(), Entry::Unavailable(address));
                 }
             }
         }
@@ -527,6 +555,7 @@ impl<'a> Checker<'a> {
         let target = match entry {
             Entry::Declaration(id) => Target::Declaration(self.declarations[*id].address.clone()),
             Entry::Namespace(name) => Target::Module(name.clone()),
+            Entry::Unavailable(address) => Target::Module(address.module.clone()),
             Entry::Builtin(index) => builtin_target(&self.builtins[*index]),
         };
         self.refer(module, span, target);
@@ -606,6 +635,7 @@ impl<'a> Checker<'a> {
         match entry {
             Entry::Declaration(id) => self.declarations[*id].node.kind().to_owned(),
             Entry::Namespace(module) => format!("module {module}"),
+            Entry::Unavailable(address) => format!("not here: {}", address.module),
             Entry::Builtin(_) => "function".to_owned(),
         }
     }

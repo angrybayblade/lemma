@@ -182,3 +182,137 @@ fn change_finds_a_repository_by_its_directory() {
 
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
 }
+
+/// A repository holding one operation, cloned nowhere yet; its URL.
+fn remote_billing(root: &Path) -> String {
+    let billing = root.join("remote/billing");
+    write(
+        &billing.join("src/charges.ts"),
+        "export function createCharge() {}\nexport function refund() {}\n",
+    );
+    write(&billing.join("mod.lm"), BILLING);
+    commit_all(&billing);
+    format!("file://{}", billing.display())
+}
+
+/// `web` linked to billing, named by `source` in its `repo` line.
+fn web_importing(root: &Path, source: &str) -> std::path::PathBuf {
+    let web = root.join("web");
+    write(&web.join("src/calls.ts"), "export function call() {}\n");
+    let text = caller("web", "create_charge").replace("local(\"../billing\")", source);
+    write(&web.join("mod.lm"), &text);
+    commit_all(&web);
+    web
+}
+
+fn git_source(url: &str) -> String {
+    format!("git(url: \"{url}\", rev: \"HEAD\")")
+}
+
+#[test]
+fn a_missing_local_repository_is_an_error() {
+    let scratch = tempfile::tempdir().unwrap();
+    let web = web_importing(scratch.path(), "local(\"../nowhere\")");
+
+    let output = lemma(&web, &["check", "mod.lm", "--no-daemon"]);
+
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output));
+}
+
+#[test]
+fn without_a_terminal_a_git_repository_is_cloned_by_default() {
+    let scratch = tempfile::tempdir().unwrap();
+    let url = remote_billing(scratch.path());
+    let web = web_importing(scratch.path(), &git_source(&url));
+
+    let output = lemma(&web, &["check", "mod.lm", "--no-daemon"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+}
+
+#[test]
+fn never_cloning_checks_what_is_here_and_exits_incomplete() {
+    let scratch = tempfile::tempdir().unwrap();
+    let url = remote_billing(scratch.path());
+    let web = web_importing(scratch.path(), &git_source(&url));
+    write(
+        &web.join(".lemma/config.toml"),
+        "[repositories]\nclone = \"never\"\n",
+    );
+
+    let output = lemma(&web, &["check", "mod.lm", "--no-daemon"]);
+
+    assert_eq!(output.status.code(), Some(5), "{}", text(&output));
+    assert!(
+        text(&output).contains("not checked: 1 links to #billing"),
+        "{}",
+        text(&output)
+    );
+}
+
+#[test]
+fn no_clone_stops_at_what_is_here_too() {
+    let scratch = tempfile::tempdir().unwrap();
+    let url = remote_billing(scratch.path());
+    let web = web_importing(scratch.path(), &git_source(&url));
+
+    let output = lemma(&web, &["check", "mod.lm", "--no-daemon", "--no-clone"]);
+
+    assert_eq!(output.status.code(), Some(5), "{}", text(&output));
+}
+
+#[test]
+fn a_change_naming_a_repository_that_is_not_here_is_an_error() {
+    let scratch = tempfile::tempdir().unwrap();
+    let url = remote_billing(scratch.path());
+    let web = web_importing(scratch.path(), &git_source(&url));
+
+    let output = lemma(
+        &web,
+        &[
+            "check",
+            "mod.lm",
+            "--no-daemon",
+            "--no-clone",
+            "--change",
+            "billing",
+            "--base",
+            "HEAD",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output));
+    assert!(text(&output).contains("not cloned"), "{}", text(&output));
+}
+
+#[test]
+fn an_index_that_may_not_clone_keeps_what_the_description_says() {
+    let scratch = tempfile::tempdir().unwrap();
+    let url = remote_billing(scratch.path());
+    let web = web_importing(scratch.path(), &git_source(&url));
+    write(&web.join("scripts/seed.ts"), "export const seed = 1;\n");
+
+    let output = lemma(&web, &["index", "--no-clone"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    assert!(
+        text(&output).contains("#billing is not cloned"),
+        "{}",
+        text(&output)
+    );
+    assert!(text(&output).contains("1 files"), "{}", text(&output));
+}
+
+#[test]
+fn a_query_does_not_clone() {
+    let scratch = tempfile::tempdir().unwrap();
+    let url = remote_billing(scratch.path());
+    let web = web_importing(scratch.path(), &git_source(&url));
+    let first = lemma(&web, &["index", "--no-clone"]);
+    assert_eq!(first.status.code(), Some(0), "{}", text(&first));
+
+    let output = lemma(&web, &["symbols", "call"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    assert!(!scratch.path().join("web/.cache/lemma/repos").exists());
+}

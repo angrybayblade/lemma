@@ -16,31 +16,24 @@ use crate::cli::CheckArgs;
 
 /// Exit code when a finding is an error.
 const EXIT_VIOLATED: u8 = 4;
+/// Exit code when the check finished without covering every repository.
+const EXIT_INCOMPLETE: u8 = 5;
 
 pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCode {
-    let change = args.change.as_ref().map(|repository| Change {
-        repository: repository.clone(),
-        base: args.base.clone(),
-        head: args.head.clone(),
-    });
-    let options = CheckOptions {
-        change,
-        level: args.level.as_deref().map(|level| match level {
-            "check" => Level::Check,
-            "strict" => Level::Strict,
-            _ => Level::Audit,
-        }),
-        cache: lemma_graph::repos::cache_directory(),
-        facts_cache: crate::verify::facts_cache(),
-        evaluation: match args.evaluation.as_deref() {
-            Some("full") => lemma_verify::Evaluation::Full,
-            _ => lemma_verify::Evaluation::Demand,
-        },
-        list_links: args.links,
-        run_checkers: !args.no_run,
-        runs_base_checkers: args.run_base,
-        select: args.select.clone(),
+    let directory = args.manifest.parent().unwrap_or(Path::new(""));
+    let directory = if directory.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        directory
     };
+    let cloning = match crate::cloning::permitted(args.no_clone, directory) {
+        Ok(cloning) => cloning,
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let options = check_options(args, cloning);
     let report = match check(args, &options, lsp) {
         Ok(report) => report,
         Err(error) => {
@@ -59,11 +52,50 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
     if printed.is_err() {
         return ExitCode::FAILURE;
     }
+    ExitCode::from(exit_code(&report))
+}
+
+/// The command's exit code: findings first, then whether it covered all.
+fn exit_code(report: &Report) -> u8 {
     let violated = report
         .findings
         .iter()
         .any(|finding| finding.severity == Severity::Error);
-    ExitCode::from(if violated { EXIT_VIOLATED } else { 0 })
+    if violated {
+        return EXIT_VIOLATED;
+    }
+    if report.not_checked.is_empty() {
+        return 0;
+    }
+    EXIT_INCOMPLETE
+}
+
+/// What `args` ask to check.
+fn check_options(args: &CheckArgs, cloning: lemma_graph::repos::Cloning) -> CheckOptions {
+    let change = args.change.as_ref().map(|repository| Change {
+        repository: repository.clone(),
+        base: args.base.clone(),
+        head: args.head.clone(),
+    });
+    CheckOptions {
+        change,
+        level: args.level.as_deref().map(|level| match level {
+            "check" => Level::Check,
+            "strict" => Level::Strict,
+            _ => Level::Audit,
+        }),
+        cache: lemma_graph::repos::cache_directory(),
+        cloning,
+        facts_cache: crate::verify::facts_cache(),
+        evaluation: match args.evaluation.as_deref() {
+            Some("full") => lemma_verify::Evaluation::Full,
+            _ => lemma_verify::Evaluation::Demand,
+        },
+        list_links: args.links,
+        run_checkers: !args.no_run,
+        runs_base_checkers: args.run_base,
+        select: args.select.clone(),
+    }
 }
 
 /// Where `--anchors` gets language servers from.
@@ -76,7 +108,7 @@ pub(crate) struct LanguageServers {
 
 /// The manifest to start from: `mod.lm` when the default `lemma.yaml` is
 /// absent and it is there.
-fn entry_manifest(manifest: &Path) -> PathBuf {
+pub(crate) fn entry_manifest(manifest: &Path) -> PathBuf {
     let is_default = manifest == Path::new("lemma.yaml");
     let language = manifest.with_file_name("mod.lm");
     if is_default && !manifest.exists() && language.exists() {
@@ -168,6 +200,7 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
         )?;
         print_affects(out, &finding.affects, all)?;
     }
+    print_not_checked(out, report)?;
     let infos = count(Severity::Info);
     let hidden = if all || infos == 0 {
         ""
@@ -426,6 +459,17 @@ fn plural(count: usize, noun: &str) -> String {
     } else {
         format!("{count} {noun}s")
     }
+}
+
+fn print_not_checked(out: &mut dyn Write, report: &Report) -> std::io::Result<()> {
+    for skipped in &report.not_checked {
+        writeln!(
+            out,
+            "not checked: {} links to {} (not cloned)",
+            skipped.links, skipped.repository
+        )?;
+    }
+    Ok(())
 }
 
 fn print_repositories(out: &mut dyn Write, report: &Report) -> std::io::Result<()> {

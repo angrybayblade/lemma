@@ -52,6 +52,9 @@ pub(crate) enum Command {
         /// keep in each repository's index, most recently indexed first.
         #[arg(long, default_value_t = 5)]
         keep: usize,
+        /// Never clone a repository: stop at those that are here.
+        #[arg(long)]
+        no_clone: bool,
         /// How long a pinned commit's snapshot is kept after it was last
         /// indexed: `14d`, `12h`, or `never` to keep it until `--keep`
         /// pushes it out.
@@ -126,6 +129,10 @@ pub(crate) struct CheckArgs {
     /// The parent lemma.yaml, which composes the repositories to check.
     #[arg(default_value = "lemma.yaml")]
     pub manifest: PathBuf,
+    /// Never clone a repository: check those that are here, and exit 5 if
+    /// that is not all of them.
+    #[arg(long)]
+    pub no_clone: bool,
     /// The repository that changed, as the workspace names it (`billing`;
     /// `#billing` in a lemma.yaml), or `self` for the workspace's own
     /// repository.

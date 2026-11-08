@@ -34,8 +34,8 @@ use std::path::{Path, PathBuf};
 
 pub use anchors::{References, Uses};
 pub use check::{
-    Change, CheckOptions, Finding, Impact, InferredLink, LinkList, Report, ResolvedRepository,
-    Severity, check,
+    Change, CheckOptions, Finding, Impact, InferredLink, LinkList, NotChecked, Report,
+    ResolvedRepository, Severity, check,
 };
 pub use trace::{Reached, SystemTrace, TraceCaches, trace_through_system};
 
@@ -230,6 +230,12 @@ pub enum GraphError {
     /// The change names a repository the workspace does not compose.
     #[error("the change names `{name}`, which the workspace does not compose")]
     UnknownRepository {
+        /// The name.
+        name: String,
+    },
+    /// The change names a repository that is not cloned here.
+    #[error("the change names `{name}`, which is not cloned here")]
+    UnavailableRepository {
         /// The name.
         name: String,
     },

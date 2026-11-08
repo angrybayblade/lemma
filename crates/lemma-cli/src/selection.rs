@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use lemma_graph::config::{LEMMA_FILE, LemmaFile, Service};
-use lemma_graph::repos::{Checkout, cache_directory};
+use lemma_graph::repos::{Checkout, Cloning, cache_directory, is_cloned};
 use lemma_index::{RuleSpec, Selection};
 use lemma_model::Language;
 
@@ -47,9 +47,9 @@ pub(crate) fn is_workspace(file: &LemmaFile) -> bool {
 }
 
 /// The description at `path`, read and checked.
-pub(crate) fn read_description(path: &Path) -> anyhow::Result<LemmaFile> {
+pub(crate) fn read_description(path: &Path, cloning: Cloning) -> anyhow::Result<LemmaFile> {
     if path.extension().is_some_and(|extension| extension == "lm") {
-        return read_module(path);
+        return read_module(path, cloning);
     }
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("could not read {}", path.display()))?;
@@ -62,7 +62,7 @@ pub(crate) fn read_description(path: &Path) -> anyhow::Result<LemmaFile> {
 
 /// The repository a root module at `path` describes, loaded and type-checked
 /// as `lemma check` loads it, so that the two cannot disagree about it.
-fn read_module(path: &Path) -> anyhow::Result<LemmaFile> {
+fn read_module(path: &Path, cloning: Cloning) -> anyhow::Result<LemmaFile> {
     let (Some(root), Some(name)) = (path.parent(), path.file_name()) else {
         bail!("{} is not a module's file", path.display());
     };
@@ -77,6 +77,7 @@ fn read_module(path: &Path) -> anyhow::Result<LemmaFile> {
         &name,
         &cache_directory(),
         &BTreeMap::new(),
+        cloning,
     )?)
 }
 
@@ -122,6 +123,18 @@ pub(crate) fn whole_repository_warning(file: &LemmaFile) -> Option<String> {
          indexed; add `index.include` to {}",
         names.join(", ")
     ))
+}
+
+/// What `lemma index` says about each repository `file` names that is not
+/// cloned here, so links reaching it are not known.
+pub(crate) fn not_cloned_warnings(file: &LemmaFile) -> Vec<String> {
+    let cache = cache_directory();
+    file.services
+        .iter()
+        .filter_map(|(name, service)| Some((name, service.git.as_ref()?, service)))
+        .filter(|(_, url, service)| !is_cloned(url, service.reference.as_deref(), &cache))
+        .map(|(name, url, _)| format!("{name} is not cloned, so nothing about it is known ({url})"))
+        .collect()
 }
 
 /// The services `file` defines itself, without the repositories it names.

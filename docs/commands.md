@@ -281,6 +281,17 @@ A paused server, and every process it started, is stopped with `SIGSTOP`: it use
 
 There is one daemon per user. It talks to `lemma` over a Unix socket in the temporary directory that only your user can open, and finds language servers on the `PATH` of each command it runs. A daemon started by a different build of Lemma is replaced automatically. The daemon is not available on Windows; commands there always run in-process.
 
+### Repositories that are not cloned
+
+`lemma index` and `lemma check` need the repositories a description names. A `local(...)` repository that is missing is an error. A `git(...)` repository that is not cloned follows the `clone` setting, read from `.lemma/config.toml` beside the description and then from the file above:
+
+```toml
+[repositories]
+clone = "ask"              # "ask", "always" or "never"
+```
+
+`ask`, the default, asks in an interactive terminal and clones otherwise. `never`, or `--no-clone` on the command, or answering no, stops at the repositories that are here: `lemma index` warns, and `lemma check` lists what it could not reach and exits `5`. Queries and MCP tools never clone.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -290,6 +301,7 @@ There is one daemon per user. It talks to `lemma` over a Unix socket in the temp
 | `2` | `refs`, `implementations`, `signature` and `graph`: the name matches several symbols. The candidates are printed. |
 | `3` | `refs`, `definition`, `implementations`, `signature` and `graph`: no answer. The file is stale, no server is installed, the server failed, or it does not support the question. |
 | `4` | `verify` and `check` only: a finding is an error. |
+| `5` | `check` only: it finished, but a `git(...)` repository was not cloned, so what reaches it was not checked. A finding that is an error exits `4` instead. |
 
 ## `lm`
 

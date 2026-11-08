@@ -23,7 +23,9 @@ use crate::behaviors::{BehaviorReport, RequirementChange};
 use crate::compare::{Difference, compare};
 use crate::config::{LEMMA_FILE, LemmaFile, Level, Operation, SchemaSource, Service, parse};
 use crate::infer;
-use crate::repos::{Checkout, clone_remote, fork_point, resolve_commit};
+use crate::repos::{
+    Checkout, Cloning, UnavailableRepository, clone_remote, fork_point, is_cloned, resolve_commit,
+};
 use crate::schema::{self, Context, Role};
 
 /// The name of the repository holding the parent `lemma.yaml`.
@@ -57,6 +59,8 @@ pub struct CheckOptions {
     pub level: Option<Level>,
     /// Lemma's cache directory.
     pub cache: PathBuf,
+    /// Whether a repository not in the cache may be cloned.
+    pub cloning: Cloning,
     /// Where facts read from code are kept between runs; `None` keeps
     /// nothing.
     pub facts_cache: Option<lemma_verify::FactsCache>,
@@ -254,6 +258,18 @@ pub struct Report {
     /// changed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub requirement_changes: Vec<RequirementChange>,
+    /// Repositories that are not here, so this check did not cover them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub not_checked: Vec<NotChecked>,
+}
+
+/// A repository a check could not read.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NotChecked {
+    /// Its name, as loading names it: `#billing`.
+    pub repository: String,
+    /// How many links reach it.
+    pub links: usize,
 }
 
 /// A repository at both snapshots.
@@ -261,6 +277,8 @@ pub(crate) struct Repo {
     pub(crate) checkouts: [Checkout; 2],
     pub(crate) files: [LemmaFile; 2],
     pub(crate) manifest_from_working_directory: bool,
+    /// The repositories this one names that are not here.
+    pub(crate) unavailable: BTreeSet<UnavailableRepository>,
 }
 
 /// Checks the links of the system whose parent `lemma.yaml` is `root_file`,
@@ -286,7 +304,7 @@ pub fn check<E: Engine>(
         .level
         .or(repos[SELF].files[HEAD].graph.level)
         .unwrap_or_default();
-    let links = collect_links(&repos)?;
+    let (links, not_checked) = split_unchecked_links(collect_links(&repos)?, &repos);
     let mut findings = check_declared(&repos, &links, level, options)?;
     log::info!(
         "checked {} declared links: {} findings",
@@ -332,6 +350,7 @@ pub fn check<E: Engine>(
         link_list: options.list_links.then(|| link_list(&links, &walkable)),
         behaviors,
         requirement_changes,
+        not_checked,
     })
 }
 
@@ -496,6 +515,14 @@ fn check_change_names_a_repository(
     };
     if repos.contains_key(&change.repository) {
         return Ok(());
+    }
+    if unavailable_repositories(repos)
+        .iter()
+        .any(|missing| missing.name == change.repository)
+    {
+        return Err(GraphError::UnavailableRepository {
+            name: change.repository.clone(),
+        });
     }
     Err(GraphError::UnknownRepository {
         name: change.repository.clone(),
@@ -1366,23 +1393,26 @@ pub(crate) fn load_manifests(
             manifest: &manifest,
             cache: &options.cache,
             pins: &pins,
+            cloning: options.cloning,
         };
         let (base_file, base_fallback) = read_manifest(&reading, &checkouts[BASE])?;
         let (head_file, head_fallback) = read_manifest(&reading, &checkouts[HEAD])?;
         let files = [base_file, head_file];
         let manifest_from_working_directory = base_fallback || head_fallback;
         let base_directory = root.join(Path::new(&manifest).parent().unwrap_or(Path::new("")));
-        for file in &files {
-            for (external, service) in file.services.iter().filter(|(key, _)| key.starts_with('#'))
-            {
-                let source = external_root(service, &base_directory, &options.cache)?;
-                let pinned = crate::lm::repository_name(external.trim_start_matches('#'));
-                pins.entry(pinned).or_insert_with(|| Checkout {
-                    root: source.root.clone(),
-                    commit: source.reference.clone(),
-                });
-                pending.push_back(source.with_name(external));
+        let mut unavailable = BTreeSet::new();
+        for (external, service) in files.iter().flat_map(external_services) {
+            if let Some(missing) = unavailable_external(external, service, options) {
+                unavailable.insert(missing);
+                continue;
             }
+            let source = external_root(service, &base_directory, &options.cache)?;
+            let pinned = crate::lm::repository_name(external.trim_start_matches('#'));
+            pins.entry(pinned).or_insert_with(|| Checkout {
+                root: source.root.clone(),
+                commit: source.reference.clone(),
+            });
+            pending.push_back(source.with_name(external));
         }
         repos.insert(
             name,
@@ -1390,6 +1420,7 @@ pub(crate) fn load_manifests(
                 checkouts,
                 files,
                 manifest_from_working_directory,
+                unavailable,
             },
         );
     }
@@ -1605,6 +1636,7 @@ struct Reading<'r> {
     manifest: &'r str,
     cache: &'r Path,
     pins: &'r BTreeMap<String, Checkout>,
+    cloning: Cloning,
 }
 
 /// A repository's `.lm` manifest at a checkout, falling back to the working
@@ -1614,10 +1646,10 @@ fn read_language_manifest(
     checkout: &Checkout,
     manifest: &str,
 ) -> Result<(LemmaFile, bool), GraphError> {
-    let (name, cache, pins) = (reading.name, reading.cache, reading.pins);
+    let (name, cache, pins, cloning) = (reading.name, reading.cache, reading.pins, reading.cloning);
     if checkout.read(manifest)?.is_some() {
         return Ok((
-            crate::lm::read_manifest(checkout, manifest, cache, pins)?,
+            crate::lm::read_manifest(checkout, manifest, cache, pins, cloning)?,
             false,
         ));
     }
@@ -1633,7 +1665,7 @@ fn read_language_manifest(
             commit: checkout.commit.clone(),
         });
     }
-    let file = crate::lm::read_manifest(&working, manifest, cache, pins)?;
+    let file = crate::lm::read_manifest(&working, manifest, cache, pins, cloning)?;
     Ok((file, checkout.commit.is_some()))
 }
 
@@ -1660,6 +1692,73 @@ fn add_documented_operations(file: &mut LemmaFile, checkout: &Checkout) -> Resul
         }
     }
     Ok(())
+}
+
+fn external_services(file: &LemmaFile) -> impl Iterator<Item = (&String, &Service)> {
+    file.services.iter().filter(|(key, _)| key.starts_with('#'))
+}
+
+/// Every repository named somewhere in `repos` that is not here.
+pub(crate) fn unavailable_repositories(
+    repos: &BTreeMap<String, Repo>,
+) -> BTreeSet<UnavailableRepository> {
+    repos
+        .values()
+        .flat_map(|repo| repo.unavailable.iter().cloned())
+        .collect()
+}
+
+/// `service`, an external service called `name`, if it is a `git` repository
+/// that is not cloned and may not be.
+fn unavailable_external(
+    name: &str,
+    service: &Service,
+    options: &CheckOptions,
+) -> Option<UnavailableRepository> {
+    let url = service.git.as_ref()?;
+    if options.cloning == Cloning::Allowed
+        || is_cloned(url, service.reference.as_deref(), &options.cache)
+    {
+        return None;
+    }
+    Some(UnavailableRepository {
+        name: name.to_owned(),
+        url: url.clone(),
+        reference: service.reference.clone(),
+    })
+}
+
+/// `links` split into those that can be checked, and how many reach each
+/// repository that is not here.
+fn split_unchecked_links(
+    links: BTreeSet<Link>,
+    repos: &BTreeMap<String, Repo>,
+) -> (BTreeSet<Link>, Vec<NotChecked>) {
+    let unavailable = unavailable_repositories(repos);
+    let reaches = |link: &Link, name: &str| {
+        [&link.caller, &link.provider]
+            .iter()
+            .any(|end| end.repository.as_deref() == Some(name))
+    };
+    let not_checked = unavailable
+        .iter()
+        .map(|missing| NotChecked {
+            repository: missing.name.clone(),
+            links: links
+                .iter()
+                .filter(|link| reaches(link, &missing.name))
+                .count(),
+        })
+        .collect();
+    let checkable = links
+        .into_iter()
+        .filter(|link| {
+            !unavailable
+                .iter()
+                .any(|missing| reaches(link, &missing.name))
+        })
+        .collect();
+    (checkable, not_checked)
 }
 
 /// Every link in every repository's `graph` at head, with addresses made

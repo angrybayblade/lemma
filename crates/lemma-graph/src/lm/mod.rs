@@ -572,11 +572,11 @@ fn operation_address(
         Value::Discovered { service, key } => (service.clone(), key.clone()),
         _ => return Err(shape("a link's end", "operation")),
     };
-    let owner = checked
-        .loaded
-        .modules
-        .get(&service.module)
-        .map_or(repository, |module| module.repository.as_str());
+    // A module of a repository that is not here is known only by its name.
+    let owner = checked.loaded.modules.get(&service.module).map_or_else(
+        || service.module.split('.').next().unwrap_or(repository),
+        |module| module.repository.as_str(),
+    );
     let address = format!("services.{}.{operation}", service_key(&service));
     if owner == repository {
         return Ok(address);
