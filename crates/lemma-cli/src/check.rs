@@ -41,6 +41,7 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
         runs_base_checkers: args.run_base,
         select: args.select.clone(),
         warm: None,
+        environment: None,
     };
     let report = match check(args, &options, lsp) {
         Ok(report) => report,

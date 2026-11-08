@@ -62,6 +62,9 @@ pub struct Context<'a> {
     pub outputs: &'a mut BTreeMap<(String, String, String), Arc<Value>>,
     /// What this run has read from repositories already.
     pub reads: &'a mut Reads,
+    /// The environment commands start from instead of this process's own,
+    /// for a check answered on behalf of another process.
+    pub environment: Option<&'a BTreeMap<String, String>>,
 }
 
 /// Prints a Python interpreter's executable, version and installed
@@ -202,15 +205,26 @@ impl Reads {
     /// Kept by a long-lived process from run to run, it is asked again when
     /// the interpreter's files change: installing or removing a package
     /// changes the modification time of its `site-packages` directory.
-    fn interpreter(&mut self, python: &str) -> String {
+    fn interpreter(
+        &mut self,
+        python: &str,
+        environment: Option<&BTreeMap<String, String>>,
+    ) -> String {
         let stamp = interpreter_stamp(Path::new(python));
         if let Some((found, seen)) = self.interpreters.get(python) {
             if *seen == stamp {
                 return found.clone();
             }
         }
-        let found = std::process::Command::new(python)
-            .args(["-c", INTERPRETER_SCRIPT])
+        let mut probe = std::process::Command::new(python);
+        probe.args(["-c", INTERPRETER_SCRIPT]);
+        let no_variables = BTreeMap::new();
+        repos::Environment {
+            base: environment,
+            added: &no_variables,
+        }
+        .apply(&mut probe);
+        let found = probe
             .output()
             .ok()
             .filter(|output| output.status.success())
@@ -397,15 +411,21 @@ fn python_schema(
 ) -> Result<Resolved, GraphError> {
     let python = context.runtime.python.as_deref().unwrap_or("python3");
     let python = absolute_interpreter(python, &context.checkout.root);
-    let interpreter = context.reads.interpreter(&python);
+    let interpreter = context.reads.interpreter(&python, context.environment);
     let described = format!(
         "pydantic\n{}\n{python}\n{interpreter}\n{file}\n{symbol}\n{:?}",
         python::SCRIPT,
         context.runtime.env
     );
     let env = context.runtime.env.clone();
+    let base = context.environment;
     let imported = kept_or_run(context, &described, true, |root| {
-        python::type_schema(root, &python, file, symbol, &env)
+        python::type_schema(
+            root,
+            &python,
+            (file, symbol),
+            repos::Environment { base, added: &env },
+        )
     });
     let error = match imported {
         Ok(schema) => {
@@ -483,16 +503,24 @@ fn run_resolver(resolver: &Resolver, context: &mut Context<'_>) -> Result<Arc<Va
         &context.checkout.root,
     );
     let interpreter = if resolver.command.contains("{python}") {
-        context.reads.interpreter(&python)
+        context.reads.interpreter(&python, context.environment)
     } else {
         String::new()
     };
+    let environment = context.environment;
     let described = format!(
         "command\n{command}\n{env:?}\n{:?}\n{interpreter}",
         resolver.output
     );
     let document = kept_or_run(context, &described, resolver.cache, |root| {
-        let stdout = repos::run(root, &command, &env)?;
+        let stdout = repos::run(
+            root,
+            &command,
+            repos::Environment {
+                base: environment,
+                added: &env,
+            },
+        )?;
         let text = match &resolver.output {
             Some(output) => {
                 std::fs::read_to_string(root.join(output)).map_err(|source| GraphError::Io {
@@ -532,7 +560,7 @@ fn kept_or_run(
         let described = format!(
             "{RESOLVER_PROTOCOL}\n{}\n{described}\n{}\n{state}",
             env!("CARGO_PKG_VERSION"),
-            inherited_environment()
+            inherited_environment(context.environment)
         );
         let key = lemma_model::content_hash(described.as_bytes());
         context
@@ -566,10 +594,15 @@ fn kept_or_run(
 
 /// The variables commands inherit that decide which interpreter and
 /// libraries they use.
-fn inherited_environment() -> String {
+fn inherited_environment(base: Option<&BTreeMap<String, String>>) -> String {
+    let no_variables = BTreeMap::new();
+    let environment = repos::Environment {
+        base,
+        added: &no_variables,
+    };
     ["PATH", "VIRTUAL_ENV", "PYTHONPATH"]
         .iter()
-        .map(|name| format!("{name}={}", std::env::var(name).unwrap_or_default()))
+        .map(|name| format!("{name}={}", environment.inherited(name).unwrap_or_default()))
         .collect::<Vec<_>>()
         .join("\n")
 }

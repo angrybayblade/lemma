@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use lemma_lang::eval::Evidence;
 use lemma_lang::model::Checker;
@@ -35,6 +36,9 @@ pub(crate) struct Store {
     directory: PathBuf,
     cache: PathBuf,
     may_run: bool,
+    /// The environment checkers start from instead of this process's own,
+    /// for a check answered on behalf of another process.
+    environment: Option<Arc<BTreeMap<String, String>>>,
 }
 
 /// Where a repository's code is read, and the state of that code: `None`
@@ -83,7 +87,18 @@ impl Store {
             directory: cache.join("evidence"),
             cache: cache.to_path_buf(),
             may_run,
+            environment: None,
         }
+    }
+
+    /// The store, with checkers run from `environment` rather than this
+    /// process's own.
+    pub(crate) fn with_environment(
+        mut self,
+        environment: Option<Arc<BTreeMap<String, String>>>,
+    ) -> Self {
+        self.environment = environment;
+        self
     }
 
     /// Where a checkout's files are: the clone for a working directory, a
@@ -187,7 +202,11 @@ impl Store {
         env.insert("LEMMA_ROOT".to_owned(), root.display().to_string());
         env.insert("LEMMA_CASE".to_owned(), request.case.to_owned());
         let timeout_ms = checker.timeout_ms.unwrap_or(CHECKER_TIMEOUT_MS);
-        repos::run_program(&directory, &checker.command, &env, Some(timeout_ms))
+        let environment = repos::Environment {
+            base: self.environment.as_deref(),
+            added: &env,
+        };
+        repos::run_program(&directory, &checker.command, environment, Some(timeout_ms))
             .map_err(|error| format!("the checker failed: {}", describe(&error)))?;
         read_output(&output, checker)
     }
@@ -208,7 +227,10 @@ impl Store {
         repos::run_program(
             directory,
             setup,
-            &request.checker.env,
+            repos::Environment {
+                base: self.environment.as_deref(),
+                added: &request.checker.env,
+            },
             Some(SETUP_TIMEOUT_MS),
         )
         .map_err(|error| format!("the checker's setup failed: {}", describe(&error)))?;

@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 pub use anchors::{References, Uses};
 pub use check::{
     Change, CheckOptions, Finding, Impact, InferredLink, LinkList, Report, ResolvedRepository,
-    Severity, check,
+    Severity, check, repository_roots,
 };
 pub use trace::{Reached, SystemTrace, TraceCaches, trace_through_system};
 pub use warm::Warm;

@@ -215,7 +215,12 @@ impl<'a> Adapter<'a> {
         let env = self.env(worktree, worktree, Path::new(""));
         log::debug!("adapter setup in {}: {setup}", directory.display());
         let started = std::time::Instant::now();
-        repos::run_within(&directory, setup, &env, Some(SETUP_TIMEOUT_MS))?;
+        repos::run_within(
+            &directory,
+            setup,
+            repos::Environment::with(&env),
+            Some(SETUP_TIMEOUT_MS),
+        )?;
         log::info!(
             "adapter: setup finished in {:.1}s",
             started.elapsed().as_secs_f64()
@@ -235,16 +240,21 @@ impl<'a> Adapter<'a> {
         let timeout_ms = self.from.timeout_ms.unwrap_or(ADAPTER_TIMEOUT_MS);
         log::debug!("adapter command in {}: {command}", directory.display());
         let started = std::time::Instant::now();
-        let result = repos::run_within(&directory, &command, &env, Some(timeout_ms))
-            .and_then(|_| read_generated(&written).map(|_| ()))
-            .map_err(|error| match error {
-                GraphError::Io { path, .. } if path == written => GraphError::Resolver {
-                    command: command.clone(),
-                    directory: directory.clone(),
-                    message: "the adapter wrote no document to $LEMMA_OUTPUT".to_owned(),
-                },
-                other => other,
-            });
+        let result = repos::run_within(
+            &directory,
+            &command,
+            repos::Environment::with(&env),
+            Some(timeout_ms),
+        )
+        .and_then(|_| read_generated(&written).map(|_| ()))
+        .map_err(|error| match error {
+            GraphError::Io { path, .. } if path == written => GraphError::Resolver {
+                command: command.clone(),
+                directory: directory.clone(),
+                message: "the adapter wrote no document to $LEMMA_OUTPUT".to_owned(),
+            },
+            other => other,
+        });
         let seconds = started.elapsed().as_secs_f64();
         if let Err(error) = result {
             log::debug!("adapter failed after {seconds:.1}s");

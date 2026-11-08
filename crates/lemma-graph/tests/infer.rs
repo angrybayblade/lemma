@@ -112,6 +112,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
         runs_base_checkers: false,
         select: None,
         warm: None,
+        environment: None,
     };
 
     let report = check(
@@ -156,6 +157,7 @@ fn selected_problems(workspace: &Path, select: &str) -> Result<Vec<String>, Stri
         runs_base_checkers: false,
         select: Some(select.to_owned()),
         warm: None,
+        environment: None,
     };
     let report = check(
         &workspace.join("lemma.yaml"),
@@ -214,6 +216,7 @@ fn link_findings(
         runs_base_checkers: false,
         select: None,
         warm: warm.cloned(),
+        environment: None,
     };
     let report = check(
         &workspace.join("lemma.yaml"),
@@ -314,6 +317,7 @@ fn checks_of(workspace: &Path) -> Vec<(Severity, String)> {
         runs_base_checkers: false,
         select: None,
         warm: None,
+        environment: None,
     };
     let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
     report
@@ -391,6 +395,7 @@ fn select_runs_another_check_and_an_unknown_one_is_refused() {
         runs_base_checkers: false,
         select: Some(select.to_owned()),
         warm: None,
+        environment: None,
     };
     let entry = workspace.path().join("mod.lm");
 
@@ -437,6 +442,7 @@ fn a_change_may_name_its_repository_as_a_module_does() {
         runs_base_checkers: false,
         select: None,
         warm: None,
+        environment: None,
     };
 
     let report = check(

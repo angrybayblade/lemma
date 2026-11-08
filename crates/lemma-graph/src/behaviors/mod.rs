@@ -183,7 +183,7 @@ pub(crate) fn run(
     let base_model = base.as_ref().map(|base| &base.checked.model);
     let selected = options.select.as_deref();
     let results = head.run(
-        &Store::new(cache, options.run_checkers),
+        &Store::new(cache, options.run_checkers).with_environment(options.environment.clone()),
         base_model,
         selected,
     )?;
@@ -192,7 +192,8 @@ pub(crate) fn run(
     // requirement it lacks is new, and has nothing at the base to compare
     // with, so nothing runs there (with `--run-base`, every base behavior's
     // checkers would run for none of their cases to be compared).
-    let base_store = Store::new(cache, options.run_checkers && options.runs_base_checkers);
+    let base_store = Store::new(cache, options.run_checkers && options.runs_base_checkers)
+        .with_environment(options.environment.clone());
     let selects_a_check = selected.is_none_or(|name| names_a_check(&head.checked, name));
     let base_results = base.as_ref().map(|base| {
         base.run(&base_store, None, selected)

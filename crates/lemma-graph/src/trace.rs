@@ -140,6 +140,7 @@ fn trace_options(cache: &Path) -> CheckOptions {
         runs_base_checkers: false,
         select: None,
         warm: None,
+        environment: None,
     }
 }
 

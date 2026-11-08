@@ -79,6 +79,10 @@ pub struct CheckOptions {
     /// Reads kept from earlier checks of the same workspace, by a
     /// long-lived process that drops what changes; `None` reads everything.
     pub warm: Option<Arc<crate::warm::Warm>>,
+    /// The environment resolvers, adapters and checkers start from instead
+    /// of this process's own: the asking process's, for a check the daemon
+    /// answers on its behalf. `None` uses this process's.
+    pub environment: Option<Arc<BTreeMap<String, String>>>,
 }
 
 impl CheckOptions {
@@ -233,6 +237,24 @@ pub(crate) struct Repo {
     pub(crate) checkouts: [Checkout; 2],
     pub(crate) files: [LemmaFile; 2],
     pub(crate) manifest_from_working_directory: bool,
+}
+
+/// The directory of each repository the system whose parent `lemma.yaml`
+/// (or `mod.lm`) is `root_file` reads, itself included: what a watcher of
+/// its files must watch. Read as [`check`] reads them, at the head.
+pub fn repository_roots(
+    root_file: &Path,
+    options: &CheckOptions,
+) -> Result<Vec<PathBuf>, GraphError> {
+    let options = &options.with_change_named_as_loaded();
+    let repos = load(root_file, options)?;
+    let mut roots: Vec<PathBuf> = repos
+        .values()
+        .map(|repo| repo.checkouts[HEAD].root.clone())
+        .collect();
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
 }
 
 /// Checks the links of the system whose parent `lemma.yaml` is `root_file`,
@@ -522,6 +544,7 @@ fn infer_at_head<E: Engine>(
             listings: shared.listings,
             evaluation: lemma_verify::Evaluation::Full,
             warm: options.warm.as_ref().map(|warm| warm.verify()),
+            environment: options.environment.clone(),
         };
         let mut ignored = Vec::new();
         if let Some(found) = infer_links(repos, &run, Level::Audit, engine, &mut ignored)? {
@@ -609,6 +632,7 @@ fn check_declared(
         reads,
         findings: Vec::new(),
         has_change: options.change.is_some(),
+        environment: options.environment.clone(),
         unread: BTreeMap::new(),
     };
     let links_read = links.iter().try_for_each(|link| checker.check_link(link));
@@ -667,6 +691,8 @@ struct Inference<'a> {
     evaluation: lemma_verify::Evaluation,
     /// What verification keeps between checks, in a long-lived process.
     warm: Option<Arc<lemma_verify::Warm>>,
+    /// The environment adapters start from, when not this process's own.
+    environment: Option<Arc<BTreeMap<String, String>>>,
 }
 
 /// What every inference in one check shares: its options, and the
@@ -769,6 +795,7 @@ fn infer_change<E: Engine>(
         listings,
         evaluation: evaluation_of(options),
         warm: options.warm.as_ref().map(|warm| warm.verify()),
+        environment: options.environment.clone(),
     };
     infer_links(repos, &run, level, engine, findings)
 }
@@ -814,6 +841,7 @@ fn infer_drift<E: Engine>(
             listings,
             evaluation: options.evaluation,
             warm: options.warm.as_ref().map(|warm| warm.verify()),
+            environment: options.environment.clone(),
         };
         if let Some(found) = infer_links(repos, &run, level, engine, findings)? {
             inferred = Some(found);
@@ -1017,7 +1045,9 @@ struct AdapterJob<'r> {
     checkout: &'r Checkout,
     build: adapters::Build,
     from: &'r crate::config::OperationsFrom,
-    runtime: &'r crate::config::Runtime,
+    /// The service's runtime, with the asking process's environment under
+    /// its own variables when a check is answered on its behalf.
+    runtime: std::borrow::Cow<'r, crate::config::Runtime>,
     documents: Vec<String>,
 }
 
@@ -1053,12 +1083,30 @@ fn adapter_jobs<'r>(
                 checkout,
                 build,
                 from,
-                runtime: &service.runtime,
+                runtime: runtime_for(&service.runtime, run.environment.as_deref()),
                 documents: repository.specs.clone(),
             });
         }
     }
     jobs
+}
+
+/// `runtime`, or, given the environment of the process a check is answered
+/// for, a copy whose variables lie over that environment's: adapters then
+/// run as they would have in that process.
+fn runtime_for<'r>(
+    runtime: &'r crate::config::Runtime,
+    environment: Option<&BTreeMap<String, String>>,
+) -> std::borrow::Cow<'r, crate::config::Runtime> {
+    let Some(environment) = environment else {
+        return std::borrow::Cow::Borrowed(runtime);
+    };
+    let mut env = environment.clone();
+    env.extend(runtime.env.clone());
+    std::borrow::Cow::Owned(crate::config::Runtime {
+        env,
+        ..runtime.clone()
+    })
 }
 
 /// Runs every job, the jobs of one repository in turn (they share its
@@ -1119,7 +1167,7 @@ fn adapter_contract(
         job.role
     );
     let Some(generated) =
-        adapters::generate(job.from, job.runtime, job.checkout, cache, job.build)?
+        adapters::generate(job.from, &job.runtime, job.checkout, cache, job.build)?
     else {
         return Ok(None);
     };
@@ -1740,6 +1788,8 @@ struct Checker<'a> {
     /// Whether a change is being checked: then only what it introduces is a
     /// problem, and what was already there is context.
     has_change: bool,
+    /// The environment commands start from instead of this process's own.
+    environment: Option<Arc<BTreeMap<String, String>>>,
     /// Schemas a resolver could not produce, by its command and directory:
     /// one resolver that cannot run here leaves every schema it serves
     /// unread, and that is one thing to fix, so one warning.
@@ -1987,6 +2037,7 @@ impl Checker<'_> {
             cache: self.cache,
             outputs: &mut self.outputs,
             reads: &mut self.reads,
+            environment: self.environment.as_deref(),
         };
         match schema::resolve(&source, &mut context) {
             Ok(resolved_schema) => {

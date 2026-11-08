@@ -319,12 +319,42 @@ pub fn clone_remote(
     Ok(directory)
 }
 
+/// The environment a command runs in.
+#[derive(Debug, Clone, Copy)]
+pub struct Environment<'a> {
+    /// The whole environment to start from, instead of this process's own:
+    /// a check the daemon answers for another process runs its commands as
+    /// that process would have.
+    pub base: Option<&'a BTreeMap<String, String>>,
+    /// Variables set on top, such as a service's `env`.
+    pub added: &'a BTreeMap<String, String>,
+}
+
+impl<'a> Environment<'a> {
+    /// This process's environment with `added` set on top.
+    pub fn with(added: &'a BTreeMap<String, String>) -> Self {
+        Self { base: None, added }
+    }
+
+    /// A variable of the environment started from, before `added`.
+    pub fn inherited(&self, name: &str) -> Option<String> {
+        match self.base {
+            Some(base) => base.get(name).cloned(),
+            None => std::env::var(name).ok(),
+        }
+    }
+
+    /// Gives `process` this environment.
+    pub fn apply(&self, process: &mut Command) {
+        if let Some(base) = self.base {
+            process.env_clear().envs(base);
+        }
+        process.envs(self.added);
+    }
+}
+
 /// Runs a command in `directory` with `sh -c`, returning its standard output.
-pub fn run(
-    directory: &Path,
-    command: &str,
-    env: &BTreeMap<String, String>,
-) -> Result<String, GraphError> {
+pub fn run(directory: &Path, command: &str, env: Environment<'_>) -> Result<String, GraphError> {
     run_within(directory, command, env, None)
 }
 
@@ -334,7 +364,7 @@ pub fn run(
 pub fn run_within(
     directory: &Path,
     command: &str,
-    env: &BTreeMap<String, String>,
+    env: Environment<'_>,
     timeout_ms: Option<u64>,
 ) -> Result<String, GraphError> {
     let mut process = Command::new("sh");
@@ -347,7 +377,7 @@ pub fn run_within(
 pub fn run_program(
     directory: &Path,
     program: &[String],
-    env: &BTreeMap<String, String>,
+    env: Environment<'_>,
     timeout_ms: Option<u64>,
 ) -> Result<String, GraphError> {
     let Some((name, arguments)) = program.split_first() else {
@@ -368,16 +398,16 @@ fn run_process(
     mut process: Command,
     command: &str,
     directory: &Path,
-    env: &BTreeMap<String, String>,
+    env: Environment<'_>,
     timeout_ms: Option<u64>,
 ) -> Result<String, GraphError> {
     let io_error = |source| GraphError::Io {
         path: directory.to_owned(),
         source,
     };
+    env.apply(&mut process);
     process
         .current_dir(directory)
-        .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

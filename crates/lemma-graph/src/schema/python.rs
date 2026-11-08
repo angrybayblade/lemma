@@ -3,7 +3,6 @@
 //! and other types. The repository's own interpreter imports the module, so
 //! aliases, inheritance and generics come out as Python sees them.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::Value;
@@ -34,11 +33,10 @@ print(json.dumps(schema))
 pub fn type_schema(
     root: &Path,
     python: &str,
-    file: &str,
-    symbol: &str,
-    env: &BTreeMap<String, String>,
+    (file, symbol): (&str, &str),
+    environment: repos::Environment<'_>,
 ) -> Result<Value, GraphError> {
-    let mut env = env.clone();
+    let mut env = environment.added.clone();
     let python_path = env
         .entry("PYTHONPATH".to_owned())
         .or_insert_with(|| ".".to_owned())
@@ -51,7 +49,14 @@ pub fn type_schema(
         quote(&module),
         quote(symbol)
     );
-    let output = repos::run(root, &command, &env)?;
+    let output = repos::run(
+        root,
+        &command,
+        repos::Environment {
+            base: environment.base,
+            added: &env,
+        },
+    )?;
     serde_json::from_str(output.trim()).map_err(|source| GraphError::ResolverOutput {
         command: format!("{python} (schema of {file}#{symbol})"),
         source,
