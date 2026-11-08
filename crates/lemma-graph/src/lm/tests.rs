@@ -321,3 +321,15 @@ fn a_source_file_named_after_a_service_gets_a_binding_of_its_own() {
     );
     assert_eq!(checked.error_lines(), Vec::<String>::new(), "{text}");
 }
+
+#[test]
+fn a_local_repository_pinned_to_a_commit_keeps_its_pin() {
+    let yaml = "services:\n  \"#billing\": { path: ../billing, ref: abc123 }\n";
+
+    let text = convert(&parse(yaml).unwrap(), "example").unwrap();
+
+    assert!(
+        text.contains("repo billing = local(\"../billing\", rev: \"abc123\")"),
+        "{text}"
+    );
+}

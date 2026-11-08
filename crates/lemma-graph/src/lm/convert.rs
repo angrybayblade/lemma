@@ -79,7 +79,10 @@ fn repository_source(service: &Service) -> String {
         };
     }
     let path = service.path.as_deref().unwrap_or(".");
-    format!("local({})", quoted(path))
+    match &service.reference {
+        Some(reference) => format!("local({}, rev: {})", quoted(path), quoted(reference)),
+        None => format!("local({})", quoted(path)),
+    }
 }
 
 struct Writer<'f> {

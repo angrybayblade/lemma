@@ -31,6 +31,7 @@ impl WorkingTrees {
             path,
             declared_in,
             declaring_file,
+            ..
         } = source
         else {
             return Err(SourceError::new(format!(

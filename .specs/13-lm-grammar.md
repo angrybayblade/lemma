@@ -126,7 +126,7 @@ repo functions = local("../functions")
 repo functions = git(url: "https://git.example.com/functions.git", rev: "3f2a1c9e04")
 ```
 
-- `local(path)` reads a working tree, with `path` relative to the declaring file. Its identity is its commit plus the content of every changed file Lemma reads.
+- `local(path)` reads a working tree, with `path` relative to the declaring file; `local(path, rev: "...")` reads that clone at a commit. Its identity is its commit plus the content of every changed file Lemma reads.
 - `git(url:, rev:)` reads a commit. `rev` should be a commit; a branch or tag is resolved, and the commit is recorded.
 - The repository holding the entry module is always known under its root module's name.
 

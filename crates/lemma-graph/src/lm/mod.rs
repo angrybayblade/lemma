@@ -498,10 +498,12 @@ fn externals(checked: &Checked, repository: &str) -> Vec<(String, Service)> {
         let external = match &declared.source {
             Some(RepositorySource::Local {
                 path,
+                rev,
                 declared_in,
                 declaring_file,
             }) if declared_in == repository => Service {
                 path: Some(relative_to_root(declaring_file, path)),
+                reference: rev.clone(),
                 manifest: Some(lemma_lang::load::MODULE_FILE.to_owned()),
                 ..Service::default()
             },

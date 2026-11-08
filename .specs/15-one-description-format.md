@@ -65,7 +65,7 @@ Read through `lemma-graph/src/lm/mod.rs` against `config.rs`, every field `lemma
 | `exports.client`, with `generated_from`, `specs`, `call_names` | `client` |
 | `exports.operations`, with `path`, `previously` | `operation`, `implementation`, `previously` |
 | `schema`, with code, a document, or a `resolver` and its `output`, `env`, `cache` | `request`, `response` (or `sends`, `accepts`) |
-| `#name` with `git`, `ref` or `path` | `repo name = git(...)` or `local(...)` |
+| `#name` with `git`, `ref` or `path` | `repo name = git(...)` or `local(...)`, which takes `rev` as `git(...)` does |
 | `graph.links`, `graph.level` | A graph of `Link`, and `workspace.config.level` |
 
 `LowerError::Unsupported` rejects only what `lemma.yaml` cannot say either, such as two adapters on one service.

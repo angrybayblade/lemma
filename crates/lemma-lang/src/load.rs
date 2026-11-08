@@ -28,10 +28,13 @@ pub const MODULE_FILE: &str = "mod.lm";
 /// Where a repository comes from, as a `repo` declaration says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepositorySource {
-    /// A working tree, `path` relative to the declaring module's file.
+    /// A local clone, `path` relative to the declaring module's file, read
+    /// in its working tree or at `rev`.
     Local {
         /// The path as written.
         path: String,
+        /// The commit, branch or tag; the working tree if absent.
+        rev: Option<String>,
         /// The repository holding the declaring module.
         declared_in: String,
         /// The declaring module's file, relative to that repository.
@@ -541,6 +544,7 @@ fn repository_source(
     match function.as_str() {
         "local" => Some(RepositorySource::Local {
             path: text("path", 0)?,
+            rev: text("rev", 1),
             declared_in: declared_in.to_owned(),
             declaring_file: declaring_file.to_owned(),
         }),

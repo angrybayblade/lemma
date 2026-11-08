@@ -77,6 +77,7 @@ workspace {
 | --- | --- |
 | `"#billing": { git: ..., ref: ... }` | `repo billing = git(url: "...", rev: "...")` |
 | `"#billing": { path: ../billing }` | `repo billing = local("../billing")` |
+| `"#billing": { path: ../billing, ref: 3f2a1c9e04 }` | `repo billing = local("../billing", rev: "3f2a1c9e04")` |
 | `exports.openapi: [openapi.json]` | `operations: http.openapi("openapi.json")` |
 | `exports.operations_from` | `operations: hono.app(entry: [...])`, `fastapi.app(...)`, `http.adapter("express-routes", ...)` or `http.adapter_command(...)` |
 | `path: client/charges.go:Charges.Create` | `implementation: charges.symbol("Charges.Create")` |

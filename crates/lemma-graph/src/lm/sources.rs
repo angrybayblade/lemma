@@ -92,6 +92,7 @@ impl<'c> CheckoutSources<'c> {
         let checkout = match source {
             RepositorySource::Local {
                 path,
+                rev,
                 declared_in,
                 declaring_file,
             } => {
@@ -99,7 +100,7 @@ impl<'c> CheckoutSources<'c> {
                 let directory = Path::new(declaring_file).parent().unwrap_or(Path::new(""));
                 Checkout {
                     root: normalize(&base.join(directory).join(path)),
-                    commit: None,
+                    commit: rev.clone(),
                 }
             }
             RepositorySource::Git { url, rev, .. } => {
