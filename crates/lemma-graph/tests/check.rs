@@ -427,3 +427,56 @@ fn select_is_refused_for_a_parent_lemma_yaml() {
             .contains("declares no check `nightly`")
     );
 }
+
+/// A check of the system as it is, at `level`, with the provider's resolver
+/// replaced by a command that cannot run here.
+fn checked_without_resolver(level: Level) -> Vec<(Severity, String)> {
+    let workspace = system(CALLER_GO);
+    let provider = workspace.path().join("provider/lemma.yaml");
+    let missing = PROVIDER_LEMMA.replace("cat spec.json", "./.venv/bin/python -m spec");
+    write(&provider, &missing);
+    let options = CheckOptions {
+        change: None,
+        level: Some(level),
+        cache: workspace.path().join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
+        run_checkers: true,
+        runs_base_checkers: false,
+        select: None,
+    };
+    let report = check(
+        &workspace.path().join("lemma.yaml"),
+        &options,
+        &ReferenceEngine,
+        None,
+    )
+    .unwrap();
+    report
+        .findings
+        .iter()
+        .filter(|finding| finding.check == "resolver" || finding.check == "schema")
+        .map(|finding| (finding.severity, finding.check.clone()))
+        .collect()
+}
+
+#[test]
+fn a_resolver_that_cannot_run_here_warns_and_fails_only_a_strict_check() {
+    let checked = checked_without_resolver(Level::Check);
+    let strict = checked_without_resolver(Level::Strict);
+
+    assert_ne!(checked, []);
+    assert!(
+        checked
+            .iter()
+            .all(|(severity, check)| *severity == Severity::Warning && check == "resolver"),
+        "{checked:?}"
+    );
+    assert!(
+        strict
+            .iter()
+            .all(|(severity, _)| *severity == Severity::Error),
+        "{strict:?}"
+    );
+}

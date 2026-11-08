@@ -1172,8 +1172,8 @@ fn push_once(findings: &mut Vec<Finding>, finding: Finding) {
     }
 }
 
-/// At level `strict`, code an adapter could not read, whole or in part, is
-/// an error: its committed documents stood in for it, so a change only the
+/// At level `strict`, code an adapter or schema resolver could not read,
+/// whole or in part, is an error: its committed documents stood in for it, so a change only the
 /// code shows (in CI without the dependencies the adapter needs, say)
 /// would otherwise pass.
 fn fail_unread_contracts(level: Level, findings: &mut [Finding]) {
@@ -1182,7 +1182,7 @@ fn fail_unread_contracts(level: Level, findings: &mut [Finding]) {
     }
     for finding in findings
         .iter_mut()
-        .filter(|finding| finding.check == "adapter")
+        .filter(|finding| matches!(finding.check.as_str(), "adapter" | "resolver"))
     {
         finding.severity = Severity::Error;
         finding.introduced = true;
@@ -1899,14 +1899,50 @@ impl Checker<'_> {
                 Some(resolved_schema.schema)
             }
             Err(error) => {
-                let message = format!(
-                    "could not resolve {address}'s {} schema: {}",
-                    part.name(),
-                    describe(&error)
+                self.report_unresolved(
+                    label,
+                    &format!("{address}'s {}", part.name()),
+                    &error,
+                    snapshot,
                 );
-                self.report(label, Note::problem("schema", message, snapshot == HEAD));
                 None
             }
+        }
+    }
+
+    /// Reports a schema that could not be resolved. A resolver that could
+    /// not run (its interpreter or dependencies missing here) says nothing
+    /// about the change, as an adapter that could not run does not: a
+    /// warning, an error at level strict.
+    fn report_unresolved(
+        &mut self,
+        label: &str,
+        schema: &str,
+        error: &GraphError,
+        snapshot: usize,
+    ) {
+        let message = format!("could not resolve {schema} schema: {}", describe(error));
+        if matches!(error, GraphError::Resolver { .. }) {
+            self.warn_unread(label, message);
+            return;
+        }
+        self.report(label, Note::problem("schema", message, snapshot == HEAD));
+    }
+
+    /// Records that a resolver could not run, once.
+    fn warn_unread(&mut self, link: &str, message: String) {
+        let finding = Finding {
+            severity: Severity::Warning,
+            link: link.to_owned(),
+            check: "resolver".to_owned(),
+            message,
+            introduced: false,
+            affects: Vec::new(),
+            allowed: None,
+            values: BTreeMap::new(),
+        };
+        if !self.findings.contains(&finding) {
+            self.findings.push(finding);
         }
     }
 
