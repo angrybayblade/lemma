@@ -237,6 +237,14 @@ impl Reads {
         found
     }
 
+    /// Each interpreter asked, with the stamp it had when last asked.
+    pub(crate) fn interpreter_stamps(&self) -> BTreeMap<String, String> {
+        self.interpreters
+            .iter()
+            .map(|(python, (_, seen))| (python.clone(), seen.clone()))
+            .collect()
+    }
+
     /// Drops what was read from the working directory of the repository at
     /// `repository`, after its files changed. Reads at commits stay.
     pub fn forget_working(&mut self, repository: &Path) {
@@ -611,7 +619,7 @@ fn inherited_environment(base: Option<&BTreeMap<String, String>>) -> String {
 /// `pyvenv.cfg` of the environment it belongs to, and of that
 /// environment's `site-packages` directories: what changes when the
 /// interpreter or its packages do.
-fn interpreter_stamp(python: &Path) -> String {
+pub(crate) fn interpreter_stamp(python: &Path) -> String {
     let modified = |path: &Path| {
         std::fs::metadata(path)
             .and_then(|metadata| metadata.modified())

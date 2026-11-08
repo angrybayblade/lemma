@@ -57,6 +57,23 @@ impl Warm {
         }
     }
 
+    /// Each interpreter the kept reads asked, with the stamp it had then:
+    /// what an answer rests on outside the files watched, since a package
+    /// installs under a directory Git ignores.
+    pub fn interpreter_stamps(&self) -> BTreeMap<String, String> {
+        self.lock()
+            .as_ref()
+            .map(|(reads, _)| reads.interpreter_stamps())
+            .unwrap_or_default()
+    }
+
+    /// Whether every interpreter in `stamps` still has its stamp.
+    pub fn stamps_hold(stamps: &BTreeMap<String, String>) -> bool {
+        stamps
+            .iter()
+            .all(|(python, seen)| schema::interpreter_stamp(Path::new(python)) == *seen)
+    }
+
     pub(crate) fn take(&self) -> (schema::Reads, Outputs) {
         self.lock().take().unwrap_or_default()
     }

@@ -31,6 +31,9 @@ const BATCH_INTERVAL: Duration = Duration::from_millis(200);
 const JOURNAL_LIMIT: usize = 1000;
 /// How many earlier answers it keeps per set of options, for `--since`.
 const ANSWERS_KEPT: usize = 8;
+/// How many answers it holds ready to give again. Each set of options has
+/// its own, so a check of one repository does not displace another's.
+const ANSWERS_HELD: usize = 16;
 
 /// A check asked of sentry, with the connection to answer on.
 pub(crate) struct Ask {
@@ -196,12 +199,22 @@ enum Event {
     },
 }
 
-/// The last answer: what it rested on, its place in the journal, and the
-/// report, or the error the check stopped with.
+/// An answer held ready: its place in the journal, when it was last given,
+/// the interpreters it read, and the report, or the error the check stopped
+/// with.
 struct Kept {
-    fingerprint: u64,
     position: u64,
+    last_given: u64,
+    interpreters: BTreeMap<String, String>,
     report: Result<Arc<Report>, String>,
+}
+
+/// One ask being answered: what was asked, the options that name it, and
+/// the fingerprint of what its answer rests on.
+struct Asked<'a> {
+    question: &'a Question,
+    options: String,
+    fingerprint: u64,
 }
 
 /// The connection of a wait for events, and what it waits for.
@@ -222,7 +235,8 @@ struct Worker {
     journal: VecDeque<(u64, Event)>,
     /// The last position given out.
     position: u64,
-    last: Option<Kept>,
+    /// Answers held ready, by the fingerprint of what each rests on.
+    held: BTreeMap<u64, Kept>,
     /// Earlier answers by their options, for `--since`.
     answers: BTreeMap<String, VecDeque<(u64, Arc<Report>)>>,
     waiting: Vec<Waiting>,
@@ -268,7 +282,7 @@ impl Worker {
             instance: instance(),
             journal: VecDeque::new(),
             position: 0,
-            last: None,
+            held: BTreeMap::new(),
             answers: BTreeMap::new(),
             waiting: Vec::new(),
             counts: Counts::default(),
@@ -335,32 +349,41 @@ impl Worker {
         self.position
     }
 
-    /// The answer to `question`: the last one again when nothing it read
+    /// The answer to `question`: the one held for it when nothing it read
     /// has changed since, otherwise a check on what is kept.
     fn respond(&mut self, question: &Question) -> Answer {
         let started = Instant::now();
         self.collect(true);
         let options = options_key(&question.raw);
         let fingerprint = self.fingerprint(question, &options);
+        let asked = Asked {
+            question,
+            options,
+            fingerprint,
+        };
         let reused = self
-            .last
-            .as_ref()
-            .is_some_and(|kept| kept.fingerprint == fingerprint);
+            .held
+            .get(&fingerprint)
+            .is_some_and(|kept| lemma_graph::Warm::stamps_hold(&kept.interpreters));
         if !reused {
             let report = self.evaluate(question).map(Arc::new);
-            self.last = Some(Kept {
+            self.held.insert(
                 fingerprint,
-                position: 0,
-                report,
-            });
+                Kept {
+                    position: 0,
+                    last_given: 0,
+                    interpreters: self.warm.interpreter_stamps(),
+                    report,
+                },
+            );
         }
-        self.account(question, &options, started.elapsed(), reused);
-        self.render(question, &options)
+        self.account(&asked, started.elapsed(), reused);
+        self.render(&asked)
     }
 
     /// Counts the answer and keeps it in the journal; a new answer's token
     /// is its event's place there, and a reused one keeps its token.
-    fn account(&mut self, question: &Question, options: &str, took: Duration, reused: bool) {
+    fn account(&mut self, asked: &Asked<'_>, took: Duration, reused: bool) {
         if reused {
             self.counts.reused += 1;
         } else {
@@ -368,8 +391,8 @@ impl Worker {
         }
         self.counts.last = Some((took, reused));
         let report = self
-            .last
-            .as_ref()
+            .held
+            .get(&asked.fingerprint)
             .and_then(|kept| kept.report.as_ref().ok())
             .cloned();
         let count = |severity: Severity| {
@@ -382,7 +405,7 @@ impl Worker {
             })
         };
         let event = Event::Answer {
-            command: question.raw.join(" "),
+            command: asked.question.raw.join(" "),
             errors: count(Severity::Error),
             warnings: count(Severity::Warning),
             informational: count(Severity::Info),
@@ -390,14 +413,18 @@ impl Worker {
             seconds: took.as_secs_f64(),
         };
         let position = self.record(event);
+        if let Some(kept) = self.held.get_mut(&asked.fingerprint) {
+            kept.last_given = position;
+            if !reused {
+                kept.position = position;
+            }
+        }
+        self.hold_fewer();
         if reused {
             return;
         }
-        if let Some(kept) = self.last.as_mut() {
-            kept.position = position;
-        }
         if let Some(report) = report {
-            let earlier = self.answers.entry(options.to_owned()).or_default();
+            let earlier = self.answers.entry(asked.options.clone()).or_default();
             earlier.push_back((position, report));
             while earlier.len() > ANSWERS_KEPT {
                 earlier.pop_front();
@@ -405,10 +432,25 @@ impl Worker {
         }
     }
 
-    /// The last answer, printed for `question`: with its token, and with
-    /// what changed since the answer `--since` names.
-    fn render(&self, question: &Question, options: &str) -> Answer {
-        let Some(kept) = &self.last else {
+    /// Lets go of the answers given longest ago, past [`ANSWERS_HELD`].
+    fn hold_fewer(&mut self) {
+        while self.held.len() > ANSWERS_HELD {
+            let oldest = self
+                .held
+                .iter()
+                .min_by_key(|(_, kept)| kept.last_given)
+                .map(|(fingerprint, _)| *fingerprint);
+            let Some(oldest) = oldest else {
+                return;
+            };
+            self.held.remove(&oldest);
+        }
+    }
+
+    /// The answer held for `asked`, printed: with its token, and with what
+    /// changed since the answer `--since` names.
+    fn render(&self, asked: &Asked<'_>) -> Answer {
+        let Some(kept) = self.held.get(&asked.fingerprint) else {
             return failed("sentry has no answer");
         };
         let report = match &kept.report {
@@ -416,10 +458,11 @@ impl Worker {
             Err(error) => return failed(&format!("error: {error}")),
         };
         let token = self.token(kept.position);
+        let question = asked.question;
         let delta = question.args.since.as_deref().map(|since| Delta {
             since,
             changes: self
-                .earlier(since, options)
+                .earlier(since, &asked.options)
                 .map(|earlier| changes(earlier, report)),
         });
         let note = SentryNote {
@@ -961,5 +1004,90 @@ mod tests {
             events.contains("lemma check --change billing --since"),
             "{events}"
         );
+    }
+
+    /// `billing` with a Python operation read through the interpreter at
+    /// `.venv/bin/python`, which `web` links to.
+    fn python_shop(root: &Path) {
+        let billing = root.join("billing");
+        write(&billing.join(".gitignore"), ".venv/\n");
+        write(
+            &billing.join("api.py"),
+            "class Req:\n    id: str\n\ndef charge(r: Req) -> Req:\n    return r\n",
+        );
+        write(
+            &billing.join("mod.lm"),
+            "module billing\n\nimport * as python from lemma.python\n\nlet handlers = python.file(\"api.py\")\n\nexport service api {\n    runtime: { python: \".venv/bin/python\" }\n    index: { include: [\"api.py\"] }\n\n    export operation charge {\n        implementation: handlers.symbol(\"charge\")\n        request: handlers.type(\"Req\")\n        response: handlers.type(\"Req\")\n    }\n}\n",
+        );
+        let interpreter = billing.join(".venv/bin/python");
+        // One that cannot import Pydantic, so types are read by Tree-sitter.
+        write(&interpreter, "#!/bin/sh\nexit 1\n");
+        std::fs::set_permissions(
+            &interpreter,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        write(&billing.join(".venv/pyvenv.cfg"), "version = 3\n");
+        std::fs::create_dir_all(billing.join(".venv/lib/python3/site-packages")).unwrap();
+        git(&billing, &["init", "-q"]);
+        git(&billing, &["add", "."]);
+        git(&billing, &["commit", "-q", "-m", "billing"]);
+        let web = root.join("web");
+        write(
+            &web.join("c.ts"),
+            "export type Req = { id: string }\nexport function call(r: Req): Req { return r }\n",
+        );
+        write(
+            &web.join("mod.lm"),
+            "module web\n\nimport * as typescript from lemma.typescript\nimport { Link } from lemma.links\nimport { api as billing_api } from billing\n\nrepo billing = local(\"../billing\")\n\nlet client = typescript.file(\"c.ts\")\n\nexport service web {\n    index: { include: [\"c.ts\"] }\n\n    export client operation charge {\n        implementation: client.symbol(\"call\")\n        sends: client.type(\"Req\")\n        accepts: client.type(\"Req\")\n    }\n}\n\nexport graph links : Link {\n    web.charge -> billing_api.charge\n}\n",
+        );
+        git(&web, &["init", "-q"]);
+        git(&web, &["add", "."]);
+        git(&web, &["commit", "-q", "-m", "web"]);
+        write(
+            &root.join("mod.lm"),
+            "module shop\n\nworkspace {\n    repo billing = local(\"billing\")\n    repo web = local(\"web\")\n    config: { level: check }\n}\n",
+        );
+    }
+
+    #[test]
+    fn an_installed_package_keeps_sentry_from_giving_an_answer_again() {
+        let root = tempfile::tempdir().unwrap();
+        python_shop(root.path());
+        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let asked = question(root.path());
+
+        let first = worker.respond(&asked);
+        worker.respond(&asked);
+        // Modification times are only as fine as the file system's clock.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::create_dir(
+            root.path()
+                .join("billing/.venv/lib/python3/site-packages/added"),
+        )
+        .unwrap();
+        worker.respond(&asked);
+
+        assert_eq!(first.exit_code, 0, "{first:?}");
+        assert_eq!((worker.counts.evaluated, worker.counts.reused), (2, 1));
+    }
+
+    #[test]
+    fn each_set_of_options_keeps_its_own_answer() {
+        let root = tempfile::tempdir().unwrap();
+        shop(root.path());
+        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let billing = question(root.path());
+        let mut web = question(root.path());
+        web.args.change = Some("web".to_owned());
+        web.raw = ["check", "--change", "web"].map(str::to_owned).to_vec();
+
+        let first = worker.respond(&billing);
+        worker.respond(&web);
+        let again = worker.respond(&billing);
+        worker.respond(&web);
+
+        assert_eq!(again, first);
+        assert_eq!((worker.counts.evaluated, worker.counts.reused), (2, 2));
     }
 }
