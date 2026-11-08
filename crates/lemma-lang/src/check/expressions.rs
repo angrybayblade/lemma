@@ -31,6 +31,9 @@ pub(crate) struct Context<'c> {
     /// Whether known values are recorded for lowering, as in behaviors and
     /// functions.
     pub records: bool,
+    /// Whether this is an end of a link, which may name an operation its
+    /// service no longer has.
+    pub is_link_end: bool,
 }
 
 impl<'c> Context<'c> {
@@ -41,6 +44,7 @@ impl<'c> Context<'c> {
             locals: Vec::new(),
             is_behavior: false,
             records: false,
+            is_link_end: false,
         }
     }
 
@@ -577,14 +581,19 @@ impl Checker<'_> {
             };
             return (Type::Operation, Some(key));
         }
-        self.error(
-            context.module,
-            span,
-            format!(
-                "service `{}` has no `{name}`; it discovers no operations either",
-                service.name()
-            ),
+        let message = format!(
+            "service `{}` has no `{name}`; it discovers no operations either",
+            service.name()
         );
+        if context.is_link_end {
+            self.diagnostics.push(
+                crate::diagnostic::Diagnostic::error(span, message)
+                    .in_module(context.module)
+                    .as_removed_link_end(),
+            );
+            return operation_of(service, name);
+        }
+        self.error(context.module, span, message);
         (Type::Unknown, None)
     }
 
@@ -1044,4 +1053,16 @@ pub fn normalize_key(key: &str) -> String {
         }
     }
     normalized
+}
+
+/// The operation `name` of `service` as a link writes it, known only by its
+/// address because no declaration of it can be read.
+fn operation_of(service: &Address, name: &str) -> Evaluated {
+    let mut path = service.path.clone();
+    path.push(name.to_owned());
+    let operation = Address {
+        module: service.module.clone(),
+        path,
+    };
+    (Type::Unknown, Some(Value::Operation(operation)))
 }

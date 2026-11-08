@@ -312,7 +312,7 @@ fn load_language_grammar(
         .unwrap_or_default();
     let mut sources = lemma_lang::files::WorkingTrees::new(directory);
     let checked = lemma_lang::check_program(&mut sources, &file);
-    let errors = checked.error_lines();
+    let errors = checked.stopping_error_lines();
     if !errors.is_empty() {
         return Err(VerifyError::Language {
             path: path.to_path_buf(),

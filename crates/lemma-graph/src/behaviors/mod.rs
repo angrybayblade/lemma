@@ -297,7 +297,7 @@ impl Program {
         let parent = &repos[SELF].checkouts[snapshot];
         let mut sources = CheckoutSources::new(parent.clone(), cache).with_pins(pins.clone());
         let checked = lemma_lang::check_program_including(&mut sources, manifest, &[HTTP]);
-        let errors = checked.error_lines();
+        let errors = checked.stopping_error_lines();
         if !errors.is_empty() {
             return Err(GraphError::Language {
                 path: parent.root.join(manifest),

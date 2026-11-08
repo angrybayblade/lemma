@@ -94,6 +94,37 @@ impl CheckOptions {
     }
 }
 
+impl CheckOptions {
+    /// These options with the changed repository named as `repos` names it,
+    /// if the change names none of them but is the directory of exactly one:
+    /// a repository is `web_app` to a module and `web-app` to
+    /// the people and tools working in it.
+    fn with_change_found_by_directory(
+        &self,
+        repos: &BTreeMap<String, Repo>,
+    ) -> Option<CheckOptions> {
+        let change = self.change.as_ref()?;
+        if repos.contains_key(&change.repository) {
+            return None;
+        }
+        let directory = change.repository.trim_start_matches('#');
+        let mut found = repos.iter().filter(|(name, repo)| {
+            name.as_str() != SELF
+                && repo.checkouts[HEAD]
+                    .root
+                    .file_name()
+                    .is_some_and(|name| name == directory)
+        });
+        let (name, _) = found.next()?;
+        if found.next().is_some() {
+            return None;
+        }
+        let mut options = self.clone();
+        options.change.as_mut()?.repository.clone_from(name);
+        Some(options)
+    }
+}
+
 /// Every link a check found, as [`CheckOptions::list_links`] asks.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LinkList {
@@ -243,7 +274,12 @@ pub fn check<E: Engine>(
 ) -> Result<Report, GraphError> {
     let started = std::time::Instant::now();
     let options = &options.with_change_named_as_loaded();
-    let repos = load(root_file, options)?;
+    let mut repos = load(root_file, options)?;
+    let by_directory = options.with_change_found_by_directory(&repos);
+    if let Some(found) = &by_directory {
+        repos = load(root_file, found)?;
+    }
+    let options = by_directory.as_ref().unwrap_or(options);
     check_change_names_a_repository(&repos, options)?;
     log_repositories(&repos);
     let level = options

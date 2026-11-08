@@ -170,7 +170,7 @@ pub fn read_manifest(
     let mut sources = CheckoutSources::new(checkout.clone(), cache).with_pins(pins.clone());
     let checked = check_program(&mut sources, manifest);
     let path = checkout.root.join(manifest);
-    let errors = checked.error_lines();
+    let errors = checked.stopping_error_lines();
     if !errors.is_empty() {
         return Err(GraphError::Language { path, errors });
     }

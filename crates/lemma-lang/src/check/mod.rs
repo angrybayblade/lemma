@@ -37,9 +37,20 @@ pub struct Checked {
 impl Checked {
     /// Each error as `module:line:column: message`, for a command line.
     pub fn error_lines(&self) -> Vec<String> {
+        self.lines_of_errors(|_| true)
+    }
+
+    /// [`Self::error_lines`] without links naming a removed operation, which
+    /// `lemma check` reports as findings rather than stopping for.
+    pub fn stopping_error_lines(&self) -> Vec<String> {
+        self.lines_of_errors(|diagnostic| !diagnostic.is_removed_link_end)
+    }
+
+    fn lines_of_errors(&self, is_wanted: impl Fn(&Diagnostic) -> bool) -> Vec<String> {
         self.diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.severity == crate::Severity::Error)
+            .filter(|diagnostic| is_wanted(diagnostic))
             .map(|diagnostic| {
                 let position = self
                     .loaded
