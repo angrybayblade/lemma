@@ -136,6 +136,7 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
 
     let report = check(
@@ -199,6 +200,7 @@ fn a_caller_anchored_at_a_method_nothing_calls_is_warned_about() {
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
 
     let report = check(
@@ -288,6 +290,7 @@ fn link_problems(workspace: &Path) -> Vec<String> {
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
     let report = check(
         &workspace.join("web/mod.lm"),
@@ -369,6 +372,7 @@ fn errors_after_rename(says_previously: bool) -> usize {
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
     let report = check(
         &workspace.path().join("lemma.yaml"),
@@ -411,6 +415,7 @@ fn select_is_refused_for_a_parent_lemma_yaml() {
         run_checkers: true,
         runs_base_checkers: false,
         select: Some("nightly".to_owned()),
+        warm: None,
     };
 
     let refused = check(
@@ -445,6 +450,7 @@ fn checked_without_resolver(level: Level) -> Vec<(Severity, String)> {
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
     let report = check(
         &workspace.path().join("lemma.yaml"),

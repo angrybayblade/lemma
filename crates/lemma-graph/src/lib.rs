@@ -29,6 +29,7 @@ pub mod openapi;
 pub mod repos;
 pub mod schema;
 mod trace;
+mod warm;
 
 use std::path::{Path, PathBuf};
 
@@ -38,6 +39,7 @@ pub use check::{
     Severity, check,
 };
 pub use trace::{Reached, SystemTrace, TraceCaches, trace_through_system};
+pub use warm::Warm;
 
 /// Why a check could not run.
 #[derive(Debug, thiserror::Error)]

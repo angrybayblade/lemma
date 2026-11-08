@@ -7,7 +7,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use lemma_grammar::CompiledGrammar;
@@ -82,19 +81,53 @@ impl<'g> FactWriter<'g> {
 pub fn extract_all(
     manifest: &Manifest,
     writer: &mut FactWriter<'_>,
-    cache: Option<&crate::FactsCache>,
+    options: &crate::Options,
     listings: &Arc<lemma_http::Listings>,
     focus: &Focus<'_>,
 ) -> Result<Option<BTreeSet<String>>, VerifyError> {
-    let mut extractor = FactReader::new(cache.cloned());
-    check_files(manifest)?;
+    let warm = options.warm.as_deref();
+    let memo = warm.map(crate::Warm::take).unwrap_or_default();
+    let mut extractor = FactReader::new(options.facts_cache.clone());
+    extractor.read = memo.facts;
     let specs = SpecCache {
+        read: RefCell::new(memo.specs),
         listings: Arc::clone(listings),
-        ..SpecCache::default()
+        blobs: RefCell::new(memo.blobs),
+        on_disk: RefCell::new(memo.on_disk),
     };
+    let extracted = extract_with(manifest, writer, &specs, &mut extractor, focus);
+    if let Some(warm) = warm {
+        warm.put(Memo {
+            specs: specs.read.into_inner(),
+            blobs: specs.blobs.into_inner(),
+            on_disk: specs.on_disk.into_inner(),
+            facts: std::mem::take(&mut extractor.read),
+        });
+    }
+    extracted
+}
+
+/// [`extract_all`] with its caches, which a long-lived process carries from
+/// one run to the next.
+fn extract_with(
+    manifest: &Manifest,
+    writer: &mut FactWriter<'_>,
+    specs: &SpecCache,
+    extractor: &mut FactReader,
+    focus: &Focus<'_>,
+) -> Result<Option<BTreeSet<String>>, VerifyError> {
+    check_files(manifest)?;
+    let listings = &specs.listings;
+    let started = std::time::Instant::now();
     listings.prefetch(&snapshot_listings(manifest));
-    let system = read_system(manifest, &specs)?;
-    let clients = read_clients(manifest, &system, &specs, &mut extractor)?;
+    log::debug!("listed the repositories in {:.0?}", started.elapsed());
+    let started = std::time::Instant::now();
+    let system = read_system(manifest, specs)?;
+    log::debug!("read the services' documents in {:.0?}", started.elapsed());
+    let started = std::time::Instant::now();
+    let clients = read_clients(manifest, &system, specs, extractor)?;
+    log::debug!("read the generated clients in {:.0?}", started.elapsed());
+    let started = std::time::Instant::now();
     // Services and clients first: in change-driven evaluation, their facts
     // say which operations findings can be about, and so which consumer
     // files to read.
@@ -103,13 +136,14 @@ pub fn extract_all(
         .iter()
         .partition(|(_, repository)| repository.role == Role::Consumer);
     for (name, repository) in others {
-        for snapshot in snapshots(manifest, repository, &system, &clients, &specs) {
+        for snapshot in snapshots(manifest, repository, &system, &clients, specs) {
             match repository.role {
-                Role::Service => service(name, repository, &snapshot, writer, &mut extractor)?,
+                Role::Service => service(name, repository, &snapshot, writer, extractor)?,
                 _ => client(name, repository, &snapshot, writer)?,
             }
         }
     }
+    log::debug!("read services and clients in {:.0?}", started.elapsed());
     let operations = match focus {
         Focus::Everything => None,
         Focus::Change(plan) => Some(crate::demand::operations(writer.grammar(), plan)?),
@@ -131,9 +165,9 @@ pub fn extract_all(
         )
     });
     for (name, repository) in consumers {
-        for mut snapshot in snapshots(manifest, repository, &system, &clients, &specs) {
+        for mut snapshot in snapshots(manifest, repository, &system, &clients, specs) {
             snapshot.selection = selection.as_ref();
-            consumer(name, repository, &snapshot, writer, &mut extractor)?;
+            consumer(name, repository, &snapshot, writer, extractor)?;
         }
     }
     extractor.counts.log();
@@ -597,9 +631,34 @@ struct SpecCache {
     listings: Arc<lemma_http::Listings>,
     /// Files read at a commit, by repository, commit and path: the entries
     /// and snapshots of one repository read many of the same files.
-    blobs: RefCell<BTreeMap<(PathBuf, String, String), Rc<SourceFile>>>,
+    blobs: RefCell<BTreeMap<(PathBuf, String, String), Arc<SourceFile>>>,
     /// Files read from a working directory, by repository and path.
-    on_disk: RefCell<BTreeMap<(PathBuf, String), Rc<SourceFile>>>,
+    on_disk: RefCell<BTreeMap<(PathBuf, String), Arc<SourceFile>>>,
+}
+
+/// One run's reads that the next run over the same repositories may reuse:
+/// documents parsed, files read, and facts decoded. Everything read at a
+/// commit, and facts keyed by their file's contents, stays true; what was
+/// read from a working directory is dropped when it changes.
+#[derive(Default)]
+pub(crate) struct Memo {
+    specs: BTreeMap<SpecKey, Vec<Operation>>,
+    blobs: BTreeMap<(PathBuf, String, String), Arc<SourceFile>>,
+    on_disk: BTreeMap<(PathBuf, String), Arc<SourceFile>>,
+    facts: BTreeMap<String, Arc<CodeFacts>>,
+}
+
+impl Memo {
+    /// Drops what was read from the working directory of the repository at
+    /// `repository`: its documents and files. Facts stay, being keyed by
+    /// contents.
+    pub(crate) fn forget_working(&mut self, repository: &Path) {
+        let is_it = |path: &Path| crate::warm::same_path(path, repository);
+        self.specs.retain(|(path, commit, other, _), _| {
+            !(is_it(path) && (commit.is_none() || matches!(other, Some(None))))
+        });
+        self.on_disk.retain(|(path, _), _| !is_it(path));
+    }
 }
 
 impl SpecCache {
@@ -640,7 +699,7 @@ impl SpecCache {
             let read = lemma_http::read_paths(repository, commit, &missing)?;
             let mut blobs = self.blobs.borrow_mut();
             for file in read {
-                blobs.insert(key(&file.path), Rc::new(file));
+                blobs.insert(key(&file.path), Arc::new(file));
             }
         }
         let blobs = self.blobs.borrow();
@@ -677,7 +736,7 @@ impl SpecCache {
             let read = lemma_http::read_from_disk(repository, &missing)?;
             let mut on_disk = self.on_disk.borrow_mut();
             for file in read {
-                on_disk.insert(key(&file.path), Rc::new(file));
+                on_disk.insert(key(&file.path), Arc::new(file));
             }
         }
         let on_disk = self.on_disk.borrow();
@@ -1706,7 +1765,7 @@ fn write_calls(
 /// '../generated/api'`), with each name and module.
 fn generated_reexports(
     scope: &ConsumerScope<'_>,
-    read: &[(String, Rc<CodeFacts>)],
+    read: &[(String, Arc<CodeFacts>)],
 ) -> BTreeMap<String, Vec<(String, String)>> {
     let mut found = BTreeMap::new();
     for (path, facts) in read {
@@ -2085,7 +2144,7 @@ struct FactReader {
     /// What is kept between runs, when facts are kept.
     kept: Option<Kept>,
     /// Facts read in this run, by unit key.
-    read: BTreeMap<String, Rc<CodeFacts>>,
+    read: BTreeMap<String, Arc<CodeFacts>>,
     /// Units whose terms this run has sent to the cache, which its writer
     /// may not have stored yet.
     termed: BTreeSet<String>,
@@ -2166,7 +2225,7 @@ impl FactReader {
         commit: Option<&str>,
         files: &[ListedFile],
         options: &CodeOptions,
-    ) -> Result<Vec<(String, Rc<CodeFacts>)>, VerifyError> {
+    ) -> Result<Vec<(String, Arc<CodeFacts>)>, VerifyError> {
         let (keyed, mut contents) = self.keyed(repository, commit, files, options)?;
         let unknown: Vec<(&ListedFile, &String)> = keyed
             .iter()
@@ -2194,7 +2253,7 @@ impl FactReader {
         self.read.extend(parsed);
         Ok(keyed
             .iter()
-            .filter_map(|(file, key)| Some((file.path.clone(), Rc::clone(self.read.get(key)?))))
+            .filter_map(|(file, key)| Some((file.path.clone(), Arc::clone(self.read.get(key)?))))
             .collect())
     }
 
@@ -2410,7 +2469,7 @@ impl FactReader {
     /// The facts the cache keeps for `files`, decoded in parallel. A cache
     /// that cannot be read, or an entry that does not decode, only means
     /// parsing.
-    fn kept_facts(&self, files: &[(&ListedFile, &String)]) -> BTreeMap<String, Rc<CodeFacts>> {
+    fn kept_facts(&self, files: &[(&ListedFile, &String)]) -> BTreeMap<String, Arc<CodeFacts>> {
         let Some(Kept { units, .. }) = &self.kept else {
             return BTreeMap::new();
         };
@@ -2421,7 +2480,7 @@ impl FactReader {
         decoded
             .unwrap_or_default()
             .into_iter()
-            .map(|(key, facts)| (key, Rc::new(facts)))
+            .map(|(key, facts)| (key, Arc::new(facts)))
             .collect()
     }
 
@@ -2432,7 +2491,7 @@ impl FactReader {
         &mut self,
         files: &[(&SourceFile, &String)],
         options: &CodeOptions,
-    ) -> Result<Vec<(String, Rc<CodeFacts>)>, VerifyError> {
+    ) -> Result<Vec<(String, Arc<CodeFacts>)>, VerifyError> {
         use rayon::prelude::*;
         let is_keeping = self.kept.is_some();
         let extractors = &self.extractors;
@@ -2457,7 +2516,7 @@ impl FactReader {
                 new_terms.push(((*key).clone(), crate::terms::code_terms(&facts)));
                 self.termed.insert((*key).clone());
             }
-            parsed.push(((*key).clone(), Rc::new(facts)));
+            parsed.push(((*key).clone(), Arc::new(facts)));
         }
         if let Some(Kept { units, .. }) = &mut self.kept {
             units.put_later(new_units);

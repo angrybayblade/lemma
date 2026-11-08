@@ -35,6 +35,7 @@ pub fn members(workspace: &Path, cache: &Path) -> Result<Vec<Member>, GraphError
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
     let repos = check::load_manifests(workspace, &options)?;
     Ok(repos

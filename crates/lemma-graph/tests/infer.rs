@@ -111,6 +111,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
 
     let report = check(
@@ -154,6 +155,7 @@ fn selected_problems(workspace: &Path, select: &str) -> Result<Vec<String>, Stri
         run_checkers: true,
         runs_base_checkers: false,
         select: Some(select.to_owned()),
+        warm: None,
     };
     let report = check(
         &workspace.join("lemma.yaml"),
@@ -189,6 +191,72 @@ fn a_lemma_yaml_workspace_selects_one_built_in_requirement_by_name() {
             .unwrap_err()
             .contains("no check `consumer_forgets_everything`")
     );
+}
+
+/// The findings on the link of the `lemma.yaml` system's change, checked
+/// with `warm`.
+fn link_findings(
+    workspace: &Path,
+    warm: Option<&std::sync::Arc<lemma_graph::Warm>>,
+) -> Vec<String> {
+    let options = CheckOptions {
+        change: Some(Change {
+            repository: "#billing".to_owned(),
+            base: Some("HEAD~1".to_owned()),
+            head: Some("HEAD".to_owned()),
+        }),
+        level: Some(Level::Check),
+        cache: workspace.join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
+        run_checkers: true,
+        runs_base_checkers: false,
+        select: None,
+        warm: warm.cloned(),
+    };
+    let report = check(
+        &workspace.join("lemma.yaml"),
+        &options,
+        &ReferenceEngine,
+        None,
+    )
+    .unwrap();
+    report
+        .findings
+        .iter()
+        .filter(|finding| finding.link.ends_with(" -> POST /v1/charges"))
+        .map(|finding| {
+            format!(
+                "{:?} {} {}",
+                finding.severity, finding.check, finding.message
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_warm_check_answers_as_a_fresh_one_once_an_edited_repository_is_forgotten() {
+    let workspace = tempfile::tempdir().unwrap();
+    system(workspace.path());
+    // Committed, as a real repository is: its files are listed through Git.
+    let web = workspace.path().join("web");
+    git(&web, &["add", "."]);
+    git(&web, &["commit", "-q", "-m", "web"]);
+    let warm = std::sync::Arc::new(lemma_graph::Warm::default());
+
+    let warm_before = link_findings(workspace.path(), Some(&warm));
+    let fresh_before = link_findings(workspace.path(), None);
+    // The consumer now sends the newly required field.
+    let fixed = CONSUMER_TS.replace("{ customer }", "{ customer, currency: \"usd\" }");
+    write(&workspace.path().join("web/src/charge.ts"), &fixed);
+    warm.forget_working(&web);
+    let warm_after = link_findings(workspace.path(), Some(&warm));
+    let fresh_after = link_findings(workspace.path(), None);
+
+    assert_eq!(warm_before, fresh_before);
+    assert_eq!(warm_after, fresh_after);
+    assert_ne!(warm_after, warm_before);
 }
 
 /// The same system composed by modules, whose parent adds a requirement of
@@ -245,6 +313,7 @@ fn checks_of(workspace: &Path) -> Vec<(Severity, String)> {
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
     let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
     report
@@ -321,6 +390,7 @@ fn select_runs_another_check_and_an_unknown_one_is_refused() {
         run_checkers: true,
         runs_base_checkers: false,
         select: Some(select.to_owned()),
+        warm: None,
     };
     let entry = workspace.path().join("mod.lm");
 
@@ -366,6 +436,7 @@ fn a_change_may_name_its_repository_as_a_module_does() {
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
 
     let report = check(

@@ -94,6 +94,7 @@ fn verify(args: &VerifyArgs) -> anyhow::Result<Report> {
         relations: args.relations.clone(),
         facts_cache: facts_cache(),
         evaluation: Evaluation::Full,
+        warm: None,
     };
     let run = |evaluation: Evaluation| -> anyhow::Result<Report> {
         let options = Options {

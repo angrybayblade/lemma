@@ -64,6 +64,17 @@ impl Listings {
         Ok(listed)
     }
 
+    /// Forgets the working directory's listing of the repository at
+    /// `repository`, after its files changed. Listings at commits stay.
+    pub fn forget_working(&self, repository: &Path) {
+        let resolved = repository.canonicalize().ok();
+        self.locked().retain(|(path, commit), _| {
+            let is_it =
+                path == repository || resolved.is_some() && path.canonicalize().ok() == resolved;
+            commit.is_some() || !is_it
+        });
+    }
+
     /// Lists each of `wanted` not listed yet, several at a time, so a run
     /// over many repositories waits for its slowest listing rather than
     /// for all of them in turn. A listing that fails is left for

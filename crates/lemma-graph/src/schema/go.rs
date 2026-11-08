@@ -33,31 +33,62 @@ pub struct GoSchema {
     pub unresolved: BTreeSet<String>,
 }
 
-/// The schema of `type_name`, defined in one of a package's files, as seen
-/// from `view`. `None` if no file defines it.
-pub fn struct_schema(files: &[(String, String)], type_name: &str, view: View) -> Option<GoSchema> {
-    let mut parser = Parser::new();
-    parser.set_language(&tree_sitter_go::LANGUAGE.into()).ok()?;
-    let trees: Vec<(tree_sitter::Tree, &str)> = files
-        .iter()
-        .filter_map(|(_, source)| Some((parser.parse(source, None)?, source.as_str())))
-        .collect();
-    let mut types = BTreeMap::new();
-    for (tree, source) in &trees {
-        collect_types(tree.root_node(), source, &mut types);
+/// A package's files, parsed once to read several of its types.
+#[derive(Debug)]
+pub struct Package {
+    /// Each file's path, tree and source, in the order given.
+    files: Vec<(String, tree_sitter::Tree, String)>,
+}
+
+impl Package {
+    /// The package of `files`, by path and source; `None` if Go cannot be
+    /// parsed at all.
+    pub fn parse(files: &[(String, String)]) -> Option<Self> {
+        let mut parser = Parser::new();
+        parser.set_language(&tree_sitter_go::LANGUAGE.into()).ok()?;
+        let files = files
+            .iter()
+            .filter_map(|(path, source)| {
+                Some((path.clone(), parser.parse(source, None)?, source.clone()))
+            })
+            .collect();
+        Some(Self { files })
     }
-    let definition = *types.get(type_name)?;
-    let mut reader = Reader {
-        types: &types,
-        unresolved: BTreeSet::new(),
-        depth: 0,
-        view,
-    };
-    let schema = reader.type_schema(definition.0, definition.1);
-    Some(GoSchema {
-        schema,
-        unresolved: reader.unresolved,
-    })
+
+    /// The schema of `type_name`, defined in one of the package's files, as
+    /// seen from `view`; `None` if no file defines it. The files are read in the order
+    /// [`super::directory_files`] gives them: `anchored` first, then the
+    /// others as listed.
+    pub fn struct_schema(&self, anchored: &str, type_name: &str, view: View) -> Option<GoSchema> {
+        let mut order: Vec<usize> = (0..self.files.len()).collect();
+        order.sort_by_key(|&index| self.files[index].0 != anchored);
+        self.schema_in_order(order, type_name, view)
+    }
+
+    fn schema_in_order(
+        &self,
+        order: impl IntoIterator<Item = usize>,
+        type_name: &str,
+        view: View,
+    ) -> Option<GoSchema> {
+        let mut types = BTreeMap::new();
+        for index in order {
+            let (_, tree, source) = &self.files[index];
+            collect_types(tree.root_node(), source, &mut types);
+        }
+        let definition = *types.get(type_name)?;
+        let mut reader = Reader {
+            types: &types,
+            unresolved: BTreeSet::new(),
+            depth: 0,
+            view,
+        };
+        let schema = reader.type_schema(definition.0, definition.1);
+        Some(GoSchema {
+            schema,
+            unresolved: reader.unresolved,
+        })
+    }
 }
 
 /// A type's definition: its type node and the source it is in.
@@ -287,6 +318,10 @@ fn text<'s>(node: Node<'_>, source: &'s str) -> &'s str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn struct_schema(files: &[(String, String)], name: &str, view: View) -> Option<GoSchema> {
+        Package::parse(files)?.struct_schema(&files[0].0, name, view)
+    }
 
     fn schema(source: &str, name: &str) -> GoSchema {
         struct_schema(

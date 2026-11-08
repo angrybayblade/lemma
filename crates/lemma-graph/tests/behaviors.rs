@@ -188,6 +188,7 @@ fn run(workspace: &Path, level: Level, run_checkers: bool) -> Report {
         run_checkers,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
     check(
         &workspace.join("platform/mod.lm"),
@@ -406,6 +407,7 @@ fn a_change_that_breaks_the_worker_introduces_its_violations_and_lists_new_behav
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
 
     let report = check(&platform.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
@@ -452,6 +454,7 @@ fn a_new_behavior_selected_alone_runs_no_checker_at_the_base() {
         run_checkers: true,
         runs_base_checkers: true,
         select: Some("always".to_owned()),
+        warm: None,
     };
 
     let report = check(&platform.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
@@ -480,6 +483,7 @@ fn fixing_change(runs_base_checkers: bool) -> Report {
         run_checkers: true,
         runs_base_checkers,
         select: None,
+        warm: None,
     };
     check(&platform.join("mod.lm"), &options, &ReferenceEngine, None).unwrap()
 }
@@ -551,6 +555,7 @@ fn a_checker_reads_other_repositories_at_the_commit_checked() {
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     };
 
     let report = check(&platform.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();

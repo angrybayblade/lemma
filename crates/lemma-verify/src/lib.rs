@@ -13,6 +13,7 @@ mod manifest;
 mod system;
 mod term_segments;
 mod terms;
+mod warm;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -24,6 +25,7 @@ use lemma_logic::{Derivation, Engine, EvaluationError, Fact, Request, Symbols, V
 
 pub use extract::operation_key;
 pub use manifest::{Change, GeneratedDocument, Manifest, Repository, Role};
+pub use warm::Warm;
 
 /// The grammar used when a manifest names none.
 pub const HTTP_CONTRACTS: &str = include_str!("../../../grammars/http-contracts.yaml");
@@ -204,6 +206,9 @@ pub struct Options {
     pub facts_cache: Option<FactsCache>,
     /// How much consumer code to read.
     pub evaluation: Evaluation,
+    /// Reads kept from earlier runs over the same repositories, and kept
+    /// for later ones; `None` reads everything.
+    pub warm: Option<Arc<Warm>>,
 }
 
 /// How much consumer code a verification reads.
@@ -378,13 +383,7 @@ fn run<E: Engine>(
     let evaluation = evaluation_label(evaluability.as_ref());
     let focus = focus(evaluability.as_ref(), operations);
     let mut writer = extract::FactWriter::new(&mut grammar);
-    let covered = extract::extract_all(
-        manifest,
-        &mut writer,
-        options.facts_cache.as_ref(),
-        listings,
-        &focus,
-    )?;
+    let covered = extract::extract_all(manifest, &mut writer, options, listings, &focus)?;
     let facts = writer.counts;
     let request = match operations {
         Some(_) => Request {

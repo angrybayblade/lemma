@@ -139,6 +139,7 @@ fn trace_options(cache: &Path) -> CheckOptions {
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
+        warm: None,
     }
 }
 
@@ -298,6 +299,7 @@ fn current_inference<E: Engine>(
             relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
             facts_cache: facts.cloned(),
             evaluation: lemma_verify::Evaluation::Demand,
+            warm: None,
         };
         // The calls of no operation: routes and operations, with calls
         // fetched as the trace reaches their operations.

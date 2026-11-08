@@ -76,6 +76,9 @@ pub struct CheckOptions {
     pub runs_base_checkers: bool,
     /// The check of a parent module to run instead of its `check main`.
     pub select: Option<String>,
+    /// Reads kept from earlier checks of the same workspace, by a
+    /// long-lived process that drops what changes; `None` reads everything.
+    pub warm: Option<Arc<crate::warm::Warm>>,
 }
 
 impl CheckOptions {
@@ -265,7 +268,10 @@ pub fn check<E: Engine>(
     }
     // Verification and tracing read the same repositories; each is listed
     // once.
-    let listings = Arc::new(lemma_http::Listings::default());
+    let listings = options
+        .warm
+        .as_ref()
+        .map_or_else(Arc::default, |warm| warm.verify().listings());
     let mut shared = Shared::new(options, &listings, root_file, &repos)?;
     let (inferred_links, walkable) = infer(&repos, &shared, engine, level, &mut findings)?;
     let head_program = shared.program.take();
@@ -515,6 +521,7 @@ fn infer_at_head<E: Engine>(
             facts_cache: options.facts_cache.as_ref(),
             listings: shared.listings,
             evaluation: lemma_verify::Evaluation::Full,
+            warm: options.warm.as_ref().map(|warm| warm.verify()),
         };
         let mut ignored = Vec::new();
         if let Some(found) = infer_links(repos, &run, Level::Audit, engine, &mut ignored)? {
@@ -574,6 +581,7 @@ pub(crate) fn fetch_calls<E: Engine>(
         relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
         facts_cache: facts.cloned(),
         evaluation: lemma_verify::Evaluation::Demand,
+        warm: None,
     };
     let report = lemma_verify::calls_of(&partial.manifest, engine, &options, listings, operations)
         .map_err(|source| GraphError::Inference { source })?;
@@ -587,22 +595,32 @@ fn check_declared(
     level: Level,
     options: &CheckOptions,
 ) -> Result<Vec<Finding>, GraphError> {
+    let (reads, outputs) = options
+        .warm
+        .as_ref()
+        .map(|warm| warm.take())
+        .unwrap_or_default();
     let mut checker = Checker {
         repos,
         level,
         cache: &options.cache,
         extractor: Extractor::new().map_err(|source| GraphError::Syntax { source })?,
-        outputs: BTreeMap::new(),
-        reads: schema::Reads::default(),
+        outputs,
+        reads,
         findings: Vec::new(),
         has_change: options.change.is_some(),
         unread: BTreeMap::new(),
     };
-    for link in links {
-        checker.check_link(link)?;
-    }
+    let links_read = links.iter().try_for_each(|link| checker.check_link(link));
     // Adapters build in the same shared worktree resolvers ran in.
     checker.reads.release();
+    if let Some(warm) = &options.warm {
+        warm.put(
+            std::mem::take(&mut checker.reads),
+            std::mem::take(&mut checker.outputs),
+        );
+    }
+    links_read?;
     let mut findings = checker.findings;
     findings.extend(checker.unread.into_values().map(Unread::into_finding));
     findings.extend(unsupported_documents(repos)?);
@@ -647,6 +665,8 @@ struct Inference<'a> {
     facts_cache: Option<&'a lemma_verify::FactsCache>,
     listings: &'a Arc<lemma_http::Listings>,
     evaluation: lemma_verify::Evaluation,
+    /// What verification keeps between checks, in a long-lived process.
+    warm: Option<Arc<lemma_verify::Warm>>,
 }
 
 /// What every inference in one check shares: its options, and the
@@ -748,6 +768,7 @@ fn infer_change<E: Engine>(
         facts_cache: options.facts_cache.as_ref(),
         listings,
         evaluation: evaluation_of(options),
+        warm: options.warm.as_ref().map(|warm| warm.verify()),
     };
     infer_links(repos, &run, level, engine, findings)
 }
@@ -792,6 +813,7 @@ fn infer_drift<E: Engine>(
             facts_cache: options.facts_cache.as_ref(),
             listings,
             evaluation: options.evaluation,
+            warm: options.warm.as_ref().map(|warm| warm.verify()),
         };
         if let Some(found) = infer_links(repos, &run, level, engine, findings)? {
             inferred = Some(found);
@@ -830,15 +852,19 @@ fn infer_links<E: Engine>(
         base,
         head,
     };
+    let started = std::time::Instant::now();
     let Some(mut inferred) = infer::manifest(&sources, &changed) else {
         return Ok(None);
     };
+    log::debug!("inference: manifest inferred in {:.0?}", started.elapsed());
     // With nothing to compare and no declared problem to trace, the
     // inference would find what the committed documents already say.
     let needs_trace = findings
         .iter()
         .any(|finding| finding.severity != Severity::Info);
+    let started = std::time::Instant::now();
     let has_drift = apply_adapters(&mut inferred, repos, run, findings);
+    log::debug!("inference: adapters applied in {:.0?}", started.elapsed());
     if run.is_drift && !has_drift && !needs_trace {
         return Ok(None);
     }
@@ -876,6 +902,7 @@ fn verify_inferred<E: Engine>(
         // Tracing asks for the calls of further operations as it reaches
         // them (see `affects::CallSource`).
         evaluation: run.evaluation,
+        warm: run.warm.clone(),
     };
     log::info!(
         "inferring links from code: {} changed {}..{}, {} evaluation",
@@ -1707,7 +1734,7 @@ struct Checker<'a> {
     level: Level,
     cache: &'a Path,
     extractor: Extractor,
-    outputs: BTreeMap<(String, String, String), serde_json::Value>,
+    outputs: crate::warm::Outputs,
     reads: schema::Reads,
     findings: Vec<Finding>,
     /// Whether a change is being checked: then only what it introduces is a
@@ -1786,15 +1813,21 @@ struct Want {
 
 impl Checker<'_> {
     fn check_link(&mut self, link: &Link) -> Result<(), GraphError> {
+        let started = std::time::Instant::now();
         let label = format!("{} -> {}", link.caller, link.provider);
         let caller_ok = self.persists(&label, "caller", &link.caller)?;
         let provider_ok = self.persists(&label, "provider", &link.provider)?;
-        if !(caller_ok && provider_ok) {
-            return Ok(());
+        let anchored = started.elapsed();
+        if caller_ok && provider_ok {
+            for part in [Part::Request, Part::Response] {
+                self.compare_part(&label, link, part)?;
+            }
         }
-        for part in [Part::Request, Part::Response] {
-            self.compare_part(&label, link, part)?;
-        }
+        log::debug!(
+            "link {label}: anchors {:.0?}, schemas {:.0?}",
+            anchored,
+            started.elapsed().saturating_sub(anchored)
+        );
         Ok(())
     }
 

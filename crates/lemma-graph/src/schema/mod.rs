@@ -12,7 +12,7 @@ mod typescript;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -59,7 +59,7 @@ pub struct Context<'a> {
     /// Lemma's cache directory, for worktrees.
     pub cache: &'a Path,
     /// Resolver outputs already produced, by repository, commit and command.
-    pub outputs: &'a mut BTreeMap<(String, String, String), Value>,
+    pub outputs: &'a mut BTreeMap<(String, String, String), Arc<Value>>,
     /// What this run has read from repositories already.
     pub reads: &'a mut Reads,
 }
@@ -84,13 +84,18 @@ type DirectoryKey = (PathBuf, Option<String>, String, String);
 pub struct Reads {
     /// A directory's files with an extension, by repository, commit,
     /// directory and extension.
-    directories: BTreeMap<DirectoryKey, Rc<Vec<(String, String)>>>,
+    directories: BTreeMap<DirectoryKey, Arc<Vec<(String, String)>>>,
     /// A file's text, by repository, commit and path.
-    texts: BTreeMap<(PathBuf, Option<String>, String), Option<Rc<str>>>,
+    texts: BTreeMap<(PathBuf, Option<String>, String), Option<Arc<str>>>,
+    /// A Go package parsed, by repository, commit and directory.
+    go_packages: BTreeMap<(PathBuf, Option<String>, String), Arc<go::Package>>,
+    /// A JSON document parsed, by repository, commit and path.
+    documents: BTreeMap<(PathBuf, Option<String>, String), Arc<Value>>,
     /// A working directory's state (see [`adapters::working_state`]).
     states: BTreeMap<PathBuf, Option<String>>,
-    /// What each Python interpreter reports of itself and its packages.
-    interpreters: BTreeMap<String, String>,
+    /// What each Python interpreter reports of itself and its packages,
+    /// with the stamp of its files it was asked under.
+    interpreters: BTreeMap<String, (String, String)>,
     /// The shared worktree last checked out, by repository and commit,
     /// held for the run so resolvers at one commit check it out once.
     worktree: Option<(PathBuf, String, repos::SharedWorktree)>,
@@ -98,7 +103,11 @@ pub struct Reads {
 
 impl Reads {
     /// A file's text at the checkout, read once per run.
-    pub fn text(&mut self, checkout: &Checkout, file: &str) -> Result<Option<Rc<str>>, GraphError> {
+    pub fn text(
+        &mut self,
+        checkout: &Checkout,
+        file: &str,
+    ) -> Result<Option<Arc<str>>, GraphError> {
         let key = (
             checkout.root.clone(),
             checkout.commit.clone(),
@@ -107,9 +116,54 @@ impl Reads {
         if let Some(found) = self.texts.get(&key) {
             return Ok(found.clone());
         }
-        let found: Option<Rc<str>> = checkout.read(file)?.map(Rc::from);
+        let found: Option<Arc<str>> = checkout.read(file)?.map(Arc::from);
         self.texts.insert(key, found.clone());
         Ok(found)
+    }
+
+    /// The Go package of `file` at the checkout, its test files left out,
+    /// parsed once per run: links read many types of one package.
+    pub fn go_package(
+        &mut self,
+        checkout: &Checkout,
+        file: &str,
+    ) -> Result<Arc<go::Package>, GraphError> {
+        let directory = file.rsplit_once('/').map_or("", |(directory, _)| directory);
+        let key = (
+            checkout.root.clone(),
+            checkout.commit.clone(),
+            directory.to_owned(),
+        );
+        if let Some(found) = self.go_packages.get(&key) {
+            return Ok(Arc::clone(found));
+        }
+        let files: Vec<(String, String)> = self
+            .directory(checkout, directory, "go")?
+            .iter()
+            .filter(|(path, _)| !path.ends_with("_test.go"))
+            .cloned()
+            .collect();
+        let package = go::Package::parse(&files).ok_or_else(|| GraphError::Schema {
+            message: "the Go grammar could not be loaded".to_owned(),
+        })?;
+        let package = Arc::new(package);
+        self.go_packages.insert(key, Arc::clone(&package));
+        Ok(package)
+    }
+
+    /// A JSON document at the checkout, read and parsed once per run.
+    pub fn json(&mut self, checkout: &Checkout, file: &str) -> Result<Arc<Value>, GraphError> {
+        let key = (
+            checkout.root.clone(),
+            checkout.commit.clone(),
+            file.to_owned(),
+        );
+        if let Some(found) = self.documents.get(&key) {
+            return Ok(Arc::clone(found));
+        }
+        let document = Arc::new(read_json(checkout, file)?);
+        self.documents.insert(key, Arc::clone(&document));
+        Ok(document)
     }
 
     /// Lets go of the shared worktree, for others (adapters) to use.
@@ -144,9 +198,16 @@ impl Reads {
 
     /// What a Python interpreter reports of its version and installed
     /// packages, asked once per run: a cached schema depends on both.
+    ///
+    /// Kept by a long-lived process from run to run, it is asked again when
+    /// the interpreter's files change: installing or removing a package
+    /// changes the modification time of its `site-packages` directory.
     fn interpreter(&mut self, python: &str) -> String {
-        if let Some(found) = self.interpreters.get(python) {
-            return found.clone();
+        let stamp = interpreter_stamp(Path::new(python));
+        if let Some((found, seen)) = self.interpreters.get(python) {
+            if *seen == stamp {
+                return found.clone();
+            }
         }
         let found = std::process::Command::new(python)
             .args(["-c", INTERPRETER_SCRIPT])
@@ -157,8 +218,24 @@ impl Reads {
                 || format!("{python} (did not report)"),
                 |output| lemma_model::content_hash(&output.stdout),
             );
-        self.interpreters.insert(python.to_owned(), found.clone());
+        self.interpreters
+            .insert(python.to_owned(), (found.clone(), stamp));
         found
+    }
+
+    /// Drops what was read from the working directory of the repository at
+    /// `repository`, after its files changed. Reads at commits stay.
+    pub fn forget_working(&mut self, repository: &Path) {
+        let is_it = |root: &Path| same_path(root, repository);
+        self.directories
+            .retain(|(root, commit, _, _), _| commit.is_some() || !is_it(root));
+        self.texts
+            .retain(|(root, commit, _), _| commit.is_some() || !is_it(root));
+        self.documents
+            .retain(|(root, commit, _), _| commit.is_some() || !is_it(root));
+        self.go_packages
+            .retain(|(root, commit, _), _| commit.is_some() || !is_it(root));
+        self.states.retain(|root, _| !is_it(root));
     }
 
     fn working_state(&mut self, root: &Path) -> Result<Option<String>, GraphError> {
@@ -177,7 +254,7 @@ impl Reads {
         checkout: &Checkout,
         directory: &str,
         extension: &str,
-    ) -> Result<Rc<Vec<(String, String)>>, GraphError> {
+    ) -> Result<Arc<Vec<(String, String)>>, GraphError> {
         let key = (
             checkout.root.clone(),
             checkout.commit.clone(),
@@ -185,7 +262,7 @@ impl Reads {
             extension.to_owned(),
         );
         if let Some(found) = self.directories.get(&key) {
-            return Ok(Rc::clone(found));
+            return Ok(Arc::clone(found));
         }
         let prefixes = if directory.is_empty() {
             Vec::new()
@@ -199,7 +276,7 @@ impl Reads {
             &[extension],
         )
         .map_err(|source| GraphError::Source { source })?;
-        let found: Rc<Vec<(String, String)>> = Rc::new(
+        let found: Arc<Vec<(String, String)>> = Arc::new(
             files
                 .into_iter()
                 .filter(|candidate| {
@@ -212,7 +289,7 @@ impl Reads {
                 .map(|candidate| (candidate.path, candidate.contents))
                 .collect(),
         );
-        self.directories.insert(key, Rc::clone(&found));
+        self.directories.insert(key, Arc::clone(&found));
         Ok(found)
     }
 }
@@ -230,7 +307,7 @@ pub fn resolve(source: &SchemaSource, context: &mut Context<'_>) -> Result<Resol
                 });
             }
             let document = match (&location.file, context.resolver) {
-                (Some(file), _) => read_json(context.checkout, file)?,
+                (Some(file), _) => context.reads.json(context.checkout, file)?,
                 (None, Some(resolver)) => run_resolver(resolver, context)?,
                 (None, None) => {
                     return Err(GraphError::Schema {
@@ -278,9 +355,10 @@ fn code_schema(anchor: &str, context: &mut Context<'_>) -> Result<Resolved, Grap
     let checkout = context.checkout;
     match extension {
         "go" => {
-            let package = directory_files(context.reads, checkout, file, "go", "_test.go")?;
-            let found =
-                go::struct_schema(&package, symbol, view(context.role)).ok_or_else(missing)?;
+            let package = context.reads.go_package(checkout, file)?;
+            let found = package
+                .struct_schema(file, symbol, view(context.role))
+                .ok_or_else(missing)?;
             Ok(syntax(found.schema, found.unresolved))
         }
         "rs" => {
@@ -388,14 +466,14 @@ fn read_json(checkout: &Checkout, file: &str) -> Result<Value, GraphError> {
 }
 
 /// Runs the operation's resolver at the checkout once, and parses its output.
-fn run_resolver(resolver: &Resolver, context: &mut Context<'_>) -> Result<Value, GraphError> {
+fn run_resolver(resolver: &Resolver, context: &mut Context<'_>) -> Result<Arc<Value>, GraphError> {
     let key = (
         context.checkout.root.to_string_lossy().into_owned(),
         context.checkout.commit.clone().unwrap_or_default(),
         resolver.command.clone(),
     );
     if let Some(output) = context.outputs.get(&key) {
-        return Ok(output.clone());
+        return Ok(Arc::clone(output));
     }
     let command = expand_runtime(&resolver.command, context.runtime, &context.checkout.root);
     let mut env = context.runtime.env.clone();
@@ -429,7 +507,8 @@ fn run_resolver(resolver: &Resolver, context: &mut Context<'_>) -> Result<Value,
             source,
         })
     })?;
-    context.outputs.insert(key, document.clone());
+    let document = Arc::new(document);
+    context.outputs.insert(key, Arc::clone(&document));
     Ok(document)
 }
 
@@ -495,6 +574,45 @@ fn inherited_environment() -> String {
         .join("\n")
 }
 
+/// The modification times of an interpreter's executable, of the
+/// `pyvenv.cfg` of the environment it belongs to, and of that
+/// environment's `site-packages` directories: what changes when the
+/// interpreter or its packages do.
+fn interpreter_stamp(python: &Path) -> String {
+    let modified = |path: &Path| {
+        std::fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |elapsed| elapsed.as_nanos())
+    };
+    let mut times = vec![modified(python)];
+    let Some(prefix) = python.parent().and_then(Path::parent) else {
+        return format!("{times:?}");
+    };
+    times.push(modified(&prefix.join("pyvenv.cfg")));
+    let mut packages: Vec<PathBuf> = ["lib", "lib64"]
+        .iter()
+        .filter_map(|lib| std::fs::read_dir(prefix.join(lib)).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("site-packages"))
+        .collect();
+    packages.sort();
+    times.extend(packages.iter().map(|directory| modified(directory)));
+    format!("{times:?}")
+}
+
+/// Whether two paths name the same directory, as written or resolved.
+pub(crate) fn same_path(left: &Path, right: &Path) -> bool {
+    left == right
+        || left
+            .canonicalize()
+            .ok()
+            .zip(right.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
 fn read_kept(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
@@ -534,6 +652,25 @@ pub(crate) fn absolute_interpreter(interpreter: &str, repository: &Path) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_interpreter_stamp_changes_when_a_package_is_installed() {
+        let environment = tempfile::tempdir().unwrap();
+        let packages = environment.path().join("lib/python3.12/site-packages");
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::create_dir_all(environment.path().join("bin")).unwrap();
+        let python = environment.path().join("bin/python");
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(environment.path().join("pyvenv.cfg"), "home = /usr\n").unwrap();
+
+        let before = interpreter_stamp(&python);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::create_dir(packages.join("requests-2.0.dist-info")).unwrap();
+        let after = interpreter_stamp(&python);
+
+        assert_ne!(before, after);
+        assert_eq!(after, interpreter_stamp(&python));
+    }
 
     #[test]
     fn runtime_placeholders_use_the_repository_environment() {
