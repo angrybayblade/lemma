@@ -138,6 +138,8 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | check | A named entry point selecting the requirements to evaluate | suite, target |
 | outcome | What evaluating a requirement or behavior established: satisfied, violated, unknown or stale | result, status, verdict |
 | allowance | An `allow`: findings of one requirement that its condition selects are reported as allowed, with a reason, until a date | exception, suppression, waiver |
+| description | A system's `.lm` modules, read as what its repositories are made of, what they offer and how they link | inventory, topology |
+| candidate | A suspected gap in a description, found by a pattern rather than shown from the code; reported, and never fails a command | guess, hint |
 
 Extend this table when a new domain concept appears, in the same change that introduces it.
 
