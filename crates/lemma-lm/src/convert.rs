@@ -20,7 +20,8 @@ pub(crate) fn run(file: &Path, module: Option<&str>, write: bool) -> anyhow::Res
         Some(name) => name.to_owned(),
         None => module_name(&directory),
     };
-    let converted = lemma_graph::lm::convert(&parsed, &name);
+    let converted = lemma_graph::lm::convert(&parsed, &name)
+        .with_context(|| format!("cannot convert {}", file.display()))?;
     if !write {
         print!("{converted}");
         return Ok(());

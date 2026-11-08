@@ -23,10 +23,10 @@ impl Sources for Memory {
 /// (repository, `lemma.yaml`) converted beside it, and lowers it back.
 fn round_trip(yaml: &str, module: &str, others: &[(&str, &str)]) -> (LemmaFile, LemmaFile, String) {
     let original = parse(yaml).unwrap();
-    let text = convert(&original, module);
+    let text = convert(&original, module).unwrap();
     let mut files = BTreeMap::from([((String::new(), "mod.lm".to_owned()), text.clone())]);
     for (repository, other) in others {
-        let converted = convert(&parse(other).unwrap(), repository);
+        let converted = convert(&parse(other).unwrap(), repository).unwrap();
         files.insert(((*repository).to_owned(), "mod.lm".to_owned()), converted);
     }
     let checked = check_program(&mut Memory(files), "mod.lm");
@@ -215,7 +215,7 @@ fn every_built_in_adapter_round_trips() {
 fn a_file_of_external_services_becomes_a_workspace() {
     let yaml = "services:\n  \"#billing\": { path: ../billing }\n  \"#web\": { path: ../web }\ngraph:\n  level: check\n";
 
-    let text = convert(&parse(yaml).unwrap(), "example");
+    let text = convert(&parse(yaml).unwrap(), "example").unwrap();
 
     assert!(text.contains("workspace {"), "{text}");
     assert!(
@@ -232,7 +232,7 @@ fn a_workspace_pins_its_repositories_and_level() {
         ((String::new(), "mod.lm".to_owned()), workspace.to_owned()),
         (
             ("billing".to_owned(), "mod.lm".to_owned()),
-            convert(&parse(BILLING).unwrap(), "billing"),
+            convert(&parse(BILLING).unwrap(), "billing").unwrap(),
         ),
     ]);
     let checked = check_program(&mut Memory(files), "mod.lm");
@@ -296,4 +296,28 @@ fn a_discovered_operation_named_by_method_and_path_lowers_to_a_route() {
         lowered,
         ["services.Web.list -> services.Gateway.GET /users"]
     );
+}
+
+#[test]
+fn a_link_that_cannot_be_read_stops_the_conversion() {
+    let yaml = "services:\n  web: {}\ngraph:\n  links:\n    - not a link\n";
+
+    let converted = convert(&parse(yaml).unwrap(), "example");
+
+    assert!(converted.is_err(), "{converted:?}");
+}
+
+#[test]
+fn a_source_file_named_after_a_service_gets_a_binding_of_its_own() {
+    let yaml = "services:\n  api:\n    exports:\n      operations:\n        create:\n          path: src/api.ts:create\n";
+
+    let text = convert(&parse(yaml).unwrap(), "example").unwrap();
+
+    assert!(text.contains("let api2 = typescript.file"), "{text}");
+    let mut files = BTreeMap::from([((String::new(), "mod.lm".to_owned()), text.clone())]);
+    let checked = check_program(
+        &mut Memory(files.split_off(&(String::new(), String::new()))),
+        "mod.lm",
+    );
+    assert_eq!(checked.error_lines(), Vec::<String>::new(), "{text}");
 }

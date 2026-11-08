@@ -9,19 +9,35 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use crate::address::{Address as LinkAddress, parse_link};
+use crate::address::{Address as LinkAddress, AddressError, parse_link};
 use crate::config::{LemmaFile, Level, Operation, OperationsFrom, Resolver, SchemaSource, Service};
 
+/// Names a converted module uses for itself, which no binding may take.
+const RESERVED_NAMES: [&str; 11] = [
+    "fastapi",
+    "go",
+    "hono",
+    "http",
+    "json",
+    "lemma",
+    "Link",
+    "python",
+    "rust",
+    "typescript",
+    "workspace",
+];
+
 /// `file` as the `.lm` root module `module`. A file of external services
-/// only is a workspace.
-pub fn convert(file: &LemmaFile, module: &str) -> String {
+/// only is a workspace. A link that cannot be read is an error, since
+/// carrying on would drop it from what is checked.
+pub fn convert(file: &LemmaFile, module: &str) -> Result<String, AddressError> {
     let local: Vec<(&String, &Service)> = file
         .services
         .iter()
         .filter(|(name, _)| !name.starts_with('#'))
         .collect();
     if local.is_empty() {
-        return convert_workspace(file, module);
+        return Ok(convert_workspace(file, module));
     }
     Writer::new(file, module).module(&local)
 }
@@ -94,17 +110,17 @@ impl<'f> Writer<'f> {
             module,
             clients,
             bindings: BTreeMap::new(),
-            names: BTreeSet::new(),
+            names: taken_names(file),
             namespaces: BTreeSet::new(),
         }
     }
 
-    fn module(mut self, local: &[(&String, &Service)]) -> String {
+    fn module(mut self, local: &[(&String, &Service)]) -> Result<String, AddressError> {
         let mut services = String::new();
         for (name, service) in local {
             services.push_str(&self.service(name, service));
         }
-        let links = self.links();
+        let links = self.links()?;
         let mut text = format!("module {}\n\n", self.module);
         text.push_str(&self.imports());
         text.push_str(&self.repositories());
@@ -116,7 +132,7 @@ impl<'f> Writer<'f> {
         }
         text.push_str(&services);
         text.push_str(&links);
-        text.trim_end().to_owned() + "\n"
+        Ok(text.trim_end().to_owned() + "\n")
     }
 
     fn sorted_bindings(&self) -> Vec<(String, String)> {
@@ -467,29 +483,46 @@ impl<'f> Writer<'f> {
         name
     }
 
-    fn links(&self) -> String {
+    fn links(&self) -> Result<String, AddressError> {
         if self.file.graph.links.is_empty() {
-            return String::new();
+            return Ok(String::new());
         }
         let mut text = "export graph links : Link {\n".to_owned();
         for written in &self.file.graph.links {
-            match parse_link(written) {
-                Ok(link) => {
-                    let _ = writeln!(
-                        text,
-                        "    {} -> {}",
-                        link_end(&link.caller),
-                        link_end(&link.provider)
-                    );
-                }
-                Err(_) => {
-                    let _ = writeln!(text, "    // could not convert: {written}");
-                }
-            }
+            let link = parse_link(written)?;
+            let _ = writeln!(
+                text,
+                "    {} -> {}",
+                link_end(&link.caller),
+                link_end(&link.provider)
+            );
         }
         text.push_str("}\n");
-        text
+        Ok(text)
     }
+}
+
+/// The names a binding cannot take: the services the module declares and
+/// imports, and the names it uses itself.
+fn taken_names(file: &LemmaFile) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = RESERVED_NAMES.iter().map(|&name| name.to_owned()).collect();
+    names.extend(file.services.keys().map(|name| identifier(name)));
+    let links = file
+        .graph
+        .links
+        .iter()
+        .filter_map(|text| parse_link(text).ok());
+    for link in links {
+        for end in [link.caller, link.provider] {
+            if let Some(repository) = end.repository {
+                names.insert(imported_name(
+                    repository.trim_start_matches('#'),
+                    &end.service,
+                ));
+            }
+        }
+    }
+    names
 }
 
 /// A link's end as `.lm` writes it: an imported service's local name, or a
