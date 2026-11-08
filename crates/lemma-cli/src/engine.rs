@@ -328,7 +328,7 @@ impl Engine {
     }
 
     /// Indexes the code `source`'s services are made of under `root` into
-    /// `db_path`, with their exports; without a `lemma.yaml`, every
+    /// `db_path`, with their exports; without a description, every
     /// supported file, with no exports.
     fn index_repository(
         &mut self,
@@ -832,7 +832,7 @@ impl Engine {
     }
 
     /// The symbol a command is about, the index holding it, and what
-    /// lemma.yaml links it to. In a workspace's index the symbol is named by
+    /// the description links it to. In a workspace's index the symbol is named by
     /// an export's address and found in its member's index. `None` when a
     /// name matches several symbols, which are printed.
     fn locate(
@@ -1118,13 +1118,13 @@ fn now_ns() -> i64 {
 }
 
 /// A symbol a command is about, where it is indexed, and the symbols
-/// lemma.yaml links it to.
+/// the description links it to.
 struct Located {
     db_path: PathBuf,
     snapshot: StoredSnapshot,
     symbol: StoredSymbol,
     linked: Vec<output::Linked>,
-    /// The workspace lemma.yaml, when the symbol was found through a
+    /// The workspace description, when the symbol was found through a
     /// workspace's index.
     workspace: Option<PathBuf>,
     /// The workspace member the symbol is in, such as `#billing`, so
@@ -1188,7 +1188,7 @@ fn member_root(member: &lemma_graph::compose::Member, cache: &Path) -> anyhow::R
 /// resolved through the exports, so they are brought up to date too. A
 /// symbol named otherwise leaves them as the last refresh did, sparing a
 /// query after an edit the adapters' run; what `refs` lists as linked is
-/// then as of that refresh, which only a lemma.yaml or adapter change
+/// then as of that refresh, which only a description or adapter change
 /// makes out of date.
 fn refresh_for(target: &SymbolTarget) -> Indexing {
     if addresses::as_address(&target.symbol).is_some() {
@@ -1293,7 +1293,7 @@ impl WorkspaceIndex {
 }
 
 /// An address as a workspace names it: one written inside `member`'s
-/// lemma.yaml (`services.a.op`) gets the member's name.
+/// the description (`services.a.op`) gets the member's name.
 fn absolute_address(member: &str, address: &str) -> String {
     if address.starts_with('#') {
         return address.to_owned();
@@ -1301,21 +1301,21 @@ fn absolute_address(member: &str, address: &str) -> String {
     format!("{member}:{address}")
 }
 
-/// Clears exports and links a `lemma.yaml` since removed left behind.
+/// Clears exports and links a description since removed left behind.
 fn clear_exports(
     store: &mut Store,
     summary: &lemma_index::IndexSummary,
 ) -> anyhow::Result<output::ExportCounts> {
-    const NO_LEMMA_FILE: &str = "no lemma.yaml";
+    const NO_DESCRIPTION: &str = "no description";
     let snapshot_id = summary.snapshot_id;
-    if store.exports_fingerprint(snapshot_id)?.as_deref() != Some(NO_LEMMA_FILE) {
-        store.replace_exports(snapshot_id, NO_LEMMA_FILE, &[], &[])?;
+    if store.exports_fingerprint(snapshot_id)?.as_deref() != Some(NO_DESCRIPTION) {
+        store.replace_exports(snapshot_id, NO_DESCRIPTION, &[], &[])?;
     }
     Ok(output::ExportCounts::default())
 }
 
 /// Rebuilds the snapshot's exports and links unless they were built from
-/// this `lemma.yaml` and snapshot already; how many there are.
+/// this description and snapshot already; how many there are.
 fn update_exports(
     store: &mut Store,
     summary: &lemma_index::IndexSummary,
@@ -1815,9 +1815,7 @@ fn is_composed_as(root: &Path, name: &str) -> bool {
         .ancestors()
         .skip(1)
         .take(4)
-        .flat_map(|directory| {
-            ["mod.lm", lemma_graph::config::LEMMA_FILE].map(|file| directory.join(file))
-        })
+        .flat_map(|directory| std::iter::once(directory.join(lemma_lang::load::MODULE_FILE)))
         .filter(|file| file.exists());
     for manifest in manifests {
         let composition = lemma_graph::compose::composition(

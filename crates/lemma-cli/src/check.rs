@@ -1,4 +1,4 @@
-//! `lemma check`: checks the links declared in composable lemma.yaml files.
+//! `lemma check`: checks the links a composed description declares and infers.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,7 +11,6 @@ use lemma_graph::{
 use lemma_logic::ReferenceEngine;
 use lemma_souffle::SouffleEngine;
 
-use crate::anchors::CheckReferences;
 use crate::cli::CheckArgs;
 
 /// Exit code when a finding is an error.
@@ -19,7 +18,7 @@ const EXIT_VIOLATED: u8 = 4;
 /// Exit code when the check finished without covering every repository.
 const EXIT_INCOMPLETE: u8 = 5;
 
-pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCode {
+pub(crate) fn run(args: &CheckArgs, json: bool) -> ExitCode {
     let directory = args.manifest.parent().unwrap_or(Path::new(""));
     let directory = if directory.as_os_str().is_empty() {
         Path::new(".")
@@ -35,9 +34,9 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
     };
     let options = check_options(args, cloning);
     let checked = if args.evaluation.as_deref() == Some("both") {
-        check_both(args, &options, lsp)
+        check_both(args, &options)
     } else {
-        check(args, &options, lsp)
+        check(args, &options)
     };
     let report = match checked {
         Ok(report) => report,
@@ -92,19 +91,20 @@ fn check_options(args: &CheckArgs, cloning: lemma_graph::repos::Cloning) -> Chec
         cache: lemma_graph::repos::cache_directory(),
         cloning,
         explain: args.explain,
+        relations: Vec::new(),
         facts_cache: crate::verify::facts_cache(),
         evaluation: match args.evaluation.as_deref() {
             Some("full") => lemma_verify::Evaluation::Full,
             _ => lemma_verify::Evaluation::Demand,
         },
-        list_links: args.links,
+        list_links: false,
         run_checkers: !args.no_run,
         runs_base_checkers: args.run_base,
         select: args.select.clone(),
     }
 }
 
-/// Where `--anchors` gets language servers from.
+/// Where `lemma verify` gets language servers from.
 pub(crate) struct LanguageServers {
     /// Whether to ask the running daemon's warm servers first.
     pub asks_daemon: bool,
@@ -112,50 +112,28 @@ pub(crate) struct LanguageServers {
     pub providers_file: Option<PathBuf>,
 }
 
-/// The manifest to start from: `mod.lm` when the default `lemma.yaml` is
-/// absent and it is there.
-pub(crate) fn entry_manifest(manifest: &Path) -> PathBuf {
-    let is_default = manifest == Path::new("lemma.yaml");
-    let language = manifest.with_file_name("mod.lm");
-    if is_default && !manifest.exists() && language.exists() {
-        log::info!("reading mod.lm: there is no lemma.yaml");
-        return language;
-    }
-    manifest.to_path_buf()
-}
-
-fn check(
-    args: &CheckArgs,
-    options: &CheckOptions,
-    lsp: &LanguageServers,
-) -> anyhow::Result<Report> {
-    let manifest = &entry_manifest(&args.manifest);
-    let mut references = args
-        .anchors
-        .then(|| CheckReferences::new(lsp.asks_daemon, lsp.providers_file.clone()));
-    let references = references
-        .as_mut()
-        .map(|references| references as &mut dyn lemma_graph::References);
+fn check(args: &CheckArgs, options: &CheckOptions) -> anyhow::Result<Report> {
+    let manifest = &args.manifest;
     if let Some(cache) = &options.facts_cache {
         log::debug!("facts cache: {}", cache.directory.display());
     }
     let report: Result<Report, GraphError> = match args.engine.as_deref() {
         Some("reference") => {
             log::info!("rule engine: reference (--engine reference)");
-            lemma_graph::check(manifest, options, &ReferenceEngine, references)
+            lemma_graph::check(manifest, options, &ReferenceEngine, None)
         }
         Some("souffle") => {
             log::info!("rule engine: souffle (--engine souffle)");
-            lemma_graph::check(manifest, options, &SouffleEngine::find()?, references)
+            lemma_graph::check(manifest, options, &SouffleEngine::find()?, None)
         }
         Some(other) => anyhow::bail!("unknown engine `{other}`; use `souffle` or `reference`"),
         None => {
             if let Ok(souffle) = SouffleEngine::find() {
                 log::info!("rule engine: souffle");
-                lemma_graph::check(manifest, options, &souffle, references)
+                lemma_graph::check(manifest, options, &souffle, None)
             } else {
                 log::info!("rule engine: reference (souffle is not installed)");
-                lemma_graph::check(manifest, options, &ReferenceEngine, references)
+                lemma_graph::check(manifest, options, &ReferenceEngine, None)
             }
         }
     };
@@ -165,17 +143,13 @@ fn check(
 /// Checks with full and with change-driven evaluation, and fails if they
 /// found different things: a selection that missed a file a finding rests
 /// on. The change-driven report, otherwise.
-fn check_both(
-    args: &CheckArgs,
-    options: &CheckOptions,
-    lsp: &LanguageServers,
-) -> anyhow::Result<Report> {
+fn check_both(args: &CheckArgs, options: &CheckOptions) -> anyhow::Result<Report> {
     let evaluated = |evaluation| CheckOptions {
         evaluation,
         ..options.clone()
     };
-    let full = check(args, &evaluated(lemma_verify::Evaluation::Full), lsp)?;
-    let demand = check(args, &evaluated(lemma_verify::Evaluation::Demand), lsp)?;
+    let full = check(args, &evaluated(lemma_verify::Evaluation::Full))?;
+    let demand = check(args, &evaluated(lemma_verify::Evaluation::Demand))?;
     let differences = findings_only_in_one(&full, &demand);
     anyhow::ensure!(
         differences.is_empty(),
@@ -224,9 +198,6 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
         .map_or_else(String::new, |count| format!(", {count} inferred"));
     writeln!(out, "{} links{inferred}, level {level}", report.links)?;
     print_repositories(out, report)?;
-    if let Some(list) = &report.link_list {
-        print_link_list(out, list, all)?;
-    }
     print_behaviors(out, report)?;
     let count = |severity: Severity| {
         report
@@ -461,7 +432,11 @@ const LISTED_CALLS_PER_GROUP: usize = 10;
 
 /// Every link: those declared, then the inferred calls by calling
 /// repository and the service called, each group's count first.
-fn print_link_list(out: &mut dyn Write, list: &LinkList, all: bool) -> std::io::Result<()> {
+pub(crate) fn print_link_list(
+    out: &mut dyn Write,
+    list: &LinkList,
+    all: bool,
+) -> std::io::Result<()> {
     writeln!(out, "declared links: {}", list.declared.len())?;
     for link in &list.declared {
         writeln!(out, "  {link}")?;
@@ -546,7 +521,7 @@ fn print_repositories(out: &mut dyn Write, report: &Report) -> std::io::Result<(
             format!("{}..{}", at(&repository.base), at(&repository.head))
         };
         let note = if repository.manifest_from_working_directory {
-            "  (lemma.yaml from the working directory)"
+            "  (the description from the working directory)"
         } else {
             ""
         };

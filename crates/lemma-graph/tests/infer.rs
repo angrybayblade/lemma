@@ -62,8 +62,8 @@ fn system(workspace: &Path) {
     let provider = workspace.join("billing");
     let consumer = workspace.join("web");
     write(
-        &provider.join("lemma.yaml"),
-        "services:\n  api:\n    exports: { openapi: [openapi.json] }\n",
+        &provider.join("mod.lm"),
+        "module billing\n\nimport * as http from lemma.http\n\nexport service api {\n    operations: http.openapi(\"openapi.json\")\n}\n",
     );
     write(
         &provider.join("openapi.json"),
@@ -84,12 +84,15 @@ fn system(workspace: &Path) {
         ),
     );
     git(&provider, &["commit", "-q", "-am", "head"]);
-    write(&consumer.join("lemma.yaml"), "services:\n  web: {}\n");
+    write(
+        &consumer.join("mod.lm"),
+        "module web\n\nexport service web {}\n",
+    );
     write(&consumer.join("src/charge.ts"), CONSUMER_TS);
     git(&consumer, &["init", "-q"]);
     write(
-        &workspace.join("lemma.yaml"),
-        "services:\n  \"#billing\": { path: billing }\n  \"#web\": { path: web }\n",
+        &workspace.join("mod.lm"),
+        "module system\n\nworkspace {\n    repo billing = local(\"billing\")\n    repo web = local(\"web\")\n}\n",
     );
 }
 
@@ -107,6 +110,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
         cache: workspace.path().join("cache"),
         cloning: lemma_graph::repos::Cloning::Allowed,
         explain: false,
+        relations: Vec::new(),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
@@ -116,7 +120,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
     };
 
     let report = check(
-        &workspace.path().join("lemma.yaml"),
+        &workspace.path().join("mod.lm"),
         &options,
         &ReferenceEngine,
         None,
@@ -147,7 +151,6 @@ fn system_of_modules(workspace: &Path, main: &str) {
         &workspace.join("billing/mod.lm"),
         "module billing\nimport * as http from lemma.http\nexport service api {\n    operations: http.openapi(\"openapi.json\")\n}\n",
     );
-    std::fs::remove_file(workspace.join("billing/lemma.yaml")).unwrap();
     git(&workspace.join("billing"), &["add", "-A"]);
     git(
         &workspace.join("billing"),
@@ -157,7 +160,6 @@ fn system_of_modules(workspace: &Path, main: &str) {
         &workspace.join("web/mod.lm"),
         "module web\nexport service web {}\n",
     );
-    std::fs::remove_file(workspace.join("web/lemma.yaml")).unwrap();
     let parent = format!(
         r#"module system
 
@@ -189,6 +191,7 @@ fn checks_of(workspace: &Path) -> Vec<(Severity, String)> {
         cache: workspace.join("cache"),
         cloning: lemma_graph::repos::Cloning::Allowed,
         explain: false,
+        relations: Vec::new(),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
@@ -267,6 +270,7 @@ fn select_runs_another_check_and_an_unknown_one_is_refused() {
         cache: workspace.path().join("cache"),
         cloning: lemma_graph::repos::Cloning::Allowed,
         explain: false,
+        relations: Vec::new(),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
@@ -314,6 +318,7 @@ fn a_change_may_name_its_repository_as_a_module_does() {
         cache: workspace.path().join("cache"),
         cloning: lemma_graph::repos::Cloning::Allowed,
         explain: false,
+        relations: Vec::new(),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,

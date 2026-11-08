@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
-use lemma_graph::config::{LEMMA_FILE, LemmaFile, Service};
+use lemma_graph::config::{LemmaFile, Service};
 use lemma_graph::repos::{Checkout, Cloning, cache_directory, is_cloned};
 use lemma_index::{RuleSpec, Selection};
 use lemma_model::Language;
@@ -24,13 +24,10 @@ pub(crate) fn locate(path: &Path) -> anyhow::Result<(PathBuf, Option<PathBuf>)> 
     Ok((path, description))
 }
 
-/// The description in `directory`, if it has one. `lemma.yaml` comes first
-/// because `lemma check` reads it first, and the two must agree.
+/// The description in `directory`, if it has one.
 pub(crate) fn description_in(directory: &Path) -> Option<PathBuf> {
-    [LEMMA_FILE, lemma_lang::load::MODULE_FILE]
-        .into_iter()
-        .map(|name| directory.join(name))
-        .find(|file| file.is_file())
+    let file = directory.join(lemma_lang::load::MODULE_FILE);
+    file.is_file().then_some(file)
 }
 
 /// What `lemma index` says when a directory has no description.
@@ -46,23 +43,9 @@ pub(crate) fn is_workspace(file: &LemmaFile) -> bool {
         && names.all(|name| name.starts_with('#'))
 }
 
-/// The description at `path`, read and checked.
-pub(crate) fn read_description(path: &Path, cloning: Cloning) -> anyhow::Result<LemmaFile> {
-    if path.extension().is_some_and(|extension| extension == "lm") {
-        return read_module(path, cloning);
-    }
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("could not read {}", path.display()))?;
-    let file =
-        lemma_graph::config::parse(&text).with_context(|| format!("invalid {}", path.display()))?;
-    file.validate()
-        .with_context(|| format!("invalid {}", path.display()))?;
-    Ok(file)
-}
-
-/// The repository a root module at `path` describes, loaded and type-checked
+/// The repository the root module at `path` describes, loaded and type-checked
 /// as `lemma check` loads it, so that the two cannot disagree about it.
-fn read_module(path: &Path, cloning: Cloning) -> anyhow::Result<LemmaFile> {
+pub(crate) fn read_description(path: &Path, cloning: Cloning) -> anyhow::Result<LemmaFile> {
     let (Some(root), Some(name)) = (path.parent(), path.file_name()) else {
         bail!("{} is not a module's file", path.display());
     };
@@ -166,6 +149,25 @@ fn rule(name: &str, service: &Service) -> anyhow::Result<RuleSpec> {
 mod tests {
     use super::*;
 
+    fn service(include: &[&str], exclude: &[&str], languages: &[&str]) -> Service {
+        let owned = |values: &[&str]| values.iter().map(|value| (*value).to_owned()).collect();
+        let mut service = Service::default();
+        service.index.include = owned(include);
+        service.index.exclude = owned(exclude);
+        service.index.languages = owned(languages);
+        service
+    }
+
+    fn file_of(services: Vec<(&str, Service)>) -> LemmaFile {
+        LemmaFile {
+            services: services
+                .into_iter()
+                .map(|(name, service)| (name.to_owned(), service))
+                .collect(),
+            ..LemmaFile::default()
+        }
+    }
+
     #[test]
     fn a_directory_with_only_a_root_module_is_described_by_it() {
         let directory = tempfile::tempdir().unwrap();
@@ -176,18 +178,11 @@ mod tests {
     }
 
     #[test]
-    fn lemma_yaml_is_read_before_a_root_module_as_lemma_check_does() {
-        let directory = tempfile::tempdir().unwrap();
-        let yaml = directory.path().join(LEMMA_FILE);
-        std::fs::write(&yaml, "services: {}\n").unwrap();
-        std::fs::write(directory.path().join("mod.lm"), "module example\n").unwrap();
-
-        assert_eq!(description_in(directory.path()), Some(yaml));
-    }
-
-    #[test]
     fn services_without_code_select_every_file_and_are_named_in_the_warning() {
-        let file = lemma_graph::config::parse("services:\n  api: {}\n  web: {}\n").unwrap();
+        let file = file_of(vec![
+            ("api", service(&[], &[], &[])),
+            ("web", service(&[], &[], &[])),
+        ]);
 
         let selection = repository_selection(&file).unwrap();
         let warning = whole_repository_warning(&file).unwrap();
@@ -215,20 +210,20 @@ mod tests {
 
     #[test]
     fn a_service_naming_its_code_needs_no_warning() {
-        let file = lemma_graph::config::parse(
-            "services:\n  api: {}\n  web:\n    index:\n      include: [src]\n",
-        )
-        .unwrap();
+        let file = file_of(vec![
+            ("api", service(&[], &[], &[])),
+            ("web", service(&["src"], &[], &[])),
+        ]);
 
         assert_eq!(whole_repository_warning(&file), None);
     }
 
     #[test]
     fn each_service_contributes_its_own_rule() {
-        let file = lemma_graph::config::parse(
-            "services:\n  api:\n    index: { include: [api], exclude: [\"**/gen/**\"] }\n  web:\n    index: { include: [web], languages: [typescript] }\n",
-        )
-        .unwrap();
+        let file = file_of(vec![
+            ("api", service(&["api"], &["**/gen/**"], &[])),
+            ("web", service(&["web"], &[], &["typescript"])),
+        ]);
 
         let selection = repository_selection(&file).unwrap();
 

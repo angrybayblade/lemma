@@ -23,7 +23,7 @@ pub struct Source<'a> {
     /// The commit read, unless it is the changed repository; `None` for the
     /// working directory.
     pub commit: Option<&'a str>,
-    /// Its `lemma.yaml` with the change.
+    /// Its description with the change.
     pub file: &'a LemmaFile,
 }
 
@@ -64,7 +64,6 @@ pub fn manifest(sources: &[Source<'_>], changed: &Changed<'_>) -> Option<Inferre
         }
     }
     let manifest = Manifest {
-        grammar: None,
         lowered: None,
         change: VerifyChange {
             repository: changed_entry?,
@@ -180,29 +179,50 @@ fn entry(root: &Path, commit: Option<&str>, role: Role) -> Repository {
         generated: BTreeMap::new(),
         rejects_unknown_fields: false,
         routes: Vec::new(),
-        path_prefixes: Vec::new(),
-        route_aliases: BTreeMap::new(),
         schemas: Vec::new(),
         generated_from: Vec::new(),
         call_names: Vec::new(),
         include: Vec::new(),
-        client_receivers: Vec::new(),
-        client_modules: Vec::new(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::parse;
+    use crate::config::{GeneratedClient, IndexSettings, Service};
+
+    fn service_reading(include: &[&str]) -> Service {
+        Service {
+            index: IndexSettings {
+                include: include.iter().map(|path| (*path).to_owned()).collect(),
+                ..IndexSettings::default()
+            },
+            ..Service::default()
+        }
+    }
+
+    fn file_of(services: Vec<(&str, Service)>) -> LemmaFile {
+        LemmaFile {
+            services: services
+                .into_iter()
+                .map(|(name, service)| (name.to_owned(), service))
+                .collect(),
+            ..LemmaFile::default()
+        }
+    }
+
+    fn sdk_client(client: GeneratedClient) -> LemmaFile {
+        let mut sdk = service_reading(&["src"]);
+        sdk.exports.client = Some(client);
+        file_of(vec![("sdk", sdk)])
+    }
 
     #[test]
     fn services_become_entries_by_the_parts_they_play() {
-        let provider = parse(
-            "services:\n  api:\n    exports: { openapi: [openapi.json] }\n    index: { include: [src] }\n  worker:\n    exports: { operations: {} }\n",
-        )
-        .unwrap();
-        let consumer = parse("services:\n  web: {}\n").unwrap();
+        let mut api = service_reading(&["src"]);
+        api.exports.openapi = vec!["openapi.json".to_owned()];
+        let provider = file_of(vec![("api", api), ("worker", Service::default())]);
+        let consumer = file_of(vec![("web", Service::default())]);
         let sources = [
             Source {
                 name: "#billing",
@@ -245,10 +265,10 @@ mod tests {
 
     #[test]
     fn a_generated_client_is_not_searched_for_calls_even_with_its_code_indexed() {
-        let client = parse(
-            "services:\n  sdk:\n    index: { include: [src] }\n    exports:\n      client: { specs: [openapi.json] }\n",
-        )
-        .unwrap();
+        let client = sdk_client(GeneratedClient {
+            specs: vec!["openapi.json".to_owned()],
+            ..GeneratedClient::default()
+        });
         let sources = [Source {
             name: "#sdk",
             root: Path::new("/sdk"),
@@ -269,10 +289,10 @@ mod tests {
 
     #[test]
     fn a_client_is_read_from_its_code() {
-        let file = parse(
-            "services:\n  sdk:\n    index: { include: [src] }\n    exports:\n      client: { specs: [openapi.json] }\n",
-        )
-        .unwrap();
+        let file = sdk_client(GeneratedClient {
+            specs: vec!["openapi.json".to_owned()],
+            ..GeneratedClient::default()
+        });
         let sources = [Source {
             name: "#sdk",
             root: Path::new("/sdk"),

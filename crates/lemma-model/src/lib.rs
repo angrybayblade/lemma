@@ -454,7 +454,7 @@ pub struct Use {
     pub to: String,
     /// How it was found: `lsp` or `names` for a symbol's own uses, `call`,
     /// `route`, `name` or `type` (a body naming only a method's type) for a
-    /// trace across services, `declared` for a link a `lemma.yaml`
+    /// trace across services, `declared` for a link a description
     /// declares.
     pub source: String,
 }
@@ -471,7 +471,7 @@ pub fn dedup_uses(uses: &mut Vec<Use>) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportKind {
-    /// An operation declared in `lemma.yaml`, at its code anchor.
+    /// An operation declared in a description, at its code anchor.
     Operation,
     /// An operation an `OpenAPI` document describes, at its route handler.
     Endpoint,
@@ -507,9 +507,9 @@ impl FromStr for ExportKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FoundBy {
-    /// `lemma.yaml` names the code: an operation's anchor or a public module.
+    /// the description names the code: an operation's anchor or a public module.
     Declared,
-    /// A `routes` directive in `lemma.yaml` led to the handler.
+    /// A `routes` directive in a description led to the handler.
     Directive,
     /// Read from how the code registers its routes, without a directive.
     Code,
@@ -567,7 +567,7 @@ impl Export {
     }
 }
 
-/// A link declared in `lemma.yaml`: the caller's operation uses the
+/// A link declared in a description: the caller's operation uses the
 /// provider's. Addresses name exports here (`services.a.op`) or in another
 /// repository (`#repo:services.b.op`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

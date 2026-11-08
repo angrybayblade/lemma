@@ -465,14 +465,25 @@ fn aliased(path: &str, aliases: &BTreeMap<String, String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::parse;
+    use crate::config::{Graph, LemmaFile, Operation, Service};
 
     #[test]
     fn declared_operations_and_links_become_exports_and_links() {
-        let file = parse(
-            "services:\n  web:\n    exports:\n      operations:\n        pay: { path: \"src/pay.go:Charges.Create\" }\ngraph:\n  links:\n    - services.web.pay -> \"#billing:services.api.charge\"\n",
-        )
-        .unwrap();
+        let mut web = Service::default();
+        web.exports.operations.insert(
+            "pay".to_owned(),
+            Operation {
+                path: "src/pay.go:Charges.Create".to_owned(),
+                ..Operation::default()
+            },
+        );
+        let file = LemmaFile {
+            services: [("web".to_owned(), web)].into(),
+            graph: Graph {
+                links: vec!["services.web.pay -> #billing:services.api.charge".to_owned()],
+                ..Graph::default()
+            },
+        };
         let unique = |_: &str, _: &str| None;
         let enclosing = |_: &str, _: u32| None;
         let top_level = |_: &str| Vec::new();

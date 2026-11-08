@@ -64,6 +64,8 @@ pub struct Walkable {
     /// calls `calls` holds completely, and how to ask for the calls of
     /// others; `None` when `calls` holds every call.
     pub partial: Option<PartialCalls>,
+    /// The rows of each relation a report was asked to include.
+    pub relations: BTreeMap<String, Vec<Vec<String>>>,
 }
 
 /// Calls inference read for some operations only.
@@ -128,6 +130,7 @@ pub fn walkable(
         services,
         seeds: Vec::new(),
         partial: None,
+        relations: BTreeMap::new(),
     }
 }
 

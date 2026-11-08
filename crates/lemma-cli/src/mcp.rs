@@ -317,6 +317,7 @@ fn command_for(name: &str, arguments: &Map<String, Value>) -> Result<Vec<String>
         "signature" => push_symbol_command(&mut args, "signature", arguments)?,
         "graph" => push_graph_command(&mut args, arguments)?,
         "check" => push_check_command(&mut args, arguments)?,
+        "verify" => push_verify_command(&mut args, arguments)?,
         _ => return Err(format!("unknown tool `{name}`")),
     }
     Ok(args)
@@ -354,6 +355,22 @@ fn push_graph_command(
     ] {
         if let Some(count) = optional_count(arguments, field)? {
             args.extend([flag.to_owned(), count.to_string()]);
+        }
+    }
+    Ok(())
+}
+
+fn push_verify_command(
+    args: &mut Vec<String>,
+    arguments: &Map<String, Value>,
+) -> Result<(), String> {
+    args.push("verify".to_owned());
+    if let Some(module) = optional_string(arguments, "module")? {
+        args.push(module);
+    }
+    for flag in ["all", "links"] {
+        if optional_bool(arguments, flag)? {
+            args.push(format!("--{flag}"));
         }
     }
     Ok(())
@@ -625,7 +642,8 @@ mod tests {
                 "implementations",
                 "signature",
                 "graph",
-                "check"
+                "check",
+                "verify"
             ]
         );
     }

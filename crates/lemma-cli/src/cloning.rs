@@ -48,7 +48,7 @@ fn entry_of(command: &Command) -> Option<(PathBuf, PathBuf)> {
             Some((description?, root))
         }
         Command::Check(args) if !args.no_clone => {
-            let entry = crate::check::entry_manifest(&args.manifest);
+            let entry = args.manifest.clone();
             let directory = entry.parent().map_or_else(PathBuf::new, Path::to_path_buf);
             Some((entry, directory))
         }

@@ -5,7 +5,7 @@
 //! cache on first use. A commit is read from Git without a checkout; a
 //! worktree is created only when a resolver has to run code at a commit.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -294,6 +294,15 @@ fn default_branches(root: &Path) -> Vec<String> {
     }
     branches.extend(names);
     branches
+}
+
+/// Every file Git tracks at `checkout`; `None` where it is no repository.
+pub(crate) fn tracked_files(checkout: &Checkout) -> Option<BTreeSet<String>> {
+    let listed = match &checkout.commit {
+        Some(commit) => git(&checkout.root, &["ls-tree", "-r", "--name-only", commit]),
+        None => git(&checkout.root, &["ls-files"]),
+    };
+    Some(listed.ok()?.lines().map(str::to_owned).collect())
 }
 
 /// Whether `url` at `reference` is in the clone cache.

@@ -1,6 +1,6 @@
 //! Compiling a grammar file to a checked program.
 //!
-//! Entities and declared relations become input relations; a relation read
+//! Declared relations become input relations; a relation read
 //! with `@base` also gets a base-snapshot input (`returns@base`). Rule heads
 //! that are not declared become derived relations, their column types
 //! inferred from the rule bodies. Each requirement becomes a derived
@@ -12,20 +12,16 @@ use lemma_logic::{
     Atom, Column, ColumnType, FactSet, Literal, Program, Relation, RelationRole, Rule, Symbols,
     Term, Value,
 };
-use serde::Deserialize;
 
 use crate::rules::{RawAtom, RawLiteral, RawRule, RawTerm, parse_body, parse_rule};
 use crate::twins;
-use crate::{DeclaredFact, GrammarError, GrammarFile, RelationSpec, SNAPSHOTS};
+use crate::{DeclaredFact, FactValue, GrammarError, GrammarFile, RelationSpec, SNAPSHOTS};
 
 /// Sources a relation's facts may come from.
 const SOURCES: [&str; 5] = ["syntax", "semantic", "spec", "declared", "observed"];
-/// Type names every grammar understands, besides its entities.
-const SYMBOLIC_TYPES: [&str; 2] = ["Text", "Symbol"];
 
 /// How serious a requirement's findings are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Severity {
     /// The change should not merge.
     #[default]
@@ -104,33 +100,11 @@ fn snapshot_name(relation: &str, snapshot: &str) -> String {
 
 /// Compiles a grammar file.
 pub fn compile(file: &GrammarFile) -> Result<CompiledGrammar, GrammarError> {
-    let entity_names: BTreeSet<String> = mapping_keys(&file.entities, "entities")?
-        .into_iter()
-        .collect();
     let mut inputs = BTreeMap::new();
     let mut columns: BTreeMap<String, Vec<Column>> = BTreeMap::new();
-    for (name, value) in &file.entities {
-        let name = key(name, "entities")?;
-        let attributes = mapping_of(value, &format!("entity {name}"))?;
-        let mut entity_columns = vec![symbol_column("id")];
-        entity_columns.extend(attribute_columns(
-            &attributes,
-            &entity_names,
-            &format!("entity {name}"),
-        )?);
-        declare(
-            &mut inputs,
-            &mut columns,
-            &name,
-            entity_columns,
-            RelationSpec::default_for_entity(),
-        )?;
-    }
-    for (name, value) in &file.relations {
-        let name = key(name, "relations")?;
-        let spec: RelationSpec = yaml_serde::from_value(value.clone())?;
-        let relation_columns = relation_columns(&spec, &entity_names, &name)?;
-        declare(&mut inputs, &mut columns, &name, relation_columns, spec)?;
+    for (name, spec) in &file.relations {
+        let relation_columns = relation_columns(spec, name)?;
+        declare(&mut inputs, &mut columns, name, relation_columns, spec)?;
     }
     let mut symbols = Symbols::new();
     let mut parsed = parse_all(file)?;
@@ -167,23 +141,12 @@ pub fn compile(file: &GrammarFile) -> Result<CompiledGrammar, GrammarError> {
     })
 }
 
-impl RelationSpec {
-    fn default_for_entity() -> Self {
-        Self {
-            args: Vec::new(),
-            attributes: yaml_serde::Mapping::new(),
-            sources: SOURCES.iter().map(|source| (*source).to_owned()).collect(),
-            description: None,
-        }
-    }
-}
-
 fn declare(
     inputs: &mut BTreeMap<String, RelationInfo>,
     columns: &mut BTreeMap<String, Vec<Column>>,
     name: &str,
     relation_columns: Vec<Column>,
-    spec: RelationSpec,
+    spec: &RelationSpec,
 ) -> Result<(), GrammarError> {
     let what = || format!("relation {name}");
     if let Some(source) = spec
@@ -210,96 +173,31 @@ fn declare(
             .iter()
             .map(|column| column.name.clone())
             .collect(),
-        sources: spec.sources,
-        description: spec.description,
+        sources: spec.sources.clone(),
+        description: spec.description.clone(),
     };
     if inputs.insert(name.to_owned(), info).is_some() {
-        return Err(declaration(
-            what(),
-            "declared twice (entities and relations share names)",
-        ));
+        return Err(declaration(what(), "declared twice"));
     }
     columns.insert(name.to_owned(), relation_columns);
     Ok(())
 }
 
-fn relation_columns(
-    spec: &RelationSpec,
-    entities: &BTreeSet<String>,
-    name: &str,
-) -> Result<Vec<Column>, GrammarError> {
-    let what = format!("relation {name}");
-    let mut used: BTreeMap<String, usize> = BTreeMap::new();
-    let mut relation_columns = Vec::new();
-    for kind in &spec.args {
-        let column_type = column_type(kind, entities, &what)?;
-        let base = kind.to_lowercase();
-        let count = used.entry(base.clone()).or_insert(0);
-        *count += 1;
-        let column_name = if *count == 1 {
-            base
-        } else {
-            format!("{base}{count}")
-        };
-        relation_columns.push(Column {
-            name: column_name,
-            kind: column_type,
-        });
-    }
-    relation_columns.extend(attribute_columns(&spec.attributes, entities, &what)?);
-    if relation_columns.is_empty() {
+fn relation_columns(spec: &RelationSpec, name: &str) -> Result<Vec<Column>, GrammarError> {
+    if spec.columns.is_empty() {
         return Err(declaration(
-            what,
-            "needs at least one argument or attribute",
+            format!("relation {name}"),
+            "needs at least one column",
         ));
     }
-    Ok(relation_columns)
-}
-
-fn attribute_columns(
-    attributes: &yaml_serde::Mapping,
-    entities: &BTreeSet<String>,
-    what: &str,
-) -> Result<Vec<Column>, GrammarError> {
-    let mut result = Vec::new();
-    for (name, kind) in attributes {
-        let name = key(name, what)?;
-        let kind = kind.as_str().ok_or_else(|| {
-            declaration(
-                what.to_owned(),
-                &format!("attribute `{name}` needs a type name"),
-            )
-        })?;
-        result.push(Column {
-            name,
-            kind: column_type(kind, entities, what)?,
-        });
-    }
-    Ok(result)
-}
-
-fn column_type(
-    name: &str,
-    entities: &BTreeSet<String>,
-    what: &str,
-) -> Result<ColumnType, GrammarError> {
-    if name == "Number" {
-        return Ok(ColumnType::Number);
-    }
-    if SYMBOLIC_TYPES.contains(&name) || entities.contains(name) {
-        return Ok(ColumnType::Symbol);
-    }
-    Err(GrammarError::UnknownType {
-        what: what.to_owned(),
-        name: name.to_owned(),
-    })
-}
-
-fn symbol_column(name: &str) -> Column {
-    Column {
-        name: name.to_owned(),
-        kind: ColumnType::Symbol,
-    }
+    Ok(spec
+        .columns
+        .iter()
+        .map(|(column, kind)| Column {
+            name: column.clone(),
+            kind: *kind,
+        })
+        .collect())
 }
 
 /// Rules and requirement bodies, parsed, each with its source text.
@@ -720,39 +618,14 @@ fn declared_row(
         .iter()
         .zip(&fact.values)
         .map(|(column, value)| match (column.kind, value) {
-            (ColumnType::Symbol, yaml_serde::Value::String(text)) => Ok(symbols.intern(text)),
-            (ColumnType::Number, yaml_serde::Value::Number(number)) => number
-                .as_i64()
-                .map(Value::Number)
-                .ok_or_else(|| declaration(what(), "numbers must be integers")),
+            (ColumnType::Symbol, FactValue::Text(text)) => Ok(symbols.intern(text)),
+            (ColumnType::Number, FactValue::Number(number)) => Ok(Value::Number(*number)),
             _ => Err(declaration(
                 what(),
                 &format!("`{}` expects a {:?}", column.name, column.kind),
             )),
         })
         .collect()
-}
-
-fn mapping_keys(mapping: &yaml_serde::Mapping, what: &str) -> Result<Vec<String>, GrammarError> {
-    mapping.keys().map(|name| key(name, what)).collect()
-}
-
-fn key(value: &yaml_serde::Value, what: &str) -> Result<String, GrammarError> {
-    value
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| declaration(what.to_owned(), "names must be strings"))
-}
-
-fn mapping_of(value: &yaml_serde::Value, what: &str) -> Result<yaml_serde::Mapping, GrammarError> {
-    match value {
-        yaml_serde::Value::Mapping(mapping) => Ok(mapping.clone()),
-        yaml_serde::Value::Null => Ok(yaml_serde::Mapping::new()),
-        _ => Err(declaration(
-            what.to_owned(),
-            "expected a map of attribute names to types",
-        )),
-    }
 }
 
 fn declaration(what: String, message: &str) -> GrammarError {

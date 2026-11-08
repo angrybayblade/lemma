@@ -613,15 +613,14 @@ version = "0.1.0-rc1"
 dependencies = [
  "lemma-lang",
  "lemma-logic",
- "serde",
  "thiserror 2.0.21",
- "yaml_serde",
 ]
 
 [[package]]
 name = "lemma-graph"
 version = "0.1.0-rc1"
 dependencies = [
+ "globset",
  "json-schema-diff",
  "lemma-grammar",
  "lemma-http",

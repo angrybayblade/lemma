@@ -9,9 +9,6 @@ module lemma.http
 // "repository:file". The changed repository is read at the base and head
 // of the change; every other repository at one commit, the same in both.
 
-// Ported from grammars/http-contracts.yaml: the same relations, rules and
-// requirements, so lowering this module gives the same program.
-
 export relation operation(service: Text, operation: Text, method: Text, path: Text)
 export relation parameter(operation: Text, name: Text, location: Text)
 export relation required_parameter(operation: Text, name: Text, location: Text)

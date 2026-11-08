@@ -441,7 +441,7 @@ fn chosen_languages(target: &LspTarget) -> anyhow::Result<Option<BTreeSet<Langua
     Ok(Some(chosen))
 }
 
-/// Each member's indexed root in the workspace whose `lemma.yaml` is at
+/// Each member's indexed root in the workspace whose description is at
 /// `lemma_path`: its clone, or the worktree at its pin.
 fn workspace_roots(lemma_path: &Path) -> anyhow::Result<Vec<Root>> {
     let cache = lemma_graph::repos::cache_directory();

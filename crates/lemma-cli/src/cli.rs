@@ -45,7 +45,7 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Index source files and symbols under a directory.
     Index {
-        /// A directory with a mod.lm or lemma.yaml, or one of those files.
+        /// A directory with a mod.lm, or the module to read.
         #[arg(default_value = ".")]
         path: PathBuf,
         /// Snapshots of pinned commits (worktrees a workspace indexes) to
@@ -101,14 +101,11 @@ pub(crate) enum Command {
     /// Run it from the project directory; tool calls go through the
     /// daemon like any other command.
     Mcp,
-    /// Verify a change across repositories: extract facts from each
-    /// repository in a manifest, evaluate a grammar's requirements, and
-    /// report what the change breaks.
-    ///
-    /// Exits with 4 if any finding is an error.
+    /// Check that a description still matches the code: its configuration
+    /// and its links, at one snapshot. Exits 4 if a finding is an error.
     Verify(VerifyArgs),
     /// Check the links between operations declared in composable
-    /// lemma.yaml files: that each link persists, and that both sides'
+    /// descriptions: that each link persists, and that both sides'
     /// request and response schemas agree.
     ///
     /// Exits with 4 if any finding is an error (level `check`).
@@ -126,15 +123,15 @@ pub(crate) enum Command {
     reason = "independent command-line flags"
 )]
 pub(crate) struct CheckArgs {
-    /// The parent lemma.yaml, which composes the repositories to check.
-    #[arg(default_value = "lemma.yaml")]
+    /// The entry module, which composes the repositories to check.
+    #[arg(default_value = "mod.lm")]
     pub manifest: PathBuf,
     /// Never clone a repository: check those that are here, and exit 5 if
     /// that is not all of them.
     #[arg(long)]
     pub no_clone: bool,
-    /// The repository that changed, as the workspace names it (`billing`;
-    /// `#billing` in a lemma.yaml), or `self` for the workspace's own
+    /// The repository that changed, as the workspace names it or by its
+    /// directory (`billing`), or `self` for the workspace's own
     /// repository.
     #[arg(long)]
     pub change: Option<String>,
@@ -181,49 +178,22 @@ pub(crate) struct CheckArgs {
     /// Show why each inferred finding holds.
     #[arg(long)]
     pub explain: bool,
-    /// Also list every link: those declared, and each call from code to a
-    /// documented operation, by calling repository and the service called.
-    /// Reads all consumer code; without `--change`, at head.
-    #[arg(long)]
-    pub links: bool,
-    /// Also ask language servers who calls each link's caller anchor, and
-    /// warn when a method nothing calls is anchored while a sibling method
-    /// is called. Uses the running daemon's warm servers, or, without one,
-    /// starts a server per repository, which takes longer.
-    #[arg(long)]
-    pub anchors: bool,
 }
 
 #[derive(Args)]
 pub(crate) struct VerifyArgs {
-    /// The manifest: repositories, their roles and commits, and the change.
-    pub manifest: PathBuf,
-    /// Show why each finding holds.
-    #[arg(long)]
-    pub explain: bool,
-    /// The rule engine: `souffle` or `reference`. Default: Soufflé if it is
-    /// installed, otherwise the reference engine.
-    #[arg(long)]
-    pub engine: Option<String>,
-    /// Also list informational findings, not just their count.
+    /// The entry module: a workspace verifies every repository it composes.
+    #[arg(default_value = "mod.lm")]
+    pub module: PathBuf,
+    /// List every informational finding, not just the first ten.
     #[arg(long)]
     pub all: bool,
-    /// The commit before the change, instead of the manifest's `change.base`.
+    /// Also list every link, declared and inferred.
     #[arg(long)]
-    pub base: Option<String>,
-    /// The commit with the change, instead of the manifest's `change.head`.
-    #[arg(long)]
-    pub head: Option<String>,
+    pub links: bool,
     /// Also print every row of a derived relation, such as `calls`.
-    /// Repeatable.
     #[arg(long = "relation", value_name = "NAME")]
     pub relations: Vec<String>,
-    /// How much consumer code to read: `demand` (only what a finding can
-    /// rest on), `full`, or `both`, which runs the two and fails if their
-    /// findings differ. Default: `demand`, or `full` with `--relation`, whose
-    /// rows are then complete.
-    #[arg(long)]
-    pub evaluation: Option<String>,
 }
 
 #[derive(Args)]
@@ -351,7 +321,7 @@ pub(crate) struct GraphArgs {
     /// `function,method` for the calls without the fields and types used.
     #[arg(long, value_delimiter = ',', value_name = "KINDS")]
     pub only: Vec<SymbolKind>,
-    /// A workspace lemma.yaml: follow callers out of the repository too,
+    /// A workspace description: follow callers out of the repository too,
     /// through the operations their handlers serve to the code in other
     /// repositories that calls them, and on up. Runs inference over the
     /// whole system, so it takes as long as `lemma check`.
@@ -419,7 +389,7 @@ pub(crate) struct DefinitionArgs {
 #[derive(Args)]
 pub(crate) struct SymbolTarget {
     /// A name, a qualified name such as `Router.delete`, `#<id>` from
-    /// `lemma symbols`, or an export's address from lemma.yaml, such as
+    /// `lemma symbols`, or an export's address from a description, such as
     /// `services.api.charge`.
     pub symbol: String,
     #[command(flatten)]

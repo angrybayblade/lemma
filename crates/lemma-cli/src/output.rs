@@ -80,7 +80,7 @@ struct IndexView<'a> {
 /// How many exports and links an index holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct ExportCounts {
-    /// Operations declared in `lemma.yaml`.
+    /// Operations declared in a description.
     pub operations: usize,
     /// Operations documents describe.
     pub endpoints: usize,
@@ -95,7 +95,7 @@ pub(crate) struct ExportCounts {
     pub warnings: Vec<String>,
 }
 
-/// A symbol `lemma.yaml` links to (`to`) or from (`from`) the one asked
+/// A symbol the description links to (`to`) or from (`from`) the one asked
 /// about, by its export's address, with the code implementing it when the
 /// index knows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -273,7 +273,7 @@ impl<'a> IndexView<'a> {
 pub(crate) struct IndexReport<'a> {
     pub summary: &'a IndexSummary,
     pub exports: &'a ExportCounts,
-    /// What the person should know, such as a missing `lemma.yaml`.
+    /// What the person should know, such as a missing the description.
     pub warnings: &'a [String],
 }
 

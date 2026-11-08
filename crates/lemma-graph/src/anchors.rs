@@ -259,6 +259,7 @@ fn finding(link: &str, severity: Severity, message: String) -> Finding {
         values: std::collections::BTreeMap::new(),
 
         derivation: None,
+        description_name: Some("anchor_uncalled"),
     }
 }
 

@@ -1,8 +1,8 @@
-//! Loading a system of `lemma.yaml` files and checking its links.
+//! Loading a system of descriptions and checking its links.
 //!
-//! The system starts at a parent `lemma.yaml`. Every external service it or
+//! The system starts at a parent description. Every external service it or
 //! a repository it reaches declares (`#name`) is resolved to a checkout and
-//! its `lemma.yaml` read there; the first declaration of a name wins, so a
+//! its description read there; the first declaration of a name wins, so a
 //! parent's pin overrides a repository's. The changed repository is read at
 //! the change's two commits, every other at its pin. Links come from every
 //! `graph` at head.
@@ -21,14 +21,16 @@ use crate::address::{Address, Link, parse_link};
 use crate::affects::{self, Walkable};
 use crate::behaviors::{BehaviorReport, RequirementChange};
 use crate::compare::{Difference, compare};
-use crate::config::{LEMMA_FILE, LemmaFile, Level, Operation, SchemaSource, Service, parse};
+use lemma_lang::load::MODULE_FILE;
+
+use crate::config::{LemmaFile, Level, Operation, SchemaSource, Service};
 use crate::infer;
 use crate::repos::{
     Checkout, Cloning, UnavailableRepository, clone_remote, fork_point, is_cloned, resolve_commit,
 };
 use crate::schema::{self, Context, Role};
 
-/// The name of the repository holding the parent `lemma.yaml`.
+/// The name of the repository holding the parent description.
 pub(crate) const SELF: &str = "self";
 pub(crate) const BASE: usize = 0;
 pub(crate) const HEAD: usize = 1;
@@ -38,7 +40,7 @@ pub(crate) const HEAD: usize = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
     /// The external service's name (`#billing`), or `self` for the
-    /// repository holding the parent `lemma.yaml`.
+    /// repository holding the parent description.
     pub repository: String,
     /// The commit before the change; when absent, where the repository's
     /// checked-out commit left its default branch (see
@@ -63,6 +65,8 @@ pub struct CheckOptions {
     pub level: Option<Level>,
     /// Whether each inferred finding says why it holds.
     pub explain: bool,
+    /// Derived relations whose rows to include in the report.
+    pub relations: Vec<String>,
     /// Lemma's cache directory.
     pub cache: PathBuf,
     /// Whether a repository not in the cache may be cloned.
@@ -90,7 +94,7 @@ pub struct CheckOptions {
 
 impl CheckOptions {
     /// These options with the changed repository named as loading names
-    /// it: a module's workspace writes `repo billing`, a `lemma.yaml` writes
+    /// it: a module's workspace writes `repo billing`, a description writes
     /// `#billing`, and either is the external service `#billing`.
     fn with_change_named_as_loaded(&self) -> CheckOptions {
         let mut options = self.clone();
@@ -138,7 +142,7 @@ impl CheckOptions {
 /// Every link a check found, as [`CheckOptions::list_links`] asks.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LinkList {
-    /// The links `lemma.yaml` files declare, as `caller -> provider`.
+    /// The links descriptions declare, as `caller -> provider`.
     pub declared: Vec<String>,
     /// The calls from code to documented operations inference found.
     pub inferred: Vec<InferredLink>,
@@ -199,6 +203,10 @@ pub struct Finding {
     /// Why an inferred finding holds, when [`CheckOptions::explain`] asks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub derivation: Option<String>,
+    /// The name `lemma verify` reports it under, if it is about the
+    /// description rather than a contract.
+    #[serde(skip)]
+    pub description_name: Option<&'static str>,
 }
 
 /// Something a problem affects further up.
@@ -236,7 +244,7 @@ pub struct ResolvedRepository {
     pub base: Option<String>,
     /// The commit read with the change.
     pub head: Option<String>,
-    /// Whether its `lemma.yaml` came from the working directory because a
+    /// Whether its description came from the working directory because a
     /// commit read had none, as when replaying history from before the
     /// repository adopted Lemma. Its code is still read at the commit.
     pub manifest_from_working_directory: bool,
@@ -270,6 +278,9 @@ pub struct Report {
     /// Repositories that are not here, so this check did not cover them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub not_checked: Vec<NotChecked>,
+    /// The rows of each derived relation [`CheckOptions::relations`] asks.
+    #[serde(skip)]
+    pub relations: BTreeMap<String, Vec<Vec<String>>>,
 }
 
 /// A repository a check could not read.
@@ -290,7 +301,7 @@ pub(crate) struct Repo {
     pub(crate) unavailable: BTreeSet<UnavailableRepository>,
 }
 
-/// Checks the links of the system whose parent `lemma.yaml` is `root_file`,
+/// Checks the links of the system whose parent description is `root_file`,
 /// evaluating inferred links' grammar with `engine`. With `references`,
 /// also checks that each link's caller is anchored at code that is called.
 pub fn check<E: Engine>(
@@ -300,13 +311,8 @@ pub fn check<E: Engine>(
     references: Option<&mut dyn crate::anchors::References>,
 ) -> Result<Report, GraphError> {
     let started = std::time::Instant::now();
-    let options = &options.with_change_named_as_loaded();
-    let mut repos = load(root_file, options)?;
-    let by_directory = options.with_change_found_by_directory(&repos);
-    if let Some(found) = &by_directory {
-        repos = load(root_file, found)?;
-    }
-    let options = by_directory.as_ref().unwrap_or(options);
+    let (repos, options) = load_with_change_named(root_file, options)?;
+    let options = &options;
     check_change_names_a_repository(&repos, options)?;
     log_repositories(&repos);
     let level = options
@@ -315,6 +321,9 @@ pub fn check<E: Engine>(
         .unwrap_or_default();
     let (links, not_checked) = split_unchecked_links(collect_links(&repos)?, &repos);
     let mut findings = check_declared(&repos, &links, level, options)?;
+    if options.change.is_some() {
+        findings.extend(crate::description::introduced_by_change(&repos, level));
+    }
     log::info!(
         "checked {} declared links: {} findings",
         links.len(),
@@ -360,7 +369,22 @@ pub fn check<E: Engine>(
         behaviors,
         requirement_changes,
         not_checked,
+        relations: walkable.relations,
     })
+}
+
+/// The repositories at `root_file` and the options, with the change named as
+/// loading names its repository: by that name, or else by its directory.
+fn load_with_change_named(
+    root_file: &Path,
+    options: &CheckOptions,
+) -> Result<(BTreeMap<String, Repo>, CheckOptions), GraphError> {
+    let options = options.with_change_named_as_loaded();
+    let repos = load(root_file, &options)?;
+    let Some(found) = options.with_change_found_by_directory(&repos) else {
+        return Ok((repos, options));
+    };
+    Ok((load(root_file, &found)?, found))
 }
 
 /// What tracing what problems affect reads.
@@ -414,7 +438,7 @@ fn evaluate_behaviors(
 ) -> Result<(Vec<BehaviorReport>, Vec<RequirementChange>), GraphError> {
     let (root_file, head_program) = program;
     let manifest = root_file.file_name().map_or_else(
-        || LEMMA_FILE.to_owned(),
+        || MODULE_FILE.to_owned(),
         |name| name.to_string_lossy().into_owned(),
     );
     let evaluated = crate::behaviors::run(&manifest, repos, options, head_program)?;
@@ -484,7 +508,7 @@ fn log_repositories(repos: &BTreeMap<String, Repo>) {
             format!("{}..{}", at(&repository.base), at(&repository.head))
         };
         let manifest = if repository.manifest_from_working_directory {
-            ", lemma.yaml from the working directory"
+            ", the description from the working directory"
         } else {
             ""
         };
@@ -514,7 +538,7 @@ fn log_outcome(findings: &[Finding], started: std::time::Instant) {
     );
 }
 
-/// Fails when the change names a repository no `lemma.yaml` declares.
+/// Fails when the change names a repository no description declares.
 fn check_change_names_a_repository(
     repos: &BTreeMap<String, Repo>,
     options: &CheckOptions,
@@ -586,6 +610,7 @@ fn infer_at_head<E: Engine>(
             listings: shared.listings,
             evaluation: lemma_verify::Evaluation::Full,
             explain: false,
+            relations: &options.relations,
         };
         let mut ignored = Vec::new();
         if let Some(found) = infer_links(repos, &run, Level::Audit, engine, &mut ignored)? {
@@ -717,6 +742,7 @@ struct Inference<'a> {
     listings: &'a Arc<lemma_http::Listings>,
     evaluation: lemma_verify::Evaluation,
     explain: bool,
+    relations: &'a [String],
 }
 
 /// What every inference in one check shares: its options, and the
@@ -786,6 +812,7 @@ fn infer_change<E: Engine>(
         listings,
         evaluation: evaluation_of(options),
         explain: options.explain,
+        relations: &options.relations,
     };
     infer_links(repos, &run, level, engine, findings)
 }
@@ -831,6 +858,7 @@ fn infer_drift<E: Engine>(
             listings,
             evaluation: options.evaluation,
             explain: options.explain,
+            relations: &options.relations,
         };
         if let Some(found) = infer_links(repos, &run, level, engine, findings)? {
             inferred = Some(found);
@@ -884,6 +912,11 @@ fn infer_links<E: Engine>(
     inferred.manifest.lowered = run.grammar.cloned();
     let report = verify_inferred(&inferred, run, engine)?;
     let mut walkable = affects::walkable(&report.relations, &inferred.repositories);
+    walkable.relations = run
+        .relations
+        .iter()
+        .filter_map(|name| Some((name.clone(), report.relations.get(name)?.clone())))
+        .collect();
     walkable.partial = partial_calls(&report, &inferred);
     for found in &report.findings {
         if let Some(seed) = affects::inferred_seed(&found.values, &inferred.repositories) {
@@ -910,7 +943,11 @@ fn verify_inferred<E: Engine>(
     let (base, head) = (run.base, run.head);
     let options = lemma_verify::Options {
         explain: run.explain,
-        relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
+        relations: affects::TRACED_RELATIONS
+            .map(str::to_owned)
+            .into_iter()
+            .chain(run.relations.iter().cloned())
+            .collect(),
         facts_cache: run.facts_cache.cloned(),
         // Tracing asks for the calls of further operations as it reaches
         // them (see `affects::CallSource`).
@@ -1223,6 +1260,7 @@ fn unsupported_documents(repos: &BTreeMap<String, Repo>) -> Result<Vec<Finding>,
             allowed: None,
             values: BTreeMap::new(),
             derivation: None,
+            description_name: None,
         });
     }
     Ok(warnings)
@@ -1279,13 +1317,15 @@ fn adapter_warning(entry: &str, message: String) -> Finding {
         values: BTreeMap::new(),
 
         derivation: None,
+
+        description_name: None,
     }
 }
 
-/// A repository's `lemma.yaml` as inference reads it. One borrowed from the
+/// A repository's the description as inference reads it. One borrowed from the
 /// working directory for a commit that had none names documents as they are
 /// today; those missing at both of the repository's checkouts are dropped
-/// rather than failing the check. A `lemma.yaml` from the commit itself is
+/// rather than failing the check. A description from the commit itself is
 /// taken as written, so a misspelt document is still an error.
 pub(crate) fn inference_file(repo: &Repo) -> Result<LemmaFile, GraphError> {
     let mut file = repo.files[HEAD].clone();
@@ -1346,6 +1386,7 @@ fn inferred_finding(found: &lemma_verify::Finding, level: Level, has_change: boo
         allowed: None,
         values: found.values.clone(),
         derivation: found.derivation.clone(),
+        description_name: None,
     }
 }
 
@@ -1392,7 +1433,7 @@ pub(crate) fn load_manifests(
 ) -> Result<BTreeMap<String, Repo>, GraphError> {
     let directory = absolute(root_file.parent().unwrap_or(Path::new(".")));
     let manifest = root_file.file_name().map_or_else(
-        || LEMMA_FILE.to_owned(),
+        || MODULE_FILE.to_owned(),
         |name| name.to_string_lossy().into_owned(),
     );
     let mut repos = BTreeMap::new();
@@ -1543,10 +1584,7 @@ fn external_root(
     Ok(ExternalSource {
         root,
         reference,
-        manifest: service
-            .manifest
-            .clone()
-            .unwrap_or_else(|| LEMMA_FILE.to_owned()),
+        manifest: MODULE_FILE.to_owned(),
     })
 }
 
@@ -1584,66 +1622,10 @@ fn checkouts(
     Ok([at(commit.clone()), at(commit)])
 }
 
-/// A repository's `lemma.yaml` at a checkout, falling back to the working
+/// A repository's the description at a checkout, falling back to the working
 /// directory's when the commit has none; the flag says whether it did.
 fn read_manifest(reading: &Reading, checkout: &Checkout) -> Result<(LemmaFile, bool), GraphError> {
-    let name = reading.name;
-    let manifest = language_manifest(checkout, reading.manifest)?;
-    let manifest = manifest.as_str();
-    if Path::new(manifest)
-        .extension()
-        .is_some_and(|extension| extension == "lm")
-    {
-        return read_language_manifest(reading, checkout, manifest);
-    }
-    let (text, fallback) = if let Some(text) = checkout.read(manifest)? {
-        (text, false)
-    } else {
-        let working = Checkout {
-            root: checkout.root.clone(),
-            commit: None,
-        };
-        let text = working
-            .read(manifest)?
-            .ok_or_else(|| GraphError::MissingManifest {
-                name: name.to_owned(),
-                path: manifest.to_owned(),
-                root: checkout.root.clone(),
-                commit: checkout.commit.clone(),
-            })?;
-        (text, checkout.commit.is_some())
-    };
-    let path = checkout.root.join(manifest);
-    let file = parse(&text).map_err(|source| GraphError::Parse {
-        path: path.clone(),
-        source,
-    })?;
-    file.validate()
-        .map_err(|source| GraphError::InvalidService { path, source })?;
-    Ok((file, fallback))
-}
-
-/// The manifest to read: `lemma.yaml` falls back to `mod.lm` for a
-/// repository that has only the latter, at the checkout or in its working
-/// directory.
-pub(crate) fn language_manifest(checkout: &Checkout, manifest: &str) -> Result<String, GraphError> {
-    if manifest != LEMMA_FILE {
-        return Ok(manifest.to_owned());
-    }
-    let working = Checkout {
-        root: checkout.root.clone(),
-        commit: None,
-    };
-    // Most repositories have lemma.yaml; look no further for them.
-    if checkout.read(manifest)?.is_some() || working.read(manifest)?.is_some() {
-        return Ok(manifest.to_owned());
-    }
-    let has_language = checkout.read(lemma_lang::load::MODULE_FILE)?.is_some()
-        || working.read(lemma_lang::load::MODULE_FILE)?.is_some();
-    if has_language {
-        return Ok(lemma_lang::load::MODULE_FILE.to_owned());
-    }
-    Ok(manifest.to_owned())
+    read_language_manifest(reading, checkout, reading.manifest)
 }
 
 /// What reading one repository's manifest needs: its name, the manifest's
@@ -1657,7 +1639,7 @@ struct Reading<'r> {
 }
 
 /// A repository's `.lm` manifest at a checkout, falling back to the working
-/// directory's when the commit has none, as `lemma.yaml` does.
+/// directory's when the commit has none.
 fn read_language_manifest(
     reading: &Reading,
     checkout: &Checkout,
@@ -1687,7 +1669,7 @@ fn read_language_manifest(
 }
 
 /// Adds every operation a local service's `OpenAPI` documents declare, at
-/// the checkout, to its operations; one declared by name in `lemma.yaml`
+/// the checkout, to its operations; one declared by name in a description
 /// wins. A document missing at the checkout adds nothing.
 fn add_documented_operations(file: &mut LemmaFile, checkout: &Checkout) -> Result<(), GraphError> {
     for (name, service) in &mut file.services {
@@ -1832,6 +1814,7 @@ struct Checker<'a> {
 
 /// A finding before its severity is decided.
 struct Note {
+    description_name: Option<&'static str>,
     check: &'static str,
     message: String,
     introduced: bool,
@@ -1842,11 +1825,18 @@ struct Note {
 impl Note {
     fn problem(check: &'static str, message: String, introduced: bool) -> Self {
         Note {
+            description_name: None,
             check,
             message,
             introduced,
             problem: true,
         }
+    }
+
+    /// The same note, reported by `lemma verify` under `name`.
+    fn named(mut self, name: &'static str) -> Self {
+        self.description_name = Some(name);
+        self
     }
 }
 
@@ -1879,9 +1869,10 @@ impl Checker<'_> {
             let message = if at_base {
                 format!("the {role} operation {address} no longer exists")
             } else {
-                format!("the {role} operation {address} is not declared in any lemma.yaml")
+                format!("the {role} operation {address} is not declared in any description")
             };
-            self.report(label, Note::problem("link", message, at_base));
+            let name = "operation_not_documented";
+            self.report(label, Note::problem("link", message, at_base).named(name));
             return Ok(false);
         };
         let anchor = found.operation.path.clone();
@@ -1900,7 +1891,8 @@ impl Checker<'_> {
         };
         let message =
             format!("the {role} operation {address}'s code anchor `{anchor}` does not resolve");
-        self.report(label, Note::problem("link", message, resolved_at_base));
+        let note = Note::problem("link", message, resolved_at_base);
+        self.report(label, note.named("anchor_unresolved"));
         Ok(false)
     }
 
@@ -1954,6 +1946,7 @@ impl Checker<'_> {
             self.report(
                 label,
                 Note {
+                    description_name: None,
                     check: part.name(),
                     message,
                     introduced,
@@ -2041,6 +2034,7 @@ impl Checker<'_> {
                     self.report(
                         label,
                         Note {
+                            description_name: Some("schema_open"),
                             check: "schema",
                             message,
                             introduced: false,
@@ -2056,7 +2050,8 @@ impl Checker<'_> {
                     part.name(),
                     describe(&error)
                 );
-                self.report(label, Note::problem("schema", message, snapshot == HEAD));
+                let note = Note::problem("schema", message, snapshot == HEAD);
+                self.report(label, note.named("schema_unresolved"));
                 None
             }
         }
@@ -2067,6 +2062,7 @@ impl Checker<'_> {
     /// change did not introduce, is context.
     fn report(&mut self, link: &str, note: Note) {
         let Note {
+            description_name,
             check,
             message,
             introduced,
@@ -2088,6 +2084,7 @@ impl Checker<'_> {
             allowed: None,
             values: BTreeMap::new(),
             derivation: None,
+            description_name,
         };
         if !self.findings.contains(&finding) {
             self.findings.push(finding);
@@ -2153,6 +2150,7 @@ mod tests {
                 allowed: None,
                 values: BTreeMap::new(),
                 derivation: None,
+                description_name: None,
             },
         ];
 

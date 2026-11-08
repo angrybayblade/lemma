@@ -1,9 +1,9 @@
-//! Links between operations declared in composable `lemma.yaml` files, and
+//! Links between operations declared in composable descriptions, and
 //! the checks that run over them.
 //!
-//! Each repository's `lemma.yaml` says what it is (`services`, with their
+//! Each repository's description says what it is (`services`, with their
 //! operations and where each operation's request and response schemas come
-//! from) and how it relates to others (`graph`). A parent `lemma.yaml`
+//! from) and how it relates to others (`graph`). A parent description
 //! composes repositories as external services (`#name`). For every link
 //! (`caller -> provider`), Lemma checks that the link persists, then that
 //! the two sides' schemas, resolved to JSON Schema, agree in the direction
@@ -13,12 +13,13 @@ pub mod adapters;
 pub mod address;
 mod affects;
 mod allowances;
-mod anchors;
+pub mod anchors;
 mod behaviors;
 mod check;
 pub mod compare;
 pub mod compose;
 pub mod config;
+pub mod description;
 pub mod exports;
 mod functions;
 pub mod handlers;
@@ -51,15 +52,6 @@ pub enum GraphError {
         #[source]
         source: std::io::Error,
     },
-    /// A `lemma.yaml` is malformed.
-    #[error("invalid {}", path.display())]
-    Parse {
-        /// The file.
-        path: PathBuf,
-        /// Why.
-        #[source]
-        source: yaml_serde::Error,
-    },
     /// A `.lm` manifest does not check.
     #[error("{} has errors:\n  {}", path.display(), errors.join("\n  "))]
     Language {
@@ -88,7 +80,7 @@ pub enum GraphError {
         source: lemma_grammar::lm::LowerError,
     },
     /// `--select` names a check the parent module does not declare, or the
-    /// parent is a `lemma.yaml`, which declares none.
+    /// parent declares none.
     #[error("{module} declares no check `{name}`, and no behavior or requirement is named so")]
     UnknownCheck {
         /// The parent's entry module.
@@ -103,15 +95,6 @@ pub enum GraphError {
         name: String,
         /// The addresses it could mean.
         candidates: Vec<String>,
-    },
-    /// A service in a `lemma.yaml` contradicts its name.
-    #[error("invalid {}", path.display())]
-    InvalidService {
-        /// The file.
-        path: PathBuf,
-        /// Which service, and why.
-        #[source]
-        source: config::InvalidService,
     },
     /// A link or address is malformed.
     #[error(transparent)]
@@ -202,7 +185,7 @@ pub enum GraphError {
         #[source]
         source: serde_json::Error,
     },
-    /// A schema could not be found where its `lemma.yaml` says.
+    /// A schema could not be found where its description says.
     #[error("{message}")]
     Schema {
         /// What is missing.
@@ -214,13 +197,13 @@ pub enum GraphError {
         /// Why.
         message: String,
     },
-    /// A repository has no `lemma.yaml` where it should, at the commit
+    /// A repository has no `mod.lm` where it should, at the commit
     /// read nor in its working directory.
     #[error("{}", missing_manifest(name, path, root, commit.as_deref()))]
     MissingManifest {
         /// The repository's name.
         name: String,
-        /// Where its `lemma.yaml` was looked for, relative to its root.
+        /// Where its `mod.lm` was looked for, relative to its root.
         path: String,
         /// The repository's clone.
         root: PathBuf,
@@ -264,7 +247,7 @@ pub enum GraphError {
     },
 }
 
-/// What a missing `lemma.yaml` error says: where it was looked for, and
+/// What a missing `mod.lm` error says: where it was looked for, and
 /// what to do about it.
 fn missing_manifest(name: &str, path: &str, root: &Path, commit: Option<&str>) -> String {
     let file = root.join(path);
@@ -291,7 +274,7 @@ mod tests {
     fn a_missing_manifest_says_where_it_was_looked_for_and_what_to_do() {
         let error = GraphError::MissingManifest {
             name: "#billing".to_owned(),
-            path: "lemma.yaml".to_owned(),
+            path: "mod.lm".to_owned(),
             root: PathBuf::from("/work/billing"),
             commit: Some("5a4d5fff35cfb1481505".to_owned()),
         };
@@ -299,8 +282,8 @@ mod tests {
         let message = error.to_string();
 
         assert!(message.starts_with(
-            "#billing has no lemma.yaml at 5a4d5fff35, nor in its working directory \
-             (/work/billing/lemma.yaml). Add one there"
+            "#billing has no mod.lm at 5a4d5fff35, nor in its working directory \
+             (/work/billing/mod.lm). Add one there"
         ));
     }
 }

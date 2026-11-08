@@ -1,4 +1,4 @@
-//! Which files an index covers: the code each service in `lemma.yaml` says
+//! Which files an index covers: the code each service in a description says
 //! it is made of.
 
 use std::collections::BTreeSet;

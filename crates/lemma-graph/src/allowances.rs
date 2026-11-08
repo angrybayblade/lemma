@@ -111,6 +111,7 @@ impl<'m> Allowed<'m> {
                 allowed: None,
                 values: BTreeMap::new(),
                 derivation: None,
+                description_name: None,
             })
             .collect()
     }
@@ -162,6 +163,8 @@ mod tests {
                 .collect(),
 
             derivation: None,
+
+            description_name: None,
         }
     }
 

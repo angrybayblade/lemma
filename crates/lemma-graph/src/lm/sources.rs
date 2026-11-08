@@ -24,7 +24,7 @@ pub struct CheckoutSources<'c> {
     /// unsaved buffers, by absolute path.
     overlay: BTreeMap<PathBuf, String>,
     /// Repositories a composition already pinned, which win over the pins
-    /// the modules declare, as a parent's do in `lemma.yaml`.
+    /// the modules declare, as a composition's do.
     pins: BTreeMap<String, Checkout>,
     cloning: Cloning,
 }
@@ -146,7 +146,7 @@ impl Sources for CheckoutSources<'_> {
             return Ok(found);
         }
         // A commit from before the repository had modules: its working
-        // directory's, as a lemma.yaml missing at a commit is read.
+        // directory's.
         let working = Checkout {
             root: checkout.root.clone(),
             commit: None,
@@ -175,7 +175,7 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 /// A repository's `mod.lm` at a checkout, checked and lowered to the
-/// `lemma.yaml` structures for that repository.
+/// structures for that repository.
 pub fn read_manifest(
     checkout: &Checkout,
     manifest: &str,

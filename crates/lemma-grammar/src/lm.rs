@@ -14,13 +14,15 @@ use lemma_lang::model::{Literal, Model, Run, Severity as LmSeverity, Term};
 use lemma_lang::syntax::ast::Snapshot;
 use lemma_lang::types::{Address, Type, Value};
 
-use crate::{DeclaredFact, GrammarFile, RelationSpec, RequirementSpec, Severity};
+use lemma_logic::ColumnType;
+
+use crate::{DeclaredFact, FactValue, GrammarFile, RelationSpec, RequirementSpec, Severity};
 
 /// Why a checked program cannot be lowered into a grammar.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LowerError {
     /// The program uses something the grammar compiler cannot express yet.
-    #[error("{what} cannot run in `lemma verify` yet")]
+    #[error("{what} cannot run in `lemma check` yet")]
     Unsupported {
         /// What, in a phrase naming the declaration.
         what: String,
@@ -38,8 +40,7 @@ pub fn grammar_file(
     let names = Names::new(model);
     let mut file = GrammarFile {
         grammar: name.to_owned(),
-        entities: yaml_serde::Mapping::new(),
-        relations: yaml_serde::Mapping::new(),
+        relations: Vec::new(),
         rules: Vec::new(),
         requirements: BTreeMap::new(),
         facts: Vec::new(),
@@ -50,7 +51,7 @@ pub fn grammar_file(
             .iter()
             .map(|column| (column.name.as_str(), &column.column_type));
         file.relations
-            .insert(names.key(&relation.address), relation_spec(columns));
+            .push((names.get(&relation.address), relation_spec(columns)));
     }
     for graph in &model.graphs {
         lower_graph(&mut file, &names, model, graph)?;
@@ -96,32 +97,22 @@ fn severity(severity: LmSeverity) -> Severity {
     }
 }
 
-fn relation_spec<'c>(columns: impl Iterator<Item = (&'c str, &'c Type)>) -> yaml_serde::Value {
-    let mut attributes = yaml_serde::Mapping::new();
-    for (name, column_type) in columns {
+fn relation_spec<'c>(columns: impl Iterator<Item = (&'c str, &'c Type)>) -> RelationSpec {
+    let column = |(name, column_type): (&str, &Type)| {
         let kind = if *column_type == Type::Int {
-            "Number"
+            ColumnType::Number
         } else {
-            "Text"
+            ColumnType::Symbol
         };
-        attributes.insert(name.into(), kind.into());
+        (name.to_owned(), kind)
+    };
+    RelationSpec {
+        columns: columns.map(column).collect(),
+        sources: ["syntax", "semantic", "spec", "declared", "observed"]
+            .map(str::to_owned)
+            .to_vec(),
+        description: None,
     }
-    let mut spec = yaml_serde::Mapping::new();
-    spec.insert("attributes".into(), yaml_serde::Value::Mapping(attributes));
-    spec.insert(
-        "sources".into(),
-        yaml_serde::Value::Sequence(
-            ["syntax", "semantic", "spec", "declared", "observed"]
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        ),
-    );
-    // Validate the shape the compiler expects, so a change there fails here.
-    debug_assert!(
-        yaml_serde::from_value::<RelationSpec>(yaml_serde::Value::Mapping(spec.clone())).is_ok()
-    );
-    yaml_serde::Value::Mapping(spec)
 }
 
 /// A graph's rows hold in its relation and in a relation of its own, which
@@ -144,9 +135,9 @@ fn lower_graph(
         .iter()
         .map(|column| (column.name.as_str(), &column.column_type));
     file.relations
-        .insert(names.key(&graph.address), relation_spec(columns));
+        .push((names.get(&graph.address), relation_spec(columns)));
     for row in &graph.rows {
-        let values: Vec<yaml_serde::Value> = row
+        let values: Vec<FactValue> = row
             .iter()
             .map(|value| fact_value(value, &graph.address))
             .collect::<Result<_, _>>()?;
@@ -161,10 +152,10 @@ fn lower_graph(
     Ok(())
 }
 
-fn fact_value(value: &Value, owner: &Address) -> Result<yaml_serde::Value, LowerError> {
+fn fact_value(value: &Value, owner: &Address) -> Result<FactValue, LowerError> {
     match value {
-        Value::Int(number) => Ok((*number).into()),
-        _ => Ok(constant_symbol(value, owner)?.into()),
+        Value::Int(number) => Ok(FactValue::Number(*number)),
+        _ => Ok(FactValue::Text(constant_symbol(value, owner)?)),
     }
 }
 
@@ -331,10 +322,6 @@ impl Names {
             address.path.join("_")
         )
     }
-
-    fn key(&self, address: &Address) -> yaml_serde::Value {
-        self.get(address).into()
-    }
 }
 
 /// Every predicate's name a rule body reads, for tests.
@@ -357,10 +344,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use lemma_lang::{Repository, SourceError, Sources, check_program};
-    use lemma_logic::ColumnType;
 
     use super::*;
-    use crate::{compile, parse_grammar};
+    use crate::compile;
 
     struct Memory(BTreeMap<String, String>);
 
@@ -375,36 +361,6 @@ mod tests {
         let checked = check_program(&mut sources, "mod.lm");
         assert!(checked.diagnostics.is_empty(), "{:#?}", checked.diagnostics);
         checked.model
-    }
-
-    /// A relation's columns' kinds, for comparing programs whose column
-    /// names differ.
-    fn kinds(program: &lemma_logic::Program) -> BTreeMap<String, Vec<ColumnType>> {
-        program
-            .relations()
-            .map(|relation| {
-                let kinds = relation.columns.iter().map(|column| column.kind).collect();
-                (relation.name.clone(), kinds)
-            })
-            .collect()
-    }
-
-    #[test]
-    fn the_standard_http_module_lowers_to_the_yaml_grammars_program() {
-        let lowered = grammar_file(
-            &model("module example\nimport lemma.http\n"),
-            "http-contracts",
-            None,
-        )
-        .unwrap();
-        let yaml = parse_grammar(include_str!("../../../grammars/http-contracts.yaml")).unwrap();
-
-        let from_lm = compile(&lowered).unwrap();
-        let from_yaml = compile(&yaml).unwrap();
-
-        assert_eq!(kinds(&from_lm.program), kinds(&from_yaml.program));
-        assert_eq!(from_lm.program.rules(), from_yaml.program.rules());
-        assert_eq!(from_lm.requirements, from_yaml.requirements);
     }
 
     #[test]

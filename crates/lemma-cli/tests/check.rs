@@ -395,3 +395,71 @@ fn explain_says_why_an_inferred_finding_holds() {
         "{explained}"
     );
 }
+
+#[test]
+fn verify_finds_a_document_that_does_not_exist_and_a_pattern_that_matches_nothing() {
+    let scratch = tempfile::tempdir().unwrap();
+    let directory = scratch.path();
+    write(&directory.join("src/a.ts"), "export const a = 1;\n");
+    write(
+        &directory.join("mod.lm"),
+        "module shop\n\nimport * as http from lemma.http\n\nexport service api {\n    index: { include: [\"src\", \"nope\"] }\n    operations: http.openapi(\"missing.json\")\n}\n",
+    );
+    commit_all(directory);
+
+    let output = lemma(directory, &["verify", "--no-daemon"]);
+
+    assert_eq!(output.status.code(), Some(4), "{}", text(&output));
+    assert!(
+        text(&output).contains("[document_missing]"),
+        "{}",
+        text(&output)
+    );
+    assert!(
+        text(&output).contains("[include_matches_nothing]"),
+        "{}",
+        text(&output)
+    );
+}
+
+#[test]
+fn verify_passes_a_description_that_matches() {
+    let scratch = tempfile::tempdir().unwrap();
+    let directory = scratch.path();
+    write(&directory.join("src/a.ts"), "export const a = 1;\n");
+    write(
+        &directory.join("mod.lm"),
+        "module shop\n\nexport service web {\n    index: { include: [\"src\"] }\n}\n",
+    );
+    commit_all(directory);
+
+    let output = lemma(directory, &["verify", "--no-daemon"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+}
+
+#[test]
+fn a_change_that_deletes_a_document_is_reported_by_check() {
+    let scratch = tempfile::tempdir().unwrap();
+    inferred_break(scratch.path());
+    std::fs::remove_file(scratch.path().join("billing/openapi.json")).unwrap();
+
+    let output = lemma(
+        scratch.path(),
+        &[
+            "check",
+            "--change",
+            "billing",
+            "--base",
+            "HEAD",
+            "--no-daemon",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(4), "{}", text(&output));
+    assert!(
+        text(&output).contains("document_missing"),
+        "{}",
+        text(&output)
+    );
+}

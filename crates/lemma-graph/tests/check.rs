@@ -34,18 +34,23 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-const PROVIDER_LEMMA: &str = r#"
-services:
-  api:
-    index: { include: [charges.py] }
-    exports:
-      operations:
-        create_charge:
-          path: charges.py:create_charge
-          schema:
-            resolver: { command: "cat spec.json" }
-            request:  { path: "$.create_charge.request" }
-            response: { path: "$.create_charge.response" }
+const PROVIDER_MODULE: &str = r#"module provider
+
+import * as json from lemma.json
+import * as python from lemma.python
+
+let charges = python.file("charges.py")
+let spec = json.command("cat spec.json")
+
+export service api {
+    index: { include: ["charges.py"] }
+
+    export operation create_charge {
+        implementation: charges.symbol("create_charge")
+        request: spec.at("$.create_charge.request")
+        response: spec.at("$.create_charge.response")
+    }
+}
 "#;
 
 const SPEC_BASE: &str = r#"{ "create_charge": {
@@ -60,21 +65,30 @@ const SPEC_HEAD: &str = r#"{ "create_charge": {
                 "required": ["customer", "currency"] },
   "response": { "type": "object", "properties": { "result": { "type": "object" } }, "required": ["result"] } } }"#;
 
-const CALLER_LEMMA: &str = r##"
-services:
-  web:
-    index: { include: [client] }
-    exports:
-      operations:
-        create_charge:
-          path: client/charges.go:Charges.Create
-          schema:
-            request:  client/charges.go#CreateChargeRequest
-            response: client/charges.go#CreateChargeResponse
-graph:
-  links:
-    - services.web.create_charge -> "#provider:services.api.create_charge"
-"##;
+const CALLER_MODULE: &str = r#"module caller
+
+import * as go from lemma.go
+import { Link } from lemma.links
+import { api } from provider
+
+repo provider = local("../provider")
+
+let charges = go.file("client/charges.go")
+
+export service web {
+    index: { include: ["client"] }
+
+    export client operation create_charge {
+        implementation: charges.symbol("Charges.Create")
+        sends: charges.type("CreateChargeRequest")
+        accepts: charges.type("CreateChargeResponse")
+    }
+}
+
+export graph links : Link {
+    web.create_charge -> api.create_charge
+}
+"#;
 
 const CALLER_GO: &str = r#"package client
 
@@ -98,7 +112,7 @@ fn system(caller_go: &str) -> tempfile::TempDir {
     let workspace = tempfile::tempdir().unwrap();
     let provider = workspace.path().join("provider");
     let caller = workspace.path().join("caller");
-    write(&provider.join("lemma.yaml"), PROVIDER_LEMMA);
+    write(&provider.join("mod.lm"), PROVIDER_MODULE);
     write(
         &provider.join("charges.py"),
         "def create_charge():\n    pass\n",
@@ -109,12 +123,12 @@ fn system(caller_go: &str) -> tempfile::TempDir {
     git(&provider, &["commit", "-q", "-m", "base"]);
     write(&provider.join("spec.json"), SPEC_HEAD);
     git(&provider, &["commit", "-q", "-am", "head"]);
-    write(&caller.join("lemma.yaml"), CALLER_LEMMA);
+    write(&caller.join("mod.lm"), CALLER_MODULE);
     write(&caller.join("client/charges.go"), caller_go);
     git(&caller, &["init", "-q"]);
     write(
-        &workspace.path().join("lemma.yaml"),
-        "services:\n  \"#provider\": { path: provider }\n  \"#caller\": { path: caller }\n",
+        &workspace.path().join("mod.lm"),
+        "module system\n\nworkspace {\n    repo provider = local(\"provider\")\n    repo caller = local(\"caller\")\n}\n",
     );
     workspace
 }
@@ -132,6 +146,7 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
         cache: workspace.path().join("cache"),
         cloning: lemma_graph::repos::Cloning::Allowed,
         explain: false,
+        relations: Vec::new(),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
@@ -141,7 +156,7 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
     };
 
     let report = check(
-        &workspace.path().join("lemma.yaml"),
+        &workspace.path().join("mod.lm"),
         &options,
         &ReferenceEngine,
         None,
@@ -197,6 +212,7 @@ fn a_caller_anchored_at_a_method_nothing_calls_is_warned_about() {
         cache: workspace.path().join("cache"),
         cloning: lemma_graph::repos::Cloning::Allowed,
         explain: false,
+        relations: Vec::new(),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
@@ -206,7 +222,7 @@ fn a_caller_anchored_at_a_method_nothing_calls_is_warned_about() {
     };
 
     let report = check(
-        &workspace.path().join("lemma.yaml"),
+        &workspace.path().join("mod.lm"),
         &options,
         &ReferenceEngine,
         Some(&mut FakeReferences),
@@ -288,6 +304,7 @@ fn link_problems(workspace: &Path) -> Vec<String> {
         cache: workspace.join("cache"),
         cloning: lemma_graph::repos::Cloning::Allowed,
         explain: false,
+        relations: Vec::new(),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
@@ -341,20 +358,22 @@ fn renamed_system(says_previously: bool) -> tempfile::TempDir {
     write(&provider.join("spec.json"), SPEC_HEAD);
     git(&provider, &["commit", "-q", "--amend", "-am", "head"]);
     let previously = if says_previously {
-        "\n          previously: [api.create_charge]"
+        "\n        previously: [\"provider::api.create_charge\"]"
     } else {
         ""
     };
-    let renamed = PROVIDER_LEMMA.replace(
-        "        create_charge:\n          path: charges.py:create_charge",
-        &format!("        make_charge:\n          path: charges.py:create_charge{previously}"),
+    let renamed = PROVIDER_MODULE.replace(
+        "operation create_charge {\n        implementation: charges.symbol(\"create_charge\")",
+        &format!(
+            "operation make_charge {{\n        implementation: charges.symbol(\"create_charge\"){previously}"
+        ),
     );
-    write(&provider.join("lemma.yaml"), &renamed);
+    write(&provider.join("mod.lm"), &renamed);
     git(&provider, &["commit", "-q", "-am", "rename"]);
     let caller = workspace.path().join("caller");
     write(
-        &caller.join("lemma.yaml"),
-        &CALLER_LEMMA.replace("api.create_charge", "api.make_charge"),
+        &caller.join("mod.lm"),
+        &CALLER_MODULE.replace("api.create_charge", "api.make_charge"),
     );
     workspace
 }
@@ -371,6 +390,7 @@ fn errors_after_rename(says_previously: bool) -> usize {
         cache: workspace.path().join("cache"),
         cloning: lemma_graph::repos::Cloning::Allowed,
         explain: false,
+        relations: Vec::new(),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,
@@ -379,7 +399,7 @@ fn errors_after_rename(says_previously: bool) -> usize {
         select: None,
     };
     let report = check(
-        &workspace.path().join("lemma.yaml"),
+        &workspace.path().join("mod.lm"),
         &options,
         &ReferenceEngine,
         None,
@@ -403,37 +423,5 @@ fn a_renamed_operation_is_compared_with_where_it_was() {
         errors_after_rename(true),
         0,
         "its disagreements were already there"
-    );
-}
-
-#[test]
-fn select_is_refused_for_a_parent_lemma_yaml() {
-    let workspace = system(CALLER_GO);
-    let options = CheckOptions {
-        change: None,
-        level: Some(Level::Check),
-        cache: workspace.path().join("cache"),
-        cloning: lemma_graph::repos::Cloning::Allowed,
-        explain: false,
-        facts_cache: None,
-        evaluation: lemma_verify::Evaluation::Demand,
-        list_links: false,
-        run_checkers: true,
-        runs_base_checkers: false,
-        select: Some("nightly".to_owned()),
-    };
-
-    let refused = check(
-        &workspace.path().join("lemma.yaml"),
-        &options,
-        &ReferenceEngine,
-        None,
-    );
-
-    assert!(
-        refused
-            .unwrap_err()
-            .to_string()
-            .contains("declares no check `nightly`")
     );
 }

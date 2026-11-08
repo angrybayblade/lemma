@@ -4,7 +4,7 @@
 //!
 //! The first step is given: the functions that reach the symbol in its own
 //! repository, found by whoever asks (a language server, say). The rest is
-//! inference over the system the workspace `lemma.yaml` composes, as
+//! inference over the system the workspace description composes, as
 //! `lemma check` traces what a break affects.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -136,6 +136,7 @@ fn trace_options(cache: &Path) -> CheckOptions {
         // A trace answers a query, which must not start a clone.
         cloning: crate::repos::Cloning::Forbidden,
         explain: false,
+        relations: Vec::new(),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Full,
         list_links: false,

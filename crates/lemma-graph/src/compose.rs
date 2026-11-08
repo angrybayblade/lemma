@@ -1,5 +1,5 @@
-//! The repositories a workspace `lemma.yaml` composes: where each is, which
-//! commit it is pinned to, and its own `lemma.yaml`.
+//! The repositories a workspace description composes: where each is, which
+//! commit it is pinned to, and its own the description.
 
 use std::path::{Path, PathBuf};
 
@@ -17,7 +17,7 @@ pub struct Member {
     pub root: PathBuf,
     /// The commit it is pinned to, or `None` for its working directory.
     pub commit: Option<String>,
-    /// Its `lemma.yaml`, at the pin (or the working directory's, for a
+    /// Its description, at the pin (or the working directory's, for a
     /// commit that has none).
     pub file: LemmaFile,
 }
@@ -45,6 +45,7 @@ pub fn composition(
         cache: cache.to_path_buf(),
         cloning,
         explain: false,
+        relations: Vec::new(),
         facts_cache: None,
         evaluation: lemma_verify::Evaluation::Demand,
         list_links: false,

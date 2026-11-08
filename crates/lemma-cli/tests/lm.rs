@@ -52,23 +52,3 @@ fn a_clean_module_checks_and_formats_quietly() {
     assert_eq!(report["entry"], "shop");
     assert!(formatted.status.success(), "{}", text(&formatted.stdout));
 }
-
-#[test]
-fn convert_prints_a_lemma_yaml_as_a_module() {
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::write(
-        directory.path().join("lemma.yaml"),
-        "services:\n  api:\n    exports: { openapi: [openapi.json] }\n",
-    )
-    .unwrap();
-
-    let output = lm(directory.path(), &["convert", "--module", "billing"]);
-
-    assert!(output.status.success(), "{}", text(&output.stderr));
-    let module = text(&output.stdout);
-    assert!(module.starts_with("module billing\n"), "{module}");
-    assert!(
-        module.contains("http.openapi(\"openapi.json\")"),
-        "{module}"
-    );
-}

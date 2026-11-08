@@ -8,7 +8,7 @@ use lemma_model::{Export, ExportLink, GraphNode, Use, UseGraph};
 
 use crate::output::Linked;
 
-/// The source of relationships a `lemma.yaml` declares.
+/// The source of relationships a description declares.
 const DECLARED: &str = "declared";
 use lemma_query::{Direction, SymbolResolution};
 use lemma_store::{FactStore, Store, StoredSnapshot, StoredSymbol};
@@ -33,7 +33,7 @@ pub(crate) fn resolve_export(
     if let Some(repository) = &address.repository {
         bail!(
             "`{address}` is an export of {repository}, another repository; index a workspace \
-             lemma.yaml that composes both to resolve it"
+             the description that composes both to resolve it"
         );
     }
     let exports = store.exports(snapshot.id)?;
@@ -42,7 +42,7 @@ pub(crate) fn resolve_export(
         .find(|export| export.service == address.service && export.name == address.operation)
     else {
         bail!(
-            "no service in this index exports `{}` as `{}`; `lemma index` stores what lemma.yaml declares",
+            "no service in this index exports `{}` as `{}`; `lemma index` stores what the description declares",
             address.operation,
             address.service
         );

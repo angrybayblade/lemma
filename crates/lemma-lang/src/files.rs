@@ -1,6 +1,5 @@
 //! Module texts from working trees on disk, for callers without commits or
-//! clones to read, such as a grammar module named by a `lemma verify`
-//! manifest. The rest of the crate reads nothing itself.
+//! clones to read. The rest of the crate reads nothing itself.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};

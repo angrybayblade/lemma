@@ -13,8 +13,6 @@ const SPEC: &str = r#"{ "openapi": "3.0.0", "info": { "title": "B", "version": "
 
 const MODULE: &str = "module billing\n\nimport * as http from lemma.http\n\nexport service api {\n    index: { include: [\"src\"] }\n    operations: http.openapi(\"openapi.json\")\n}\n";
 
-const YAML: &str = "services:\n  api:\n    index:\n      include: [src]\n    exports:\n      openapi: [openapi.json]\n";
-
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
@@ -153,28 +151,6 @@ fn a_workspace_says_which_member_was_indexed_whole() {
         text(&output)
     );
     assert_ne!(indexed(&billing).1, []);
-}
-
-#[test]
-fn a_root_module_gives_the_same_index_as_the_same_lemma_yaml() {
-    let from_module = tempfile::tempdir().unwrap();
-    code(from_module.path());
-    write(&from_module.path().join("mod.lm"), MODULE);
-    let from_yaml = tempfile::tempdir().unwrap();
-    code(from_yaml.path());
-    write(&from_yaml.path().join("lemma.yaml"), YAML);
-
-    let module_output = lemma(from_module.path(), &["index"]);
-    let yaml_output = lemma(from_yaml.path(), &["index"]);
-
-    assert!(module_output.status.success(), "{}", text(&module_output));
-    assert!(yaml_output.status.success(), "{}", text(&yaml_output));
-    let (module_files, module_exports, module_links) = indexed(from_module.path());
-    assert_ne!(module_exports, []);
-    assert_eq!(
-        indexed(from_yaml.path()),
-        (module_files, module_exports, module_links)
-    );
 }
 
 #[test]

@@ -50,15 +50,15 @@ fn main() -> ExitCode {
     let declined_cloning = cloning::ask_before_cloning(&mut cli);
     if let Command::Verify(args) = &cli.command {
         log::info!("running in this process: verify always does");
-        return verify::run(args, cli.json);
-    }
-    if let Command::Check(args) = &cli.command {
-        log::info!("running in this process: check always does");
         let lsp = check::LanguageServers {
             asks_daemon: !cli.no_daemon && !daemon_disabled_by_environment(),
             providers_file: cli.providers.clone(),
         };
-        return check::run(args, &lsp, cli.json);
+        return verify::run(args, &lsp, cli.json);
+    }
+    if let Command::Check(args) = &cli.command {
+        log::info!("running in this process: check always does");
+        return check::run(args, cli.json);
     }
     if matches!(cli.command, Command::Mcp) {
         let uses_daemon = !cli.no_daemon && !daemon_disabled_by_environment();
