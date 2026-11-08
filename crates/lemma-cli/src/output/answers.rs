@@ -395,6 +395,12 @@ fn write_provenance<T>(out: &mut dyn Write, answer: &Answered<T>) -> io::Result<
         let cached = if answer.from_cache { ", cached" } else { "" };
         writeln!(out, "via {}{version}{cached}", provenance.provider_id)?;
     }
+    // A provider tried before the one that answered matters only when the
+    // answer holds nothing: the one skipped might have found something.
+    // Otherwise its failure, repeated on every query, is noise.
+    if matches!(answer.outcome, Outcome::Found(_)) {
+        return Ok(());
+    }
     for skipped in &answer.skipped_providers {
         writeln!(out, "skipped {skipped}")?;
     }
@@ -566,6 +572,32 @@ mod tests {
         let rows = outline_rows(&symbols);
 
         assert_eq!(rows[0].0, 0);
+    }
+
+    fn provenance_text(outcome: Outcome<Vec<u32>>) -> String {
+        let answer = Answered {
+            outcome,
+            provenance: None,
+            from_cache: false,
+            skipped_providers: vec![
+                "typescript-language-server: no TypeScript installation".to_owned(),
+            ],
+        };
+        let mut out = Vec::new();
+        write_provenance(&mut out, &answer).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn a_provider_skipped_before_an_answer_is_named_only_when_the_answer_is_empty() {
+        let found = provenance_text(Outcome::Found(vec![1]));
+        let empty = provenance_text(Outcome::Empty);
+
+        assert_eq!(found, "");
+        assert!(
+            empty.contains("skipped typescript-language-server"),
+            "{empty}"
+        );
     }
 
     #[test]
