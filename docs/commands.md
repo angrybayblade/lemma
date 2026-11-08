@@ -254,6 +254,9 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 | `lemma daemon lsp [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |
 | `lemma daemon lsp start [path] [--language <l>] [--provider <id>] [--wait]` | Start those servers in the daemon, in the background, or with `--wait` until each has loaded its project, reporting how long it took or why it failed (exit 1). A language's providers are tried in order, as a lookup tries them: when the first cannot start (typescript-language-server without a TypeScript it can use), the next serves. |
 | `lemma daemon lsp stop [path] [--language <l>] [--provider <id>]` | Stop those servers. |
+| `lemma daemon sentry start [manifest]` | Attach the daemon's sentry to a workspace (its `lemma.yaml` or `mod.lm`, `lemma.yaml` by default). Sentry watches the workspace's repositories, and `lemma check` on that workspace is then answered by the daemon: what earlier checks read is kept and only what changed is read again, and a check is answered again at once when nothing it read changed. The report is the same as a check run on its own. It attaches only to a daemon already running, to one workspace at a time. |
+| `lemma daemon sentry stop` | Detach sentry. It also detaches when the workspace's directory is gone and when the daemon exits. |
+| `lemma daemon sentry status` | The workspace, the directories watched in each repository, and how many checks sentry answered and reused. |
 | `lemma daemon --idle-secs <n>` | Run in the foreground, exiting after this many seconds without a command instead of the configured `idle_exit`. |
 
 On Linux, `install` uses a systemd user unit. On a server you reach over SSH there may be no user session to run it in; `sudo loginctl enable-linger $USER` gives you one that starts at boot and outlives your logins.
@@ -273,7 +276,12 @@ pause_after = "10m"        # pause idle language servers
 stop_after = "2h"          # stop idle language servers
 memory_budget = "none"     # e.g. "2GB": stop the least recently used servers beyond this
 warm_on_activity = true    # start a project's servers again when its files change
+
+[sentry]
+auto_attach = false        # attach sentry to a workspace on its first `lemma check`
 ```
+
+Sentry answers a check only from a daemon already running; `lemma check` never starts one for it. A check that asks for logs (`-l`) or for anchors (`--anchors`) runs in its own process, and `LEMMA_SENTRY=off` keeps every check there. A check sentry answers runs resolvers, adapters and checkers with the environment of the process that asked, as a check run on its own does. `auto_attach` applies only in the user's own settings, and never when `CI` is set. `LEMMA_DAEMON_SOCKET` names another socket for the daemon, to run a separate one.
 
 Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `none`. The values above are the defaults. Unknown settings are rejected, so a typo shows up instead of being ignored; a file that stops parsing while the daemon runs leaves the previous settings in force.
 

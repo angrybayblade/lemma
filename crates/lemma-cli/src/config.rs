@@ -24,6 +24,9 @@ pub(crate) struct Config {
     /// Start a project's servers again when its files change, if they were
     /// stopped, so they are ready by the next lookup.
     pub warms_up_on_activity: bool,
+    /// Attach sentry to a workspace on its first `lemma check` while the
+    /// daemon runs. Off unless the user turns it on.
+    pub sentry_auto_attach: bool,
 }
 
 impl Default for Config {
@@ -36,6 +39,7 @@ impl Default for Config {
                 memory_budget_bytes: None,
             },
             warms_up_on_activity: true,
+            sentry_auto_attach: false,
         }
     }
 }
@@ -47,6 +51,14 @@ struct ConfigFile {
     daemon: DaemonSection,
     #[serde(default)]
     servers: ServersSection,
+    #[serde(default)]
+    sentry: SentrySection,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SentrySection {
+    auto_attach: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -114,6 +126,10 @@ fn parse(text: &str) -> anyhow::Result<Config> {
             .servers
             .warm_on_activity
             .unwrap_or(defaults.warms_up_on_activity),
+        sentry_auto_attach: file
+            .sentry
+            .auto_attach
+            .unwrap_or(defaults.sentry_auto_attach),
     })
 }
 

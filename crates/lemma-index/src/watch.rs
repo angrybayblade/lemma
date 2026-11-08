@@ -35,7 +35,7 @@ const BARRIER_LIMIT: Duration = Duration::from_millis(500);
 
 /// What changed since the last call to [`Watch::changes`].
 #[derive(Debug, Default)]
-pub(crate) struct Observed {
+pub struct Observed {
     /// Changed paths, absolute and canonical.
     pub paths: HashSet<PathBuf>,
     /// The watcher lost events or could not confirm it saw them all; only a
@@ -48,7 +48,7 @@ pub(crate) struct Observed {
 const WATCHES_EACH_DIRECTORY: bool = cfg!(any(target_os = "linux", target_os = "android"));
 
 /// A running watcher on one directory.
-pub(crate) struct Watch {
+pub struct Watch {
     watcher: RecommendedWatcher,
     shared: Arc<Shared>,
     barrier_dir: PathBuf,
@@ -61,6 +61,8 @@ pub(crate) struct Watch {
     /// Why some change may go unreported, once a later directory could not
     /// be watched; every collection then asks for a full walk.
     degraded: Option<String>,
+    /// Directories under the root left to other watchers.
+    excluded: Vec<PathBuf>,
 }
 
 /// What a watcher covers, for status.
@@ -97,6 +99,17 @@ impl Watch {
     /// watcher could not be set up, such as the limit on watches; callers
     /// then walk every time.
     pub fn start(root: &Path, selection: &Selection) -> Result<Self, String> {
+        Self::start_without(root, selection, &[])
+    }
+
+    /// [`Watch::start`], leaving the directories `excluded` (canonical, under
+    /// `root`) and what is below them to other watchers, such as the
+    /// repositories inside a workspace's directory.
+    pub fn start_without(
+        root: &Path,
+        selection: &Selection,
+        excluded: &[PathBuf],
+    ) -> Result<Self, String> {
         let barrier_dir = barrier_directory().ok_or("could not create a directory for markers")?;
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
@@ -117,6 +130,7 @@ impl Watch {
             selection: selection.clone(),
             watched: HashSet::new(),
             degraded: None,
+            excluded: excluded.to_vec(),
         };
         let barrier = watch.barrier_dir.clone();
         watch.add(&barrier, RecursiveMode::NonRecursive)?;
@@ -142,7 +156,9 @@ impl Watch {
 
     /// Watches `top` and every directory below it that discovery enters.
     fn watch_tree(&mut self, top: &Path) -> Result<(), String> {
-        for directory in discover::directories_under(&self.root, top, &self.selection) {
+        let directories =
+            discover::directories_under(&self.root, top, &self.selection, &self.excluded);
+        for directory in directories {
             if self.watched.contains(&directory) {
                 continue;
             }

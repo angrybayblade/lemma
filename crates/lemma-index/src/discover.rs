@@ -100,16 +100,22 @@ pub(crate) fn source_files_in(
 }
 
 /// The directories under `top` (itself included) that discovery would enter
-/// from `root`: not hidden, not skipped, not ignored by Git and entered by
-/// `selection`, sorted. Walking from `root` rather than from `top` applies
+/// from `root`: not hidden, not skipped, not ignored by Git, entered by
+/// `selection` and not one of `excluded` or below it, sorted. Walking from `root` rather than from `top` applies
 /// every ignore file on the way down. For watching exactly what is indexed.
-pub(crate) fn directories_under(root: &Path, top: &Path, selection: &Selection) -> Vec<PathBuf> {
+pub(crate) fn directories_under(
+    root: &Path,
+    top: &Path,
+    selection: &Selection,
+    excluded: &[PathBuf],
+) -> Vec<PathBuf> {
     let Some(top_relative) = relative_path(root, top) else {
         return Vec::new();
     };
     let filter_root = root.to_owned();
     let filter_selection = selection.clone();
     let filter_top = top_relative.clone();
+    let filter_excluded = excluded.to_vec();
     let walker = WalkBuilder::new(root)
         .hidden(true)
         .git_ignore(true)
@@ -119,6 +125,12 @@ pub(crate) fn directories_under(root: &Path, top: &Path, selection: &Selection) 
             let is_directory = entry.file_type().is_some_and(|kind| kind.is_dir());
             let name = entry.file_name().to_string_lossy();
             if !is_directory || SKIPPED_DIRECTORIES.contains(&name.as_ref()) {
+                return false;
+            }
+            if filter_excluded
+                .iter()
+                .any(|excluded| entry.path() == excluded)
+            {
                 return false;
             }
             let Some(relative) = relative_path(&filter_root, entry.path()) else {
@@ -266,6 +278,7 @@ mod tests {
                 root.path(),
                 &root.path().join(top),
                 &Selection::everything(),
+                &[],
             )
             .iter()
             .map(|path| relative_path(root.path(), path).unwrap())

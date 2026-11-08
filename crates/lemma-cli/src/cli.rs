@@ -242,6 +242,31 @@ pub(crate) enum DaemonAction {
     /// List, start or stop the daemon's language servers for a repository
     /// or workspace. Without an action, lists them.
     Lsp(LspArgs),
+    /// Attach the daemon's sentry to a workspace, so its checks reuse what
+    /// earlier checks read and only what changed is read again; detach it,
+    /// or report on it.
+    Sentry(SentryArgs),
+}
+
+/// `lemma daemon sentry`: the daemon's watch over one workspace.
+#[derive(Args)]
+pub(crate) struct SentryArgs {
+    #[command(subcommand)]
+    pub action: SentryCommand,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum SentryCommand {
+    /// Attach to the workspace of a manifest, in a daemon already running.
+    Start {
+        /// The workspace's lemma.yaml or mod.lm.
+        #[arg(default_value = "lemma.yaml")]
+        manifest: PathBuf,
+    },
+    /// Detach.
+    Stop,
+    /// What it watches and how many checks it answered.
+    Status,
 }
 
 /// `lemma daemon lsp`: the daemon's language servers, by hand.

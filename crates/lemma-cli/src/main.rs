@@ -20,6 +20,8 @@ mod mcp;
 mod output;
 mod selection;
 #[cfg(unix)]
+mod sentry;
+#[cfg(unix)]
 mod service;
 mod verify;
 
@@ -44,6 +46,9 @@ fn main() -> ExitCode {
     if let Command::Daemon(args) = &cli.command {
         if matches!(args.action, Some(cli::DaemonAction::Lsp(_))) {
             return manage_servers(&cli);
+        }
+        if let Some(cli::DaemonAction::Sentry(sentry)) = &args.action {
+            return control_sentry(sentry);
         }
         return run_daemon(args, logger);
     }
@@ -179,6 +184,9 @@ fn run_daemon(args: &cli::DaemonArgs, logger: &'static logging::Logger) -> ExitC
         Some(DaemonAction::Uninstall) => service::uninstall().map(|done| println!("{done}")),
         // `main` forwards these to the daemon before getting here.
         Some(DaemonAction::Lsp(_)) => Err(anyhow::anyhow!("`lemma daemon lsp` needs the daemon")),
+        Some(DaemonAction::Sentry(_)) => {
+            Err(anyhow::anyhow!("`lemma daemon sentry` needs the daemon"))
+        }
         Some(DaemonAction::Stop) => daemon::stop().map(|was_running| {
             if !was_running {
                 eprintln!("no lemma daemon is running");
@@ -200,6 +208,45 @@ fn run_daemon(args: &cli::DaemonArgs, logger: &'static logging::Logger) -> ExitC
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(unix)]
+fn control_sentry(args: &cli::SentryArgs) -> ExitCode {
+    let Ok(cwd) = std::env::current_dir() else {
+        eprintln!("error: could not read the current directory");
+        return ExitCode::FAILURE;
+    };
+    let action = match &args.action {
+        cli::SentryCommand::Start { manifest } => daemon::SentryAction::Start {
+            manifest: check::entry_manifest_in(&cwd, manifest),
+        },
+        cli::SentryCommand::Stop => daemon::SentryAction::Stop,
+        cli::SentryCommand::Status => daemon::SentryAction::Status,
+    };
+    match daemon::sentry_control(action) {
+        Ok(Some((stdout, stderr, exit_code))) => {
+            print!("{stdout}");
+            eprint!("{stderr}");
+            ExitCode::from(exit_code)
+        }
+        Ok(None) => {
+            eprintln!(
+                "error: no lemma daemon is running; sentry attaches only to a running daemon \
+                 (it starts with the first lookup, or at login after `lemma daemon install`)"
+            );
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn control_sentry(_args: &cli::SentryArgs) -> ExitCode {
+    eprintln!("error: sentry runs in the lemma daemon, which needs Unix sockets");
+    ExitCode::FAILURE
 }
 
 #[cfg(not(unix))]

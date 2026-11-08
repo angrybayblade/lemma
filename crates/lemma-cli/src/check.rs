@@ -1,8 +1,10 @@
 //! `lemma check`: checks the links declared in composable lemma.yaml files.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use lemma_graph::config::Level;
 use lemma_graph::{
@@ -18,12 +20,84 @@ use crate::cli::CheckArgs;
 const EXIT_VIOLATED: u8 = 4;
 
 pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCode {
+    #[cfg(unix)]
+    if lsp.asks_daemon && !args.anchors {
+        if let Some(answered) = crate::sentry::ask(std::env::args().skip(1).collect()) {
+            let _ = std::io::stdout().write_all(answered.stdout.as_bytes());
+            let _ = std::io::stderr().write_all(answered.stderr.as_bytes());
+            return ExitCode::from(answered.exit_code);
+        }
+    }
+    let mut stdout = std::io::stdout().lock();
+    let mut stderr = std::io::stderr().lock();
+    let mut streams = Streams {
+        out: &mut stdout,
+        err: &mut stderr,
+    };
+    ExitCode::from(answer(args, lsp, json, None, &mut streams))
+}
+
+/// Where a check prints its report and its errors.
+pub(crate) struct Streams<'a> {
+    pub out: &'a mut dyn Write,
+    pub err: &'a mut dyn Write,
+}
+
+/// What a check sentry answers brings from it: the manifest, resolved
+/// against the asking process's directory, the reads sentry keeps, and the
+/// asking process's environment, for the commands the check runs.
+pub(crate) struct Served<'a> {
+    pub manifest: &'a Path,
+    pub warm: Arc<lemma_graph::Warm>,
+    pub environment: Arc<BTreeMap<String, String>>,
+}
+
+/// Checks as `args` ask, printing the report to `streams`; the exit code.
+pub(crate) fn answer(
+    args: &CheckArgs,
+    lsp: &LanguageServers,
+    json: bool,
+    served: Option<&Served<'_>>,
+    streams: &mut Streams<'_>,
+) -> u8 {
+    let options = options(args, served);
+    let manifest = served.map_or_else(
+        || entry_manifest(&args.manifest),
+        |served| served.manifest.to_path_buf(),
+    );
+    let report = match check(&manifest, args, &options, lsp) {
+        Ok(report) => report,
+        Err(error) => {
+            let _ = writeln!(streams.err, "error: {error:#}");
+            return 1;
+        }
+    };
+    let out = &mut *streams.out;
+    let printed = if json {
+        serde_json::to_writer_pretty(&mut *out, &report)
+            .map_err(std::io::Error::other)
+            .and_then(|()| writeln!(out))
+    } else {
+        print_text(out, &report, args.all)
+    };
+    if printed.is_err() {
+        return 1;
+    }
+    let violated = report
+        .findings
+        .iter()
+        .any(|finding| finding.severity == Severity::Error);
+    if violated { EXIT_VIOLATED } else { 0 }
+}
+
+/// What to check, from the command's arguments.
+fn options(args: &CheckArgs, served: Option<&Served<'_>>) -> CheckOptions {
     let change = args.change.as_ref().map(|repository| Change {
         repository: repository.clone(),
         base: args.base.clone(),
         head: args.head.clone(),
     });
-    let options = CheckOptions {
+    CheckOptions {
         change,
         level: args.level.as_deref().map(|level| match level {
             "check" => Level::Check,
@@ -40,32 +114,9 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
         run_checkers: !args.no_run,
         runs_base_checkers: args.run_base,
         select: args.select.clone(),
-        warm: None,
-        environment: None,
-    };
-    let report = match check(args, &options, lsp) {
-        Ok(report) => report,
-        Err(error) => {
-            eprintln!("error: {error:#}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut stdout = std::io::stdout().lock();
-    let printed = if json {
-        serde_json::to_writer_pretty(&mut stdout, &report)
-            .map_err(std::io::Error::other)
-            .and_then(|()| writeln!(stdout))
-    } else {
-        print_text(&mut stdout, &report, args.all)
-    };
-    if printed.is_err() {
-        return ExitCode::FAILURE;
+        warm: served.map(|served| Arc::clone(&served.warm)),
+        environment: served.map(|served| Arc::clone(&served.environment)),
     }
-    let violated = report
-        .findings
-        .iter()
-        .any(|finding| finding.severity == Severity::Error);
-    ExitCode::from(if violated { EXIT_VIOLATED } else { 0 })
 }
 
 /// Where `--anchors` gets language servers from.
@@ -74,6 +125,18 @@ pub(crate) struct LanguageServers {
     pub asks_daemon: bool,
     /// Provider configuration given with `--providers`.
     pub providers_file: Option<PathBuf>,
+}
+
+/// The manifest a check asked from `cwd` starts from, made absolute: what
+/// sentry is attached to.
+pub(crate) fn entry_manifest_in(cwd: &Path, manifest: &Path) -> PathBuf {
+    let is_default = manifest == Path::new("lemma.yaml");
+    let absolute = cwd.join(manifest);
+    let language = absolute.with_file_name("mod.lm");
+    if is_default && !absolute.exists() && language.exists() {
+        return language;
+    }
+    absolute
 }
 
 /// The manifest to start from: `mod.lm` when the default `lemma.yaml` is
@@ -89,11 +152,11 @@ fn entry_manifest(manifest: &Path) -> PathBuf {
 }
 
 fn check(
+    manifest: &Path,
     args: &CheckArgs,
     options: &CheckOptions,
     lsp: &LanguageServers,
 ) -> anyhow::Result<Report> {
-    let manifest = &entry_manifest(&args.manifest);
     let mut references = args
         .anchors
         .then(|| CheckReferences::new(lsp.asks_daemon, lsp.providers_file.clone()));
