@@ -1090,4 +1090,168 @@ mod tests {
         assert_eq!(again, first);
         assert_eq!((worker.counts.evaluated, worker.counts.reused), (2, 2));
     }
+
+    /// What a seeded sequence of changes does to a workspace: the things a
+    /// developer or an agent does between two checks.
+    struct Changes {
+        root: PathBuf,
+        state: u64,
+        written: u64,
+    }
+
+    const DOCUMENTS: [&str; 3] = ["/v1/charges", "/v1/payments", "/v2/charges"];
+
+    fn document(path: &str) -> String {
+        SPEC.replace("/v1/charges", path)
+    }
+
+    impl Changes {
+        /// A small generator of its own, so a sequence is the same on
+        /// every run and machine.
+        fn next(&mut self, limit: u64) -> u64 {
+            self.state ^= self.state << 13;
+            self.state ^= self.state >> 7;
+            self.state ^= self.state << 17;
+            self.state % limit
+        }
+
+        fn path(&self, relative: &str) -> PathBuf {
+            self.root.join(relative)
+        }
+
+        fn call(&mut self) -> String {
+            let path = DOCUMENTS[usize::try_from(self.next(3)).unwrap()];
+            format!(
+                "export async function charge() {{\n  return fetch(\"{path}\", {{ method: \"POST\" }});\n}}\n"
+            )
+        }
+
+        fn change_document(&mut self, relative: &str) -> String {
+            let path = DOCUMENTS[usize::try_from(self.next(3)).unwrap()];
+            write(&self.path(relative), &document(path));
+            format!("{relative} serves {path}")
+        }
+
+        fn change_call(&mut self) -> String {
+            let call = self.call();
+            write(&self.path("web/src/charge.ts"), &call);
+            "edited a call".to_owned()
+        }
+
+        fn add_file(&mut self) -> String {
+            self.written += 1;
+            let call = self.call();
+            let name = format!("web/src/generated/extra{}.ts", self.written);
+            write(&self.path(&name), &call);
+            format!("added {name}")
+        }
+
+        fn remove_directory(&mut self) -> String {
+            let _ = std::fs::remove_dir_all(self.path("web/src/generated"));
+            "removed a directory".to_owned()
+        }
+
+        fn rename_directory(&mut self) -> String {
+            let (from, to) = (self.path("web/src/generated"), self.path("web/src/moved"));
+            let _ = std::fs::remove_dir_all(&to);
+            let _ = std::fs::rename(from, to);
+            "renamed a directory".to_owned()
+        }
+
+        fn commit(&mut self, repository: &str) -> String {
+            let directory = self.path(repository);
+            git(&directory, &["add", "-A"]);
+            git(&directory, &["commit", "-q", "--allow-empty", "-m", "step"]);
+            format!("committed {repository}")
+        }
+
+        fn check_out_first_commit(&mut self, repository: &str) -> String {
+            let directory = self.path(repository);
+            let first = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&directory)
+                .args(["rev-list", "--max-parents=0", "HEAD"])
+                .output()
+                .unwrap();
+            let first = String::from_utf8(first.stdout).unwrap();
+            git(&directory, &["checkout", "-q", "-f", first.trim()]);
+            format!("checked out {repository}'s first commit")
+        }
+
+        fn change_include(&mut self) -> String {
+            let include = if self.next(2) == 0 {
+                "src"
+            } else {
+                "src/charge.ts"
+            };
+            write(
+                &self.path("web/mod.lm"),
+                &format!(
+                    "module web\n\nexport service web {{\n    index: {{ include: [\"{include}\"] }}\n}}\n"
+                ),
+            );
+            format!("included {include}")
+        }
+
+        fn apply(&mut self) -> String {
+            match self.next(11) {
+                0 | 1 => self.change_document("billing/openapi.json"),
+                2 => self.change_document("billing/.config/extra.json"),
+                3 | 4 => self.change_call(),
+                5 => self.add_file(),
+                6 => self.remove_directory(),
+                7 => self.rename_directory(),
+                8 => self.commit("web"),
+                9 => self.check_out_first_commit("billing"),
+                _ => self.change_include(),
+            }
+        }
+    }
+
+    /// `shop`, with a second document under a hidden directory.
+    fn shop_with_hidden_document(root: &Path) {
+        shop(root);
+        let billing = root.join("billing");
+        write(
+            &billing.join(".config/extra.json"),
+            &document("/v2/charges"),
+        );
+        write(
+            &billing.join("mod.lm"),
+            "module billing\n\nimport * as http from lemma.http\n\nexport service api {\n    operations: [http.openapi(\"openapi.json\"), http.openapi(\".config/extra.json\")]\n}\n",
+        );
+        git(&billing, &["add", "-A"]);
+        git(&billing, &["commit", "-q", "-m", "second document"]);
+    }
+
+    fn matches_fresh_checks_through(seed: u64, steps: usize) {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        shop_with_hidden_document(&root_path);
+        let mut worker = Worker::start(root_path.join("mod.lm")).unwrap();
+        let billing = question(&root_path);
+        let mut web = question(&root_path);
+        web.args.change = Some("web".to_owned());
+        web.raw = ["check", "--change", "web"].map(str::to_owned).to_vec();
+        let mut changes = Changes {
+            root: root_path.clone(),
+            state: seed,
+            written: 0,
+        };
+        let mut done = Vec::new();
+        for step in 0..steps {
+            done.push(changes.apply());
+            let asked = if step % 3 == 0 { &web } else { &billing };
+            let answered = without_token(&worker.respond(asked));
+            let expected = fresh(asked);
+            assert_eq!(answered, expected, "seed {seed}, after {done:#?}");
+        }
+    }
+
+    #[test]
+    fn sentry_answers_as_fresh_checks_do_through_seeded_changes() {
+        for seed in [11, 2027] {
+            matches_fresh_checks_through(seed, 16);
+        }
+    }
 }
