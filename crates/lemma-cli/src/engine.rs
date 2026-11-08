@@ -1051,6 +1051,7 @@ impl Engine {
     /// `warms_up_on_activity`, starts servers again for directories whose
     /// files are changing, so they are ready by the next lookup.
     pub fn maintain(&mut self, policy: &IdlePolicy, warms_up_on_activity: bool) {
+        self.forget_vanished();
         self.pool.maintain(policy, Instant::now());
         if !warms_up_on_activity {
             return;
@@ -1068,6 +1069,21 @@ impl Engine {
             // Best effort: a failure here shows up again on the next lookup.
             let _ = self.warm_up(&db_path, &root, &languages, &origin);
         }
+    }
+
+    /// Lets go of indexes whose database or directory is gone, such as a
+    /// worktree deleted after use: their connections, watchers and servers.
+    /// A long-lived daemon serving many short-lived directories otherwise
+    /// keeps their files open until it runs out of file descriptors.
+    fn forget_vanished(&mut self) {
+        let is_present = |db_path: &Path, root: &Path| db_path.exists() && root.exists();
+        self.live_indexes
+            .retain(|(db_path, root), _| is_present(db_path, root));
+        self.origins
+            .retain(|(db_path, root), _| is_present(db_path, root));
+        self.stores.retain(|db_path, _| db_path.exists());
+        self.searches.retain(|db_path, _| db_path.exists());
+        self.pool.stop_vanished();
     }
 
     /// A line per running language server: what it serves, how long it has
@@ -2143,6 +2159,26 @@ mod tests {
         let found = select_symbol(&store, &stored, &format!("#{id}"), filters).unwrap();
 
         assert!(matches!(found, SymbolResolution::Resolved(symbol) if symbol.id == id));
+    }
+
+    #[test]
+    fn a_long_lived_engine_lets_go_of_an_index_whose_directory_is_gone() {
+        let kept = tempfile::tempdir().unwrap();
+        let gone = tempfile::tempdir().unwrap();
+        let kept_db = kept.path().join(".lemma/index.db");
+        let gone_db = gone.path().join(".lemma/index.db");
+        let mut engine = Engine::long_lived();
+        for db_path in [&kept_db, &gone_db] {
+            std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+            open_store(&mut engine.stores, db_path).unwrap();
+        }
+        let gone_path = gone.path().to_owned();
+        drop(gone);
+
+        engine.maintain(&IdlePolicy::default(), false);
+
+        assert!(!gone_path.exists());
+        assert_eq!(engine.stores.keys().collect::<Vec<_>>(), [&kept_db]);
     }
 
     #[test]

@@ -310,6 +310,22 @@ impl SessionPool {
         stopped
     }
 
+    /// Stops the servers whose root directory no longer exists, such as a
+    /// worktree deleted after use, and forgets their failed starts.
+    pub fn stop_vanished(&mut self) {
+        self.collect_arrivals(None);
+        let vanished: Vec<SessionKey> = self
+            .sessions
+            .keys()
+            .filter(|key| !key.root.exists())
+            .cloned()
+            .collect();
+        self.failed_warm_ups.retain(|key, _| key.root.exists());
+        for key in vanished {
+            self.stop(&key);
+        }
+    }
+
     /// Stops every server, waiting for any still starting.
     pub fn shutdown(mut self) {
         while !self.warming.is_empty() {
