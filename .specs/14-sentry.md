@@ -235,6 +235,8 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
    - Per-event timestamps in the agent benchmark, to split an agent's time between the model, Lemma's answers, checks and hooks.
 
    Measure the watches per workspace, which should be near the 9,200 of the measured workspace's 90,148 directories that are not under dependencies, and confirm no change in behaviour.
+
+   **Landed, 2026-11-08.** On Linux each live index watches only the directories its selection enters, one by one, and follows new ones when changes are collected. A failure is kept and shown by `lemma daemon status`. On the measured workspace the daemon holds 1,684 watches (90,148 directories on disk), and preparing a workspace for agents (index plus language servers) fell from about 95 s to 53 s, since registering every directory had been slow too. Still to do: an index still has its own watcher instance (5 for this workspace, against a limit of 128); one instance per daemon waits until that matters. Refusing network file systems waits for a way to ask the file system type. Sentry needs a watch scope covering what a check reads, which is wider than a symbol index's selection.
 1. **Prepared inputs** in `lemma-graph`.
    - The in-process check rebuilt on them, with the environment as a parameter.
    - The differential gate.

@@ -7,6 +7,15 @@
 //! watcher writes a marker file into a directory it also watches and waits
 //! for that marker's own event: reports arrive in order, so once the marker
 //! is seen, every earlier change has been too.
+//!
+//! On Linux each watched directory takes one of a limited number of
+//! inotify watches per user, so only the directories discovery enters are
+//! watched, one by one: not `node_modules`, virtual environments or build
+//! output, which can be nine in ten directories of a JavaScript or Python
+//! project. A directory created later is watched when changes are next
+//! collected, before the index walks it; until then its creation, reported
+//! by its parent, makes the index walk it in full. Elsewhere one recursive
+//! watch costs nothing per directory, and is used instead.
 
 use std::collections::HashSet;
 use std::fs;
@@ -16,6 +25,9 @@ use std::time::{Duration, Instant};
 
 use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+
+use crate::discover;
+use crate::selection::Selection;
 
 /// How long to wait for the marker's event before giving up and walking
 /// the whole tree instead.
@@ -31,12 +43,40 @@ pub(crate) struct Observed {
     pub needs_full_walk: bool,
 }
 
+/// Whether one watch per directory is needed, because the platform's
+/// watcher (inotify) has no recursive watch of its own.
+const WATCHES_EACH_DIRECTORY: bool = cfg!(any(target_os = "linux", target_os = "android"));
+
 /// A running watcher on one directory.
 pub(crate) struct Watch {
-    _watcher: RecommendedWatcher,
+    watcher: RecommendedWatcher,
     shared: Arc<Shared>,
     barrier_dir: PathBuf,
     next_barrier: u64,
+    root: PathBuf,
+    selection: Selection,
+    /// The directories watched one by one; empty where one recursive watch
+    /// covers the root.
+    watched: HashSet<PathBuf>,
+    /// Why some change may go unreported, once a later directory could not
+    /// be watched; every collection then asks for a full walk.
+    degraded: Option<String>,
+}
+
+/// What a watcher covers, for status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WatchReport {
+    /// Every change is reported.
+    Watching {
+        /// How many directories are watched one by one, or `None` where one
+        /// recursive watch covers the root.
+        directories: Option<usize>,
+    },
+    /// Changes may go unreported, so every index walks the whole tree.
+    Walking {
+        /// Why, such as the limit on watches being reached.
+        reason: String,
+    },
 }
 
 struct Shared {
@@ -52,30 +92,127 @@ struct State {
 }
 
 impl Watch {
-    /// Starts watching `root`, which must be canonical. `None` if the
-    /// platform's watcher could not be set up; callers then walk every time.
-    pub fn start(root: &Path) -> Option<Self> {
-        let barrier_dir = barrier_directory()?;
+    /// Starts watching `root`, which must be canonical, and the directories
+    /// `selection` enters below it. The error says why the platform's
+    /// watcher could not be set up, such as the limit on watches; callers
+    /// then walk every time.
+    pub fn start(root: &Path, selection: &Selection) -> Result<Self, String> {
+        let barrier_dir = barrier_directory().ok_or("could not create a directory for markers")?;
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
         });
         let handler_shared = Arc::clone(&shared);
         let handler_barrier = barrier_dir.clone();
-        let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
+        let watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
             record(&handler_shared, &handler_barrier, event);
         })
-        .ok()?;
-        watcher.watch(root, RecursiveMode::Recursive).ok()?;
-        watcher
-            .watch(&barrier_dir, RecursiveMode::NonRecursive)
-            .ok()?;
-        Some(Self {
-            _watcher: watcher,
+        .map_err(|error| describe(&error))?;
+        let mut watch = Self {
+            watcher,
             shared,
             barrier_dir,
             next_barrier: 0,
-        })
+            root: root.to_owned(),
+            selection: selection.clone(),
+            watched: HashSet::new(),
+            degraded: None,
+        };
+        let barrier = watch.barrier_dir.clone();
+        watch.add(&barrier, RecursiveMode::NonRecursive)?;
+        if !WATCHES_EACH_DIRECTORY {
+            watch.add(root, RecursiveMode::Recursive)?;
+            return Ok(watch);
+        }
+        watch.watch_tree(root)?;
+        watch.watch_git_metadata();
+        Ok(watch)
+    }
+
+    /// What this watcher covers.
+    pub fn report(&self) -> WatchReport {
+        if let Some(reason) = &self.degraded {
+            return WatchReport::Walking {
+                reason: reason.clone(),
+            };
+        }
+        let directories = WATCHES_EACH_DIRECTORY.then_some(self.watched.len());
+        WatchReport::Watching { directories }
+    }
+
+    /// Watches `top` and every directory below it that discovery enters.
+    fn watch_tree(&mut self, top: &Path) -> Result<(), String> {
+        for directory in discover::directories_under(&self.root, top, &self.selection) {
+            if self.watched.contains(&directory) {
+                continue;
+            }
+            self.add(&directory, RecursiveMode::NonRecursive)?;
+            self.watched.insert(directory);
+        }
+        Ok(())
+    }
+
+    /// Watches what tells that the checked-out commit moved: `.git` itself
+    /// (`HEAD`, the index, packed refs) and the directories of loose refs.
+    /// Best effort: a commit Lemma misses is asked of Git on a full walk.
+    fn watch_git_metadata(&mut self) {
+        let git = self.root.join(".git");
+        if !git.is_dir() {
+            return;
+        }
+        let mut pending = vec![git.clone(), git.join("refs")];
+        while let Some(directory) = pending.pop() {
+            if self.add(&directory, RecursiveMode::NonRecursive).is_err() {
+                continue;
+            }
+            self.watched.insert(directory.clone());
+            if directory == git {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&directory) else {
+                continue;
+            };
+            let children = entries.filter_map(Result::ok).map(|entry| entry.path());
+            pending.extend(children.filter(|path| path.is_dir()));
+        }
+    }
+
+    fn add(&mut self, path: &Path, mode: RecursiveMode) -> Result<(), String> {
+        self.watcher
+            .watch(path, mode)
+            .map_err(|error| format!("could not watch {}: {}", path.display(), describe(&error)))
+    }
+
+    /// Watches the directories among `paths` that appeared since the last
+    /// collection, and forgets those that are gone. A failure leaves the
+    /// watcher degraded: from then on every collection asks for a full walk.
+    fn follow_directories(&mut self, paths: &HashSet<PathBuf>) {
+        if !WATCHES_EACH_DIRECTORY || self.degraded.is_some() {
+            return;
+        }
+        for path in paths {
+            if let Err(reason) = self.follow(path) {
+                log::warn!(
+                    "watching {}: {reason}; walking instead",
+                    self.root.display()
+                );
+                self.degraded = Some(reason);
+                return;
+            }
+        }
+    }
+
+    /// Watches `path` if it is a new directory under the root; forgets it,
+    /// and what was below it, if it is gone.
+    fn follow(&mut self, path: &Path) -> Result<(), String> {
+        if !path.exists() {
+            self.watched.retain(|watched| !watched.starts_with(path));
+            return Ok(());
+        }
+        if !path.is_dir() || self.watched.contains(path) || !path.starts_with(&self.root) {
+            return Ok(());
+        }
+        self.watch_tree(path)
     }
 
     /// Whether any change has been reported since the last call to
@@ -94,9 +231,12 @@ impl Watch {
         let is_confirmed = fs::write(&marker, b"").is_ok() && self.wait_for(barrier);
         let _ = fs::remove_file(&marker);
 
-        let mut state = lock(&self.shared.state);
-        let mut observed = std::mem::take(&mut state.observed);
+        let mut observed = std::mem::take(&mut lock(&self.shared.state).observed);
         observed.needs_full_walk |= !is_confirmed;
+        // Before the index walks the new directories, so a file written in
+        // one after this is reported, and one written before is walked.
+        self.follow_directories(&observed.paths);
+        observed.needs_full_walk |= self.degraded.is_some();
         observed
     }
 
@@ -183,6 +323,14 @@ fn barrier_directory() -> Option<PathBuf> {
         std::env::temp_dir().join(format!("lemma-watch-{}-{started}", std::process::id()));
     fs::create_dir_all(&directory).ok()?;
     directory.canonicalize().ok()
+}
+
+/// The watcher's error in words, naming the limit when that is the cause.
+fn describe(error: &notify::Error) -> String {
+    if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) {
+        return "the limit on watches per user is reached (fs.inotify.max_user_watches)".to_owned();
+    }
+    error.to_string()
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

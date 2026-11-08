@@ -23,6 +23,7 @@ use lemma_store::{FactStore, NewSnapshot, SnapshotUpdate, Store, StoreError, Sto
 use lemma_syntax::{EXTRACTOR_VERSION, ExtractorPool, SyntaxError};
 
 pub use crate::selection::{InvalidPattern, RuleSpec, Selection};
+pub use crate::watch::WatchReport;
 
 use crate::scan::ReusePolicy;
 use crate::scope::{DirtyScope, WalkScope};
@@ -92,6 +93,8 @@ pub struct LiveIndex {
     /// The commit seen by the last run.
     last_head: HeadState,
     watch: Option<watch::Watch>,
+    /// Why the tree is not watched, when watching was asked for and failed.
+    watch_failure: Option<String>,
     extractors: ExtractorPool,
     /// The files it covers.
     selection: Selection,
@@ -133,6 +136,7 @@ impl LiveIndex {
             previous: None,
             last_head: HeadState::Unknown,
             watch: None,
+            watch_failure: None,
             extractors: ExtractorPool::new(),
             selection,
         })
@@ -143,8 +147,28 @@ impl LiveIndex {
     /// cannot watch.
     pub fn watched(root: &Path, selection: Selection) -> Result<Self, IndexError> {
         let mut index = Self::selecting(root, selection)?;
-        index.watch = watch::Watch::start(&index.root);
+        match watch::Watch::start(&index.root, &index.selection) {
+            Ok(watch) => index.watch = Some(watch),
+            Err(reason) => {
+                log::warn!(
+                    "not watching {}: {reason}; walking instead",
+                    index.root.display()
+                );
+                index.watch_failure = Some(reason);
+            }
+        }
         Ok(index)
+    }
+
+    /// Whether changes are watched, and how many directories that takes;
+    /// `None` for an index that never asked to be watched.
+    pub fn watch_report(&self) -> Option<WatchReport> {
+        if let Some(reason) = &self.watch_failure {
+            return Some(WatchReport::Walking {
+                reason: reason.clone(),
+            });
+        }
+        self.watch.as_ref().map(watch::Watch::report)
     }
 
     /// The files this index covers.
@@ -782,6 +806,43 @@ mod tests {
 
         assert!(!summary.files_by_language.contains_key(&Language::Go));
         assert_eq!(symbol_ids(&store, summary.snapshot_id, "Delete"), []);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_watched_index_watches_entered_directories_and_follows_new_ones() {
+        let repository = sample_repository();
+        let mut live_store = Store::open_in_memory().unwrap();
+        let mut fresh_store = Store::open_in_memory().unwrap();
+        let mut live = LiveIndex::watched(repository.path(), Selection::everything()).unwrap();
+        live.index(&mut live_store).unwrap();
+        let before = live.watch_report();
+
+        write(
+            repository.path(),
+            "lib/first.py",
+            "def first():\n    pass\n",
+        );
+        live.index(&mut live_store).unwrap();
+        // Written after the new directory was collected: only its own watch
+        // reports it.
+        write(
+            repository.path(),
+            "lib/second.py",
+            "def second():\n    pass\n",
+        );
+        let after = live.index(&mut live_store).unwrap();
+        let fresh = index_directory(repository.path(), &mut fresh_store).unwrap();
+
+        // The root, src, py and go; not node_modules.
+        assert_eq!(
+            before,
+            Some(WatchReport::Watching {
+                directories: Some(4)
+            })
+        );
+        assert_eq!(after.snapshot.fingerprint, fresh.snapshot.fingerprint);
+        assert_eq!(after.symbol_count, fresh.symbol_count);
     }
 
     #[test]

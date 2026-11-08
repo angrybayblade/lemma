@@ -1089,6 +1089,43 @@ impl Engine {
     /// A line per running language server: what it serves, how long it has
     /// been idle, whether it is paused, and its memory.
     pub fn status(&mut self) -> String {
+        let mut text = self.server_status();
+        text.push_str(&self.watch_status());
+        text
+    }
+
+    /// A line per live index: how many directories it watches, or why it
+    /// walks the whole tree instead.
+    fn watch_status(&self) -> String {
+        let mut lines: Vec<String> = self
+            .live_indexes
+            .values()
+            .filter_map(|live| {
+                let report = live.watch_report()?;
+                let root = live.root().display();
+                Some(match report {
+                    lemma_index::WatchReport::Watching {
+                        directories: Some(count),
+                    } => format!("watching {root}: {count} directories"),
+                    lemma_index::WatchReport::Watching { directories: None } => {
+                        format!("watching {root}")
+                    }
+                    lemma_index::WatchReport::Walking { reason } => {
+                        format!("walking {root} on every index: {reason}")
+                    }
+                })
+            })
+            .collect();
+        lines.sort();
+        let mut text = String::new();
+        for line in lines {
+            text.push_str(&line);
+            text.push('\n');
+        }
+        text
+    }
+
+    fn server_status(&mut self) -> String {
         let statuses = self.pool.status(Instant::now());
         if statuses.is_empty() {
             return "no language servers\n".to_owned();

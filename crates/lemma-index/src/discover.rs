@@ -99,6 +99,62 @@ pub(crate) fn source_files_in(
     Ok(files)
 }
 
+/// The directories under `top` (itself included) that discovery would enter
+/// from `root`: not hidden, not skipped, not ignored by Git and entered by
+/// `selection`, sorted. Walking from `root` rather than from `top` applies
+/// every ignore file on the way down. For watching exactly what is indexed.
+pub(crate) fn directories_under(root: &Path, top: &Path, selection: &Selection) -> Vec<PathBuf> {
+    let Some(top_relative) = relative_path(root, top) else {
+        return Vec::new();
+    };
+    let filter_root = root.to_owned();
+    let filter_selection = selection.clone();
+    let filter_top = top_relative.clone();
+    let walker = WalkBuilder::new(root)
+        .hidden(true)
+        .git_ignore(true)
+        .git_exclude(true)
+        .require_git(false)
+        .filter_entry(move |entry| {
+            let is_directory = entry.file_type().is_some_and(|kind| kind.is_dir());
+            let name = entry.file_name().to_string_lossy();
+            if !is_directory || SKIPPED_DIRECTORIES.contains(&name.as_ref()) {
+                return false;
+            }
+            let Some(relative) = relative_path(&filter_root, entry.path()) else {
+                return false;
+            };
+            filter_selection.enters(&relative) && is_on_the_way(&relative, &filter_top)
+        })
+        .build();
+    let mut directories: Vec<PathBuf> = walker
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_dir()))
+        .filter(|entry| {
+            relative_path(root, entry.path())
+                .is_some_and(|relative| is_within(&relative, &top_relative))
+        })
+        .map(DirEntry::into_path)
+        .collect();
+    directories.sort();
+    directories
+}
+
+/// Whether the walk must enter `directory` to reach or cover `top`: one of
+/// its ancestors, or `top` and what is below it. The root is the empty path.
+fn is_on_the_way(directory: &str, top: &str) -> bool {
+    is_within(directory, top) || is_within(top, directory)
+}
+
+/// Whether `path` is `directory` or below it.
+fn is_within(path: &str, directory: &str) -> bool {
+    directory.is_empty()
+        || path == directory
+        || path
+            .strip_prefix(directory)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// Whether a path relative to the root is one discovery could return: a
 /// supported extension the selection covers, with no hidden or skipped
 /// directory on the way. Used to keep Git's view of changes to the same
@@ -191,6 +247,39 @@ fn relative_path(root: &Path, path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_directories_discovery_enters_are_listed() {
+        let root = tempfile::tempdir().unwrap();
+        for directory in [
+            "src/api",
+            "node_modules/dep",
+            ".venv/lib",
+            "build/out",
+            "docs",
+        ] {
+            std::fs::create_dir_all(root.path().join(directory)).unwrap();
+        }
+        std::fs::write(root.path().join(".gitignore"), "build/\n").unwrap();
+        let listed = |top: &str| -> Vec<String> {
+            directories_under(
+                root.path(),
+                &root.path().join(top),
+                &Selection::everything(),
+            )
+            .iter()
+            .map(|path| relative_path(root.path(), path).unwrap())
+            .collect()
+        };
+
+        let everything = listed("");
+        let under_src = listed("src");
+        let ignored = listed("build/out");
+
+        assert_eq!(everything, ["", "docs", "src", "src/api"]);
+        assert_eq!(under_src, ["src", "src/api"]);
+        assert_eq!(ignored, Vec::<String>::new());
+    }
 
     #[test]
     fn supported_files_outside_hidden_or_skipped_directories_are_in_scope() {
