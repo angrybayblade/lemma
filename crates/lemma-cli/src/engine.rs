@@ -931,9 +931,11 @@ impl Engine {
         // A repository-qualified id (`#billing:607`) names a symbol in that
         // member only: ids are numbered per repository, so a bare one can
         // match a different symbol in every member.
-        let qualified = qualified_id(&target.symbol);
+        let qualified = qualified_id(&target.symbol)
+            .map(|(repository, id)| (repository, format!("#{id}")))
+            .or_else(|| member_qualified_name(members, &target.symbol));
         let (wanted, symbol) = match &qualified {
-            Some((repository, id)) => (Some(repository.as_str()), format!("#{id}")),
+            Some((repository, symbol)) => (Some(repository.as_str()), symbol.clone()),
             None => (None, target.symbol.clone()),
         };
         for member in members {
@@ -1824,6 +1826,14 @@ fn member_filter(member: &StoredMember, filter: &SymbolFilter) -> Option<SymbolF
         })
 }
 
+/// A name inside one member, written `#billing:Charges.create` as a member's
+/// ids are: the member, with its `#`, and the name.
+fn member_qualified_name(members: &[StoredMember], text: &str) -> Option<(String, String)> {
+    let (repository, name) = text.split_once(':')?;
+    let is_member = members.iter().any(|member| member.name == repository);
+    (is_member && !name.is_empty()).then(|| (repository.to_owned(), name.to_owned()))
+}
+
 /// A repository-qualified symbol id: `#billing:607`, also written
 /// `#billing:#607` or `#billing#607`. The repository keeps its `#`.
 fn qualified_id(text: &str) -> Option<(String, i64)> {
@@ -2298,6 +2308,27 @@ mod tests {
         assert_eq!(from_workspace("src/main.ts"), None);
         assert_eq!(from_workspace("api/src/app.py"), None);
         assert_eq!(from_workspace("src/gone.py"), None);
+    }
+
+    #[test]
+    fn a_name_qualified_by_a_member_names_it_inside_that_member() {
+        let member = StoredMember {
+            name: "#platform".to_owned(),
+            root: String::new(),
+            revision: None,
+            indexed_root: String::new(),
+            database: String::new(),
+        };
+        let members = [member];
+
+        let found = member_qualified_name(&members, "#platform:registerActionExecute");
+
+        assert_eq!(
+            found,
+            Some(("#platform".to_owned(), "registerActionExecute".to_owned()))
+        );
+        assert_eq!(member_qualified_name(&members, "#web:charge"), None);
+        assert_eq!(member_qualified_name(&members, "Router.delete"), None);
     }
 
     #[test]
