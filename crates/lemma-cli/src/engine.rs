@@ -710,7 +710,21 @@ impl Engine {
         filter: &SymbolFilter,
     ) -> anyhow::Result<Vec<StoredSymbol>> {
         let mut found = Vec::new();
-        for member in members {
+        // A path naming a member (`platform/apps/api`, `#platform`) searches
+        // that member, the rest of the path inside it.
+        let scoped: Vec<(&StoredMember, SymbolFilter)> = members
+            .iter()
+            .filter_map(|member| Some((member, member_filter(member, filter)?)))
+            .collect();
+        let searched: Vec<(&StoredMember, SymbolFilter)> = if scoped.is_empty() {
+            members
+                .iter()
+                .map(|member| (member, filter.clone()))
+                .collect()
+        } else {
+            scoped
+        };
+        for (member, filter) in &searched {
             let Some((store, snapshot)) = self.member_index(member)? else {
                 continue;
             };
@@ -1771,6 +1785,34 @@ fn same_clone(left: &Path, right: &Path) -> bool {
         || common(left).is_some_and(|left| Some(left) == common(right))
 }
 
+/// `filter` for searching inside `member` when its path starts with the
+/// member's directory or name, the rest of the path applied inside it;
+/// `None` when the path names no member.
+fn member_filter(member: &StoredMember, filter: &SymbolFilter) -> Option<SymbolFilter> {
+    let path = filter.path_contains.as_deref()?;
+    let path = path.trim_start_matches("./");
+    let directory = Path::new(&member.root)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = member.name.trim_start_matches('#');
+    [directory.as_str(), name, member.name.as_str()]
+        .into_iter()
+        .filter(|prefix| !prefix.is_empty())
+        .find_map(|prefix| {
+            let rest = path.strip_prefix(prefix)?;
+            let rest = match rest.strip_prefix(['/', ':']) {
+                Some(rest) => rest,
+                None if rest.is_empty() => rest,
+                None => return None,
+            };
+            Some(SymbolFilter {
+                path_contains: (!rest.is_empty()).then(|| rest.to_owned()),
+                ..filter.clone()
+            })
+        })
+}
+
 /// Whether `symbol` passes `filters`, as a symbol found by name must.
 fn matches_filters(symbol: &StoredSymbol, filters: &crate::cli::Filters) -> bool {
     filters.kind.is_none_or(|kind| symbol.symbol.kind == kind)
@@ -2137,6 +2179,35 @@ mod tests {
         assert!(is_composed_as(&billing, "#billing"));
         assert!(is_composed_as(&worktree, "#billing"));
         assert!(!is_composed_as(&billing, "#web"));
+    }
+
+    #[test]
+    fn a_search_path_naming_a_member_searches_inside_it() {
+        let member = StoredMember {
+            name: "#platform".to_owned(),
+            root: "/work/platform".to_owned(),
+            revision: None,
+            indexed_root: "/work/platform".to_owned(),
+            database: String::new(),
+        };
+        let filter = |path: &str| SymbolFilter {
+            text: "Session".to_owned(),
+            name_match: lemma_store::NameMatch::Contains,
+            kind: None,
+            language: None,
+            path_contains: Some(path.to_owned()),
+            limit: 10,
+        };
+        let inside = |path: &str| member_filter(&member, &filter(path)).map(|f| f.path_contains);
+
+        assert_eq!(inside("platform"), Some(None));
+        assert_eq!(
+            inside("platform/apps/api"),
+            Some(Some("apps/api".to_owned()))
+        );
+        assert_eq!(inside("#platform:apps"), Some(Some("apps".to_owned())));
+        assert_eq!(inside("apps/api"), None);
+        assert_eq!(inside("platforms"), None);
     }
 
     #[test]
