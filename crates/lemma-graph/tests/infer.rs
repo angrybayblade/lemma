@@ -137,6 +137,60 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
     );
 }
 
+/// The checks of the problems the `lemma.yaml` system's change raises on its
+/// link, with `select`.
+fn selected_problems(workspace: &Path, select: &str) -> Result<Vec<String>, String> {
+    let options = CheckOptions {
+        change: Some(Change {
+            repository: "#billing".to_owned(),
+            base: Some("HEAD~1".to_owned()),
+            head: Some("HEAD".to_owned()),
+        }),
+        level: Some(Level::Check),
+        cache: workspace.join("cache"),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Demand,
+        list_links: false,
+        run_checkers: true,
+        runs_base_checkers: false,
+        select: Some(select.to_owned()),
+    };
+    let report = check(
+        &workspace.join("lemma.yaml"),
+        &options,
+        &ReferenceEngine,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(report
+        .findings
+        .iter()
+        .filter(|finding| finding.link.ends_with(" -> POST /v1/charges"))
+        .map(|finding| finding.check.clone())
+        .collect())
+}
+
+#[test]
+fn a_lemma_yaml_workspace_selects_one_built_in_requirement_by_name() {
+    let workspace = tempfile::tempdir().unwrap();
+    system(workspace.path());
+
+    let bare = selected_problems(workspace.path(), "consumer_uses_removed_response_field");
+    let qualified = selected_problems(
+        workspace.path(),
+        "lemma.http.consumer_misses_new_required_field",
+    );
+    let unknown = selected_problems(workspace.path(), "consumer_forgets_everything");
+
+    assert_eq!(bare.unwrap(), ["consumer_uses_removed_response_field"]);
+    assert_eq!(qualified.unwrap(), ["consumer_misses_new_required_field"]);
+    assert!(
+        unknown
+            .unwrap_err()
+            .contains("no check `consumer_forgets_everything`")
+    );
+}
+
 /// The same system composed by modules, whose parent adds a requirement of
 /// its own and, given `main`, a `check main`.
 fn system_of_modules(workspace: &Path, main: &str) {

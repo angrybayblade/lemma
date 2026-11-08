@@ -278,6 +278,8 @@ pub fn check<E: Engine>(
         facts: options.facts_cache.as_ref(),
     };
     tracing.attach(&mut findings, &seeds, engine)?;
+    // After tracing, whose seeds point into the findings by index.
+    shared.keep_selected(&mut findings);
     let (behaviors, requirement_changes) = evaluate_behaviors(
         (root_file, head_program),
         &repos,
@@ -655,6 +657,9 @@ struct Shared<'a> {
     /// The program the grammar was lowered from, checked at the head, for
     /// its behaviors to run without checking it again.
     program: Option<crate::behaviors::HeadProgram>,
+    /// Without a program: the built-in requirement a selection names, whose
+    /// findings alone are kept.
+    only: Option<String>,
 }
 
 impl<'a> Shared<'a> {
@@ -668,19 +673,49 @@ impl<'a> Shared<'a> {
     ) -> Result<Self, GraphError> {
         let (grammar, program) =
             crate::behaviors::program_grammar(root_file, repos, options)?.unzip();
-        if let (None, Some(name)) = (&grammar, &options.select) {
-            return Err(GraphError::UnknownCheck {
-                module: root_file.display().to_string(),
-                name: name.clone(),
-            });
-        }
+        let only = match (&grammar, &options.select) {
+            (None, Some(name)) => Some(built_in_requirement(root_file, name)?),
+            _ => None,
+        };
         Ok(Self {
             options,
             listings,
             grammar,
             program,
+            only,
         })
     }
+
+    /// Keeps only the selected requirement's findings, and what says a
+    /// repository could not be read, which every pass rests on.
+    fn keep_selected(&self, findings: &mut Vec<Finding>) {
+        let Some(only) = &self.only else {
+            return;
+        };
+        findings.retain(|finding| {
+            finding.check == *only || matches!(finding.check.as_str(), "adapter" | "resolver")
+        });
+    }
+}
+
+/// The built-in grammar's requirement `selected` names, bare
+/// (`operation_without_consumer`) or with its module
+/// (`lemma.http.operation_without_consumer`): a `lemma.yaml` workspace has
+/// no program whose checks or behaviors a selection could name.
+fn built_in_requirement(root_file: &Path, selected: &str) -> Result<String, GraphError> {
+    let name = selected
+        .strip_prefix("lemma.http.")
+        .unwrap_or(selected)
+        .to_owned();
+    let is_known = lemma_grammar::parse_grammar(lemma_verify::HTTP_CONTRACTS)
+        .is_ok_and(|grammar| grammar.requirements.contains_key(&name));
+    if !is_known {
+        return Err(GraphError::UnknownCheck {
+            module: root_file.display().to_string(),
+            name: selected.to_owned(),
+        });
+    }
+    Ok(name)
 }
 
 /// What a change to one repository breaks, read at its two commits.

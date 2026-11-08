@@ -156,7 +156,9 @@ pub(crate) struct CheckArgs {
     /// fixed is reported as fixed. Without, the base uses kept evidence only.
     #[arg(long, requires = "change", conflicts_with = "no_run")]
     pub run_base: bool,
-    /// The check of a parent `mod.lm` to run instead of its `check main`.
+    /// The check of a parent `mod.lm` to run instead of its `check main`, or
+    /// one behavior or requirement by name; from a `lemma.yaml` workspace,
+    /// one built-in requirement, whose findings alone are listed.
     #[arg(long, value_name = "CHECK")]
     pub select: Option<String>,
     /// Also list informational findings, not just their count.

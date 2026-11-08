@@ -440,7 +440,7 @@
         },
         "select": {
           "type": "string",
-          "description": "Run only this: a check of the mod.lm, or one behavior or requirement by name or address, such as `passes_on_retriable` or `lemma.http.operation_without_consumer`. Much faster than everything when iterating on one behavior."
+          "description": "Run only this: a check of the mod.lm, or one behavior or requirement by name or address, such as `passes_on_retriable` or `lemma.http.operation_without_consumer`. Much faster than everything when iterating on one behavior. From a lemma.yaml workspace: one built-in requirement, such as `consumer_misses_new_required_field`, whose findings alone are listed."
         },
         "all": {
           "type": "boolean",
