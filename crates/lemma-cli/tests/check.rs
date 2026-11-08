@@ -463,3 +463,22 @@ fn a_change_that_deletes_a_document_is_reported_by_check() {
         text(&output)
     );
 }
+
+#[test]
+fn a_change_that_deletes_an_included_directory_is_reported_by_check() {
+    let scratch = tempfile::tempdir().unwrap();
+    inferred_break(scratch.path());
+    std::fs::remove_dir_all(scratch.path().join("web/src")).unwrap();
+
+    let output = lemma(
+        scratch.path(),
+        &["check", "--change", "web", "--base", "HEAD", "--no-daemon"],
+    );
+
+    assert_eq!(output.status.code(), Some(4), "{}", text(&output));
+    assert!(
+        text(&output).contains("include_matches_nothing"),
+        "{}",
+        text(&output)
+    );
+}

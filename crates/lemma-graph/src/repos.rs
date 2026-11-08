@@ -296,13 +296,22 @@ fn default_branches(root: &Path) -> Vec<String> {
     branches
 }
 
-/// Every file Git tracks at `checkout`; `None` where it is no repository.
+/// Every file Git tracks at `checkout`, and in a working directory only
+/// those still there; `None` where it is no repository.
 pub(crate) fn tracked_files(checkout: &Checkout) -> Option<BTreeSet<String>> {
-    let listed = match &checkout.commit {
-        Some(commit) => git(&checkout.root, &["ls-tree", "-r", "--name-only", commit]),
-        None => git(&checkout.root, &["ls-files"]),
-    };
-    Some(listed.ok()?.lines().map(str::to_owned).collect())
+    if let Some(commit) = &checkout.commit {
+        let listed = git(&checkout.root, &["ls-tree", "-r", "--name-only", commit]).ok()?;
+        return Some(listed.lines().map(str::to_owned).collect());
+    }
+    let listed = git(&checkout.root, &["ls-files"]).ok()?;
+    let is_present = |file: &&str| checkout.root.join(file).exists();
+    Some(
+        listed
+            .lines()
+            .filter(is_present)
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 /// Whether `url` at `reference` is in the clone cache.

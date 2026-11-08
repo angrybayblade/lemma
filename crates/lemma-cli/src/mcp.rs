@@ -395,11 +395,7 @@ fn push_check_command(
             ("select", "--select"),
         ],
     )?;
-    for (field, flag) in [
-        ("no_run", "--no-run"),
-        ("all", "--all"),
-        ("links", "--links"),
-    ] {
+    for (field, flag) in [("no_run", "--no-run"), ("all", "--all")] {
         if optional_bool(arguments, field)? {
             args.push(flag.to_owned());
         }

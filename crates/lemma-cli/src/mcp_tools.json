@@ -445,10 +445,6 @@
         "all": {
           "type": "boolean",
           "description": "Also list informational findings."
-        },
-        "links": {
-          "type": "boolean",
-          "description": "Also list every link between repositories."
         }
       }
     },

@@ -2,7 +2,7 @@ module lemma.http
 
 // HTTP contracts between services, their generated clients and consumers.
 //
-// Facts come from `lemma verify`'s extractors: operations from OpenAPI
+// Facts come from `lemma check`'s extractors: operations from OpenAPI
 // documents (spec), routes, client operation tables and calls from code
 // (syntax). Operations are named "METHOD /path" with path parameters
 // written `{}`. A consumer is "repository:file::Symbol"; a file is

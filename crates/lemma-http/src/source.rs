@@ -615,23 +615,6 @@ fn normal_prefix(prefix: &str) -> &str {
     if prefix == "." { "" } else { prefix }
 }
 
-/// Fails for a prefix the working directory does not have: a directory the
-/// configuration names that is not there is a mistake to report, not an
-/// empty service.
-pub fn require_prefixes(repository: &Path, prefixes: &[String]) -> Result<(), SourceError> {
-    let missing = prefixes
-        .iter()
-        .map(|prefix| normal_prefix(prefix))
-        .find(|prefix| !prefix.is_empty() && !repository.join(prefix).exists());
-    let Some(missing) = missing else {
-        return Ok(());
-    };
-    Err(SourceError::Io {
-        path: repository.join(missing),
-        source: std::io::Error::from(std::io::ErrorKind::NotFound),
-    })
-}
-
 /// What names a listed file's contents in a cache key: its blob when Git
 /// vouches for it, otherwise the contents as `read`. `None` for a file with
 /// neither, one gone before it could be read.
@@ -819,10 +802,18 @@ fn directory_paths(
     let mut found = Vec::new();
     let mut pending = Vec::new();
     for root in roots {
-        let metadata = fs::metadata(&root).map_err(|source| SourceError::Io {
-            path: root.clone(),
-            source,
-        })?;
+        let metadata = match fs::metadata(&root) {
+            Ok(metadata) => metadata,
+            // A directory the description names and the change deleted holds
+            // no files; saying so is `lemma check`'s job, not a failure.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(SourceError::Io {
+                    path: root.clone(),
+                    source,
+                });
+            }
+        };
         if metadata.is_dir() {
             pending.push(root);
         } else {

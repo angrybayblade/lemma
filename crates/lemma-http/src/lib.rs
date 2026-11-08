@@ -23,6 +23,6 @@ pub use paths::{
 pub use source::{
     ListedFile, Listings, SourceError, SourceFile, contents_key, is_under_any, list_files,
     list_with_blobs, read_file, read_files, read_files_where, read_from_disk, read_listed,
-    read_paths, require_prefixes,
+    read_paths,
 };
 pub use tsconfig::PathAliases;

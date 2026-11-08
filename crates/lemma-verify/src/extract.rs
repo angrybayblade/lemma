@@ -696,9 +696,6 @@ impl SpecCache {
         commit: Option<&str>,
         prefixes: &[String],
     ) -> Result<Vec<ListedFile>, VerifyError> {
-        if commit.is_none() {
-            lemma_http::require_prefixes(repository, prefixes)?;
-        }
         let is_code = |path: &str| {
             let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
             CODE_EXTENSIONS.contains(&extension) && is_under_any(path, prefixes)
