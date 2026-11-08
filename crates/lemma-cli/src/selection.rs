@@ -1,15 +1,17 @@
 //! What `lemma index` reads: the code each service in a directory's
-//! `lemma.yaml` says it is made of.
+//! description says it is made of.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use lemma_graph::config::{LEMMA_FILE, LemmaFile, Service};
+use lemma_graph::repos::{Checkout, cache_directory};
 use lemma_index::{RuleSpec, Selection};
 use lemma_model::Language;
 
 /// Where `lemma index` reads from: `path` itself if it is a file, else the
-/// `lemma.yaml` in it if there is one; and the directory indexed.
+/// description in it if there is one; and the directory indexed.
 pub(crate) fn locate(path: &Path) -> anyhow::Result<(PathBuf, Option<PathBuf>)> {
     let path = path
         .canonicalize()
@@ -18,16 +20,25 @@ pub(crate) fn locate(path: &Path) -> anyhow::Result<(PathBuf, Option<PathBuf>)> 
         let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
         return Ok((root, Some(path)));
     }
-    let file = path.join(LEMMA_FILE);
-    Ok((path, file.is_file().then_some(file)))
+    let description = description_in(&path);
+    Ok((path, description))
 }
 
-/// What `lemma index` says when a directory has no `lemma.yaml`.
-pub(crate) const MISSING_LEMMA_FILE: &str = "no lemma.yaml here, so every supported file was \
+/// The description in `directory`, if it has one. `lemma.yaml` comes first
+/// because `lemma check` reads it first, and the two must agree.
+pub(crate) fn description_in(directory: &Path) -> Option<PathBuf> {
+    [LEMMA_FILE, lemma_lang::load::MODULE_FILE]
+        .into_iter()
+        .map(|name| directory.join(name))
+        .find(|file| file.is_file())
+}
+
+/// What `lemma index` says when a directory has no description.
+pub(crate) const MISSING_DESCRIPTION: &str = "no mod.lm here, so every supported file was \
     indexed; describe the services and the code each is made of (`index.include`) to index only \
     that, with their exports and links (see docs/check.md)";
 
-/// Whether a `lemma.yaml` describes a workspace: repositories it composes
+/// Whether a description is of a workspace: repositories it composes
 /// (`#name` services) and no code of its own.
 pub(crate) fn is_workspace(file: &LemmaFile) -> bool {
     let mut names = file.services.keys();
@@ -35,8 +46,11 @@ pub(crate) fn is_workspace(file: &LemmaFile) -> bool {
         && names.all(|name| name.starts_with('#'))
 }
 
-/// The `lemma.yaml` at `path`, read and checked.
-pub(crate) fn read_lemma_file(path: &Path) -> anyhow::Result<LemmaFile> {
+/// The description at `path`, read and checked.
+pub(crate) fn read_description(path: &Path) -> anyhow::Result<LemmaFile> {
+    if path.extension().is_some_and(|extension| extension == "lm") {
+        return read_module(path);
+    }
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("could not read {}", path.display()))?;
     let file =
@@ -46,32 +60,75 @@ pub(crate) fn read_lemma_file(path: &Path) -> anyhow::Result<LemmaFile> {
     Ok(file)
 }
 
+/// The repository a root module at `path` describes, loaded and type-checked
+/// as `lemma check` loads it, so that the two cannot disagree about it.
+fn read_module(path: &Path) -> anyhow::Result<LemmaFile> {
+    let (Some(root), Some(name)) = (path.parent(), path.file_name()) else {
+        bail!("{} is not a module's file", path.display());
+    };
+    let checkout = Checkout {
+        root: root.to_path_buf(),
+        commit: None,
+    };
+    let name = name.to_string_lossy();
+    // Its errors already name the file.
+    Ok(lemma_graph::lm::read_manifest(
+        &checkout,
+        &name,
+        &cache_directory(),
+        &BTreeMap::new(),
+    )?)
+}
+
 /// The files a repository's index covers: those any of its services
 /// includes.
 pub(crate) fn repository_selection(file: &LemmaFile) -> anyhow::Result<Selection> {
-    let local: Vec<(&String, &Service)> = file
-        .services
-        .iter()
-        .filter(|(name, _)| !name.starts_with('#'))
-        .collect();
-    if local.is_empty() {
-        bail!("{LEMMA_FILE} defines no services of its own, so there is nothing to index");
-    }
     let mut rules = Vec::new();
-    for (name, service) in &local {
+    for (name, service) in local_services(file) {
         if service.index.include.is_empty() {
             continue;
         }
         rules.push(rule(name, service)?);
     }
+    // A description can be only requirements, and a service only an API
+    // document. Neither is a reason to leave the repository unindexed, or to
+    // lose the operations a document exports.
     if rules.is_empty() {
-        let names: Vec<&str> = local.iter().map(|(name, _)| name.as_str()).collect();
-        bail!(
-            "no service in {LEMMA_FILE} says what it is made of; add `index.include` to {}",
-            names.join(", ")
-        );
+        return Ok(Selection::everything());
     }
     Ok(Selection::from_rules(&rules)?)
+}
+
+/// What `lemma index` says when no service in `file` names its code, so that
+/// every supported file was indexed.
+pub(crate) fn whole_repository_warning(file: &LemmaFile) -> Option<String> {
+    let services: Vec<(&String, &Service)> = local_services(file).collect();
+    if services.is_empty() {
+        return Some(
+            "the description defines no services, so every supported file was indexed; describe \
+             each service and the code it is made of (`index.include`) to index only that"
+                .to_owned(),
+        );
+    }
+    if services
+        .iter()
+        .any(|(_, service)| !service.index.include.is_empty())
+    {
+        return None;
+    }
+    let names: Vec<&str> = services.iter().map(|(name, _)| name.as_str()).collect();
+    Some(format!(
+        "no service in the description says what it is made of, so every supported file was \
+         indexed; add `index.include` to {}",
+        names.join(", ")
+    ))
+}
+
+/// The services `file` defines itself, without the repositories it names.
+fn local_services(file: &LemmaFile) -> impl Iterator<Item = (&String, &Service)> {
+    file.services
+        .iter()
+        .filter(|(name, _)| !name.starts_with('#'))
 }
 
 fn rule(name: &str, service: &Service) -> anyhow::Result<RuleSpec> {
@@ -97,12 +154,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn services_without_code_are_named_in_the_error() {
+    fn a_directory_with_only_a_root_module_is_described_by_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let module = directory.path().join("mod.lm");
+        std::fs::write(&module, "module example\n").unwrap();
+
+        assert_eq!(description_in(directory.path()), Some(module));
+    }
+
+    #[test]
+    fn lemma_yaml_is_read_before_a_root_module_as_lemma_check_does() {
+        let directory = tempfile::tempdir().unwrap();
+        let yaml = directory.path().join(LEMMA_FILE);
+        std::fs::write(&yaml, "services: {}\n").unwrap();
+        std::fs::write(directory.path().join("mod.lm"), "module example\n").unwrap();
+
+        assert_eq!(description_in(directory.path()), Some(yaml));
+    }
+
+    #[test]
+    fn services_without_code_select_every_file_and_are_named_in_the_warning() {
         let file = lemma_graph::config::parse("services:\n  api: {}\n  web: {}\n").unwrap();
 
-        let error = repository_selection(&file).unwrap_err().to_string();
+        let selection = repository_selection(&file).unwrap();
+        let warning = whole_repository_warning(&file).unwrap();
 
-        assert!(error.contains("api, web"), "{error}");
+        assert_eq!(
+            selection.description(),
+            Selection::everything().description()
+        );
+        assert!(warning.contains("api, web"), "{warning}");
+    }
+
+    #[test]
+    fn a_description_without_services_selects_every_file_and_says_so() {
+        let file = LemmaFile::default();
+
+        let selection = repository_selection(&file).unwrap();
+        let warning = whole_repository_warning(&file).unwrap();
+
+        assert_eq!(
+            selection.description(),
+            Selection::everything().description()
+        );
+        assert!(warning.contains("defines no services"), "{warning}");
+    }
+
+    #[test]
+    fn a_service_naming_its_code_needs_no_warning() {
+        let file = lemma_graph::config::parse(
+            "services:\n  api: {}\n  web:\n    index:\n      include: [src]\n",
+        )
+        .unwrap();
+
+        assert_eq!(whole_repository_warning(&file), None);
     }
 
     #[test]

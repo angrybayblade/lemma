@@ -190,7 +190,7 @@ impl Engine {
         let (directory, lemma_path) = selection::locate(&path)?;
         let workspace = lemma_path
             .as_deref()
-            .map(selection::read_lemma_file)
+            .map(selection::read_description)
             .transpose()?
             .filter(selection::is_workspace);
         let roots = match (workspace, lemma_path) {

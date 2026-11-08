@@ -45,7 +45,7 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Index source files and symbols under a directory.
     Index {
-        /// A directory with a lemma.yaml, or a lemma.yaml.
+        /// A directory with a mod.lm or lemma.yaml, or one of those files.
         #[arg(default_value = ".")]
         path: PathBuf,
         /// Snapshots of pinned commits (worktrees a workspace indexes) to
