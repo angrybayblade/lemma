@@ -169,9 +169,9 @@ fn prelude() -> Vec<Builtin> {
         builtin(
             "",
             "local",
-            vec![required("path", Type::Text)],
+            vec![required("path", Type::Text), optional("rev", Type::Text)],
             REPOSITORY_SOURCE,
-            "A repository's working tree, relative to the declaring file.",
+            "A repository's clone, relative to the declaring file: its working tree, or the commit `rev`.",
         ),
         builtin(
             "",
