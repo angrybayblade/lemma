@@ -2,7 +2,7 @@
 
 Captured: 2026-10-28
 
-Updated 2026-11-08: [document 15](15-one-description-format.md) proposes removing Lemma's YAML formats, so that a description is always `.lm`. [Document 16](16-verifying-descriptions.md) proposes a new job for `lemma verify`: checking that a description still matches the code, while `lemma check` keeps asking whether a change breaks anything.
+Updated 2026-11-08: [document 15](15-one-description-format.md) removed Lemma's YAML formats, so a description is always `.lm`. [Document 16](16-verifying-descriptions.md) gave `lemma verify` a new job, checking that a description still matches the code; its first rollout step is implemented, and the rest is proposal.
 
 Updated 2026-11-05: [document 13](13-lm-grammar.md) records the proposed `.lm` grammar and verification semantics (draft 0.2, revised 2026-11-06): modules named by their place in a repository, discovered and hand-written operations, typed `->` graphs, Datalog rules over a change's base and head, relational `require` and evidence-backed `behavior` requirements, and checkers. It is a design draft with no implementation changes. [Document 12](12-segments-and-shared-storage.md) proposes Lemma's storage format, segments keyed by Git tree that move between local machines, devboxes and CI. [Document 10](10-native-datastore.md), proposed 2026-11-04, describes a native primary datastore for agent workspaces, including versioned code facts, organisation-defined relations and verification evidence.
 

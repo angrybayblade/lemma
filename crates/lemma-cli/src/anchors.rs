@@ -1,4 +1,4 @@
-//! Finding where a symbol is used, for `lemma check --anchors`: through the
+//! Finding where a symbol is used, for `lemma verify`: through the
 //! running daemon, whose language servers stay warm between checks, or,
 //! without one, through servers started for this check alone.
 
@@ -46,7 +46,7 @@ pub(crate) enum UsesError {
     ProviderFailed { message: String },
 }
 
-/// Answers `lemma check --anchors`' questions, from the daemon when one is
+/// Answers `lemma verify`' questions, from the daemon when one is
 /// running and otherwise from servers it starts itself.
 pub(crate) struct CheckReferences {
     asks_daemon: bool,
