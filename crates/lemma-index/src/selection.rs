@@ -13,6 +13,9 @@ pub struct Selection {
     /// Whether there are no rules and everything is covered, as when no
     /// configuration narrows the index.
     is_everything: bool,
+    /// Whether directories whose names start with a dot count. A check
+    /// reads what Git lists, which includes them; an index does not.
+    enters_hidden: bool,
 }
 
 /// One service's part: files under `include`, not matching `exclude`, in
@@ -54,7 +57,22 @@ impl Selection {
         Self {
             rules: Vec::new(),
             is_everything: true,
+            enters_hidden: false,
         }
+    }
+
+    /// Everything a check can read: every supported file, and directories
+    /// whose names start with a dot, such as `.github`.
+    pub fn everything_git_lists() -> Self {
+        Self {
+            enters_hidden: true,
+            ..Self::everything()
+        }
+    }
+
+    /// Whether directories whose names start with a dot are entered.
+    pub(crate) fn enters_hidden(&self) -> bool {
+        self.enters_hidden
     }
 
     /// The files the rules cover. No rules cover nothing.
@@ -63,6 +81,7 @@ impl Selection {
         Ok(Self {
             rules,
             is_everything: false,
+            enters_hidden: false,
         })
     }
 

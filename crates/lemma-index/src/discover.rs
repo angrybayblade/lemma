@@ -13,6 +13,12 @@ use crate::selection::Selection;
 /// Directories never worth indexing, even when not ignored by Git.
 const SKIPPED_DIRECTORIES: [&str; 1] = ["node_modules"];
 
+/// Hidden directories never watched, even when hidden ones are: Git's own,
+/// which the watcher follows separately; Lemma's, which a check writes to,
+/// so watching it would make every check look like a change; and virtual
+/// environments, which hold thousands of directories no check reads.
+const NEVER_WATCHED: [&str; 3] = [".git", ".lemma", ".venv"];
+
 /// A file Lemma knows how to parse.
 pub(crate) struct SourceFile {
     pub absolute_path: PathBuf,
@@ -100,9 +106,10 @@ pub(crate) fn source_files_in(
 }
 
 /// The directories under `top` (itself included) that discovery would enter
-/// from `root`: not hidden, not skipped, not ignored by Git, entered by
-/// `selection` and not one of `excluded` or below it, sorted. Walking from `root` rather than from `top` applies
-/// every ignore file on the way down. For watching exactly what is indexed.
+/// from `root`: not skipped, not ignored by Git, hidden only if `selection`
+/// enters hidden ones, entered by `selection` and not one of `excluded` or
+/// below it, sorted. Walking from `root` rather than from `top` applies
+/// every ignore file on the way down. For watching exactly what is read.
 pub(crate) fn directories_under(
     root: &Path,
     top: &Path,
@@ -117,14 +124,17 @@ pub(crate) fn directories_under(
     let filter_top = top_relative.clone();
     let filter_excluded = excluded.to_vec();
     let walker = WalkBuilder::new(root)
-        .hidden(true)
+        .hidden(!selection.enters_hidden())
         .git_ignore(true)
         .git_exclude(true)
         .require_git(false)
         .filter_entry(move |entry| {
             let is_directory = entry.file_type().is_some_and(|kind| kind.is_dir());
             let name = entry.file_name().to_string_lossy();
-            if !is_directory || SKIPPED_DIRECTORIES.contains(&name.as_ref()) {
+            if !is_directory
+                || SKIPPED_DIRECTORIES.contains(&name.as_ref())
+                || NEVER_WATCHED.contains(&name.as_ref())
+            {
                 return false;
             }
             if filter_excluded

@@ -359,6 +359,37 @@ mod tests {
 
     use super::*;
 
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_selection_of_what_git_lists_watches_hidden_directories_but_not_lemmas_own() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join(".github")).unwrap();
+        fs::create_dir_all(root.join(".lemma")).unwrap();
+        let mut watch = Watch::start(&root, &Selection::everything_git_lists()).unwrap();
+
+        fs::write(root.join(".github/spec.json"), "{}").unwrap();
+        fs::write(root.join(".lemma/index.db"), "x").unwrap();
+        let observed = watch.changes();
+
+        assert!(observed.paths.contains(&root.join(".github/spec.json")));
+        assert!(!observed.paths.contains(&root.join(".lemma/index.db")));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn an_index_selection_leaves_hidden_directories_unwatched() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join(".github")).unwrap();
+        let mut watch = Watch::start(&root, &Selection::everything()).unwrap();
+
+        fs::write(root.join(".github/spec.json"), "{}").unwrap();
+        let observed = watch.changes();
+
+        assert!(!observed.paths.contains(&root.join(".github/spec.json")));
+    }
+
     #[test]
     fn reading_a_file_is_not_a_change() {
         let read = EventKind::Access(AccessKind::Close(AccessMode::Read));

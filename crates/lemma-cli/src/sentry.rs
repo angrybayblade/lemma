@@ -715,7 +715,7 @@ fn instance() -> String {
 /// A watcher for the repository at `root` (canonical), leaving out the
 /// repositories `inner` to it, or why there is none.
 fn watch(root: PathBuf, inner: &[PathBuf]) -> Watched {
-    let selection = lemma_index::Selection::everything();
+    let selection = lemma_index::Selection::everything_git_lists();
     let started = lemma_index::Watch::start_without(&root, &selection, inner);
     let (watch, failure) = match started {
         Ok(watch) => (Some(watch), None),
