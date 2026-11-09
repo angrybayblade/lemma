@@ -1323,6 +1323,15 @@ impl Walk<'_> {
         let method =
             method_before_path(&text, &self.options.path_markers).unwrap_or_else(|| "*".to_owned());
         self.add_reference(&method, &text, node);
+        // A request written out whole names its fields in the same string,
+        // so updating the example is what answers a finding about it.
+        let function = self.enclosing_function(node);
+        for name in example_keys(&text) {
+            self.facts.mentions.push(Mention {
+                name,
+                function: function.clone(),
+            });
+        }
     }
 
     /// Whether a string is text being searched for or compared against:
@@ -1499,6 +1508,18 @@ fn is_string_kind(kind: &str) -> bool {
 /// The last dot-separated part of a name: `n` in `m.n`.
 fn last_segment(name: &str) -> String {
     name.rsplit('.').next().unwrap_or(name).to_owned()
+}
+
+/// The keys of a request written out in a string: `origin` in
+/// `POST /v1/x {"origin": "sdk"}`. Splitting on quotes leaves a key just
+/// before the piece starting with its colon.
+fn example_keys(text: &str) -> Vec<String> {
+    let pieces: Vec<&str> = text.split('"').collect();
+    pieces
+        .windows(2)
+        .filter(|pair| pair[1].trim_start().starts_with(':') && is_identifier(pair[0]))
+        .map(|pair| pair[0].to_owned())
+        .collect()
 }
 
 fn is_identifier(name: &str) -> bool {
@@ -2145,6 +2166,28 @@ const Route = router.createRoute({
             assert!(names(&found).contains(&name), "{name}");
         }
         assert_eq!(found.imports, ["../types/configs", "zod"]);
+    }
+
+    #[test]
+    fn a_request_written_out_in_a_string_names_its_fields() {
+        let source = "function Detail() {\n  return <Block code={`POST /v1/session\n\n{\n  \"origin\": \"sdk\",\n  \"note\": \"a: b\"\n}`} />;\n}\n";
+
+        let found = facts("a.tsx", source);
+
+        assert_eq!(found.path_references[0].method, "POST");
+        assert_eq!(
+            found.path_references[0].location.function.as_deref(),
+            Some("Detail")
+        );
+        let in_detail: Vec<&str> = found
+            .mentions
+            .iter()
+            .filter(|mention| mention.function.as_deref() == Some("Detail"))
+            .map(|mention| mention.name.as_str())
+            .collect();
+        assert!(in_detail.contains(&"origin"), "{in_detail:?}");
+        assert!(in_detail.contains(&"note"), "{in_detail:?}");
+        assert!(!in_detail.contains(&"sdk"), "{in_detail:?}");
     }
 
     #[test]
