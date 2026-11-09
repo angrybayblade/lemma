@@ -1,6 +1,6 @@
 # Sentry: warm paths for checks
 
-**Status: experimental, 2026-11-09.** Built as far as [Rollout](#rollout) records, opt-in and labelled experimental: its answers matched fresh checks, but agent runs showed no time or cost benefit. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion that followed the November agent benchmark. Everything else is proposal. Measurements come from the `hill-climb` branch (commit 94eb04b), on a five-repository workspace of TypeScript, Python and Go services with their dependencies installed. Agent runs come from a private benchmark on the same workspace, whose figures are not recorded here.
+**Status: experimental, 2026-11-09.** Built as far as [Rollout](#rollout) records, opt-in and labelled experimental: its answers matched fresh checks, but agent runs showed no time or cost benefit. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion that followed the November agent benchmark. Everything else is proposal. Measurements come from the `hill-climb` branch (commit 50ff30f), on a five-repository workspace of TypeScript, Python and Go services with their dependencies installed. Agent runs come from a private benchmark on the same workspace, whose figures are not recorded here.
 
 ## Problem
 
@@ -28,7 +28,7 @@ The daemon already keeps state warm for lookups: language servers, and a live sy
 
 The benchmark also showed what long-lived state costs when its lifecycle is wrong:
 
-- **Leaked indexes.** The daemon kept every index it had opened, with its database files and watcher, until it ran out of file descriptors. After a day of short-lived workspaces it held 644 deleted files and 116 watchers. This was fixed in 94eb04b: the maintenance tick now lets go of indexes whose directory is gone.
+- **Leaked indexes.** The daemon kept every index it had opened, with its database files and watcher, until it ran out of file descriptors. After a day of short-lived workspaces it held 644 deleted files and 116 watchers. This was fixed in 50ff30f: the maintenance tick now lets go of indexes whose directory is gone.
 - **Watch limits.** The watcher registers every directory under a root. A workspace with dependencies installed has 90,148 directories, 90% of them under `node_modules` and `.venv`. Three such workspaces exceed the machine's limit of 259,504 watches per user. When registration fails, the live index silently walks the whole tree on every run.
 
 ## Goal
@@ -186,7 +186,7 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
   - Never automatic when `CI` is set. Nx turns its daemon off in CI by default for the same reason.
 - **Detaching.** Sentry detaches:
   - on `lemma daemon sentry stop`;
-  - when the workspace's directory disappears (the maintenance tick from 94eb04b);
+  - when the workspace's directory disappears (the maintenance tick from 50ff30f);
   - when the daemon exits or is replaced by a new build.
 
   Attachment does not survive the daemon. With `auto_attach`, the next check attaches again. Sentry's own activity does not count as requests for the daemon's idle exit.
@@ -256,7 +256,7 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
    - Each run gets its own daemon, through its own `TMPDIR`: the daemon's socket lives there, and a daemon attaches only one workspace.
    - Compare time and cost with the same agents before sentry.
 
-   **Ran, 2026-11-08 (build 8541531).** Agents with sentry took no less time and cost no less than agents without it. Time spent in checks fell slightly, and the model took most of every run in both arms. Differences in how many runs were done right are not attributed to sentry: some of the misses came from the benchmark's permissions blocking a code generator.
+   **Ran, 2026-11-08 (build df02198).** Agents with sentry took no less time and cost no less than agents without it. Time spent in checks fell slightly, and the model took most of every run in both arms. Differences in how many runs were done right are not attributed to sentry: some of the misses came from the benchmark's permissions blocking a code generator.
 
 5. **After that round.**
    - One answer is held per ask, up to 16, instead of only the last.
@@ -270,7 +270,7 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 
    An ask after an edit now takes a median of 1.65–1.69 s. Every answer across 982 differential cases on all builds equalled a check with nothing kept, and none fell back. Lost events and resource limits were not simulated.
 
-   **A second round, stopped early (build 1d7bf8e),** showed the same. The tasks that finished differ between the arms, so it gives no like-for-like comparison. Checks are a small part of an agent's run and the model most of it, which is the ceiling on what sentry can save an agent.
+   **A second round, stopped early (build 0359bd6),** showed the same. The tasks that finished differ between the arms, so it gives no like-for-like comparison. Checks are a small part of an agent's run and the model most of it, which is the ceiling on what sentry can save an agent.
 
 **Later:**
 

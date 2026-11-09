@@ -165,7 +165,7 @@ Locally: keep segments reachable from named heads, pinned readers, and the last 
 
 ## What landed
 
-Measured with `lemma check --change '#svc0' --evaluation demand --no-daemon` on an 8-CPU Linux VM, on systems from `bench/lemmabench/scale.py`. Findings and traces are byte-identical to `main` at `c815e7c` in every row:
+Measured with `lemma check --change '#svc0' --evaluation demand --no-daemon` on an 8-CPU Linux VM, on systems from `bench/lemmabench/scale.py`. Findings and traces are byte-identical to `main` at `461fafe` in every row:
 
 | System | | `main` | Now |
 |---|---|---|---|
