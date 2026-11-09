@@ -12,7 +12,7 @@ hook = json.load(sys.stdin)
 if hook.get("stop_hook_active"):
     sys.exit(0)
 root = hook.get("cwd") or os.getcwd()
-if not any(os.path.exists(os.path.join(root, name)) for name in ("lemma.yaml", "mod.lm")):
+if not os.path.exists(os.path.join(root, "mod.lm")):
     sys.exit(0)
 
 

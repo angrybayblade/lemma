@@ -15,7 +15,7 @@ description: Prove a change keeps repositories in agreement with `lemma check` -
 
 ## Steps
 
-1. From the workspace directory (whose `lemma.yaml` lists the repositories), run `lemma check --change <repository>` for each repository you edited, or the `check` tool with `change`. For committed work on a branch use `--base <commit>`; the default is where the branch left the default branch.
+1. From the workspace directory (whose `mod.lm` composes the repositories), run `lemma check --change <repository>` for each repository you edited, or the `check` tool with `change`. For committed work on a branch use `--base <commit>`; the default is where the branch left the default branch.
 2. Read every introduced finding:
    - `error`: a request fails, such as a caller sending a parameter the operation now rejects, or a client still declaring a removed one. The command exits with 4.
    - `warning`: behavior changes without failing, such as a response field a caller reads is gone, or an operation was added that no route serves or no code calls.
@@ -33,7 +33,7 @@ Each answer ends with `sentry token: <token>`. After fixing what a check reporte
 
 ## When a finding looks wrong
 
-Run with `--all` to see informational findings, and `--links` to see which caller Lemma matched to which operation. A wrong finding is usually one wrong match: a path built at run time matched to the wrong operation, or a common field name counted as a use. Say so in the report rather than working around it in code.
+Run with `--all` to see informational findings, and `lemma verify --links` to see which caller Lemma matched to which operation. A wrong finding is usually one wrong match: a path built at run time matched to the wrong operation, or a common field name counted as a use. Say so in the report rather than working around it in code.
 
 ## The opt-in Stop hook
 
@@ -49,4 +49,4 @@ Run with `--all` to see informational findings, and `--links` to see which calle
 }
 ```
 
-It reads the workspace from the directory the agent runs in (a `lemma.yaml` there lists the repositories, each a directory of the same name) and checks only repositories with uncommitted changes. It blocks at most once per stop, so an error the agent cannot fix is reported rather than looped on.
+It reads the workspace from the directory the agent runs in (a `mod.lm` there composes the repositories, each a directory beside it) and checks only repositories with uncommitted changes. It blocks at most once per stop, so an error the agent cannot fix is reported rather than looped on.

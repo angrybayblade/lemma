@@ -11,9 +11,9 @@ The point is the list a text search would get wrong: callers in other repositori
 
 1. **Name the target precisely.** An operation as method and path (`POST /v1/charges`), or a symbol by qualified name (`Router.delete`). Find it with `search_symbols` (or `lemma symbols`) and keep its id (`#415`, or `#billing:415` in a workspace).
 2. **Uses in its own repository.** `references` on the symbol; `implementations` too for an interface member. Each answer carries the function it sits in.
-3. **Callers in other repositories.** Run from the workspace directory (the one whose `lemma.yaml` lists the repositories):
+3. **Callers in other repositories.** Run from the workspace directory (the one whose `mod.lm` composes the repositories):
    - `graph` on the operation's handler with `direction: callers` follows the route to its operation and on to the code that calls it, whether through a URL or a generated client.
-   - `lemma check --links` lists every link Lemma infers between repositories, caller to operation.
+   - `lemma verify --links` lists every link Lemma infers between repositories, caller to operation.
    - For a generated client, `references` on its method for the operation.
 4. **Where the contract is declared.** The route's schema, each committed spec (OpenAPI documents) and each generated client's types for the operation.
 5. **Separate look-alikes.** Other operations whose paths share a prefix, internal routes that keep the old behavior, and same-named fields of other types are not on the list. Say why each was left off.
