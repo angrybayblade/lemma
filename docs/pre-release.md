@@ -1,6 +1,6 @@
 # Pre-release checklist
 
-Lemma 0.1 is in release candidates. This page is what each candidate is and is not ready for: what has been measured, what is known to be wrong or missing, and what must be true before 0.1.0. It doubles as the release notes. Each candidate updates it.
+Lemma 0.1 is in release candidates. This page lists what each candidate is and is not ready for: what was measured, what is known to be wrong or missing, and what must be true before 0.1.0. It doubles as the release notes. Each candidate updates it.
 
 Install: see [Onboarding](onboarding.md#1-install). Report problems with the description, the command and its output.
 
@@ -12,7 +12,7 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up (see [New in rc1](#new-in-rc1)) | Released |
 | 0.1.0-rc2 and later | Fixes from internal use; CI green for two weeks; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
 
-## What is ready
+## Ready
 
 | Area | Ready for | Evidence |
 | --- | --- | --- |
@@ -45,7 +45,7 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 
 ### Checking links (`lemma check`)
 
-Links Lemma cannot infer (queues, function runtimes) can be declared, and a break is traced on through the services that pass it along. `lemma check` is new in this release candidate.
+Links Lemma cannot infer (queues, function runtimes) can be declared, and Lemma traces a break through the services that pass it along. `lemma check` is new in this release candidate.
 
 | Limitation | Effect | Until fixed |
 | --- | --- | --- |
@@ -78,7 +78,7 @@ Links Lemma cannot infer (queues, function runtimes) can be declared, and a brea
 
 ## New in rc1
 
-- **`lemma check`**: `.lm` modules describe a system; links between services are declared or inferred from specs and calling code, their schemas compared, and what a break affects traced up through the services that pass it on. Only the code a change's findings can rest on is read. Without `--base`, the work in progress since the branch left the default branch is checked.
+- **`lemma check`**: `.lm` modules describe a system; links between services are declared or inferred from specs and calling code, their schemas compared, and what a break affects traced up through the services that pass it on. Lemma reads only the code a change's findings can rest on. Without `--base`, it checks the work in progress since the branch left the default branch.
 - **Is it wired up?** Warnings for an operation a change adds that no route serves or no code calls, and a route a change adds that its spec leaves out; an error for a call of an operation whose route the change removed.
 - **Adapters** read a service's operations from its code (built in: Hono with zod-openapi, FastAPI, Express, Flask and Go routers; any other through a script), remember a failure per clone and environment, and fail a `--level strict` check when they cannot run.
 - **`.lm` modules and `lm`**: typed modules for services, links, rules, requirements, behaviors (requirements checked by running checkers) and allowances; `lm check`, `lm fmt`, `lm new behavior` to scaffold a behavior and its checker, and `lm lsp` with VS Code and Zed extensions.

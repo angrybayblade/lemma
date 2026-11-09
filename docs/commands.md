@@ -20,17 +20,17 @@ Every command runs in a background daemon that keeps the index open, watches ind
 
 ## `lemma index [path]`
 
-`path` is a directory holding a `mod.lm`, or a module itself. Reads the source files that `path`'s description (default: the current directory's `mod.lm`) says its services are made of, and records their definitions in a snapshot. Re-indexing is incremental: only new or changed files are read and parsed, so running it after every edit is cheap (see [How Lemma works](concepts.md#re-indexing-is-incremental)).
+`path` is a directory holding a `mod.lm`, or a module itself. Reads the source files that `path`'s description (default: the current directory's `mod.lm`) says its services are made of, and records their definitions in a snapshot. Re-indexing is incremental: it reads and parses only new or changed files, so running it after every edit is cheap (see [Concepts](concepts.md#re-indexing-is-incremental)).
 
-- Without a `mod.lm`, every supported file is indexed, with a warning; exports, links and workspaces need one. With one, each service's `index` selects files: under `include`, not matching `exclude`, in `languages` if given. A file any service selects is indexed. A description where no service names its code, or with no services at all, has every supported file indexed, keeps its exports, and warns; a workspace reports that warning under the member. Changing the selection (adding, editing or removing `mod.lm`) re-indexes from scratch on the next run, dropping files no longer selected, and a removed `mod.lm` takes its exports and links with it.
-- Each service's exports are stored with the snapshot: declared operations at their code anchors, operations its OpenAPI documents describe at their route handlers (the function a route's line names, or the function around the route), and the top-level definitions of its public modules (`symbols`). Links in a graph of `Link` are stored too. They are rebuilt when the description or the code changes, including an edit to a module the root module imports. The summary counts them, including how many documented operations a handler was found for; routes whose paths are built at run time are not found.
+- Without a `mod.lm`, the command indexes every supported file and warns; exports, links and workspaces need one. With one, each service's `index` selects files: under `include`, not matching `exclude`, in `languages` if given. A file any service selects is indexed. A description where no service names its code, or with no services at all, has every supported file indexed, keeps its exports, and warns; a workspace reports that warning under the member. Changing the selection (adding, editing or removing `mod.lm`) re-indexes from scratch on the next run, dropping files no longer selected, and a removed `mod.lm` takes its exports and links with it.
+- The command stores each service's exports with the snapshot: declared operations at their code anchors, operations its OpenAPI documents describe at their route handlers (the function a route's line names, or the function around the route), and the top-level definitions of its public modules (`symbols`). It stores links in a graph of `Link` too, and rebuilds them when the description or the code changes, including an edit to a module the root module imports. The summary counts them, including how many documented operations a handler was found for; routes whose paths are built at run time are not found.
 - A `mod.lm` with a `workspace` block composes repositories. Each repository is indexed into its own `.lemma/index.db`: at its pinned `rev` through a Git worktree in `~/.cache/lemma/worktrees` (the cache keeps the 8 most recently used worktrees, and checks at past commits use the same ones; kept beside its working-directory snapshot, so language servers read the pinned code), or as its working directory. The workspace's own `.lemma/index.db` then records the members and every member's exports and links, with addresses made absolute (`#platform:services.worker.submit_task`). Symbols stay in the members' indexes; `lemma symbols` run from the workspace's directory searches them all, each path prefixed with its repository.
 - A repository's index keeps its working directory's snapshot always, and snapshots of pinned commits while they are among the `--keep` most recently indexed (default 5) and were indexed within `--ttl` (default `14d`; `never` to keep them until `--keep` pushes them out). A dropped snapshot's worktree is removed too.
 - Supported files: `.ts`, `.mts`, `.cts`, `.tsx`, `.py`, `.pyi`, `.go`, `.rs`.
 - Skipped even when selected: anything matched by `.gitignore`, hidden files and directories (including `.lemma/`), and `node_modules`.
-- If no file's contents changed since the last run, the snapshot is reported as `unchanged` and cached answers stay valid.
-- Otherwise only the changed files are rewritten, and cached answers for the snapshot are dropped.
-- An index written by an older version of Lemma is rebuilt from scratch.
+- If no file's contents changed since the last run, the command reports the snapshot as `unchanged` and cached answers stay valid.
+- Otherwise the command rewrites only the changed files and drops cached answers for the snapshot.
+- Lemma rebuilds an index written by an older version from scratch.
 
 `revision` is the checked-out commit; "uncommitted changes" means supported source files differ from it, including new untracked ones.
 
@@ -64,7 +64,7 @@ Lists the symbols defined in one file, in source order, indented by nesting. Nee
 
 Finds references to one symbol by asking a language server for its language.
 
-`<symbol>` can be:
+`<symbol>` is one of:
 
 - a name, such as `delete`;
 - a qualified name, such as `Router.delete`;
@@ -81,18 +81,18 @@ Names must match exactly. The same filters as `lemma symbols` narrow a name: `--
 | `--refresh` | Ask the language server again instead of using a cached answer. |
 | `--timeout-secs <n>` | How long to wait for the server to start and to answer (default 60). Large projects can take a while on the first lookup. |
 
-Lookups are answered by language servers the daemon keeps running, so only the first lookup per language pays the server's start-up cost, and `lemma index` starts them in the background ahead of that.
+Language servers the daemon keeps running answer lookups, so only the first lookup per language pays the server's start-up cost, and `lemma index` starts them in the background ahead of that.
 
 A TypeScript or Python import statement counts as a reference, since it names the symbol.
 
-Each reference shows its location and, when it sits inside an indexed definition, the name of that definition (`in remove_route`). References outside the indexed directory, such as in installed dependencies, are marked `(external)`.
+Each reference shows its location and, when it sits inside an indexed definition, the name of that definition (`in remove_route`). `refs` marks references outside the indexed directory, such as in installed dependencies, as `(external)`.
 
 ### Results
 
 | Result | Meaning |
 | --- | --- |
 | *N* references | The server found these. |
-| no references found | The server answered with nothing. This only covers what it could see, and does not prove the symbol is unused. |
+| no references found | The server answered with nothing. This covers only what it could see and does not prove the symbol is unused. |
 | does not support reference lookup | The server answered but cannot find references. |
 | changed since it was indexed | The file changed after indexing, so the stored position may be wrong. Queries re-index first, so this only appears with `--db`; run `lemma index` on that index. |
 | no provider is installed | No server for this language is on `PATH`. |
@@ -110,14 +110,14 @@ Each definition shows its location and, when it is an indexed symbol, its qualif
 
 Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters work as for `refs`, and so do `--refresh` and `--timeout-secs`. When a name is ambiguous, only symbols that can have implementations count (interfaces, classes, structs, enums, type aliases and methods), so a field named after its type (`store Store`) does not make `Store` ambiguous. Implementations in the repository are listed before those in libraries.
 
-Interface methods are indexed as symbols qualified by their interface (`Shape.area`), so you can ask about them directly. Support varies by server: gopls, rust-analyzer and the TypeScript servers answer; pyright and ty say they do not support it (`does not support implementation lookup`), which is not the same as finding none.
+Lemma indexes interface methods as symbols qualified by their interface (`Shape.area`), so `<symbol>` names them directly. Support varies by server: gopls, rust-analyzer and the TypeScript servers answer; pyright and ty say they do not support it (`does not support implementation lookup`), which is not the same as finding none.
 
 ## `lemma signature <symbol>`
 
 Shows a symbol's declaration and what its language server says about it. These come from two places and are kept apart:
 
 - The **declaration** is the definition's header as written, without its body, such as `def delete(self, id: str) -> None:`. It comes from the index and needs no server. It is left out if the file changed since it was indexed.
-- The **description** is the server's hover text, usually Markdown: the signature with inferred types, and the documentation comment. It is display text and is not parsed into types.
+- The **description** is the server's hover text, usually Markdown: the signature with inferred types, and the documentation comment. It is display text; Lemma does not parse it into types.
 
 It exits with 0 if either part was found, and 3 if neither was.
 
@@ -141,7 +141,7 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | --- | --- |
 | `--direction <way>` | `callers` (what uses it), `callees` (what it uses), or `both` (the default). |
 | `--depth <n>` | How many uses away to go. Default: 2. |
-| `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Answers are cached in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones, and files outside the snapshot, such as tests left out of `include`, are not read; an empty graph says so. With `lsp`, a caller in a file outside the snapshot is shown as `path (outside the snapshot)`. |
+| `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Lemma caches answers in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones, and files outside the snapshot, such as tests left out of `include`, are not read; an empty graph says so. With `lsp`, a caller in a file outside the snapshot is shown as `path (outside the snapshot)`. |
 | `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`, and the `source` it was found by), `notes` and `truncated`. |
 | `--max-nodes <n>` | The most nodes to include. Default: 200. |
 | `--only <kinds>` | Only symbols of these kinds besides the symbol itself, comma-separated: `--only function,method` shows the calls without the fields, types and constants a body uses. The top level of a file always counts as a caller. |
@@ -149,11 +149,11 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | `--across <calls>` | Across a workspace, how many calls from other code to follow: `1` (the default) stops at the code calling the operations the handlers serve; each more goes on through that code to its own operations and their callers. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
 
-References from a file's top-level code appear as the file; imports are left out. A symbol implementing an export that a graph of `Link` links to another operation uses that operation, which appears by address (`linked operation`). Questions the server could not answer, such as a stale file or a missing server, are listed as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
+References from a file's top-level code appear as the file; imports are left out. A symbol implementing an export that a graph of `Link` links to another operation uses that operation, which appears by address (`linked operation`). The graph lists questions the server could not answer, such as a stale file or a missing server, as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
 
 ### Across repositories
 
-Run from a workspace's directory, a graph does this without being asked. With `--workspace`, the callers found in the symbol's repository are followed on to the routes they handle, using the workspace's `mod.lm` (see [Checking links](check.md)): each route's operation becomes a node and the code in other repositories that calls it comes next. There the tree stops; `--across 2` goes on to the operations that code serves and their callers, and so on.
+Run from a workspace's directory, `lemma graph` follows callers across repositories without `--workspace`. With `--workspace`, the callers found in the symbol's repository are followed on to the routes they handle, using the workspace's `mod.lm` (see [Check links](check.md)): each route's operation becomes a node and the code in other repositories that calls it comes next. There the tree stops; `--across 2` goes on to the operations that code serves and their callers, and so on.
 
 ```text
 $ lemma graph DispatchTask --direction callers --workspace ../workspace/mod.lm --across 2
@@ -168,7 +168,7 @@ DispatchTask  (function, lib/tools/execute.go:50)
                     └─ executeOnce  (caller, #dashboard:src/server/clients/task-router/build-session-tasks.ts)
 ```
 
-Code reached in other repositories is a `caller`: it was found by the requests it sends, without reading what kind of definition it is. The last line counts relationships by how they were found when there is more than one way: `lsp` or `names` for the symbol's own repository, `route` from an operation to the code serving it, `call` from code to an operation it requests, `name` from one function to another whose name its body mentions (an approximation, as in [Checking links](check.md#what-a-problem-affects)), `type` when the body names only a method's type (it may call another method of that type; the tree marks these `through its type`, and a use found only by `name` `by name`), and `declared` for links a description declares.
+Code reached in other repositories is a `caller`: it was found by the requests it sends, without reading what kind of definition it is. The last line counts relationships by how they were found when there is more than one way: `lsp` or `names` for the symbol's own repository, `route` from an operation to the code serving it, `call` from code to an operation it requests, `name` from one function to another whose name its body mentions (an approximation, as in [Check links](check.md#impact)), `type` when the body names only a method's type (it may call another method of that type; the tree marks these `through its type`, and a use found only by `name` `by name`), and `declared` for links a description declares.
 
 - The index's directory must be inside one of the repositories the workspace composes.
 - Within the symbol's repository, callers come from `--source`. From there to a route's handler (a constructor registered for a handler type, say), and within every other repository, they are followed by name: approximate, within one language, skipping names several functions share.
@@ -221,7 +221,7 @@ Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
 ## `lemma check [mod.lm]`
 
-Checks a change against every repository the entry module composes: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Checking links](check.md). The entry module's own requirements run beside the HTTP contracts, its behaviors run (with their checkers), and its allowances apply, as its `check main` selects them. See [The `.lm` language](language.md).
+Checks a change against every repository the entry module composes: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Check links](check.md). The entry module's own requirements run beside the HTTP contracts, its behaviors run (with their checkers), and its allowances apply, as its `check main` selects them. See [The `.lm` language](language.md).
 
 | Option | Meaning |
 | --- | --- |
@@ -238,15 +238,15 @@ Checks a change against every repository the entry module composes: declared lin
 | `--explain` | Show why each inferred finding holds, down to the facts it rests on. |
 | `--no-clone` | Never clone a repository: check those that are here, and exit 5 if that is not all of them. |
 
-Each behavior is printed as `behavior <identity>: <outcome> (<held> of <cases> cases held, <reused> of <n> evidence reused)`, evidence reused being what checkers kept from an earlier run with the same inputs, and each case that did not hold is a finding naming the expression, its file and line, each operand's value and the `because` text. A finding an allowance covers ends with `(allowed: <reason>)` and is informational. With `--json`, `behaviors` lists every behavior with its cases (`identity`, `outcome`, `problem`, `introduced`, `fixed`, `at_base` for a fixed case, `allowed`) and the evidence each used (`checker`, `case`, `key`, `reused`, `unavailable`); `requirement_changes` lists what a change added, removed or changed; findings carry `allowed`.
+Prints each behavior as `behavior <identity>: <outcome> (<held> of <cases> cases held, <reused> of <n> evidence reused)`, evidence reused being what checkers kept from an earlier run with the same inputs, and each case that did not hold is a finding naming the expression, its file and line, each operand's value and the `because` text. A finding an allowance covers ends with `(allowed: <reason>)` and is informational. With `--json`, `behaviors` lists every behavior with its cases (`identity`, `outcome`, `problem`, `introduced`, `fixed`, `at_base` for a fixed case, `allowed`) and the evidence each used (`checker`, `case`, `key`, `reused`, `unavailable`); `requirement_changes` lists what a change added, removed or changed; findings carry `allowed`.
 
-An operation a link still names that the change removed is a `link` finding (introduced, exit 4), and the other repositories are still checked. A change that deletes a document a service exports, or leaves an `include` matching nothing, is reported (`document_missing`, `include_matches_nothing`).
+An operation a link still names that the change removed is a `link` finding (introduced, exit 4), and the other repositories are still checked. The command reports a change that deletes a document a service exports, or leaves an `include` matching nothing (`document_missing`, `include_matches_nothing`).
 
 Exits with 0 when no finding is an error, 4 when one is, 5 when it finished but a `git(...)` repository was not cloned, and 1 on failure.
 
 ## `lemma daemon`
 
-Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground. Language servers start when a lookup needs one, when `lemma index` runs (in the background), or with `lemma daemon lsp start`; there is one per indexed root and language, and idle ones are paused and stopped by the settings below.
+Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground. Language servers start when a lookup needs one, when `lemma index` runs (in the background), or with `lemma daemon lsp start`; there is one per indexed root and language, and the settings below pause and stop idle ones.
 
 | Command | Meaning |
 | --- | --- |
@@ -289,9 +289,9 @@ auto_attach = false        # attach sentry to a workspace on its first `lemma ch
 
 Under each report it answers, sentry adds a line `sentry token: <token>`, and JSON output a `sentry` object; the findings and the exit code are the same as a check run on its own. A token stays the same while nothing a check reads changes. Sentry answers a check only from a daemon already running; `lemma check` never starts one for it. A check that asks for logs (`-l`) or for anchors (`--anchors`) runs in its own process, and `LEMMA_SENTRY=off` keeps every check there. A check sentry answers runs resolvers, adapters and checkers with the environment of the process that asked, as a check run on its own does. `auto_attach` applies only in the user's own settings, and never when `CI` is set. `LEMMA_DAEMON_SOCKET` names another socket for the daemon, to run a separate one.
 
-Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `none`. The values above are the defaults. Unknown settings are rejected, so a typo shows up instead of being ignored; a file that stops parsing while the daemon runs leaves the previous settings in force.
+Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `none`. The values above are the defaults. The daemon rejects unknown settings, so a typo shows up instead of being ignored; a file that stops parsing while the daemon runs leaves the previous settings in force.
 
-A paused server, and every process it started, is stopped with `SIGSTOP`: it uses no CPU, and the operating system can compress or swap out its memory under pressure. The next lookup resumes it, which took about 45 ms for gopls in testing, against seconds to start a server again.
+The daemon pauses a server, and every process it started, with `SIGSTOP`: it uses no CPU, and the operating system can compress or swap out its memory under pressure. The next lookup resumes it, which took about 45 ms for gopls in testing, against seconds to start a server again.
 
 There is one daemon per user. It talks to `lemma` over a Unix socket in the temporary directory that only your user can open, and finds language servers on the `PATH` of each command it runs. A daemon started by a different build of Lemma is replaced automatically. The daemon is not available on Windows; commands there always run in-process.
 

@@ -1,13 +1,13 @@
 <!-- after: ../quickstart.md -->
 # 2. Write your own requirement
 
-The checks in the quickstart came from `lemma.http`, the standard library's requirements for HTTP contracts. You can add your own: a rule over the facts Lemma knows about the system, reported as a finding wherever it matches. This tutorial adds one that warns about calls to a deprecated operation, then chooses what runs with `check main`.
+The quickstart's checks came from `lemma.http`, the standard library's requirements for HTTP contracts. Write your own requirement when a property of your system is not covered there: a rule over the facts Lemma knows about the system, reported as a finding wherever it matches.
 
-It starts where the [quickstart](../quickstart.md) ends, in `shop`.
+Prerequisite: the end state of the [quickstart](../quickstart.md), in `shop`. Result: a requirement that warns about calls to a deprecated operation, and a `check main` that chooses what runs.
 
-## Facts, rules and requirements
+## Write the requirement
 
-`lemma.http` declares relations, sets of facts with typed columns, that Lemma fills from documents and code. One of them is `calls(c, op, f, l)`: consumer `c` calls operation `op` from file `f`, line `l`. You can state facts of your own in a `graph`, and a requirement matches them together:
+`lemma.http` declares relations, sets of facts with typed columns, that Lemma fills from documents and code. One of them is `calls(c, op, f, l)`: consumer `c` calls operation `op` from file `f`, line `l`. State facts of your own in a `graph`, and match them together in a requirement.
 
 Replace `mod.lm` with:
 
@@ -41,7 +41,7 @@ require no_calls_to_deprecated_operations {
 - `require` turns a rule body into findings. `when:` holds when every part holds for the same values: a call, of an operation that is deprecated. Lowercase names (`c`, `op`, `f`, `l`) are variables; strings, numbers and uppercase names are constants.
 - `message` fills in the variables, and `severity` is `error`, `warning` or `info`.
 
-`lm check` checks the rule before anything runs. It knows `calls` has four columns, so `calls(c, op)` would be an error at its line:
+Run `lm check` to check the rule before anything runs. It knows `calls` has four columns, so it reports `calls(c, op)` as an error at its line:
 
 ```console
 $ lm check
@@ -66,7 +66,7 @@ Your requirement found web's call, beside the findings from `lemma.http`.
 
 ## Choose what runs
 
-Without a `check main`, every requirement of every loaded module runs. A `check main` chooses, and can change a requirement's severity. Add to the end of `mod.lm`:
+Without a `check main`, every requirement of every loaded module runs. Use a `check main` to choose what runs and to change a requirement's severity. Add to the end of `mod.lm`:
 
 <!-- append: mod.lm -->
 ```lm
@@ -90,6 +90,6 @@ error   #web:web:src/charge.ts::charge calls POST /v1/charges, which is deprecat
 2 errors, 0 warnings, 0 informational
 ```
 
-The deprecation is an error now, and the removed-field warning is gone. Keep `run lemma.http.*` in any `check main`: a check that names only your own requirements runs no HTTP contract check. Another check, such as `check nightly { ... }`, runs with `lemma check --select nightly`.
+The deprecation is an error now, and the removed-field warning is gone. Keep `run lemma.http.*` in any `check main`: a check that names only your own requirements runs no HTTP contract check. Declare other checks, such as `check nightly { ... }`, and run them with `lemma check --select nightly`.
 
 Next: [allow a known finding](3-allowances.md).

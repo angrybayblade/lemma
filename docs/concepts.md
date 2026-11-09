@@ -1,4 +1,4 @@
-# How Lemma works
+# Concepts
 
 Lemma separates two kinds of facts about code:
 
@@ -15,23 +15,23 @@ The index keeps one snapshot per indexed directory, and indexing again updates i
 
 Agents re-index after every edit, so a re-index costs roughly what changed, not the size of the repository:
 
-- Files are parsed on every core.
-- A file whose size, modification time, change time and inode are the same as last time is not read again. Files written while the previous index was running are always re-read, so an edit within the same timestamp tick cannot be missed.
-- A file that was touched but has the same contents is not parsed again.
-- Only new, changed and deleted files are rewritten in the index. Symbols in other files keep their ids.
-- Git is asked about every source file only on the first index or after the commit changes. Otherwise it is asked only about the files that changed.
+- Lemma parses files on every core.
+- Lemma does not read a file again if its size, modification time, change time and inode are the same as last time. It always re-reads files written while the previous index was running, so an edit within the same timestamp tick cannot be missed.
+- Lemma does not parse a touched file again if its contents are the same.
+- Lemma rewrites only new, changed and deleted files in the index. Symbols in other files keep their ids.
+- Lemma asks Git about every source file only on the first index or after the commit changes, and otherwise only about the files that changed.
 
-The daemon goes further. It watches each indexed directory, so it knows which paths changed without walking the tree, and keeps the indexed files in memory:
+The daemon watches each indexed directory, so it knows which paths changed without walking the tree, and keeps the indexed files in memory:
 
 - Before indexing it confirms that every change made so far has been reported, by writing a marker file to a watched directory and waiting for its event. If that fails, or the operating system dropped events, it walks everything.
-- Only directories with changes are listed again, with the usual ignore rules. A changed `.gitignore` means a full walk.
-- If nothing changed and the commit has not moved, the stored snapshot is returned without reading or writing anything.
+- It lists only directories with changes again, with the usual ignore rules. A changed `.gitignore` means a full walk.
+- If nothing changed and the commit has not moved, it returns the stored snapshot without reading or writing anything.
 
 On a 73,000-file repository a re-index with nothing changed takes about 32 ms, and one after a small edit about 85 ms. See [Performance](performance.md).
 
 ## Stale results
 
-Positions in the index refer to the files as they were when indexed. Before asking a language server about a symbol, Lemma checks that the symbol's file still has the same contents. If it changed, the result is *stale* and no server is asked, because the stored position could point at the wrong code. Queries re-index before they run, as the MCP server does, so this only happens with an index given by `--db`.
+Positions in the index refer to the files as they were when indexed. Before asking a language server about a symbol, Lemma checks that the symbol's file still has the same contents. If it changed, the result is *stale* and Lemma asks no server, because the stored position could point at the wrong code. Queries re-index before they run, as the MCP server does, so this only happens with an index given by `--db`.
 
 Only the symbol's own file is checked. A server started for the lookup reads other files as they are on disk. A warm server sees edits to them once they are indexed, which every query does first.
 
@@ -46,18 +46,18 @@ Lemma keeps four situations apart:
 | Unsupported | The server cannot answer this kind of question. |
 | No answer (stale, no server, server failed) | Nothing was learned about the code. |
 
-Only the first three are real answers from a server, and only those are cached. A failed lookup is never stored as "no references", so it cannot later be mistaken for one.
+Only the first three are real answers from a server, and Lemma caches only those. It never stores a failed lookup as "no references", so it cannot later be mistaken for one.
 
 ## Caching
 
-Each answer is stored with:
+Lemma stores each answer with:
 
 - the snapshot it was computed against;
 - the provider that produced it, and the version the server reported;
 - a fingerprint of the provider's configuration;
 - whether the declaration was included.
 
-A cached answer is reused only when all of these match. Re-indexing after a content change, or changing a provider's configuration, makes the next lookup ask again: an edit in one file can change the references to a symbol defined in another, so every cached answer for the snapshot is dropped. Re-indexing with no content change keeps them. `--refresh` always asks again.
+Lemma reuses a cached answer only when all of these match. Re-indexing after a content change, or changing a provider's configuration, makes the next lookup ask again: an edit in one file can change the references to a symbol defined in another, so Lemma drops every cached answer for the snapshot. Re-indexing with no content change keeps them. `--refresh` always asks again.
 
 ## The daemon and warm language servers
 
@@ -67,16 +67,16 @@ Before reusing a server, the daemon tells it which files were created, changed o
 
 The daemon also keeps every symbol name in memory for substring search, rebuilt in the background after each index.
 
-The daemon keeps running, and looks after idle servers itself: a server nobody has used for 10 minutes is paused, so it uses no CPU and its memory can be compressed, and one idle for 2 hours is stopped. When files change in a project whose servers were stopped, the daemon starts them again, so they are usually ready by the next lookup. All of this is configurable; see [`lemma daemon`](commands.md#lemma-daemon). `lemma daemon stop` stops the daemon, and `--no-daemon` runs a command in-process.
+The daemon keeps running and manages idle servers: it pauses a server nobody has used for 10 minutes, so the server uses no CPU and its memory can be compressed, and stops one idle for 2 hours. When files change in a project whose servers were stopped, the daemon starts them again, so they are usually ready by the next lookup. All of this is configurable; see [`lemma daemon`](commands.md#lemma-daemon). `lemma daemon stop` stops the daemon, and `--no-daemon` runs a command in-process.
 
-## The index file
+## Index file
 
 `.lemma/index.db` is a SQLite database. It holds the snapshot, files, symbols, cached answers, and each service's exports and links, and is safe to delete; `lemma index` recreates it. Indexing a workspace adds snapshots of the commits it pins to each repository's database, beside its working directory's, until retention drops them (see [`lemma index`](commands.md#lemma-index-path)); the workspace's own database records its members and their links. It contains absolute paths from your machine, so do not commit it.
 
-## Limits of this version
+## Limits
 
 - Supported languages are TypeScript, TSX, Python, Go, and Rust.
-- The semantic questions are references, definitions, implementations, and hover text. Which of them a server supports varies; an unsupported question is reported as such.
-- Lemma waits for a server to finish loading the project before asking. Servers that announce it (pyright, basedpyright, typescript-language-server) are waited for exactly; for others Lemma uses signals such as diagnostics and quiet periods. A server that is still loading when it answers can give an incomplete result; `--refresh` asks again.
+- The semantic questions are references, definitions, implementations, and hover text. Which of them a server supports varies; Lemma reports an unsupported question as such.
+- Lemma waits for a server to finish loading the project before asking. It waits exactly for servers that announce it (pyright, basedpyright, typescript-language-server); for others it uses signals such as diagnostics and quiet periods. A server that is still loading when it answers can give an incomplete result; `--refresh` asks again.
 - The daemon runs one command at a time; parallel calls queue.
 - Language servers keep their memory while paused; the operating system reclaims it only under memory pressure. Set `memory_budget` or a shorter `stop_after` to bound it.

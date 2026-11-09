@@ -1,8 +1,8 @@
-# Checking links between repositories
+# Check links between repositories
 
 `lemma check` checks a change in one repository against every repository that depends on it, starting from `.lm` descriptions. Each repository describes itself in a root module, `mod.lm`; a workspace module, usually in a repository of its own, composes them. Lemma finds the operations that depend on each other, compares the schemas on both sides of each link, and traces what a broken link affects further up.
 
-To check that a description still matches the code it describes, whatever a change does, use [`lemma verify`](verify.md).
+[`lemma verify`](verify.md) checks that a description still matches the code it describes, whatever a change does.
 
 ## Example
 
@@ -123,7 +123,7 @@ An operation is something a service provides or calls, with a request and a resp
 | A command's output | `let spec = json.command("{python} scripts/spec.py")` and `request: spec.at("$.create_charge.request")` | The command, run in the repository at the commit; the location is a JSON path into its output |
 | A document | `let spec = json.document("spec.json")` and `request: spec.at("$.create_charge.request")` | The file; `format: "openapi"` on `json.document` converts OpenAPI 3.0's `nullable` |
 
-A command's output, and a Python type read with Pydantic, are kept in Lemma's cache for the commit they were produced at, by the code's Git tree, the command and its environment, the interpreter and its installed packages when Python runs, and `PATH`, `VIRTUAL_ENV` and `PYTHONPATH`; a commit not checked out runs in one worktree Lemma reuses per repository. Pass `cache: false` to a `json.command` whose output depends on anything else, such as a running service or files Git ignores.
+Lemma keeps a command's output, and a Python type read with Pydantic, in its cache for the commit they were produced at, by the code's Git tree, the command and its environment, the interpreter and its installed packages when Python runs, and `PATH`, `VIRTUAL_ENV` and `PYTHONPATH`; a commit not checked out runs in one worktree Lemma reuses per repository. Pass `cache: false` to a `json.command` whose output depends on anything else, such as a running service or files Git ignores.
 
 `{python}`, `{node}`, `{go}` and `{cargo}` in a command are the service's `runtime`, which defaults to `python3`, `node`, `go` and `cargo`. A relative interpreter such as `.venv/bin/python` is the repository's own environment. `runtime: { env: { PYTHONPATH: "src" } }` sets environment variables for every command.
 
@@ -135,11 +135,11 @@ Each language's reader follows its serializer's rules, because a type is read di
 | Rust (serde) | Fields are present unless `skip_serializing_if`; `Option` is `null` when empty | Fields are required unless `Option` or `default`; only `Option` accepts `null`; `deny_unknown_fields` rejects others |
 | Python, TypeScript | The same schema both ways: Pydantic's for Python; for TypeScript, `?` and `undefined` make a field optional and `null` makes it nullable | |
 
-Types that cannot be followed, such as a type from another package, are left open and reported as informational; fields under them are not compared.
+Lemma leaves types it cannot follow, such as a type from another package, open and reports them as informational; it does not compare the fields under them.
 
 ### Inferred links
 
-To see what is linked to what, declared and inferred, run `lemma verify --links`:
+`lemma verify --links` lists every link, declared and inferred:
 
 ```text
 $ lemma verify --links
@@ -151,9 +151,9 @@ inferred links: 521
     ...
 ```
 
-A service that declares its OpenAPI documents (`operations: http.openapi(...)`) needs no links: calls to its operations from any repository's code are found and checked. A service's code (`index.include`) is read for its route code and searched for calls to others, unless the service is itself a generated client (`client`); a service alone in its repository that declares nothing else has the whole repository searched.
+A service that declares its OpenAPI documents (`operations: http.openapi(...)`) needs no links: Lemma finds and checks calls to its operations from any repository's code. Lemma reads a service's code (`index.include`) for its route code and searches it for calls to others, unless the service is itself a generated client (`client`); for a service alone in its repository that declares nothing else, it searches the whole repository.
 
-Calls through clients need no declaration. A call through a client library (`client.apiKeys.list()`) reaches the client method its names spell, where the code imports the client's package or its repository depends on it; the client's own code says what that method requests. A client generated at build time is recognised by its imports, a module inside the repository that no file holds (or a module re-exporting it), and its functions by the `operationId`s they are named after.
+Calls through clients need no declaration. A call through a client library (`client.apiKeys.list()`) reaches the client method its names spell, where the code imports the client's package or its repository depends on it; the client's own code says what that method requests. Lemma recognizes a client generated at build time by its imports, a module inside the repository that no file holds (or a module re-exporting it), and its functions by the `operationId`s they are named after.
 
 | Field of a service | Meaning |
 | --- | --- |
@@ -175,19 +175,19 @@ For each declared link, cheapest first:
 1. **The link persists.** Both operations are declared at head, and their code anchors resolve. An operation removed while a link still names it is a `link` finding, marked introduced, so `lemma check` exits with 4 and goes on to check the other repositories.
 2. **The schemas agree.** For the request, what the caller sends is compared with what the provider accepts; for the response, what the provider sends with what the caller reads. A field the receiver requires and the sender may leave out, a value the receiver does not accept, and a response field the caller expects and the provider dropped are problems.
 
-A change that deletes a document a service exports, or leaves an `include` matching nothing, is reported as `document_missing` or `include_matches_nothing`. To find those without a change, use [`lemma verify`](verify.md).
+Lemma reports a change that deletes a document a service exports, or leaves an `include` matching nothing, as `document_missing` or `include_matches_nothing`. [`lemma verify`](verify.md) finds those without a change.
 
 With a change, only problems the change introduced count; what was already there is informational. Without one, every problem counts. The level decides what a problem is: a warning at `audit` (the default), an error at `check`, which exits with 4.
 
-Inferred links are checked by [`lemma.http`'s requirements](#what-lemmahttp-requires). Its errors are problems; its warnings stay warnings. Inference reads only the code that may call an operation the change touches, with the files it imports and the files the change edits (see `--evaluation` in [Commands](commands.md#lemma-check-modlm)), so the count of inferred links is of calls to those operations. A trace asks for the callers of each further operation it reaches as it reaches it.
+[`lemma.http`'s requirements](#lemmahttp-requirements) check inferred links. Its errors are problems; its warnings stay warnings. Inference reads only the code that may call an operation the change touches, with the files it imports and the files the change edits (see `--evaluation` in [Commands](commands.md#lemma-check-modlm)), so the count of inferred links is of calls to those operations. A trace asks for the callers of each further operation it reaches as it reaches it.
 
-### Is it wired up?
+### Wiring
 
 A change that adds to a service breaks nothing, so the checks above stay quiet even when it is only half done. Three requirements of `lemma.http` look at what a change adds, and only at that, so a system's older gaps stay out of the report:
 
 | Requirement | Warns when |
 | --- | --- |
-| `operation_without_route` | The change adds an operation to a spec, and no route in the service's code serves it. Only for services whose routes Lemma reads (`index.include` holding route code it recognises), and only when the service's route code never writes the path, whole or as a router's prefix and a path under it: a route Lemma cannot read, such as one registered in a helper, is given the benefit of the doubt. |
+| `operation_without_route` | The change adds an operation to a spec, and no route in the service's code serves it. Only for services whose routes Lemma reads (`index.include` holding route code it recognizes), and only when the service's route code never writes the path, whole or as a router's prefix and a path under it: a route Lemma cannot read, such as one registered in a helper, is given the benefit of the doubt. |
 | `route_without_operation` | The change adds a route its service's spec does not declare. |
 | `operation_without_consumer` | The change adds an operation that no code in the workspace calls, directly or through a generated client. |
 
@@ -203,11 +203,11 @@ graph public : public_operation {
 
 Operations are written as the findings print them: the method, then the path with each parameter as `{}`. `public_service` marks every operation of a service (`"#billing:api"`). A call the change adds to an operation no spec declares is `consumer_calls_unserved_operation`, an error.
 
-### What a problem affects
+### Impact
 
-Each problem lists what it affects further up, nearest first: the operations whose handlers reach the failing call, the code in other repositories that calls those operations, and so on. The call graph is read by name: a function calls another if its body mentions the other's name, and a method is reached through its type. Names that several functions share, and names so many functions mention that reaching one through them is no evidence (an error helper every handler uses), are not followed. A route's handler is found as exports find it: the call its registration names, the constant holding the registration, a helper its path is passed to, or an inline function, which counts only if its own code reaches the failing call. A walk stops at a route's registration (the code declaring the route, or a constant holding it): code that collects or documents routes, such as an OpenAPI generator, reads them without calling their handlers, and each route's operation is reached through the route itself. A trace is an approximation, so it is shown with a problem and never raises one.
+Each problem lists what it affects further up, nearest first: the operations whose handlers reach the failing call, the code in other repositories that calls those operations, and so on. Lemma reads the call graph by name: a function calls another if its body mentions the other's name, and a method is reached through its type. Lemma does not follow names that several functions share, or names so many functions mention that reaching one through them is no evidence (an error helper every handler uses). A route's handler is found as exports find it: the call its registration names, the constant holding the registration, a helper its path is passed to, or an inline function, which counts only if its own code reaches the failing call. A walk stops at a route's registration (the code declaring the route, or a constant holding it): code that collects or documents routes, such as an OpenAPI generator, reads them without calling their handlers, and each route's operation is reached through the route itself. A trace is an approximation, so it is shown with a problem and never raises one.
 
-## What `lemma.http` reads
+## `lemma.http` inputs
 
 `lemma.http` is the standard library's module of requirements for HTTP contracts. It is always loaded. Its facts come from the repositories' documents and code:
 
@@ -218,9 +218,9 @@ Each problem lists what it affects further up, nearest first: the operations who
 | A generated client's documents | the functions it exposes, named by `call_names`; the parameters it declares |
 | A service's code (TypeScript, JavaScript, Python, Go, Rust) | paths in strings and requests, with the HTTP method where the call shows it; calls through clients (`this.client.invoices.list()`) and functions imported from generated clients; the field names each function and file uses; imports, including `tsconfig.json` path aliases |
 
-A string in code counts as a path only if it contains a leading segment some service in the workspace serves, such as `/v1/`; everything before it (a base URL, `${API}`) is dropped. Paths compare in one form, so `{id}`, `${id}`, `:id`, `[id]` and `%s` are the same parameter. Test files are not searched for calls.
+A string in code counts as a path only if it contains a leading segment some service in the workspace serves, such as `/v1/`; everything before it (a base URL, `${API}`) is dropped. Paths compare in one form, so `{id}`, `${id}`, `:id`, `[id]` and `%s` are the same parameter. Lemma does not search test files for calls.
 
-## What `lemma.http` requires
+## `lemma.http` requirements
 
 | Requirement | Severity | Meaning |
 | --- | --- | --- |
@@ -255,7 +255,7 @@ lemma check [mod.lm] [--change <name or directory> [--base <commit>] [--head <co
 
 `--change` names the changed repository as the workspace names it, by its directory, or `self` for the entry module's own repository. `--base` is read from Git; `--head` too when given, and otherwise the working directory is the head, uncommitted changes included. Every other repository is read at its `rev`, or its working directory. Without a change, inferred links are checked only where a service reads its operations from code: its committed documents are compared with the code.
 
-When a commit predates the repository's `mod.lm`, the working directory's is used, and documents it names that did not exist then are skipped; the report says so. History from before a team adopted Lemma can be replayed this way.
+When a commit predates the repository's `mod.lm`, Lemma uses the working directory's and skips documents it names that did not exist then; the report says so. History from before a team adopted Lemma replays this way.
 
 Every option and exit code is in [Commands](commands.md#lemma-check-modlm).
 

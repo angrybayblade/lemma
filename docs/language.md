@@ -1,10 +1,10 @@
 # The `.lm` language
 
-A description of a system is written in `.lm`, one typed language for a repository's services and operations, the links between them, and the relations, rules, requirements, allowances and behaviors `lemma check` runs. Lemma checks a module before it uses it, so a misspelled operation or a rule reading a relation that does not exist is reported with its line, instead of quietly checking nothing.
+`.lm` is the language of descriptions: one typed language for a repository's services and operations, the links between them, and the relations, rules, requirements, allowances and behaviors `lemma check` runs. Lemma checks a module before it uses it and reports the line of a misspelled operation or of a rule reading a relation that does not exist, instead of quietly checking nothing.
 
 The design is in [spec 13](../.specs/13-lm-grammar.md), and every function and declaration of the standard library is in [its reference](standard-library.md).
 
-## A repository's module
+## Repository modules
 
 Each repository has a root module, `mod.lm`, named after the repository:
 
@@ -75,13 +75,13 @@ workspace {
 
 Repositories are `local("../billing")`, a working directory; `local("../billing", rev: "3f2a1c9e04")`, a clone read at a commit; or `git(url: "...", rev: "...")`, cloned into Lemma's cache. A link's ends name operations, by `operationId` (`api.createCharge`) or by method and path (`api["POST /v1/charges"]`). A renamed operation says what it used to be: `previously: ["billing::api.cancel"]`.
 
-A service's fields, the operations it declares and where schemas come from are listed in [Checking links](check.md#descriptions).
+[Check links](check.md#descriptions) lists a service's fields, the operations it declares and where schemas come from.
 
-Names are bound, not matched as text. An import names a module (`import { api } from billing`), a module's name is fixed by its file's place in its repository (`checks/replay.lm` in `billing` is `billing.checks.replay`), a directory's module is its `mod.lm` (`checks/mod.lm` is `billing.checks`), and a repository's name is its root module's, the `mod.lm` at its root, so it is an identifier: a directory `web-app` holds `module web_app`, and findings print `#web_app`. A service that only groups other services passes its fields down to them.
+Names are bound, not matched as text. An import names a module (`import { api } from billing`), a file's place in its repository fixes its module's name (`checks/replay.lm` in `billing` is `billing.checks.replay`), a directory's module is its `mod.lm` (`checks/mod.lm` is `billing.checks`), and a repository's name is its root module's, the `mod.lm` at its root, so it is an identifier: a directory `web-app` holds `module web_app`, and findings print `#web_app`. A service that only groups other services passes its fields down to them.
 
-## Requirements of your own
+## Custom requirements
 
-The built-in HTTP contract requirements are the standard-library module `lemma.http`, which is always loaded. A module of your own imports it and adds relations, rules and requirements:
+Lemma always loads the standard-library module `lemma.http`, which holds the built-in HTTP contract requirements. A module of your own imports it and adds relations, rules and requirements:
 
 ```lm
 module contracts
@@ -103,7 +103,7 @@ Write it in a workspace's root module, or in a module the root module imports, a
 
 ### Allowances
 
-A known finding that should not fail the check is allowed, with a reason and, optionally, a date after which it counts again:
+An allowance covers a known finding that should not fail the check, with a reason and, optionally, a date after which the finding counts again:
 
 ```lm
 module contracts
@@ -117,7 +117,7 @@ allow lemma.http.consumer_calls_removed_operation {
 }
 ```
 
-`when` reads the requirement's message variables. A covered finding is reported as allowed, with the reason, and is informational. `until` is compared with the committer date of the newest commit the check reads (a change's head), never the clock, so the same commits always give the same answer; past it, the findings count again and the allowance is reported as expired. An allowance for a behavior that ran and covered none of its cases is reported, so stale ones get removed; requirements are evaluated only over what a change touches, so allowances for them are not.
+`when` reads the requirement's message variables. Lemma reports a covered finding as allowed and informational, with the reason. It compares `until` with the committer date of the newest commit the check reads (a change's head), never the clock, so the same commits always give the same answer; past it, the findings count again and Lemma reports the allowance as expired. Lemma reports an allowance for a behavior that ran and covered none of its cases, so stale ones get removed. It evaluates requirements only over what a change touches, so it does not report allowances for them.
 
 ## Behaviors and checkers
 
@@ -179,7 +179,7 @@ export behavior forwards_upstream_retriable {
 - `need` takes the checker's evidence, or ends the case as unknown when there is none. Reading a JSON field that is absent gives a missing value, and an `expect` on it fails saying so (`trace.http.body.retriable` is missing).
 - A behavior that ran no `expect` is unknown, unless it says `allow_empty: true`. One that loops over facts Lemma reads from code is at best unknown, since behaviors read only stated graphs and the rules over them for now.
 - A checker runs `command` without a shell in its repository at the snapshot, in a worktree for a commit. `LEMMA_INPUT` names a JSON file with its arguments: operations by address with their implementation's file and symbol, facts by relation and values, and each repository's checkout. It writes `{ "observed": ... }` or `{ "unavailable": "why" }` to the file `LEMMA_OUTPUT` names. Spec 13 section 10 has the whole protocol.
-- Evidence is kept in Lemma's cache under a key of the checker's declaration, its arguments, the state of the code it reads (Git trees, plus changed files in a working directory) and its environment, and reused while that key holds. `lemma check --no-run` uses kept evidence only: a case whose code changed is `stale`, one never run is `unknown`.
+- Lemma keeps evidence in its cache under a key of the checker's declaration, its arguments, the state of the code it reads (Git trees, plus changed files in a working directory) and its environment, and reuses it while that key holds. `lemma check --no-run` uses kept evidence only: a case whose code changed is `stale`, one never run is `unknown`.
 - A behavior with parameters runs from a check with arguments: `run forwards(field: "retriable")`.
 
 ## Checks and levels
@@ -192,7 +192,7 @@ check main {
 }
 ```
 
-A workspace's `check main` selects the requirements and behaviors `lemma check` runs; `lemma check --select <name>` runs another check. Without one, every requirement of every loaded module runs, and every behavior without parameters. `lemma.http` is always loaded, so a `check main` that names only behaviors runs no HTTP contract check; add `run lemma.http.*` to keep them.
+A workspace's `check main` selects the requirements and behaviors `lemma check` runs; `lemma check --select <name>` runs another check. Without one, every requirement of every loaded module runs, and every behavior without parameters. Lemma always loads `lemma.http`, so a `check main` that names only behaviors runs no HTTP contract check; add `run lemma.http.*` to keep them.
 
 The level (the workspace's `config: { level: ... }` or `lemma check --level`) decides what fails: `audit` fails on nothing, `check` fails on error-severity findings and violated behaviors, and `strict` also fails on error-severity behaviors that are unknown or stale, and on code an adapter or schema resolver could not read, whose committed documents stood in for it. With a change, only what the change introduced counts: a behavior's case counts unless the base, run on kept evidence, ended it the same way. The report also lists requirements and behaviors the change added, removed or changed.
 

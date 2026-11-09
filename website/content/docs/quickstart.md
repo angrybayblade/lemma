@@ -1,8 +1,8 @@
 # Quickstart
 
-In about ten minutes you will describe two repositories, make a change in one that breaks the other, and watch Lemma catch it.
+Describe two repositories, break the contract between them, and run `lemma check` to catch the break. Allow about ten minutes.
 
-You need Git, and Lemma [installed](getting-started.md#1-install). Both commands should answer:
+Prerequisites: Git, and Lemma [installed](getting-started.md#1-install). Verify that both commands print a version:
 
 ```console
 $ lemma --version
@@ -11,16 +11,16 @@ $ lm --version
 lm [..]
 ```
 
-## 1. Two repositories
+## 1. Create two repositories
 
-`billing` serves an HTTP API that an OpenAPI document describes. `web` calls it from TypeScript. Make a directory for the pair:
+`billing` serves an HTTP API described by an OpenAPI document. `web` calls that API from TypeScript. Create a directory for both:
 
 ```console
 $ mkdir -p shop/billing shop/web/src
 $ cd shop
 ```
 
-Save billing's document as `billing/openapi.json`. Creating a charge needs a `customer`, and the response has an `id` and a `receipt_url`:
+Save billing's document as `billing/openapi.json`. The operation requires `customer` and returns `id` and `receipt_url`:
 
 <!-- file: billing/openapi.json -->
 ```json
@@ -46,7 +46,7 @@ Save billing's document as `billing/openapi.json`. Creating a charge needs a `cu
 }
 ```
 
-Save web's client as `web/src/charge.ts`. It sends a customer and reads the receipt URL:
+Save web's client as `web/src/charge.ts`. It sends `customer` and reads `receipt_url`:
 
 <!-- file: web/src/charge.ts -->
 ```ts
@@ -62,7 +62,7 @@ export async function charge(customer: string): Promise<string> {
 
 ## 2. Describe each repository
 
-Each repository describes itself in `mod.lm`, its root module, named after the repository. Save `billing/mod.lm`:
+Give each repository a root module, `mod.lm`, named after the repository. Save `billing/mod.lm`:
 
 <!-- file: billing/mod.lm -->
 ```lm
@@ -75,7 +75,7 @@ export service api {
 }
 ```
 
-`billing` runs one service, `api`, whose operations are the ones its OpenAPI document describes. `lemma.http` is the standard library's module for HTTP contracts.
+This declares one service, `api`, and takes its operations from the OpenAPI document. `lemma.http` is the standard library's module for HTTP contracts.
 
 Save `web/mod.lm`:
 
@@ -88,11 +88,11 @@ export service web {
 }
 ```
 
-`web` runs one service whose code is under `src`. Lemma reads that code for calls to operations other services document.
+This declares one service with its code under `src`. Lemma reads that code for calls to operations other services document, so do not list those calls yourself.
 
 ## 3. Compose them
 
-A workspace module names the repositories you check together. Save `mod.lm` in `shop`:
+Name the repositories to check together in a workspace module. Save `mod.lm` in `shop`:
 
 <!-- file: mod.lm -->
 ```lm
@@ -105,14 +105,14 @@ workspace {
 }
 ```
 
-`lm check` loads a module and everything it names, and reports any mistake with its file, line and column:
+Run `lm check` to load the module and everything it names. It reports each mistake with its file, line and column:
 
 ```console
 $ lm check
 [..]; 0 errors
 ```
 
-Lemma compares a change's commits, so make each repository a Git repository:
+`lemma check` compares a change's commits, so initialize each repository in Git:
 
 ```console
 $ git -C billing init -q
@@ -123,7 +123,7 @@ $ git -C web add .
 $ git -C web commit -q -m "Charge customers"
 ```
 
-`lemma check` checks the workspace as it stands. Nothing is broken yet:
+Run `lemma check` to check the workspace as it stands. It reports no findings yet:
 
 ```console
 $ lemma check
@@ -136,7 +136,7 @@ $ lemma check
 
 ## 4. Break the contract
 
-Billing starts requiring a `currency` and stops returning `receipt_url`. Replace `billing/openapi.json` with:
+Make billing require `currency` and stop returning `receipt_url`. Replace `billing/openapi.json` with:
 
 <!-- file: billing/openapi.json -->
 ```json
@@ -162,7 +162,7 @@ Billing starts requiring a `currency` and stops returning `receipt_url`. Replace
 }
 ```
 
-and commit it:
+Commit the change:
 
 ```console
 $ git -C billing commit -q -a -m "Require a currency; drop receipt_url"
@@ -170,7 +170,7 @@ $ git -C billing commit -q -a -m "Require a currency; drop receipt_url"
 
 ## 5. Check the change
 
-Tell `lemma check` which repository changed and its commits before and after:
+Pass the changed repository and its commits before and after:
 
 ```console
 $ lemma check --change billing --base HEAD~1 --head HEAD
@@ -187,11 +187,11 @@ warning #web:web:src/charge.ts::charge calls POST /v1/charges and names `receipt
 
 Lemma read billing's document at both commits and found what changed: a newly required field and a removed response field. It read web's code and found one call to that operation, the "1 inferred" in the first line, from `charge` in `src/charge.ts`. Each finding names the requirement that found it, in brackets, and says whether the change introduced it.
 
-The error fails the check: the command exits with 4, so CI stops the merge. At level `check` a newly required field is an error and a removed field a warning, because code that reads a field may cope without it.
+The error fails the check: the command exits with 4. Gate merges on that exit code. At level `check` a newly required field is an error and a removed field a warning, because code that reads a field may cope without it.
 
-## Where next
+## Next steps
 
-You described two repositories and nothing else; the checks came from `lemma.http`. The [tutorials](tutorials/README.md) build on this `shop`:
+You wrote no requirements: the checks came from `lemma.http`. To set up your own repositories, follow [Onboarding](onboarding.md). To learn the rest of Lemma, continue in this `shop` with the [tutorials](tutorials/README.md):
 
 1. [Declare a link](tutorials/1-links.md) and check that web's types agree with billing's schemas.
 2. [Write your own requirement](tutorials/2-requirements.md), and choose what runs with `check main`.

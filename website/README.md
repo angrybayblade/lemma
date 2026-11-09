@@ -4,7 +4,7 @@ The approved landing page and a design-system-compatible documentation site shar
 
 ## Documentation site
 
-- All 27 canonical Markdown files in the repository's `docs/`, plus the agent-skills and editor READMEs, render as static pages. A short overview provides the entry point.
+- All 27 canonical Markdown files in the repository's `docs/`, plus the agent-skills and editor READMEs, render as static pages. The introduction is the entry point, at `/docs/`.
 - `src/docs/navigation.mjs` controls groups, labels, and reading order. The build rejects unlisted documentation files.
 - `scripts/build_docs.mjs` renders headings, stable anchors, tables, file-labeled examples, local links, previous/next navigation, and the search index. Canonical Markdown is unchanged.
 - `src/docs/docs.css` uses the existing design-system tokens and fonts. It is separate from landing-page styles. Reading surfaces stay clear, with muted code backgrounds and restrained copper navigation marks.

@@ -1,6 +1,6 @@
 # Performance
 
-Lemma is meant to be called by agents in a tight loop: edit, re-index, ask where something is used. Every step has to be close to free, and the answers have to be right. This page shows where Lemma's time goes and what was tried to get there; [the comparison](comparison.md) sets it against the text and syntax search tools agents use today.
+Lemma is built for agents to call in a tight loop: edit, re-index, ask where something is used. Every step has to be close to free, and the answers have to be right. This page shows where Lemma's time goes and what was tried to get there; [the comparison](comparison.md) sets it against the text and syntax search tools agents use today.
 
 ## Setup
 
@@ -11,7 +11,7 @@ Measured on an Apple M4 Max (14 cores), macOS 15, with two private monorepos:
 
 Times are wall-clock medians from [hyperfine](https://github.com/sharkdp/hyperfine), with warm file system caches. On this machine starting any process, even `/usr/bin/true`, takes about 15 ms, so that is the floor for any command, Lemma's included.
 
-## How the numbers were produced
+## Method
 
 The work ran in four rounds, each checking the one before:
 
@@ -22,7 +22,7 @@ The work ran in four rounds, each checking the one before:
 
 ## Lemma vs grep, ripgrep and ast-grep
 
-The full comparison, measured on a clean Linux machine to a protocol fixed beforehand, with 241 randomly drawn symbols checked by independent language servers, is in [Lemma vs grep, ripgrep, git grep and ast-grep](comparison.md). In short:
+[Lemma vs grep, ripgrep, git grep and ast-grep](comparison.md) has the full comparison, measured on a clean Linux machine to a protocol fixed beforehand, with 241 randomly drawn symbols checked by independent language servers. In short:
 
 - Lemma's precision was 96% per symbol, against 31% for ripgrep, grep and git grep and 35% for ast-grep; recall was 99% per symbol against 100%. Lemma misses calls through interfaces, files outside a TypeScript project, and references needing deeper type inference than ty does.
 - With Lemma running, a symbol's first lookup took 19-126 ms (median per repository), a repeat 5-37 ms and a cached answer 1-3 ms. Those are single repositories: from a workspace's root, each query first checks every member for changes and reuses or rebuilds its exports, which took about 0.1 s across six repositories, most of it `git status` in the largest. ripgrep took 11-86 ms with files in memory and up to about 1 s from disk.
@@ -65,7 +65,7 @@ An edit costs one `git status` limited to the changed files (about 50 ms here) p
 | monorepo A, substring with 49,000 matches (`execute`) | 151 ms | 27 ms |
 | monorepo B, exact name | 21 ms | 17 ms |
 
-## What made the difference
+## Key changes
 
 Each change was measured against the previous best and kept only if it helped without hurting correctness.
 
@@ -87,7 +87,7 @@ Each change was measured against the previous best and kept only if it helped wi
 
 ## Idle language servers
 
-A warm server is what makes lookups fast, so the daemon keeps them, and looks after them when nobody asks anything (see [`lemma daemon`](commands.md#lemma-daemon)):
+Warm servers make lookups fast, so the daemon keeps them and looks after them when nobody asks anything (see [`lemma daemon`](commands.md#lemma-daemon)):
 
 | Measured | Result |
 | --- | --- |
@@ -98,7 +98,7 @@ A warm server is what makes lookups fast, so the daemon keeps them, and looks af
 
 ## Python servers measured
 
-Python is where server choice matters most. Besides ty (the default), pyright and the jedi library were measured on Linux, on django (about 2,900 files) and monorepo A (71,500 Python files), with the same random symbols as the comparison:
+Server choice matters most for Python. Besides ty (the default), pyright and the jedi library were measured on Linux, on django (about 2,900 files) and monorepo A (71,500 Python files), with the same random symbols as the comparison:
 
 | Repository | pyright mode | Load | Peak memory | First lookup, median / p90 | Repeat |
 | --- | --- | --- | --- | --- | --- |

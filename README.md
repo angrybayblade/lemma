@@ -63,7 +63,7 @@ Use and reference:
 
 - [Onboarding](docs/onboarding.md): set Lemma up for a team's repositories, from install to checks in CI.
 - [Pre-release checklist](docs/pre-release.md): what this release candidate is ready for, and its known limitations.
-- [Checking links](docs/check.md): `lemma check`, `.lm` descriptions, schema comparison, inferred links and tracing.
+- [Check links](docs/check.md): `lemma check`, `.lm` descriptions, schema comparison, inferred links and tracing.
 - [Verifying descriptions](docs/verify.md): `lemma verify`, whether a description still matches the code.
 - [Reading operations from code](docs/adapters.md): adapters that read a service's contract from its code, and the protocol for writing one.
 - [Requirements and rules](docs/grammar.md): writing the relations, rules and requirements `lemma check` runs.
@@ -72,7 +72,7 @@ Use and reference:
 - [Getting started](docs/getting-started.md): install, set up language servers, first lookup.
 - [Commands](docs/commands.md): every command, option, and exit code.
 - [Language servers](docs/providers.md): built-in providers, adding your own, how one is chosen.
-- [How Lemma works](docs/concepts.md): snapshots, stale results, caching, current limits.
+- [Concepts](docs/concepts.md): snapshots, stale results, caching, current limits.
 - [Architecture](docs/architecture.md): the four layers and where each can grow.
 - [JSON output](docs/json-output.md): the output contract for scripts and agents.
 - [Comparison](docs/comparison.md): Lemma against grep, ripgrep, git grep and ast-grep, with caveats.

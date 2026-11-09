@@ -1,6 +1,6 @@
 # Requirements and rules
 
-A requirement says what must hold. It is written in `.lm`, over relations the extractors fill with facts from documents and code, and rules that derive new relations from them. Every match of a requirement is a finding, so a team can add a check, tighten one, or turn one off without changing Lemma.
+A requirement says what must hold. It is written in `.lm`, over relations the extractors fill with facts from documents and code, and rules that derive new relations from them. Every match of a requirement is a finding, so a team adds a check, tightens one, or turns one off without changing Lemma.
 
 The built-in requirements are the standard-library module `lemma.http` ([reference](standard-library.md#lemmahttp)). `lemma.http` is always loaded, and a module of your own adds to it:
 
@@ -20,7 +20,7 @@ export require response_field_removed {
 }
 ```
 
-`lemma check` runs a module's requirements when the module is the workspace's root module or one the root module imports. Without a `check main`, every requirement of every loaded module runs, `lemma.http`'s included; a `check main` selects what runs. See [The `.lm` language](language.md#requirements-of-your-own).
+`lemma check` runs a module's requirements when the module is the workspace's root module or one the root module imports. Without a `check main`, every requirement of every loaded module runs, `lemma.http`'s included; a `check main` selects what runs. See [The `.lm` language](language.md#custom-requirements).
 
 Keep `lemma.http`'s variable names (`c`, `op`, `f`, `l`) in requirements `lemma check` reports on: findings' values are looked up by those names.
 
@@ -40,7 +40,7 @@ rule gone(op: Text) {
 }
 ```
 
-Derived relations are computed once, from both snapshots' inputs, so `@base` and `@head` apply only to input relations. A rule that needs "derived in the base" derives it from `@base` inputs under its own name.
+Lemma computes derived relations once, from both snapshots' inputs, so `@base` and `@head` apply only to input relations. A rule that needs "derived in the base" derives it from `@base` inputs under its own name.
 
 ## Rules
 
@@ -84,7 +84,7 @@ rule reaches(a: Text, c: Text) {
 }
 ```
 
-### What makes a rule valid
+### Rule validity
 
 Lemma checks every rule before running it and says which rule is wrong and why. `lm check` reports most of these with their line; a wildcard in a negation and a relation depending on its own negation are reported when `lemma check` compiles the rules, and stop it with exit 1:
 
@@ -107,9 +107,9 @@ export require consumer_sends_rejected_field {
 }
 ```
 
-`when` is a rule body. Its variables, in the order they first appear in a positive atom, become the finding's values; `message` refers to them as `{name}`. Findings are sorted by severity, requirement and message, so output is the same every run.
+`when` is a rule body. Its variables, in the order they first appear in a positive atom, become the finding's values; `message` refers to them as `{name}`. Lemma sorts findings by severity, requirement and message, so output is the same every run.
 
-Each finding also says whether the change introduced it. A requirement that compares the snapshots (it reads `@base`, directly or through a rule) only matches what changed, so its findings are introduced. A requirement over one snapshot, such as a route its spec does not declare, may already have matched before the change: Lemma evaluates it at the base too, and a finding that matches there as well is reported as not introduced. Findings are matched by their text values, not their numbers, so a route that only moved down its file is the same route.
+Each finding also says whether the change introduced it. A requirement that compares the snapshots (it reads `@base`, directly or through a rule) only matches what changed, so its findings are introduced. A requirement over one snapshot, such as a route its spec does not declare, may already have matched before the change: Lemma evaluates it at the base too, and a finding that matches there as well is reported as not introduced. Lemma matches findings by their text values, not their numbers, so a route that only moved down its file is the same route.
 
 Severity decides what a finding does: at level `check`, `lemma check` exits with 4 when any finding is an error, so CI can gate on errors while warnings and informational findings only report. Choose severity by what a match proves:
 
@@ -123,7 +123,7 @@ A requirement that rests on a name being present (`uses(c, leaf)`) should look n
 
 `lemma check --explain` attaches each inferred finding's derivation: the requirement's fact, then the facts and rules supporting it, indented, down to input facts and `not` lines for negations.
 
-### Reading only what a change touches
+### Read only what a change touches
 
 By default `lemma check` reads only the consumer code a finding can rest on (`--evaluation demand`). Lemma decides from the rules' structure whether a module's requirements allow that. Each requirement must be one of these:
 
@@ -131,9 +131,9 @@ By default `lemma check` reads only the consumer code a finding can rest on (`--
 - **Anchored**: every call it rests on is a call of an operation held by a relation computed without consumer code (`removed_operation(op)`), and its other consumer facts are about the calling code: its function, its file, and the files that file imports. Imports followed through a recursive rule are not bounded, so such a requirement is not anchored.
 - **Change-local**: each consumer fact it rests on is guarded by the negation of the same row at the base, through a rule that reads only that input at the base, with no conditions, and keeps its calling code (`!called_before(c, m, p)`), so it can hold only for code the change edits. Its other negations may only be such guards, or the service membership of the guarded call's file.
 
-When any requirement is none of these, every consumer file is read and the report's `evaluation` names the requirement.
+When any requirement is none of these, Lemma reads every consumer file and the report's `evaluation` names the requirement.
 
-## Relations the extractors fill
+## Extractor relations
 
 `lemma check` fills these input relations of `lemma.http`, in both snapshots unless noted. Operations are named `METHOD /path` with path parameters as `{}`; consumers are `repository:file::Function` (or `repository:file` outside functions); files are `repository:file`.
 
@@ -164,7 +164,7 @@ When any requirement is none of these, every consumer file is read and the repor
 | `addressed_to` | path, service | a path called in code that is under a prefix the service owns, derived from its documents |
 | `part_of_service` | file, service | a service's own files |
 | `rejects_unknown_fields` | service | `rejects_unknown_fields: true` on the service |
-| `public_operation`, `public_service` | operation; service | stated in a graph, see [Checking links](check.md#is-it-wired-up) |
+| `public_operation`, `public_service` | operation; service | stated in a graph, see [Check links](check.md#wiring) |
 
 ## Recipes
 

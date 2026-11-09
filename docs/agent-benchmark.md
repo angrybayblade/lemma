@@ -1,6 +1,6 @@
 # Agents with and without Lemma
 
-[The comparison](comparison.md) measured Lemma as a tool: how many of the lines it reports are real references, and how fast. This page measures what that buys an agent. Codex agents were given the same tasks with different tools: a shell, Lemma, or a single search tool (grep, ripgrep, ast-grep, or Lemma) with no shell. They were scored on their answers and costed in time and tokens. The harness is [`bench/`](../bench/README.md).
+[The comparison](comparison.md) measured Lemma as a tool: how many of the lines it reports are real references, and how fast. This page measures what that buys an agent. Codex agents ran the same tasks with different tools: a shell, Lemma, or a single search tool (grep, ripgrep, ast-grep, or Lemma) with no shell. They were scored on their answers and costed in time and tokens. The harness is [`bench/`](../bench/README.md).
 
 ## Summary
 
@@ -49,7 +49,7 @@ Lemma's impact cost here was almost entirely one TypeScript task where it return
 
 All localization differences are inside their intervals (for example, guided Lemma +0.03, from −0.02 to +0.11).
 
-## What was changed, and why
+## Changes
 
 Each change was measured on the Lemma arms against a baseline; kept only if it helped.
 
