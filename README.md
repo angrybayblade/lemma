@@ -69,6 +69,7 @@ Use and reference:
 - [Requirements and rules](docs/grammar.md): writing the relations, rules and requirements `lemma check` runs.
 - [The `.lm` language](docs/language.md): services, links, rules and requirements as typed modules, with editor support.
 - [Agent skills](skills/README.md): skills that teach coding agents to use Lemma.
+- [Lemma mode](docs/lemma-mode.md): the workflow agents follow to make and prove a change other code depends on.
 - [Getting started](docs/getting-started.md): install, set up language servers, first lookup.
 - [Commands](docs/commands.md): every command, option, and exit code.
 - [Language servers](docs/providers.md): built-in providers, adding your own, how one is chosen.

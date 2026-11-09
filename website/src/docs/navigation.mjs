@@ -22,6 +22,7 @@ export const sections = [
   {title:'Work with agents', pages:[
     {slug:'getting-started', title:'Code navigation', source:'docs/getting-started.md'},
     {slug:'agent-skills', title:'Agent skills', source:'skills/README.md'},
+    {slug:'lemma-mode', title:'Lemma mode', source:'docs/lemma-mode.md'},
     {slug:'providers', title:'Language servers', source:'docs/providers.md'},
     {slug:'editors', title:'Editor integrations', source:'editors/README.md'},
   ]},
