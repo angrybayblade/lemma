@@ -30,7 +30,7 @@ function rewriteLink(href,source,sourceInfo) {
   if(!href||href.startsWith('#')||/^(https?:|mailto:)/i.test(href))return href;
   if(/^[a-z][a-z0-9+.-]*:/i.test(href))return '#';
   const [location,fragment]=href.split('#');
-  const normalized=path.posix.normalize(path.posix.join(path.posix.dirname(source==='@overview'?'docs/index.md':source),location));
+  const normalized=path.posix.normalize(path.posix.join(path.posix.dirname(source),location));
   const target=pages.find(page=>page.source===normalized);
   if(target)return target.href+(fragment?'#'+fragment:'');
   return `https://github.com/${sourceInfo.repository}/blob/${sourceInfo.revision}/${normalized}${fragment?'#'+fragment:''}`;
@@ -86,14 +86,15 @@ function renderDocument(markdown,page,sourceInfo) {
 }
 
 function navigation(page) {
-  return sections.map(section=>`<section class="nav-group"><h2>${escape(section.title)}</h2><ul>${section.pages.map(item=>{const entry=pages.find(candidate=>candidate.slug===item.slug);return `<li><a href="${entry.href}"${entry.slug===page.slug?' aria-current="page"':''}>${escape(entry.title)}</a></li>`;}).join('')}</ul></section>`).join('');
+  return sections.map(section=>`<section class="nav-group"><h2>${escape(section.title)}</h2><ul>${section.pages.filter(item=>!item.isUnlisted).map(item=>{const entry=pages.find(candidate=>candidate.slug===item.slug);return `<li><a href="${entry.href}"${entry.slug===page.slug?' aria-current="page"':''}>${escape(entry.title)}</a></li>`;}).join('')}</ul></section>`).join('');
 }
 function outline(headings) {
   return `<ul>${headings.filter(item=>item.depth<=3).map(item=>`<li class="toc-depth-${item.depth}"><a href="#${escape(item.id)}">${escape(item.title)}</a></li>`).join('')}</ul>`;
 }
 function pagination(page) {
-  const index=pages.findIndex(item=>item.slug===page.slug);
-  return `<nav class="docs-pagination" aria-label="Page navigation">${[pages[index-1],pages[index+1]].map((item,position)=>item?`<a href="${item.href}" class="${position?'next':'previous'}"><span>${position?'Next':'Previous'}</span><strong>${escape(item.title)}</strong>${icon(position?'arrow':'arrow-diagonal')}</a>`:'<span></span>').join('')}</nav>`;
+  if(page.isUnlisted)return '';
+  const listed=pages.filter(item=>!item.isUnlisted),index=listed.findIndex(item=>item.slug===page.slug);
+  return `<nav class="docs-pagination" aria-label="Page navigation">${[listed[index-1],listed[index+1]].map((item,position)=>item?`<a href="${item.href}" class="${position?'next':'previous'}"><span>${position?'Next':'Previous'}</span><strong>${escape(item.title)}</strong>${icon(position?'arrow':'arrow-diagonal')}</a>`:'<span></span>').join('')}</nav>`;
 }
 // Link previews need absolute URLs; crawlers do not resolve relative ones.
 const SITE_URL='https://lemma.systems';
@@ -103,7 +104,7 @@ function socialMeta(title,description,href) {
   return `<link rel="canonical" href="${escape(url)}"><meta property="og:type" content="article"><meta property="og:site_name" content="Lemma"><meta property="og:url" content="${escape(url)}"><meta property="og:title" content="${title}"><meta property="og:description" content="${description}"><meta property="og:image" content="${image}"><meta property="og:image:type" content="image/png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta property="og:image:alt" content="${alt}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${title}"><meta name="twitter:description" content="${description}"><meta name="twitter:image" content="${image}"><meta name="twitter:image:alt" content="${alt}">`;
 }
 function template(page,document,sourceInfo) {
-  const nav=navigation(page),toc=outline(document.headings),sourceLink=page.source==='@overview'?'':`<a href="${escape(`https://github.com/${sourceInfo.repository}/blob/${sourceInfo.revision}/${page.source}`)}">View Markdown source ↗</a>`;
+  const nav=navigation(page),toc=outline(document.headings),sourceLink=`<a href="${escape(`https://github.com/${sourceInfo.repository}/blob/${sourceInfo.revision}/${page.source}`)}">View Markdown source ↗</a>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#F3F3EE"><title>${escape(page.title)}; Lemma docs</title><meta name="description" content="${escape(document.description.slice(0,200))}">${socialMeta(`${escape(page.title)}; Lemma docs`,escape(document.description.slice(0,200)),page.href)}<link rel="icon" href="/design-system/assets/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="/design-system/tokens.css"><link rel="stylesheet" href="/design-system/components.css"><link rel="stylesheet" href="/docs/docs.css"><script defer src="/docs/docs.js"></script></head>
 <body class="lm docs"><a class="docs-skip" href="#main">Skip to content</a>
 <header class="docs-header"><div class="docs-header-inner"><a class="docs-brand" href="/" aria-label="Lemma home">${icon('mark')}<span>lemma</span></a><a class="docs-header-label" href="/docs/">Documentation</a><div class="docs-header-actions"><button type="button" class="docs-search-button" aria-label="Search docs" data-open-search>${icon('search')}<span>Search docs</span><kbd>⌘ K</kbd></button><a class="docs-github" href="https://github.com/angrybayblade/lemma">GitHub ↗</a><button class="docs-menu-button" type="button" data-open-menu aria-label="Open documentation navigation">${icon('repository')}</button></div></div></header>
@@ -115,6 +116,15 @@ function template(page,document,sourceInfo) {
 <p class="docs-copy-status" id="docs-copy-status" role="status"></p><noscript><style>@media(max-width:850px){.docs-sidebar{display:block;position:static;height:auto;margin-bottom:32px}.docs-menu-button,.docs-search-button{display:none}}</style></noscript></body></html>`;
 }
 
+// Published URLs that moved keep working.
+const REDIRECTS=[{from:'introduction',to:'/docs/'}];
+function writeRedirects(destination) {
+  for(const {from,to} of REDIRECTS){
+    const directory=path.join(destination,from);mkdirSync(directory,{recursive:true});
+    writeFileSync(path.join(directory,'index.html'),`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Moved; Lemma docs</title><link rel="canonical" href="${SITE_URL}${to}"><meta http-equiv="refresh" content="0; url=${to}"></head><body><a href="${to}">Moved here</a></body></html>`);
+  }
+}
+
 export function buildDocs({root,output}) {
   const sourceInfo=snapshotSources(root),destination=path.join(output,'docs'),search=[];
   mkdirSync(destination,{recursive:true});
@@ -123,9 +133,10 @@ export function buildDocs({root,output}) {
   function checkCoverage(directory){for(const entry of readdirSync(directory,{withFileTypes:true})){const file=path.join(directory,entry.name);if(entry.isDirectory())checkCoverage(file);else if(entry.name.endsWith('.md')){const relative=path.relative(sourceInfo.directory,file).split(path.sep).join('/');if(!covered.has(relative))throw new Error(`Document missing from navigation: ${relative}`);}}}
   checkCoverage(path.join(sourceInfo.directory,'docs'));
   for(const page of pages){
-    const markdown=readFileSync(page.source==='@overview'?path.join(root,'src/docs/index.md'):path.join(sourceInfo.directory,page.source),'utf8');
+    const markdown=readFileSync(path.join(sourceInfo.directory,page.source),'utf8');
     const document=renderDocument(markdown,page,sourceInfo),directory=path.join(destination,page.slug);mkdirSync(directory,{recursive:true});writeFileSync(path.join(directory,'index.html'),template(page,document,sourceInfo));search.push(...document.records);
   }
+  writeRedirects(destination);
   writeFileSync(path.join(destination,'search-index.json'),JSON.stringify(search));
   writeFileSync(path.join(destination,'pages.json'),JSON.stringify(pages.map(({title,href,source})=>({title,href,source})),null,2));
   console.log(`Built ${pages.length} documentation pages and ${search.length} searchable sections.`);
