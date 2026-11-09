@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en" data-motion="off">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#F3F3EE">
+  <title>Lemma — Move fast. See what breaks.</title>
+  <meta name="description" content="Contract checks, cross-repo impact analysis, and behavior simulations for agent-driven software development.">
+  <meta property="og:type" content="website"><meta property="og:title" content="Lemma — Move fast. See what breaks."><meta property="og:description" content="Give coding agents the system model, impact analysis, and executable evidence to move with speed and precision."><meta property="og:image" content="assets/social-card.png"><meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="design-system/assets/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="design-system/tokens.css"><link rel="stylesheet" href="design-system/components.css"><link rel="stylesheet" href="styles.css"><script src="app.js" defer></script><script type="module" src="diagrams-webgl.js"></script>
+</head>
+<body class="lm">
+<a class="skip-link" href="#main">Skip to content</a>
+<nav class="floating-dock" aria-label="Main navigation">
+  <a class="dock-item dock-home" href="#top" aria-label="Lemma home" aria-current="location"><svg class="lm-icon" aria-hidden="true"><use href="design-system/assets/symbols.svg#mark"/></svg><span class="dock-tooltip" aria-hidden="true">Lemma home</span></a>
+  <a class="dock-item" href="#workflow" aria-label="In the loop"><svg class="lm-icon" aria-hidden="true"><use href="design-system/assets/symbols.svg#relationship"/></svg><span class="dock-tooltip" aria-hidden="true">In the loop</span></a>
+  <a class="dock-item" href="#start" aria-label="Connect your agent"><svg class="lm-icon" aria-hidden="true"><use href="design-system/assets/symbols.svg#arrow-diagonal"/></svg><span class="dock-tooltip" aria-hidden="true">Connect your agent</span></a>
+  <a class="dock-item" href="/docs/" aria-label="Documentation"><svg class="lm-icon" aria-hidden="true"><use href="design-system/assets/symbols.svg#repository"/></svg><span class="dock-tooltip" aria-hidden="true">Documentation</span></a>
+  <a class="dock-item dock-github" href="https://github.com/angrybayblade/lemma" aria-label="Source on GitHub"><svg class="lm-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M18 7v3l-6 6H6"/></svg><span class="dock-tooltip" aria-hidden="true">Source on GitHub</span></a>
+  <span class="dock-divider" aria-hidden="true"></span>
+  <button type="button" class="dock-item motion-toggle" aria-label="Pause motion" aria-pressed="false"><svg class="lm-icon motion-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><span class="dock-tooltip" data-motion-label aria-hidden="true">Pause motion</span></button>
+</nav>
+<main id="main">
+  <section class="story page-wrap" id="top" aria-labelledby="hero-title">
+    <div class="hero-topline"><a class="hero-logo" href="#top" aria-label="Lemma home"><svg aria-hidden="true" viewBox="0 0 24 24"><use href="design-system/assets/symbols.svg#mark"/></svg></a><a href="https://github.com/angrybayblade/lemma">Open source <span aria-hidden="true">↗</span></a></div>
+    <div class="story-layout">
+      <aside class="story-rail" aria-label="Product walkthrough">
+        <figure class="story-figure" data-diagram="story" data-scene="hero" data-phase="model" data-state="after" aria-label="Lemma development walkthrough">
+          <div class="story-art">
+            <canvas class="diagram-webgl" aria-hidden="true"></canvas>
+            <div class="story-layer hero-art" data-layer="hero" aria-hidden="false"><!-- HERO_ART --></div>
+            <div class="story-layer workflow-figure" data-layer="workflow" data-phase="impact" aria-hidden="true"><!-- WORKFLOW_ART --></div>
+            <div class="story-layer evidence-demo" id="verification-art" data-layer="verification" data-state="after" aria-hidden="true"><!-- VERIFY_ART --></div>
+            <div class="story-replay" aria-hidden="true" inert>
+              <div class="example-switch" role="group" aria-label="Behavior replay state"><button type="button" data-example="before" aria-label="Before fix" aria-controls="verification-art" aria-pressed="false">Before</button><button type="button" data-example="after" aria-label="After fix" aria-controls="verification-art" aria-pressed="true">After</button></div>
+              <span id="example-status" class="lm-sr-only" role="status"></span>
+            </div>
+          </div>
+          <figcaption id="story-caption" class="lm-sr-only">The agent development loop.</figcaption>
+        </figure>
+      </aside>
+      <div class="story-copy">
+        <section class="hero-intro story-chapter" data-scene-step="hero" aria-labelledby="hero-title">
+          <div class="hero-copy" data-scene-anchor="hero"><h1 id="hero-title">Move fast.<br>See what <span>breaks.</span></h1><p class="hero-description">Contract checks, cross-repo impact analysis, and behavior simulations for agents building connected systems.</p><div class="hero-actions"><a class="lm-button" href="#start">Start building <svg class="lm-icon" aria-hidden="true"><use href="design-system/assets/symbols.svg#arrow"/></svg></a><a class="plain-link" href="#workflow">See how it works <span aria-hidden="true">↘</span></a></div></div>
+        </section>
+        <section class="workflow-section" id="workflow" aria-labelledby="impact-title">
+      <article class="story-chapter workflow-step is-active" data-step="impact" data-scene-step="impact"><h2 id="impact-title" data-scene-anchor="impact">See beyond the changed repo.</h2><p>Billing changed its contract, and nobody declared the link to web. No requirements written. Lemma read the call in web’s code and saw it breaks.</p><div class="chapter-diagram" data-chapter-scene="impact" data-caption="Billing changes its contract and the call in web breaks."></div><!-- IMPACT_CONFIG --><p>That gives the agent a focused path through a large codebase: what depends on the change and where the relevant code lives.</p><a class="plain-link workflow-link" href="/docs/check/">Cross-repo impact <span aria-hidden="true">↗</span></a></article>
+      <article class="story-chapter workflow-step" data-step="setup" data-scene-step="setup"><h2 data-scene-anchor="setup">That’s the whole setup.</h2><p>One short file per repository, and one that names them. You never list the calls between them: Lemma infers those from OpenAPI documents and code.</p><div class="chapter-diagram" data-chapter-scene="setup" data-caption="Billing and web read into one Lemma index."></div><!-- SETUP_CONFIG --><a class="plain-link workflow-link" href="/docs/quickstart/">Quickstart <span aria-hidden="true">↗</span></a></article>
+      <article class="story-chapter workflow-step" data-step="model" data-scene-step="model"><h2 id="model-title" data-scene-anchor="model">Make intent checkable.</h2><p>When inference isn’t enough, declare what must hold.</p><div class="chapter-diagram" data-chapter-scene="model" data-caption="A call to a deprecated operation, flagged."></div><!-- REQUIREMENT_CONFIG --><p><code>calls</code> is the call graph Lemma inferred. This warns on every call to an operation in <code>Deprecated</code>.</p><p>Keep that intent alongside the code, so every agent works against the same declared requirements.</p><a class="plain-link workflow-link" href="/docs/tutorials/2-requirements/">Declared requirements <span aria-hidden="true">↗</span></a></article>
+        </section>
+        <section class="verification-copy story-chapter" id="verification" data-scene-step="verification" aria-labelledby="evidence-title">
+          <div class="evidence-copy">
+            <h2 id="evidence-title" data-scene-anchor="verification">Simulate the failure. Verify the fix.</h2>
+            <p>A contract can stay the same while behavior breaks. Here, Billing returns a retry flag that Orders must pass through, so the caller knows how to respond to a failed payment.</p>
+            <div class="chapter-diagram" data-chapter-scene="verification" data-caption="Simulate the failure. Verify the fix."></div><!-- VERIFICATION_CONFIG -->
+            <p><code>replay_declined_charge</code> is a checker you declare: any command that runs your code and reports what it saw. <code>through: link</code> names the call it stands in for, and <code>need</code> asks it for evidence, once for each case. Lemma keeps that evidence until the code it rests on changes.</p>
+            <p>Compare Before and After to see both cases. The agent gets the failing value to correct, then reruns the check.<span class="verification-note">Illustrative replay · evidence tied to the checked revision.</span></p>
+            <a class="plain-link" href="/docs/tutorials/4-behaviors/">Behavior simulations <span aria-hidden="true">↗</span></a>
+          </div>
+        </section>
+      </div>
+    </div>
+  </section>
+  <section class="start-section page-wrap" id="start" aria-labelledby="start-title">
+    <div class="start-copy" data-reveal><h2 id="start-title">Give your agent a verification loop.</h2><p>Bring your repositories, requirements, and checkers. Work through MCP or the CLI.</p><a class="lm-button" href="/docs/onboarding/">Follow the setup guide <svg class="lm-icon" aria-hidden="true"><use href="design-system/assets/symbols.svg#arrow"/></svg></a><a class="plain-link" href="/docs/agent-skills/">Agent skills <span aria-hidden="true">↗</span></a></div>
+    <div class="setup-steps" data-reveal><article><div class="setup-heading"><span>01 / Install</span></div><div class="setup-command"><code title="curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh">curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh</code><button type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh" aria-label="Copy install command"><svg class="lm-icon" aria-hidden="true"><use href="design-system/assets/symbols.svg#copy"/></svg></button></div></article><article><div class="setup-heading"><span>02 / Describe your repositories</span></div><div class="setup-command"><code title="lemma check">lemma check</code><button type="button" data-copy="lemma check" aria-label="Copy check command"><svg class="lm-icon" aria-hidden="true"><use href="design-system/assets/symbols.svg#copy"/></svg></button></div><p>Add a short <code>mod.lm</code> to each repository, and one that names them. <code>lemma check</code> infers the calls between them from OpenAPI documents and code; add requirements when you need more.</p></article><article><div class="setup-heading"><span>03 / Connect your agent</span></div><div class="setup-command"><code title="lemma mcp">lemma mcp</code><button type="button" data-copy="lemma mcp" aria-label="Copy MCP server command"><svg class="lm-icon" aria-hidden="true"><use href="design-system/assets/symbols.svg#copy"/></svg></button></div><p>Add this command as an MCP server in your agent’s configuration.</p></article></div>
+  </section>
+</main>
+<footer class="site-footer"><div class="page-wrap"><div class="footer-bottom"><a class="site-brand" href="#top" aria-label="Lemma home"><svg class="lm-icon" aria-hidden="true"><use href="design-system/assets/symbols.svg#mark"/></svg><span>lemma</span></a><span>Built for people and agents.</span><nav aria-label="Footer navigation"><a href="/docs/">Documentation ↗</a><a href="https://github.com/angrybayblade/lemma">GitHub ↗</a><a href="/docs/performance/">Engine benchmarks ↗</a></nav></div></div></footer>
+<p id="copy-status" class="copy-status" role="status" aria-live="polite"></p>
+</body></html>

@@ -1,0 +1,20 @@
+dist/
+node_modules/
+.publish/
+previews/
+
+# Out of date, so kept out of the repository for now. These are the files the
+# site needs to build, and to regenerate its art.
+design-system/*
+!design-system/assets/
+design-system/assets/*
+!design-system/fonts/
+design-system/fonts/*
+!design-system/assets/mark.svg
+!design-system/assets/matte-metal.svg
+!design-system/assets/symbols.svg
+!design-system/components.css
+!design-system/fonts/geist.css
+!design-system/materials.css
+!design-system/tokens.css
+!design-system/tokens.json

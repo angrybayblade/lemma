@@ -80,6 +80,10 @@ Use and reference:
 - [Performance](docs/performance.md): benchmarks, and the approaches that were tried.
 - [Troubleshooting](docs/troubleshooting.md): failed lookups and missing results.
 
+## Brand and marketing
+
+The [landing page](website/README.md) leads with agent speed and system precision: formal requirements, cross-repository impact, and checker-backed behavior simulations. Licensed Suisse files are pending; the documented fallback remains active.
+
 ## Layout
 
 | Crate | Responsibility |

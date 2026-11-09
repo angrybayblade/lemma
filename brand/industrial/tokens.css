@@ -1,0 +1,63 @@
+/* Generated from industrial/tokens.json by build_industrial.py. */
+@font-face { font-family:'Barlow Condensed'; src:url('../fonts/BarlowCondensed-SemiBold.woff2') format('woff2'); font-weight:600; font-style:normal; font-display:swap; }
+@font-face { font-family:'Geist'; src:url('../fonts/Geist-Variable.woff2') format('woff2'); font-weight:100 900; font-style:normal; font-display:swap; }
+@font-face { font-family:'Geist Mono'; src:url('../fonts/GeistMono-Variable.woff2') format('woff2'); font-weight:100 900; font-style:normal; font-display:swap; }
+:root {
+  --lm-color-graphite: #111719;
+  --lm-color-panel: #1A2326;
+  --lm-color-recess: #0C1113;
+  --lm-color-alloy: #DDE3DF;
+  --lm-color-white: #F1F3EE;
+  --lm-color-steel: #A4B3B6;
+  --lm-color-muted: #97A6AA;
+  --lm-color-line: #3A484B;
+  --lm-color-control: #899B9E;
+  --lm-color-signal: #FF6B35;
+  --lm-color-signalHover: #FF885D;
+  --lm-color-signalDark: #983616;
+  --lm-color-signalSoft: #FFCFB8;
+  --lm-color-verified: #ACCA91;
+  --lm-color-caution: #E5C05B;
+  --lm-color-lightMuted: #4A595D;
+  --lm-color-lightLine: #A5B0AC;
+  --lm-font-display: 'Barlow Condensed', 'Arial Narrow', Impact, sans-serif;
+  --lm-font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --lm-font-mono: 'Geist Mono', 'SFMono-Regular', Consolas, monospace;
+  --lm-space-1: 0.25rem;
+  --lm-space-2: 0.5rem;
+  --lm-space-3: 0.75rem;
+  --lm-space-4: 1rem;
+  --lm-space-5: 1.5rem;
+  --lm-space-6: 2rem;
+  --lm-space-7: 3rem;
+  --lm-space-8: 4rem;
+  --lm-space-9: 6rem;
+  --lm-radius-sm: 0px;
+  --lm-radius-md: 2px;
+  --lm-motion-fast: 120ms;
+  --lm-motion-normal: 180ms;
+  --lm-motion-trace: 650ms;
+  --lm-bg: #111719;
+  --lm-surface: #1A2326;
+  --lm-fg: #F1F3EE;
+  --lm-secondary: #97A6AA;
+  --lm-border: #3A484B;
+  --lm-controlBorder: #899B9E;
+  --lm-accent: #FF6B35;
+  --lm-onAccent: #111719;
+  --lm-focus: #FF6B35;
+  color-scheme: dark;
+}
+[data-lm-theme="light"] {
+  --lm-bg: #DDE3DF;
+  --lm-surface: #F1F3EE;
+  --lm-fg: #111719;
+  --lm-secondary: #4A595D;
+  --lm-border: #A5B0AC;
+  --lm-controlBorder: #4A595D;
+  --lm-accent: #983616;
+  --lm-onAccent: #F1F3EE;
+  --lm-focus: #983616;
+  color-scheme: light;
+}
+@media (prefers-reduced-motion: reduce) { :root { --lm-motion-fast:0ms; --lm-motion-normal:0ms; --lm-motion-trace:0ms; } }

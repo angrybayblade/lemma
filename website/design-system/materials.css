@@ -1,0 +1,11 @@
+/* Matte, painted metal. The texture sits in the background, below live content. */
+.lm .lm-material--metal {
+  background-image: url('./assets/matte-metal.svg'), linear-gradient(112deg, rgb(255 255 255 / 5%), transparent 46%, rgb(0 0 0 / 4%));
+  background-size: var(--lm-material-tile) var(--lm-material-tile), 100% 100%;
+  background-repeat: repeat, no-repeat;
+  background-blend-mode: soft-light, normal;
+  color: var(--lm-material-ink);
+}
+.lm .lm-material--inverse { color:var(--lm-color-inverse); }
+/* Preserve an untextured option for small controls, status, and reading areas. */
+@media (forced-colors:active) { .lm .lm-material--metal { background-image:none; } }

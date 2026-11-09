@@ -1,0 +1,15 @@
+/* Import precision/tokens.css before these framework-independent primitives. */
+.lm-precision { color:var(--lm-fg); background:var(--lm-bg); font-family:var(--lm-font-sans); line-height:1.7; }
+.lm-precision * { box-sizing:border-box; }
+.lm-precision :where(a,button,input,select,textarea):focus-visible { outline:2px solid var(--lm-focus); outline-offset:5px; }
+.lm-precision .lm-button { display:inline-flex; align-items:center; justify-content:center; gap:2rem; min-height:47px; padding:.8125rem 1.125rem; border:1px solid var(--lm-accent); border-radius:2px; background:var(--lm-accent); color:var(--lm-onAccent); font:500 .8125rem/1.5 var(--lm-font-sans); text-decoration:none; cursor:pointer; }
+.lm-precision .lm-button:hover { background:var(--lm-color-redHover); }
+.lm-precision .lm-button--secondary { background:transparent; color:var(--lm-fg); border-color:var(--lm-controlBorder); }
+.lm-precision .lm-button--secondary:hover { background:var(--lm-subtle); }
+.lm-precision .lm-button:disabled { opacity:.45; cursor:not-allowed; }
+.lm-precision .lm-heading { margin:0; font:430 clamp(2rem,4vw,3.25rem)/1.15 var(--lm-font-display); letter-spacing:-.052em; }
+.lm-precision .lm-command { padding:1rem 0; border-block:1px solid var(--lm-border); font:400 .8125rem/1.9 var(--lm-font-mono); white-space:pre-wrap; overflow-wrap:anywhere; }
+.lm-precision .lm-finding { padding:1rem 0 1rem 1rem; border-left:2px solid var(--lm-accent); }
+.lm-precision .lm-finding h3 { margin:0 0 .5rem; font:500 1rem/1.5 var(--lm-font-sans); }
+.lm-precision .lm-finding p { margin:0; color:var(--lm-secondary); font-size:.875rem; }
+.lm-precision .lm-rule { height:1px; border:0; background:var(--lm-border); }

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Lemma. Move fast. See what breaks. Contract checks, impact analysis, and behavior simulations."><defs><pattern id="social-metal" width="352" height="352" patternUnits="userSpaceOnUse">
+  <defs>
+    <filter id="metal-grain" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency=".72" numOctaves="3" seed="23" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <radialGradient id="metal-recess" cx="36%" cy="30%" r="70%">
+      <stop offset="0" stop-color="#101512" stop-opacity=".52"/>
+      <stop offset=".52" stop-color="#1B211E" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#1B211E" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="metal-dimples" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="11" cy="11" r="2.2" fill="url(#metal-recess)"/>
+      <path d="M9.7 12.3a1.9 1.9 0 0 0 2.8-.2" fill="none" stroke="#FFFFFF" stroke-opacity=".2" stroke-width=".65"/>
+    </pattern>
+  </defs>
+  <rect width="352" height="352" fill="#808080"/>
+  <rect width="352" height="352" filter="url(#metal-grain)" opacity=".20"/>
+  <rect width="352" height="352" fill="url(#metal-dimples)"/>
+</pattern></defs><rect width="1200" height="630" fill="#A3B0B5"/><rect width="1200" height="630" fill="url(#social-metal)" style="mix-blend-mode:soft-light"/><rect x="860" width="340" height="630" fill="#D3D5D0"/><path d="M56 80V56h24M75 95h24V71M68 86l18-18" fill="none" stroke="#182521" stroke-width="5"/><g fill="#182521" font-family="Geist,Arial,Helvetica,sans-serif"><text x="116" y="88" font-size="40" letter-spacing="-2">lemma</text><text x="56" y="268" font-size="96" letter-spacing="-5">Move fast.</text><text x="56" y="370" font-size="96" letter-spacing="-5">See what breaks.</text><text x="56" y="520" font-size="22">Contract checks · Cross-repo impact</text><text x="56" y="554" font-size="22">Behavior simulations for agent-driven development</text></g><path d="m925 356 210-210M925 146h210v210" fill="none" stroke="#182521" stroke-width="16"/><path d="M56 402h700" stroke="#B99A86" stroke-width="6"/></svg>
