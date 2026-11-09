@@ -366,14 +366,25 @@ pub(crate) fn introduced_by_change(repos: &BTreeMap<String, Repo>, level: Level)
         Level::Audit => Severity::Warning,
         Level::Check | Level::Strict => Severity::Error,
     };
+    // A repository outside the change reads the same at both snapshots, so
+    // it can introduce nothing, and listing its files on every check would
+    // be nearly all this function costs.
+    let changed: Vec<(&String, &Repo)> = repos
+        .iter()
+        .filter(|(_, repo)| repo.checkouts[BASE] != repo.checkouts[HEAD])
+        .collect();
     let at = |snapshot: usize| -> BTreeSet<DescriptionFinding> {
-        repos
+        changed
             .iter()
-            .flat_map(|(name, repo)| change_findings(name, repo, snapshot))
+            .flat_map(|&(name, repo)| change_findings(name, repo, snapshot))
             .collect()
     };
+    let after = at(HEAD);
+    if after.is_empty() {
+        return Vec::new();
+    }
     let before = at(BASE);
-    at(HEAD)
+    after
         .into_iter()
         .filter(|found| !before.contains(found))
         .map(|found| Finding {

@@ -482,3 +482,54 @@ fn a_change_that_deletes_an_included_directory_is_reported_by_check() {
         text(&output)
     );
 }
+
+/// [`inferred_break`], with web's included directory already gone from its
+/// last commit, so its `include` matched nothing before any later change.
+fn include_already_empty(root: &Path) {
+    inferred_break(root);
+    let web = root.join("web");
+    std::fs::remove_dir_all(web.join("src")).unwrap();
+    commit_all(&web);
+}
+
+#[test]
+fn a_change_elsewhere_does_not_report_an_include_that_already_matched_nothing() {
+    let scratch = tempfile::tempdir().unwrap();
+    include_already_empty(scratch.path());
+
+    let output = lemma(
+        scratch.path(),
+        &[
+            "check",
+            "--change",
+            "billing",
+            "--base",
+            "HEAD",
+            "--no-daemon",
+        ],
+    );
+
+    assert!(
+        !text(&output).contains("include_matches_nothing"),
+        "{}",
+        text(&output)
+    );
+}
+
+#[test]
+fn a_change_does_not_report_an_include_it_found_matching_nothing() {
+    let scratch = tempfile::tempdir().unwrap();
+    include_already_empty(scratch.path());
+    write(&scratch.path().join("web/notes.txt"), "still web\n");
+
+    let output = lemma(
+        scratch.path(),
+        &["check", "--change", "web", "--base", "HEAD", "--no-daemon"],
+    );
+
+    assert!(
+        !text(&output).contains("include_matches_nothing"),
+        "{}",
+        text(&output)
+    );
+}
