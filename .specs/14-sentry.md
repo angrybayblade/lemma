@@ -148,7 +148,7 @@ Rollout step 0 replaces the recursive watcher per indexed directory with one wat
 2. Fingerprint the ask. The fingerprint covers:
    - the manifests;
    - each repository's state at the base and the head;
-   - the options that change what is evaluated or reported, such as `--change`, `--base`, `--head`, `--level`, `--select`, `--no-run`, `--run-base` and `--links` (options that only change how an answer is printed, such as `--json`, apply when it is rendered);
+   - the options that change what is evaluated or reported, such as `--change`, `--base`, `--head`, `--level`, `--select`, `--no-run` and `--run-base` (options that only change how an answer is printed, such as `--json`, apply when it is rendered);
    - the environment variables the resolver cache already keys on;
    - Lemma's build.
 3. If an answer with that fingerprint is kept, use it. Otherwise evaluate on the prepared inputs, using change-driven evaluation, with resolvers and checkers run on demand through their existing caches.
