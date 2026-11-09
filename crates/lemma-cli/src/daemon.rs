@@ -432,7 +432,10 @@ fn control_sentry(build: &str, action: SentryAction, sentry: &mut Option<Sentry>
             }
             match Sentry::attach(&manifest) {
                 Ok(attached) => {
-                    let text = format!("sentry attached to {}\n", attached.manifest().display());
+                    let text = format!(
+                        "sentry (experimental) attached to {}\n",
+                        attached.manifest().display()
+                    );
                     *sentry = Some(attached);
                     done(text)
                 }

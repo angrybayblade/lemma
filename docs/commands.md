@@ -261,6 +261,8 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 | `lemma daemon sentry events [--since <token>] [--wait <duration>]` | What happened since a token, a line each: repositories whose files changed, and checks answered (reused or checked, how long, and their counts), then the latest token. With `--wait`, it waits that long for an event when there is none yet, for a hook or a script to follow sentry. `--json` prints the events. |
 | `lemma daemon --idle-secs <n>` | Run in the foreground, exiting after this many seconds without a command instead of the configured `idle_exit`. |
 
+Sentry is experimental and off unless you start it: its answers match a fresh check, but it can change or go away between releases.
+
 On Linux, `install` uses a systemd user unit. On a server you reach over SSH there may be no user session to run it in; `sudo loginctl enable-linger $USER` gives you one that starts at boot and outlives your logins.
 
 The daemon serves every later command, so it does not keep the environment of the command that happened to start it. Without a service, it keeps only `HOME`, `USER`, `LOGNAME`, `PATH`, `SHELL`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `SSH_AUTH_SOCK`, the proxy variables and `LEMMA_*`. A shell's `GOCACHE`, `XDG_CACHE_HOME` or `TMPDIR` would otherwise redirect every later build and cache, and break them once that shell's directories are gone. Adapters and checkers that need a variable get it from their `env` settings. Set `LEMMA_NO_DAEMON=1` to run a command in its own process, with its own environment.
