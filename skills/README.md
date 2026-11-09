@@ -4,7 +4,7 @@ Skills that teach coding agents to use Lemma. Each directory is one skill in the
 
 | Skill | Use when |
 | --- | --- |
-| [`lemma-mode`](lemma-mode/SKILL.md) | `/lemma-mode`: verification-driven work on a change other code depends on, with playbooks for changing a contract, adding a feature, renaming, mapping impact and reviewing |
+| [`lemma-mode`](lemma-mode/SKILL.md) | `/lemma-mode`: the workflow for a change other code depends on, sized to the change, ending in proof. See [Lemma mode](../docs/lemma-mode.md) |
 | [`lemma-impact`](lemma-impact/SKILL.md) | Mapping every use and every caller, across repositories, before changing an operation, schema or shared symbol |
 | [`lemma-verify`](lemma-verify/SKILL.md) | Proving a change with `lemma check` at the end of each unit, fixing what it reports, and an opt-in Stop hook that checks before the agent finishes |
 | [`lemma-behavior`](lemma-behavior/SKILL.md) | Proving a runtime claim by running the real handler, kept as a behavior |
