@@ -4,7 +4,7 @@
 
 | Command | Does |
 | --- | --- |
-| `lemma index <directory>` | Indexes the code `<directory>/lemma.yaml` says its services are made of (`index.include`, `exclude`, `languages`); writes `<directory>/.lemma/index.db`. The daemon then keeps it current. Without a `lemma.yaml`, indexes every supported file and warns. |
+| `lemma index <directory>` | Indexes the code `<directory>/mod.lm` says its services are made of (`index`: `include`, `exclude`, `languages`); writes `<directory>/.lemma/index.db`. The daemon then keeps it current. Without a `mod.lm`, or when no service names its code, indexes every supported file and warns. |
 | `lemma symbols <query>` | Searches indexed symbols by name or qualified name. |
 | `lemma outline <file>` | Lists a file's symbols in source order. |
 | `lemma refs <symbol>` | References through the symbol's language server. |
@@ -13,7 +13,8 @@
 | `lemma signature <symbol>` | The declaration and the server's hover text. |
 | `lemma providers` | Configured language servers and whether each is installed. |
 | `lemma mcp` | Serves these commands as MCP tools over stdin and stdout. |
-| `lemma verify <manifest>` | Checks a change across the repositories in a manifest. |
+| `lemma check [mod.lm]` | Checks a change across the repositories a workspace composes. |
+| `lemma verify [mod.lm]` | Checks that a description still matches the code at one snapshot. |
 | `lemma daemon status` / `stop` | Inspects or stops the background daemon. |
 
 Every command takes `--json`. Positions in JSON are zero-based.
@@ -26,18 +27,35 @@ Every command takes `--json`. Positions in JSON are zero-based.
 | 1 | Error: no index, unknown symbol, invalid configuration |
 | 2 | `refs`: the name matched several symbols |
 | 3 | `refs`: no answer (stale file, no server, server failed or unsupported) |
-| 4 | `verify`: a finding is an error |
+| 4 | `check` and `verify`: a finding is an error |
+| 5 | `check`: it finished, but a `git(...)` repository was not cloned |
+
+## `lemma check` options
+
+| Option | Does |
+| --- | --- |
+| `--change <name or directory>` | The changed repository, or `self` |
+| `--base <commit>`, `--head <commit>` | The commits before and with the change |
+| `--level audit` / `check` / `strict` | What fails; overrides the workspace's `level` |
+| `--explain` | Shows the facts and rules behind each inferred finding |
+| `--evaluation demand` / `full` / `both` | How much code is read; `both` fails if the two differ |
+| `--all` | Lists informational findings too |
+| `--select <name>` | Runs this check, behavior or requirement |
+| `--no-run`, `--run-base` | Runs no checkers; also runs them at the base |
+| `--no-clone` | Never clones; exits 5 if a repository is missing |
+| `--engine souffle` / `reference` | Picks the rule engine; Soufflé if installed by default |
+| `--json` | Findings and values as JSON |
 
 ## `lemma verify` options
 
 | Option | Does |
 | --- | --- |
-| `--explain` | Shows the facts and rules behind each finding |
-| `--all` | Lists informational findings too |
-| `--base <commit>`, `--head <commit>` | Checks these commits instead of the manifest's |
+| `--all` | Lists every informational finding |
+| `--links` | Also lists every link, declared and inferred |
 | `--relation <name>` | Prints every row of a derived relation (repeatable) |
-| `--engine souffle` / `reference` | Picks the rule engine; Soufflé if installed by default |
-| `--json` | Findings, values and relations as JSON |
+| `--json` | Findings, links and relations as JSON |
+
+Findings name a location as `#repo:service`: `include_matches_nothing`, `document_missing`, `document_unreadable`, `schema_unresolved`, `schema_open`, `runtime_missing`, `external_unpinned`, `service_empty`, `operation_not_documented`, `anchor_unresolved`, `anchor_uncalled`, `previously_still_present`, `link_redundant`.
 
 ## Built-in requirements
 

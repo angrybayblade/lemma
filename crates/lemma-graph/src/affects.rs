@@ -64,6 +64,8 @@ pub struct Walkable {
     /// calls `calls` holds completely, and how to ask for the calls of
     /// others; `None` when `calls` holds every call.
     pub partial: Option<PartialCalls>,
+    /// The rows of each relation a report was asked to include.
+    pub relations: BTreeMap<String, Vec<Vec<String>>>,
 }
 
 /// Calls inference read for some operations only.
@@ -128,6 +130,7 @@ pub fn walkable(
         services,
         seeds: Vec::new(),
         partial: None,
+        relations: BTreeMap::new(),
     }
 }
 
@@ -665,9 +668,6 @@ pub(crate) fn functions_of(
     let checkout = &repo.checkouts[HEAD];
     let (root, commit) = (checkout.root.as_path(), checkout.commit.as_deref());
     let source_error = |source| GraphError::Source { source };
-    if commit.is_none() {
-        lemma_http::require_prefixes(root, &prefixes).map_err(source_error)?;
-    }
     let listed = listings.get(root, commit).map_err(source_error)?;
     let code: Vec<&ListedFile> = listed
         .iter()

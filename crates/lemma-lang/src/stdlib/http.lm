@@ -2,15 +2,12 @@ module lemma.http
 
 // HTTP contracts between services, their generated clients and consumers.
 //
-// Facts come from `lemma verify`'s extractors: operations from OpenAPI
+// Facts come from `lemma check`'s extractors: operations from OpenAPI
 // documents (spec), routes, client operation tables and calls from code
 // (syntax). Operations are named "METHOD /path" with path parameters
 // written `{}`. A consumer is "repository:file::Symbol"; a file is
 // "repository:file". The changed repository is read at the base and head
 // of the change; every other repository at one commit, the same in both.
-
-// Ported from grammars/http-contracts.yaml: the same relations, rules and
-// requirements, so lowering this module gives the same program.
 
 export relation operation(service: Text, operation: Text, method: Text, path: Text)
 export relation parameter(operation: Text, name: Text, location: Text)

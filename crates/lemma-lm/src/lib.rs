@@ -1,5 +1,5 @@
-//! `lm`: the command for `.lm` modules. It checks them, formats them,
-//! converts a `lemma.yaml` into one, and serves them to editors. Running
+//! `lm`: the command for `.lm` modules. It checks them, formats them and
+//! serves them to editors. Running
 //! what modules declare (checks, verification, behaviors) is `lemma`'s.
 //!
 //! The `lm` binary is built by `lemma-cli`, beside `lemma`, and calls
@@ -8,7 +8,6 @@
 
 mod check;
 mod cli;
-mod convert;
 mod format;
 mod logging;
 mod new;
@@ -29,11 +28,6 @@ pub fn run() -> ExitCode {
     let outcome = match &cli.command {
         Command::Check { file } => check::run(file, cli.json),
         Command::Fmt { paths, check } => format::run(paths, *check),
-        Command::Convert {
-            file,
-            module,
-            write,
-        } => convert::run(file, module.as_deref(), *write).map(|()| ExitCode::SUCCESS),
         Command::Lsp => serve().map(|()| ExitCode::SUCCESS),
         Command::New {
             what:

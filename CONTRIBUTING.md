@@ -123,7 +123,7 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | adapter | Code that translates one provider or format into Lemma types | driver, plugin, wrapper |
 | operation | Something a service provides or calls, with a request and response | endpoint, function, method |
 | link | A relationship between two operations, caller to provider, checked for persistence and schema agreement | edge, binding, connection |
-| external service | Another repository's `lemma.yaml`, named `#name` and pinned | remote, dependency, import |
+| external service | Another repository's description, named `#name` and pinned | remote, dependency, import |
 | change-driven evaluation | Reading only the consumer code a change's findings can rest on, when the grammar's requirements allow it | demand-driven, incremental, lazy |
 | anchor | A relation, computed without consumer facts, holding the operations a requirement's calls must be of | seed, root, trigger |
 | index term | A string a file's code facts are indexed by, standing for calls the file may make | key, tag, token |
@@ -144,6 +144,8 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | bulk state | A repository changing too much at once to prepare file by file, as during a checkout or a rebase | storm, burst |
 | prepared inputs | What sentry keeps between asks so that an ask need not list, hash, parse or decode again: an ask's warm path | warm cache, hot state |
 | token | An opaque position in sentry's journal; a delta or an event list covers what came after it | cursor, clock, timestamp |
+| description | A system's `.lm` modules, read as what its repositories are made of, what they offer and how they link | inventory, topology |
+| candidate | A suspected gap in a description, found by a pattern rather than shown from the code; reported, and never fails a command | guess, hint |
 
 Extend this table when a new domain concept appears, in the same change that introduces it.
 

@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use lemma_graph::{Finding, Report, Severity};
 
-use crate::check::{Delta, LanguageServers, SentryNote, Served, Streams};
+use crate::check::{Delta, SentryNote, Served, Streams};
 use crate::cli::CheckArgs;
 
 /// How often the worker collects changes reported by the watchers.
@@ -361,6 +361,9 @@ impl Worker {
             change: None,
             level: None,
             cache: lemma_graph::repos::cache_directory(),
+            cloning: lemma_graph::repos::Cloning::Forbidden,
+            explain: false,
+            relations: Vec::new(),
             facts_cache: None,
             evaluation: lemma_verify::Evaluation::Demand,
             list_links: false,
@@ -662,12 +665,7 @@ impl Worker {
             warm: Arc::clone(&self.warm),
             environment: Arc::new(question.environment.clone()),
         };
-        let lsp = LanguageServers {
-            asks_daemon: false,
-            providers_file: None,
-        };
-        crate::check::evaluate(&question.args, &lsp, Some(&served))
-            .map_err(|error| format!("{error:#}"))
+        crate::check::evaluate(&question.args, Some(&served)).map_err(|error| format!("{error:#}"))
     }
 
     /// What an answer rests on besides the files watched: the command
@@ -928,7 +926,7 @@ fn watch(root: PathBuf, spelled: PathBuf, inner: &[PathBuf]) -> Watched {
 /// sit beside, not inside, the repositories watched.
 fn manifest_stamp(manifest: &Path) -> Vec<(u64, u128)> {
     let directory = manifest.parent().unwrap_or(manifest);
-    ["lemma.yaml", "mod.lm"]
+    ["mod.lm"]
         .iter()
         .map(|name| {
             std::fs::metadata(directory.join(name)).map_or((0, 0), |metadata| {
@@ -1054,17 +1052,12 @@ mod tests {
             warm: Arc::default(),
             environment: Arc::new(question.environment.clone()),
         };
-        let lsp = LanguageServers {
-            asks_daemon: false,
-            providers_file: None,
-        };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut streams = Streams {
             out: &mut out,
             err: &mut err,
         };
-        let exit_code =
-            crate::check::answer(&question.args, &lsp, false, Some(&served), &mut streams);
+        let exit_code = crate::check::answer(&question.args, false, Some(&served), &mut streams);
         Answer {
             stdout: String::from_utf8_lossy(&out).into_owned(),
             stderr: String::from_utf8_lossy(&err).into_owned(),

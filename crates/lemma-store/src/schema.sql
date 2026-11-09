@@ -100,8 +100,8 @@ CREATE TABLE IF NOT EXISTS answer_locations (
 
 CREATE INDEX IF NOT EXISTS answer_locations_by_answer ON answer_locations (answer_id);
 
--- What each service in lemma.yaml offers, as of a snapshot, and where in
--- the code it is implemented. Rebuilt whenever lemma.yaml or the snapshot
+-- What each service in a description offers, as of a snapshot, and where in
+-- the code it is implemented. Rebuilt whenever the description or the snapshot
 -- changes; `sources` records what it was built from.
 CREATE TABLE IF NOT EXISTS exports (
     snapshot_id INTEGER NOT NULL REFERENCES snapshots (id) ON DELETE CASCADE,
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS exports (
     PRIMARY KEY (snapshot_id, service, name, kind)
 );
 
--- Links lemma.yaml declares between exports, by address.
+-- Links the description declares between exports, by address.
 CREATE TABLE IF NOT EXISTS export_links (
     snapshot_id INTEGER NOT NULL REFERENCES snapshots (id) ON DELETE CASCADE,
     caller      TEXT NOT NULL,
@@ -125,14 +125,14 @@ CREATE TABLE IF NOT EXISTS export_links (
     PRIMARY KEY (snapshot_id, caller, provider)
 );
 
--- What a snapshot's exports were built from: a hash of lemma.yaml and the
+-- What a snapshot's exports were built from: a hash of the description and the
 -- snapshot fingerprint, so an unchanged pair is not rebuilt.
 CREATE TABLE IF NOT EXISTS export_sources (
     snapshot_id INTEGER PRIMARY KEY REFERENCES snapshots (id) ON DELETE CASCADE,
     fingerprint TEXT NOT NULL
 );
 
--- A workspace index: the repositories a workspace lemma.yaml composes, each
+-- A workspace index: the repositories a workspace description composes, each
 -- with the index holding its symbols, and every member's exports and links
 -- with addresses made absolute (#member:services.<service>.<name>).
 CREATE TABLE IF NOT EXISTS workspace_members (

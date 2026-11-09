@@ -1,5 +1,5 @@
 //! An operation's request or response schema, resolved to JSON Schema from
-//! wherever its `lemma.yaml` says it is: a resolver's output, a JSON file,
+//! wherever its description says it is: a resolver's output, a JSON file,
 //! or a type in code.
 
 mod document;

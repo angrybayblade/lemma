@@ -173,13 +173,13 @@ pub(crate) fn reference_report(
     linked_text(out, linked)
 }
 
-/// The symbols `lemma.yaml` links to or from a symbol, beside what the
+/// The symbols the description links to or from a symbol, beside what the
 /// language server found.
 fn linked_text(out: &mut dyn Write, linked: &[Linked]) -> io::Result<()> {
     if linked.is_empty() {
         return Ok(());
     }
-    writeln!(out, "linked by lemma.yaml")?;
+    writeln!(out, "linked by the description")?;
     for link in linked {
         let implemented = match (&link.symbol, &link.path) {
             (Some(symbol), Some(path)) => format!("  {symbol}  ({path})"),

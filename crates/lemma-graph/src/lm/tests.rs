@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use lemma_lang::{Repository, SourceError, Sources, check_program};
 
 use super::*;
-use crate::config::parse;
 
 /// Repository files in memory: the entry repository is "".
 struct Memory(BTreeMap<(String, String), String>);
@@ -19,173 +18,156 @@ impl Sources for Memory {
     }
 }
 
-/// Converts `yaml` to the root module `module`, checks it with `others`
-/// (repository, `lemma.yaml`) converted beside it, and lowers it back.
-fn round_trip(yaml: &str, module: &str, others: &[(&str, &str)]) -> (LemmaFile, LemmaFile, String) {
-    let original = parse(yaml).unwrap();
-    let text = convert(&original, module);
-    let mut files = BTreeMap::from([((String::new(), "mod.lm".to_owned()), text.clone())]);
+/// `module`'s repository as lowered from `text`, with `others` (repository,
+/// root module) beside it.
+fn lowered(text: &str, module: &str, others: &[(&str, &str)]) -> LemmaFile {
+    let mut files = BTreeMap::from([((String::new(), "mod.lm".to_owned()), text.to_owned())]);
     for (repository, other) in others {
-        let converted = convert(&parse(other).unwrap(), repository);
-        files.insert(((*repository).to_owned(), "mod.lm".to_owned()), converted);
+        files.insert(
+            ((*repository).to_owned(), "mod.lm".to_owned()),
+            (*other).to_owned(),
+        );
     }
     let checked = check_program(&mut Memory(files), "mod.lm");
-    assert!(
-        checked.diagnostics.is_empty(),
-        "{text}\n{:#?}",
-        checked.diagnostics
-    );
-    let lowered = repository_file(&checked, module).unwrap();
-    (original, lowered, text)
+    assert_eq!(checked.error_lines(), Vec::<String>::new(), "{text}");
+    repository_file(&checked, module).unwrap()
 }
 
-/// External services keep their source; lowering adds which file is their
-/// manifest, and writes links without quotes, which read the same.
-fn without_manifests(mut file: LemmaFile) -> LemmaFile {
-    for service in file.services.values_mut() {
-        service.manifest = None;
-    }
-    file.graph.links = file
-        .graph
-        .links
-        .iter()
-        .map(|text| {
-            crate::address::parse_link(text).map_or_else(
-                |_| text.clone(),
-                |link| format!("{} -> {}", link.caller, link.provider),
-            )
-        })
-        .collect();
-    file
-}
+const BILLING: &str = r#"module billing
 
-const BILLING: &str = r#"
-services:
-  api:
-    runtime: { python: .venv/bin/python, env: { PYTHONPATH: src } }
-    index:
-      include: [billing]
-      exclude: ["**/tests/**"]
-    exports:
-      openapi: [openapi.json]
-      operations:
-        create_charge:
-          path: billing/handlers.py:create_charge
-          schema:
-            request: billing/handlers.py#CreateChargeRequest
-            response: billing/handlers.py#CreateChargeResponse
-        refund:
-          path: billing/handlers.py:refund
-          schema:
-            resolver: { command: "{python} scripts/spec.py", cache: false }
-            request: { path: "$.refund.request" }
-            response: { path: "$.refund.response" }
-        void:
-          path: billing/handlers.py:void
-          schema:
-            request: { file: spec.json, format: openapi, path: "$.void.request" }
+import * as http from lemma.http
+import * as json from lemma.json
+import * as python from lemma.python
+
+let handlers = python.file("billing/handlers.py")
+let spec = json.command("{python} scripts/spec.py", cache: false)
+let document = json.document("spec.json", format: "openapi")
+
+export service api {
+    runtime: { python: ".venv/bin/python", env: { PYTHONPATH: "src" } }
+    index: { include: ["billing"], exclude: ["**/tests/**"] }
+    operations: http.openapi("openapi.json")
     rejects_unknown_fields: true
+
+    export operation create_charge {
+        implementation: handlers.symbol("create_charge")
+        request: handlers.type("CreateChargeRequest")
+        response: handlers.type("CreateChargeResponse")
+    }
+
+    export operation refund {
+        implementation: handlers.symbol("refund")
+        request: spec.at("$.refund.request")
+        response: spec.at("$.refund.response")
+    }
+
+    export operation void {
+        implementation: handlers.symbol("void")
+        request: document.at("$.void.request")
+        previously: ["billing::api.cancel"]
+    }
+}
 "#;
 
-const WEB: &str = r##"
-services:
-  web:
-    index:
-      include: [src, client]
-    exports:
-      operations:
-        create_charge:
-          path: client/charges.go:Charges.Create
-          schema:
-            request: client/charges.go#CreateChargeRequest
-            response: client/charges.go#CreateChargeResponse
-  "#billing":
-    git: git@github.com:example/billing.git
-    ref: 3f2a1c9e04
-graph:
-  links:
-    - services.web.create_charge -> "#billing:services.api.create_charge"
-"##;
+const WEB: &str = r#"module web
 
-#[test]
-fn a_service_with_code_command_and_document_schemas_round_trips() {
-    let (original, lowered, _) = round_trip(BILLING, "billing", &[]);
+import * as go from lemma.go
+import { Link } from lemma.links
+import { api as billing_api } from billing
 
-    assert_eq!(lowered, original);
+repo billing = git(url: "git@github.com:example/billing.git", rev: "3f2a1c9e04")
+
+let charges = go.file("client/charges.go")
+
+export service web {
+    index: { include: ["src", "client"] }
+
+    export client operation create_charge {
+        implementation: charges.symbol("Charges.Create")
+        sends: charges.type("CreateChargeRequest")
+        accepts: charges.type("CreateChargeResponse")
+    }
 }
 
-#[test]
-fn a_caller_with_a_link_to_another_repository_round_trips() {
-    let (original, lowered, text) = round_trip(WEB, "web", &[("billing", BILLING)]);
-
-    assert_eq!(without_manifests(lowered), without_manifests(original));
-    assert!(text.contains("client operation create_charge"), "{text}");
-    assert!(
-        text.contains("web.create_charge -> billing_api.create_charge"),
-        "{text}"
-    );
+export graph links : Link {
+    web.create_charge -> billing_api.create_charge
 }
-
-#[test]
-fn where_a_renamed_operation_was_round_trips() {
-    let yaml = BILLING.replace(
-        "        void:\n          path: billing/handlers.py:void",
-        "        void:\n          path: billing/handlers.py:void\n          previously: [api.cancel]",
-    );
-
-    let (original, lowered, text) = round_trip(&yaml, "billing", &[]);
-
-    assert_eq!(lowered, original);
-    assert!(
-        text.contains(r#"previously: ["billing::api.cancel"]"#),
-        "{text}"
-    );
-}
-
-#[test]
-fn a_link_naming_an_operation_by_method_and_path_round_trips() {
-    let yaml = WEB.replace(
-        "\"#billing:services.api.create_charge\"",
-        "\"#billing:services.api.POST /v1/charges.create\"",
-    );
-
-    let (original, lowered, text) = round_trip(&yaml, "web", &[("billing", BILLING)]);
-
-    assert_eq!(without_manifests(lowered), without_manifests(original));
-    assert!(
-        text.contains(r#"web.create_charge -> billing_api["POST /v1/charges.create"]"#),
-        "{text}"
-    );
-}
-
-#[test]
-fn an_adapter_and_a_generated_client_round_trip() {
-    let yaml = r#"
-services:
-  api:
-    index: { include: [src] }
-    exports:
-      operations_from:
-        adapter: hono-zod-openapi
-        directory: apps/api
-        entry: [src/index.ts#app, src/routes]
-        setup: pnpm install --frozen-lockfile
-        env: { SKIP_VALIDATION: "true" }
-        timeout_ms: 60000
-      routes:
-        register: [openapi]
-        define: [createRoute]
-  sdk:
-    index: { include: [sdk] }
-    exports:
-      client:
-        generated_from: [openapi.json]
-        call_names: ["{camel}"]
 "#;
 
-    let (original, lowered, _) = round_trip(yaml, "api", &[]);
+#[test]
+fn a_services_settings_lower_to_its_fields() {
+    let file = lowered(BILLING, "billing", &[]);
 
-    assert_eq!(lowered, original);
+    let api = &file.services["api"];
+    assert_eq!(api.index.include, ["billing"]);
+    assert_eq!(api.index.exclude, ["**/tests/**"]);
+    assert_eq!(api.exports.openapi, ["openapi.json"]);
+    assert_eq!(api.runtime.python.as_deref(), Some(".venv/bin/python"));
+    assert_eq!(api.runtime.env["PYTHONPATH"], "src");
+    assert!(api.rejects_unknown_fields);
+}
+
+#[test]
+fn an_operations_code_lowers_to_where_it_is() {
+    let file = lowered(BILLING, "billing", &[]);
+
+    let operations = &file.services["api"].exports.operations;
+    assert_eq!(
+        operations["create_charge"].path,
+        "billing/handlers.py:create_charge"
+    );
+    assert_eq!(operations["void"].previously, ["api.cancel"]);
+}
+
+#[test]
+fn a_link_to_another_repository_lowers_to_its_address() {
+    let file = lowered(WEB, "web", &[("billing", BILLING)]);
+
+    assert_eq!(
+        file.graph.links,
+        ["services.web.create_charge -> #billing:services.api.create_charge"]
+    );
+    assert_eq!(
+        file.services["#billing"].git.as_deref(),
+        Some("git@github.com:example/billing.git")
+    );
+    assert_eq!(
+        file.services["#billing"].reference.as_deref(),
+        Some("3f2a1c9e04")
+    );
+}
+
+#[test]
+fn an_adapter_and_a_generated_client_lower_to_their_settings() {
+    let text = r#"module api
+
+import * as hono from lemma.hono
+import * as http from lemma.http
+
+export service api {
+    index: { include: ["src"] }
+    operations: hono.app(entry: ["src/index.ts#app", "src/routes"], directory: "apps/api", setup: "pnpm install --frozen-lockfile", env: { SKIP_VALIDATION: "true" }, timeout_ms: 60000)
+    routes: { register: ["openapi"], define: ["createRoute"] }
+}
+
+export service sdk {
+    index: { include: ["sdk"] }
+    client: http.generated_client(generated_from: ["openapi.json"], call_names: ["{camel}"])
+}
+"#;
+
+    let file = lowered(text, "api", &[]);
+
+    let from = file.services["api"]
+        .exports
+        .operations_from
+        .as_ref()
+        .unwrap();
+    assert_eq!(from.adapter.as_deref(), Some("hono-zod-openapi"));
+    assert_eq!(from.directory.as_deref(), Some("apps/api"));
+    assert_eq!(from.timeout_ms, Some(60000));
+    let client = file.services["sdk"].exports.client.as_ref().unwrap();
+    assert_eq!(client.call_names, ["{camel}"]);
 }
 
 #[test]
@@ -199,40 +181,13 @@ fn the_languages_adapters_are_the_registrys() {
 }
 
 #[test]
-fn every_built_in_adapter_round_trips() {
-    for adapter in lemma_lang::stdlib::ADAPTERS {
-        let yaml = format!(
-            "services:\n  api:\n    exports:\n      operations_from:\n        adapter: {adapter}\n        entry: [src]\n"
-        );
-
-        let (original, lowered, _) = round_trip(&yaml, "api", &[]);
-
-        assert_eq!(lowered, original, "{adapter}");
-    }
-}
-
-#[test]
-fn a_file_of_external_services_becomes_a_workspace() {
-    let yaml = "services:\n  \"#billing\": { path: ../billing }\n  \"#web\": { path: ../web }\ngraph:\n  level: check\n";
-
-    let text = convert(&parse(yaml).unwrap(), "example");
-
-    assert!(text.contains("workspace {"), "{text}");
-    assert!(
-        text.contains("repo billing = local(\"../billing\")"),
-        "{text}"
-    );
-    assert!(text.contains("config: { level: check }"), "{text}");
-}
-
-#[test]
 fn a_workspace_pins_its_repositories_and_level() {
     let workspace = "module example\nworkspace {\n    repo billing = local(\"../billing\")\n    config: { level: check }\n}\n";
     let files = BTreeMap::from([
         ((String::new(), "mod.lm".to_owned()), workspace.to_owned()),
         (
             ("billing".to_owned(), "mod.lm".to_owned()),
-            convert(&parse(BILLING).unwrap(), "billing"),
+            BILLING.to_owned(),
         ),
     ]);
     let checked = check_program(&mut Memory(files), "mod.lm");
@@ -242,10 +197,6 @@ fn a_workspace_pins_its_repositories_and_level() {
     assert_eq!(
         lowered.services["#billing"].path.as_deref(),
         Some("../billing")
-    );
-    assert_eq!(
-        lowered.services["#billing"].manifest.as_deref(),
-        Some("mod.lm")
     );
     assert_eq!(lowered.graph.level, Some(Level::Check));
 }
@@ -295,5 +246,17 @@ fn a_discovered_operation_named_by_method_and_path_lowers_to_a_route() {
     assert_eq!(
         lowered,
         ["services.Web.list -> services.Gateway.GET /users"]
+    );
+}
+
+#[test]
+fn a_local_repository_pinned_to_a_commit_keeps_its_pin() {
+    let text = "module example\nworkspace {\n    repo billing = local(\"../billing\", rev: \"abc123\")\n}\n";
+
+    let file = lowered(text, "example", &[("billing", "module billing\n")]);
+
+    assert_eq!(
+        file.services["#billing"].reference.as_deref(),
+        Some("abc123")
     );
 }

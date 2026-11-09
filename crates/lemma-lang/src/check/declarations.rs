@@ -456,7 +456,8 @@ impl<'a> Checker<'a> {
         let module = declared.module;
         let relation = self.relation_named(module, &graph.relation);
         let columns = self.columns(id).unwrap_or_default();
-        let context = Context::new(module);
+        let mut context = Context::new(module);
+        context.is_link_end = relation.as_ref().is_some_and(is_link_relation);
         let mut rows = Vec::new();
         let mut provider = None;
         match &graph.body {
@@ -879,4 +880,9 @@ fn is_date(text: &str) -> bool {
             .iter()
             .enumerate()
             .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
+}
+
+/// Whether `relation` is the standard library's links between operations.
+fn is_link_relation(relation: &Address) -> bool {
+    *relation == Address::top("lemma.links", "Link")
 }

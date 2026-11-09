@@ -4,6 +4,7 @@
 //! provider names (or the one asked for), on the root the index serves,
 //! as lookups would use.
 
+use lemma_graph::repos::Cloning;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::{self, Write};
@@ -190,7 +191,7 @@ impl Engine {
         let (directory, lemma_path) = selection::locate(&path)?;
         let workspace = lemma_path
             .as_deref()
-            .map(selection::read_lemma_file)
+            .map(|file| selection::read_description(file, Cloning::Forbidden))
             .transpose()?
             .filter(selection::is_workspace);
         let roots = match (workspace, lemma_path) {
@@ -440,11 +441,12 @@ fn chosen_languages(target: &LspTarget) -> anyhow::Result<Option<BTreeSet<Langua
     Ok(Some(chosen))
 }
 
-/// Each member's indexed root in the workspace whose `lemma.yaml` is at
+/// Each member's indexed root in the workspace whose description is at
 /// `lemma_path`: its clone, or the worktree at its pin.
 fn workspace_roots(lemma_path: &Path) -> anyhow::Result<Vec<Root>> {
     let cache = lemma_graph::repos::cache_directory();
-    let members = lemma_graph::compose::members(lemma_path, &cache)?;
+    let members =
+        lemma_graph::compose::composition(lemma_path, &cache, Cloning::Forbidden)?.members;
     let mut roots = Vec::new();
     for member in members {
         let directory = match &member.commit {

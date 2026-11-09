@@ -1,5 +1,7 @@
 # Relational grammar and verification
 
+> A record of its time. YAML has since been removed: a description is always `.lm`. See [document 15](15-one-description-format.md).
+
 Captured: 2026-11-01. Status: **established direction** where marked; the rest is **proposal**.
 
 Lemma is the layer between agentic coding and formally verifiable systems. When an agent or engineer proposes a change, Lemma finds what the change touches across code, services and systems, derives which requirements apply, runs the verifiers that can check them, and reports findings with an explanation, stating the coverage and assumptions behind each one. This document defines the layers that hold that knowledge, the grammar users extend it with, the rule engine that evaluates it, and the first verifiers.

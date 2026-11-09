@@ -80,7 +80,7 @@ struct IndexView<'a> {
 /// How many exports and links an index holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct ExportCounts {
-    /// Operations declared in `lemma.yaml`.
+    /// Operations declared in a description.
     pub operations: usize,
     /// Operations documents describe.
     pub endpoints: usize,
@@ -90,12 +90,12 @@ pub(crate) struct ExportCounts {
     pub symbols: usize,
     /// Declared links.
     pub links: usize,
-    /// What adapters could not read, when the exports were rebuilt.
+    /// What the index leaves out or read more widely than described.
     #[serde(skip)]
-    pub adapter_warnings: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
-/// A symbol `lemma.yaml` links to (`to`) or from (`from`) the one asked
+/// A symbol the description links to (`to`) or from (`from`) the one asked
 /// about, by its export's address, with the code implementing it when the
 /// index knows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -120,6 +120,8 @@ pub(crate) struct MemberLine {
     files: usize,
     symbols: usize,
     exports: Option<ExportCounts>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
     skipped: Option<String>,
 }
 
@@ -136,6 +138,7 @@ impl MemberLine {
             files: summary.files_by_language.values().sum(),
             symbols: summary.symbol_count,
             exports: Some(exports.clone()),
+            warnings: exports.warnings.clone(),
             skipped: None,
         }
     }
@@ -148,6 +151,7 @@ impl MemberLine {
             files: 0,
             symbols: 0,
             exports: None,
+            warnings: Vec::new(),
             skipped: Some(reason),
         }
     }
@@ -199,8 +203,12 @@ pub(crate) fn workspace_summary(
             "  {}{at}: {} files, {} symbols; ",
             member.name, member.files, member.symbols
         )?;
-        if let Some(exports) = &member.exports {
-            export_counts(out, exports)?;
+        let Some(exports) = &member.exports else {
+            continue;
+        };
+        export_counts(out, exports)?;
+        for warning in &member.warnings {
+            writeln!(out, "    warning: {warning}")?;
         }
     }
     Ok(())
@@ -265,7 +273,7 @@ impl<'a> IndexView<'a> {
 pub(crate) struct IndexReport<'a> {
     pub summary: &'a IndexSummary,
     pub exports: &'a ExportCounts,
-    /// What the person should know, such as a missing `lemma.yaml`.
+    /// What the person should know, such as a missing the description.
     pub warnings: &'a [String],
 }
 

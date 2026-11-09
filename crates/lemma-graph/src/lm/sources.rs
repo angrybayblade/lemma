@@ -10,7 +10,7 @@ use lemma_lang::load::{Repository, RepositorySource, SourceError, Sources};
 
 use crate::GraphError;
 use crate::config::LemmaFile;
-use crate::repos::{Checkout, clone_remote};
+use crate::repos::{Checkout, Cloning, clone_remote, is_cloned};
 
 /// Module texts from checkouts: the entry repository's, and each pinned
 /// repository's, found from its `repo` declaration.
@@ -24,8 +24,9 @@ pub struct CheckoutSources<'c> {
     /// unsaved buffers, by absolute path.
     overlay: BTreeMap<PathBuf, String>,
     /// Repositories a composition already pinned, which win over the pins
-    /// the modules declare, as a parent's do in `lemma.yaml`.
+    /// the modules declare, as a composition's do.
     pins: BTreeMap<String, Checkout>,
+    cloning: Cloning,
 }
 
 impl<'c> CheckoutSources<'c> {
@@ -38,7 +39,15 @@ impl<'c> CheckoutSources<'c> {
             checkouts: BTreeMap::new(),
             overlay: BTreeMap::new(),
             pins: BTreeMap::new(),
+            cloning: Cloning::Allowed,
         }
+    }
+
+    /// The same sources, cloning repositories only as `cloning` says.
+    #[must_use]
+    pub fn with_cloning(mut self, cloning: Cloning) -> Self {
+        self.cloning = cloning;
+        self
     }
 
     /// The same sources, reading the repositories in `pins` where a
@@ -83,6 +92,7 @@ impl<'c> CheckoutSources<'c> {
         let checkout = match source {
             RepositorySource::Local {
                 path,
+                rev,
                 declared_in,
                 declaring_file,
             } => {
@@ -90,10 +100,17 @@ impl<'c> CheckoutSources<'c> {
                 let directory = Path::new(declaring_file).parent().unwrap_or(Path::new(""));
                 Checkout {
                     root: normalize(&base.join(directory).join(path)),
-                    commit: None,
+                    commit: rev.clone(),
                 }
             }
             RepositorySource::Git { url, rev, .. } => {
+                if self.cloning == Cloning::Forbidden && !is_cloned(url, rev.as_deref(), self.cache)
+                {
+                    return Err(SourceError::unavailable(format!(
+                        "repository `{}` is not cloned",
+                        repository.name
+                    )));
+                }
                 let root = clone_remote(url, rev.as_deref(), self.cache)
                     .map_err(|error| source_error(&error))?;
                 Checkout {
@@ -129,7 +146,7 @@ impl Sources for CheckoutSources<'_> {
             return Ok(found);
         }
         // A commit from before the repository had modules: its working
-        // directory's, as a lemma.yaml missing at a commit is read.
+        // directory's.
         let working = Checkout {
             root: checkout.root.clone(),
             commit: None,
@@ -139,9 +156,7 @@ impl Sources for CheckoutSources<'_> {
 }
 
 fn source_error(error: &GraphError) -> SourceError {
-    SourceError {
-        message: error.to_string(),
-    }
+    SourceError::new(error.to_string())
 }
 
 /// `a/b/../c` as `a/c`, without touching the file system.
@@ -160,17 +175,20 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 /// A repository's `mod.lm` at a checkout, checked and lowered to the
-/// `lemma.yaml` structures for that repository.
+/// structures for that repository.
 pub fn read_manifest(
     checkout: &Checkout,
     manifest: &str,
     cache: &Path,
     pins: &BTreeMap<String, Checkout>,
+    cloning: Cloning,
 ) -> Result<LemmaFile, GraphError> {
-    let mut sources = CheckoutSources::new(checkout.clone(), cache).with_pins(pins.clone());
+    let mut sources = CheckoutSources::new(checkout.clone(), cache)
+        .with_pins(pins.clone())
+        .with_cloning(cloning);
     let checked = check_program(&mut sources, manifest);
     let path = checkout.root.join(manifest);
-    let errors = checked.error_lines();
+    let errors = checked.stopping_error_lines();
     if !errors.is_empty() {
         return Err(GraphError::Language { path, errors });
     }
@@ -213,7 +231,7 @@ mod tests {
             },
         )]);
 
-        let file = read_manifest(&entry, "mod.lm", directory.path(), &pins);
+        let file = read_manifest(&entry, "mod.lm", directory.path(), &pins, Cloning::Allowed);
 
         assert!(file.is_ok(), "{file:?}");
     }

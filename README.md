@@ -17,13 +17,14 @@ Or from source: `cargo install --path crates/lemma-cli --locked`, which installs
 
 ## Quick start: navigating code
 
-Describe the project in `lemma.yaml` at its root: its services and the code each is made of.
+Describe the project in `mod.lm` at its root: its services and the code each is made of.
 
-```yaml
-services:
-  api:
-    index:
-      include: [src]
+```lm
+module project
+
+export service api {
+    index: { include: ["src"] }
+}
 ```
 
 ```sh
@@ -38,7 +39,8 @@ lemma definition src/app.py:12:5        # where the symbol used there is defined
 lemma implementations Shape.area        # what implements or overrides it
 lemma signature Router.delete           # declaration and the server's description
 lemma providers                         # which servers are installed and tried
-lemma verify change.yaml                # what a change breaks in the repositories that depend on it
+lemma check --change self               # what a change breaks in the repositories that depend on it
+lemma verify                            # whether the description still matches the code
 ```
 
 Add `--json` to any command for machine-readable output. For agents, `lemma mcp` serves the same commands as MCP tools; in Claude Code, `claude mcp add lemma -- lemma mcp` adds it to a project.
@@ -61,10 +63,10 @@ Use and reference:
 
 - [Onboarding](docs/onboarding.md): set Lemma up for a team's repositories, from install to checks in CI.
 - [Pre-release checklist](docs/pre-release.md): what this release candidate is ready for, and its known limitations.
-- [Verifying changes](docs/verify.md): `lemma verify`, the manifest, findings, and how well it works.
-- [Checking links](docs/check.md): `lemma check`, composable `lemma.yaml` files, schema comparison, inferred links and tracing.
+- [Checking links](docs/check.md): `lemma check`, `.lm` descriptions, schema comparison, inferred links and tracing.
+- [Verifying descriptions](docs/verify.md): `lemma verify`, whether a description still matches the code.
 - [Reading operations from code](docs/adapters.md): adapters that read a service's contract from its code, and the protocol for writing one.
-- [Grammars](docs/grammar.md): writing the relations, rules and requirements `lemma verify` checks.
+- [Requirements and rules](docs/grammar.md): writing the relations, rules and requirements `lemma check` runs.
 - [The `.lm` language](docs/language.md): services, links, rules and requirements as typed modules, with editor support.
 - [Agent skills](skills/README.md): skills that teach coding agents to use Lemma.
 - [Getting started](docs/getting-started.md): install, set up language servers, first lookup.
@@ -77,6 +79,10 @@ Use and reference:
 - [Agents with and without Lemma](docs/agent-benchmark.md): what Lemma changes for a coding agent, measured.
 - [Performance](docs/performance.md): benchmarks, and the approaches that were tried.
 - [Troubleshooting](docs/troubleshooting.md): failed lookups and missing results.
+
+## Brand and marketing
+
+The [landing page](website/README.md) leads with agent speed and system precision: formal requirements, cross-repository impact, and checker-backed behavior simulations. Licensed Suisse files are pending; the documented fallback remains active.
 
 ## Layout
 
@@ -91,9 +97,9 @@ Use and reference:
 | `lemma-query` | The operations: symbols, outline, references, definitions, implementations, signatures |
 | `lemma-logic` | Lemma's Datalog: programs, facts, the `Engine` trait and a reference engine |
 | `lemma-souffle` | Soufflé as an engine |
-| `lemma-grammar` | User-defined grammars (YAML) compiled to Datalog |
+| `lemma-grammar` | Relations, rules and requirements compiled to Datalog |
 | `lemma-http` | HTTP contract facts from OpenAPI documents and code |
-| `lemma-verify` | Verifying a change across the repositories in a manifest |
+| `lemma-verify` | Extracting facts from documents and code, and evaluating requirements over them |
 | `lemma-cli` | The `lemma` command, its background daemon, and the MCP server |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions.

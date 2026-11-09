@@ -1,6 +1,5 @@
 //! Module texts from working trees on disk, for callers without commits or
-//! clones to read, such as a grammar module named by a `lemma verify`
-//! manifest. The rest of the crate reads nothing itself.
+//! clones to read. The rest of the crate reads nothing itself.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -31,14 +30,13 @@ impl WorkingTrees {
             path,
             declared_in,
             declaring_file,
+            ..
         } = source
         else {
-            return Err(SourceError {
-                message: format!(
-                    "repository `{}` comes from git, which only `lemma check` clones",
-                    repository.name
-                ),
-            });
+            return Err(SourceError::new(format!(
+                "repository `{}` comes from git, which only `lemma check` clones",
+                repository.name
+            )));
         };
         let base = self.roots.get(declared_in).unwrap_or(&self.root);
         let directory = Path::new(declaring_file).parent().unwrap_or(Path::new(""));
@@ -54,9 +52,10 @@ impl Sources for WorkingTrees {
         match std::fs::read_to_string(&file) {
             Ok(text) => Ok(Some(text)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(SourceError {
-                message: format!("cannot read {}: {error}", file.display()),
-            }),
+            Err(error) => Err(SourceError::new(format!(
+                "cannot read {}: {error}",
+                file.display()
+            ))),
         }
     }
 }

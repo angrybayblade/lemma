@@ -249,13 +249,21 @@ fn call_tool(
         .get("arguments")
         .and_then(Value::as_object)
         .unwrap_or(&empty);
-    let args = command_for(name, arguments)?;
+    let mut args = command_for(name, arguments)?;
+    // An agent's call has no one to ask, and must not start a clone.
+    if matches!(name, "index" | "check") {
+        args.push("--no-clone".to_owned());
+    }
     // A query brings an existing index up to date itself. Only where there
     // is none yet is one built first, so an agent never spends a call on it.
     let mut finished = run(args.clone());
     let lacks_index = finished.exit_code == 1 && finished.stderr.contains(NO_INDEX);
     if name != "index" && lacks_index {
-        run(vec!["index".to_owned(), ".".to_owned()]);
+        run(vec![
+            "index".to_owned(),
+            ".".to_owned(),
+            "--no-clone".to_owned(),
+        ]);
         finished = run(args);
     }
     let is_error = finished.exit_code == 1;
@@ -309,6 +317,7 @@ fn command_for(name: &str, arguments: &Map<String, Value>) -> Result<Vec<String>
         "signature" => push_symbol_command(&mut args, "signature", arguments)?,
         "graph" => push_graph_command(&mut args, arguments)?,
         "check" => push_check_command(&mut args, arguments)?,
+        "verify" => push_verify_command(&mut args, arguments)?,
         _ => return Err(format!("unknown tool `{name}`")),
     }
     Ok(args)
@@ -351,6 +360,22 @@ fn push_graph_command(
     Ok(())
 }
 
+fn push_verify_command(
+    args: &mut Vec<String>,
+    arguments: &Map<String, Value>,
+) -> Result<(), String> {
+    args.push("verify".to_owned());
+    if let Some(module) = optional_string(arguments, "module")? {
+        args.push(module);
+    }
+    for flag in ["all", "links"] {
+        if optional_bool(arguments, flag)? {
+            args.push(format!("--{flag}"));
+        }
+    }
+    Ok(())
+}
+
 fn push_check_command(
     args: &mut Vec<String>,
     arguments: &Map<String, Value>,
@@ -371,11 +396,7 @@ fn push_check_command(
             ("since", "--since"),
         ],
     )?;
-    for (field, flag) in [
-        ("no_run", "--no-run"),
-        ("all", "--all"),
-        ("links", "--links"),
-    ] {
+    for (field, flag) in [("no_run", "--no-run"), ("all", "--all")] {
         if optional_bool(arguments, field)? {
             args.push(flag.to_owned());
         }
@@ -618,7 +639,8 @@ mod tests {
                 "implementations",
                 "signature",
                 "graph",
-                "check"
+                "check",
+                "verify"
             ]
         );
     }
@@ -685,7 +707,10 @@ mod tests {
             }
         });
 
-        assert_eq!(commands, ["outline a.py", "index .", "outline a.py"]);
+        assert_eq!(
+            commands,
+            ["outline a.py", "index . --no-clone", "outline a.py"]
+        );
     }
 
     #[test]

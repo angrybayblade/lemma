@@ -1,4 +1,4 @@
-//! Finding a route's handler by the calls a service's `lemma.yaml` says it
+//! Finding a route's handler by the calls a service's description says it
 //! writes routes with (`exports.routes`): a `register` call takes a route
 //! and its handler (`r.Handle("/x", NewHandler(db))`, `router.openapi(DEF,
 //! handler)`), a `define` call only describes a route (`createRoute({

@@ -1,7 +1,7 @@
 [
   {
     "name": "index",
-    "description": "Index the code a directory's lemma.yaml says its services are made of, with their exports and links; on a workspace lemma.yaml, every repository it composes. Without a lemma.yaml, every supported file, with a warning. Rarely needed: every other tool refreshes the index of the current directory first.",
+    "description": "Index the code a directory's mod.lm says its services are made of, with their exports and links; on a workspace's, every repository it composes. Without one, every supported file, with a warning. Rarely needed: every other tool refreshes the index of the current directory first.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -109,7 +109,7 @@
       "properties": {
         "symbol": {
           "type": "string",
-          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from lemma.yaml (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
+          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from a description (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
         },
         "kind": {
           "type": "string",
@@ -206,7 +206,7 @@
       "properties": {
         "symbol": {
           "type": "string",
-          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from lemma.yaml (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
+          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from a description (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
         },
         "kind": {
           "type": "string",
@@ -261,7 +261,7 @@
       "properties": {
         "symbol": {
           "type": "string",
-          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from lemma.yaml (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
+          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from a description (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
         },
         "kind": {
           "type": "string",
@@ -316,7 +316,7 @@
       "properties": {
         "symbol": {
           "type": "string",
-          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from lemma.yaml (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
+          "description": "A name (`delete`), a qualified name (`Router.delete`), an id from search_symbols as shown (`#415`, or `#repo:415` in a workspace), or an export's address from a description (`services.api.createCharge`, or `#repo:services.api.createCharge` in a workspace)."
         },
         "kind": {
           "type": "string",
@@ -380,7 +380,7 @@
         },
         "workspace": {
           "type": "string",
-          "description": "A workspace lemma.yaml or mod.lm: follow callers out of the repository through the operations their handlers serve. Takes as long as a check."
+          "description": "A workspace mod.lm: follow callers out of the repository through the operations their handlers serve. Takes as long as a check."
         },
         "across": {
           "type": "integer",
@@ -405,13 +405,13 @@
   },
   {
     "name": "check",
-    "description": "Checks that repositories still agree, and that what a change adds is wired up: callers against the operations they call and their schemas, an operation added with no route or no caller, a route added that no spec declares, and the requirements and behaviors a lemma.yaml or mod.lm declares. Call it with `change` after editing a repository to see what the edit breaks or leaves unwired; uncommitted edits count. Behaviors may run their checkers, which run code.",
+    "description": "Checks that repositories still agree, and that what a change adds is wired up: callers against the operations they call and their schemas, an operation added with no route or no caller, a route added that no spec declares, and the requirements and behaviors a mod.lm declares. Call it with `change` after editing a repository to see what the edit breaks or leaves unwired; uncommitted edits count. Behaviors may run their checkers, which run code.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "manifest": {
           "type": "string",
-          "description": "The workspace's lemma.yaml or mod.lm. Default: lemma.yaml in the current directory."
+          "description": "The workspace's mod.lm. Default: mod.lm in the current directory."
         },
         "change": {
           "type": "string",
@@ -449,10 +449,6 @@
         "all": {
           "type": "boolean",
           "description": "Also list informational findings."
-        },
-        "links": {
-          "type": "boolean",
-          "description": "Also list every link between repositories."
         }
       }
     },
@@ -461,6 +457,27 @@
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
+    }
+  },
+  {
+    "name": "verify",
+    "description": "Checks that a description still matches the code: patterns that match no file, documents that do not exist, operations and anchors that do not resolve, renames that did not happen. Takes as long as a full check; run it when a description changes, not after every edit. Never compares commits: `check` does that.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "module": {
+          "type": "string",
+          "description": "The entry module. Default: mod.lm in the current directory."
+        },
+        "all": {
+          "type": "boolean",
+          "description": "List every informational finding."
+        },
+        "links": {
+          "type": "boolean",
+          "description": "Also list every link, declared and inferred."
+        }
+      }
     }
   }
 ]

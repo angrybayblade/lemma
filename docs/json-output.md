@@ -193,6 +193,60 @@ The same shape as `refs`, with `outcome.implementations` holding entries like `d
 
 `executable` is `null` when the command is not on `PATH`. Entries are in the order they are tried.
 
+## `lemma --json check`
+
+```json
+{
+  "level": "check",
+  "links": 13,
+  "inferred_links": 42,
+  "repositories": [
+    { "name": "#billing", "root": "/work/billing", "base": "3f2a1c9e04", "head": null, "manifest_from_working_directory": false }
+  ],
+  "findings": [
+    { "severity": "error", "link": "#web:services.web.pay -> #billing:services.api.charge", "check": "link", "message": "the provider operation #billing:services.api.charge no longer exists", "introduced": true }
+  ],
+  "not_checked": [
+    { "repository": "#ledger", "links": 3 }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `level` | `audit`, `check` or `strict`. |
+| `links` | Declared links checked. |
+| `inferred_links` | Calls from code that were found and checked; `null` when inference did not run. |
+| `repositories` | Every repository read. `base` and `head` are commits, `null` for the working directory. |
+| `findings[].severity` | `error`, `warning` or `info`. |
+| `findings[].link` | The link, or the name of what was found. |
+| `findings[].check` | Which check found it: `link`, `request`, `response`, `schema`, or a requirement's name. |
+| `findings[].introduced` | Whether the change introduced it. |
+| `findings[].affects` | For a problem: what reaches it, nearest first. Absent when empty. |
+| `findings[].allowed` | The reason of the `allow` covering it. Absent when none does. |
+| `findings[].derivation` | With `--explain`: why an inferred finding holds. |
+| `not_checked` | Repositories that are not cloned, and how many links reach each. Absent when empty; when present, `lemma check` exits 5 unless a finding is an error. |
+
+## `lemma --json verify`
+
+```json
+{
+  "findings": [
+    { "severity": "error", "location": "#billing:api", "name": "document_missing", "message": "exports `openapi.json`, which does not exist" }
+  ],
+  "link_list": { "declared": [], "inferred": [] }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `findings[].severity` | `error`, `warning` or `info`. |
+| `findings[].location` | What is described wrongly: a repository and service, or a link. |
+| `findings[].name` | The kind of finding; [Verifying descriptions](verify.md) lists them. |
+| `link_list` | Every link, declared and inferred; `null` when a description too broken to read stopped inference. |
+| `relations` | With `--relation`: the rows of each relation. Absent otherwise. |
+| `not_checked` | Repositories that are not cloned. Absent when empty. |
+
 ## Errors
 
 Errors such as a missing index or an unknown symbol are printed as text on stderr, even with `--json`, and the exit code is `1`.

@@ -110,6 +110,8 @@ impl<'m> Allowed<'m> {
                 affects: Vec::new(),
                 allowed: None,
                 values: BTreeMap::new(),
+                derivation: None,
+                description_name: None,
             })
             .collect()
     }
@@ -159,6 +161,10 @@ mod tests {
                 .iter()
                 .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
                 .collect(),
+
+            derivation: None,
+
+            description_name: None,
         }
     }
 

@@ -168,7 +168,10 @@ def generate(out: Path, consumer_files: int, services: int, seed: int) -> dict:
     for name in names:
         repository = out / "services" / name
         repository.mkdir(parents=True)
-        (repository / "lemma.yaml").write_text("services:\n  api:\n    exports:\n      openapi: [openapi.json]\n")
+        (repository / "mod.lm").write_text(
+            f'module {name}\n\nimport * as http from lemma.http\n\n'
+            'export service api {\n    operations: http.openapi("openapi.json")\n}\n'
+        )
         (repository / "openapi.json").write_text(json.dumps(document(operations_of(name), False), indent=1))
         git(repository, "init", "-q")
         git(repository, "add", "-A")
@@ -200,7 +203,9 @@ def generate(out: Path, consumer_files: int, services: int, seed: int) -> dict:
         if (repository / "src").exists():
             for directory in (repository / "src").iterdir():
                 (directory / "__init__.py").write_text("")
-        (repository / "lemma.yaml").write_text("services:\n  web:\n    index:\n      include: [src]\n")
+        (repository / "mod.lm").write_text(
+            f'module app{consumer}\n\nexport service web {{\n    index: {{ include: ["src"] }}\n}}\n'
+        )
         git(repository, "init", "-q")
         git(repository, "add", "-A")
         git(repository, "commit", "-qm", "code")
@@ -210,11 +215,11 @@ def generate(out: Path, consumer_files: int, services: int, seed: int) -> dict:
         json.dumps(document(operations_of("svc0"), True), indent=1)
     )
     git(changed_repository, "commit", "-qam", "require added_field")
-    lines = ["services:"]
-    lines += [f'  "#{name}": {{ path: services/{name} }}' for name in names]
-    lines += [f'  "#app{index}": {{ path: consumers/app{index} }}' for index in range(consumers)]
-    lines += ["graph:", "  level: check", ""]
-    (out / "lemma.yaml").write_text("\n".join(lines))
+    lines = ["module scale", "", "workspace {", '    language: "0.2"']
+    lines += [f'    repo {name} = local("services/{name}")' for name in names]
+    lines += [f'    repo app{index} = local("consumers/app{index}")' for index in range(consumers)]
+    lines += ["    config: { level: check }", "}", ""]
+    (out / "mod.lm").write_text("\n".join(lines))
     summary = {
         "consumer_files": consumer_files,
         "services": services,
@@ -252,7 +257,7 @@ def flagged_callers(report: dict) -> list[str]:
 
 def check_once(workspace: Path, lemma: Path, cache: Path) -> tuple[float, float | None, dict]:
     timer = ["/usr/bin/time", "-l"] if sys.platform == "darwin" else ["/usr/bin/time", "-v"]
-    command = [str(lemma), "check", str(workspace / "lemma.yaml"), "--no-daemon", "--json",
+    command = [str(lemma), "check", str(workspace / "mod.lm"), "--no-daemon", "--json",
                "--change", "#svc0", "--base", "HEAD~1", "--head", "HEAD"]
     started = time.monotonic()
     result = subprocess.run(timer + command, capture_output=True, text=True,

@@ -1,79 +1,71 @@
 ---
 name: lemma-grammar
-description: Write, change and debug Lemma grammars - the YAML files or `.lm` modules of relations, Datalog rules and requirements that decide what `lemma verify` reports. Use when asked to add, remove, tune or explain a Lemma check, change a finding's severity, allow a known exception, or understand why `lemma verify` reported (or missed) something.
+description: Write, change and debug Lemma's `.lm` requirements - the relations, Datalog rules, `require`, `check main` and `allow` declarations that decide what `lemma check` reports. Use when asked to add, remove, tune or explain a Lemma check, change a finding's severity, allow a known finding, or understand why `lemma check` reported (or missed) something.
 ---
 
-# Working with Lemma grammars
+# Working with Lemma requirements
 
-A grammar decides what `lemma verify` checks. Extractors fill input relations with facts from specs and code; rules derive new relations; every match of a requirement is a finding. The built-in grammar is `grammars/http-contracts.yaml` in Lemma's repository.
+A module of relations, rules and requirements decides what `lemma check` reports. Extractors fill input relations with facts from documents and code; rules derive new relations; every match of a requirement is a finding. The built-in requirements are the standard-library module `lemma.http`, which is always loaded.
 
 ## Workflow
 
-1. **Start from the built-in grammar.** Copy it next to the manifest and point the manifest at it: `grammar: contracts.yaml`. Keep its relation declarations: extractors only fill relations the grammar declares.
-2. **Look at the facts first.** Before writing a rule, print what Lemma already concludes on a real change:
+1. **Write it in a module `lemma check` runs**: the workspace's root `mod.lm`, or a module the root module imports. A module imports `lemma.http`'s relations and rules by name.
+2. **Look at the facts first.** Before writing a rule, print what Lemma concludes, and explain a finding on a real change:
    ```sh
-   lemma verify manifest.yaml --relation calls --relation removed_request_field --json
+   lemma verify --relation calls --relation uses --json
+   lemma check --change <repo> --base <commit>~1 --head <commit> --explain
    ```
-   `--relation` takes any derived relation; input relations show up in `--explain` output.
+   `--relation` takes any derived relation, at one snapshot, so relations that compare snapshots are empty there. Input relations show up in `--explain` output.
 3. **Write the smallest change.** A new requirement over existing derived relations is usually enough. Add a rule only when the condition is reused or needs alternatives.
-4. **Run it on known cases.** Rerun the manifests whose right answer you know (past breaks and non-breaks). Compare findings before and after.
-5. **Explain a surprising finding** with `--explain`. Read from the bottom: the input facts. Fix the grammar if the logic is wrong; fix the manifest if a fact is missing or wrong.
+4. **Run `lm check`** after every edit (and `lm fmt` to lay it out). It catches a misspelled relation or a wrong column count with its line before anything runs.
+5. **Run it on known cases.** Replay the changes whose right answer you know (past breaks and non-breaks) with `lemma check --change <repo> --base <commit>^ --head <commit>`. Compare findings before and after.
+6. **Explain a surprising finding** with `--explain`. Read from the bottom: the input facts. Fix the requirement if the logic is wrong; fix the description if a fact is missing or wrong.
 
 ## Syntax in one screen
-
-```yaml
-grammar: contracts
-relations:                                   # inputs: declared with column types
-  allowed_removal: { args: [Text], sources: [declared] }
-rules:                                       # Datalog; head :- body.
-  - removed_operation(op) :- operation@base(s, op, m, p), !operation@head(s, op, m, p).
-requirements:
-  consumer_calls_removed_operation:
-    when: calls(c, op, f, l), removed_operation(op), !allowed_removal(op)
-    severity: error                          # error | warning | info
-    explain: "{c} calls {op}, which no longer exists ({f}:{l})"
-facts:                                       # by hand; head snapshot unless snapshot: base
-  - { relation: allowed_removal, values: ["DELETE /v1/legacy/things/{}"] }
-```
-
-- Identifiers are variables, `_` matches anything, `"text"` and `123` are constants.
-- `name@base(..)` / `name@head(..)` read one snapshot of an **input** relation; plain `name(..)` is the head.
-- `!name(..)` is negation; comparisons are `= != < <= > >=` (ordering on numbers only).
-- Several rules with one head are alternatives. Recursion is allowed.
-
-## Grammars as `.lm` modules
-
-A grammar can also be a typed `.lm` module that imports the built-in grammar, `lemma.http`, and adds to it; `lm check` (the `.lm` command installed beside `lemma`) catches a misspelled relation or a wrong column count with its line before anything runs:
 
 ```lm
 module contracts
 
 import { calls, removed_operation } from lemma.http
 
-export require consumer_calls_removed_endpoint {
-    severity: warning
-    when: calls(c, op, f, l), removed_operation(op)
-    message: "{c} calls {op}, which was removed ({f}:{l})"
+relation Deprecated(operation: Text)            // input: facts stated in a graph
+
+graph deprecated : Deprecated {
+    "DELETE /v1/legacy/things/{}"
+}
+
+rule still_called(op: Text) {                   // derived; each line is an alternative
+    (op) :- calls(_, op, _, _), removed_operation(op)
+}
+
+export require consumer_calls_deprecated {
+    severity: error                             // error | warning | info
+    when: calls(c, op, f, l), Deprecated(op), !still_called(op)
+    message: "{c} calls {op}, which is deprecated ({f}:{l})"
 }
 
 check main {
-    run contracts.consumer_calls_removed_endpoint
-    run lemma.http.consumer_calls_unserved_operation
+    run lemma.http.*
+    run consumer_calls_deprecated { severity: warning }
 }
 ```
 
-- Run `lm check contracts.lm` after every edit (and `lm fmt` to lay it out), then point the manifest at it: `grammar: contracts.lm`.
-- In rules and `when:` bodies, a lowercase bare name is a variable; constants are literals, uppercase names or dotted paths. `x == "*"` compares.
-- Rules declare their columns in place: `rule dropped(op: Text) { (op) :- removed_operation(op) }`.
-- Without a `check main`, every requirement of every loaded module runs, `lemma.http`'s included.
-- Keep `lemma.http`'s variable names (`c`, `op`, `f`, `l`) in requirements `lemma check` reads, which looks findings' values up by those names.
-- The same requirements in a workspace's root `mod.lm` run in `lemma check`, beside `lemma.http`'s, which it always loads. A `check main` there selects what runs (requirements and behaviors); one that names only behaviors runs no HTTP check, so add `run lemma.http.*`. `lemma check --select <name>` runs another check.
+- In rules and `when:` bodies, a lowercase bare name is a variable; constants are literals, uppercase names or dotted paths. `_` matches anything, `"text"` and `123` are constants. `x == "*"` compares.
+- `name@base(..)` / `name@head(..)` read one snapshot of an **input** relation; plain `name(..)` is the head.
+- `!name(..)` is negation; comparisons are `== != < <= > >=` (ordering on numbers only).
+- Several `(head) :- body` lines are alternatives. Recursion is allowed.
+- Without a `check main`, every requirement of every loaded module runs, `lemma.http`'s included. A `check main` selects what runs; one that names only behaviors runs no HTTP check, so add `run lemma.http.*`. `lemma check --select <name>` runs another check.
+- Keep `lemma.http`'s variable names (`c`, `op`, `f`, `l`) in requirements `lemma check` reports on: it looks findings' values up by those names.
 
 ### Allowing a known finding
 
-Prefer an `allow` to a negated relation of exceptions: it keeps the finding visible as allowed, says why, can expire, and is reported when it no longer covers anything.
+An `allow` keeps the finding visible as allowed, says why, can expire, and is reported when it no longer covers anything.
 
 ```lm
+module contracts
+
+import lemma.http
+
 allow lemma.http.consumer_calls_removed_operation {
     when: f == "src/legacy/sessions.ts"
     reason: "the legacy client is removed with the next major version"
@@ -98,18 +90,18 @@ The full language is in [The `.lm` language](https://github.com/angrybayblade/le
 
 ## Rules Lemma enforces
 
-Every one fails with a message naming the rule:
+Every one fails with a message naming the rule. `lm check` reports most of them with a line; the `_` in a negation and stratification fail when `lemma check` compiles the rules, with exit 1:
 
 - Every variable in the head, a negation or a comparison appears in a positive atom.
-- No `_` inside a negation: derive a projection first (`has_x(a) :- x(a, _).` then `!has_x(a)`).
+- No `_` inside a negation: derive a projection first (a rule `has_x(a)` over `x(a, _)`, then `!has_x(a)`).
 - No relation depends on its own negation (stratification).
 - No `@base`/`@head` on derived relations.
-- Every relation used exists (declared input or derived somewhere).
-- A column holds text or numbers, not both.
+- Every relation used exists (declared or derived somewhere).
+- A column holds one type.
 
 ## Choosing severity
 
-`lemma verify` exits 4 on any `error`, so CI gates on errors only.
+`lemma check` exits 4 on any `error` at level `check`, so CI gates on errors only.
 
 | Severity | Use when a match means |
 | --- | --- |
@@ -121,15 +113,18 @@ Findings that rest on a name being **present** should use near evidence (`uses(c
 
 ## Recipes
 
-- **Turn a check off**: delete the requirement, or set `severity: info`.
-- **Allow a known exception**: declare a relation, add facts, and negate it in the requirement (above).
+- **Turn a check off**: `skip lemma.http.<name>` in a `check main`, or `run lemma.http.<name> { severity: info }`.
+- **Allow a known finding**: an `allow` (above).
 - **Make every removed response field an error**:
-  ```yaml
-  response_field_removed:
-    when: removed_response_field(op, fld, leaf)
-    severity: error
-    explain: "{op} no longer returns `{fld}`"
+  ```lm
+  import { removed_response_field } from lemma.http
+
+  export require response_field_removed {
+      severity: error
+      when: removed_response_field(op, fld, leaf)
+      message: "{op} no longer returns `{fld}`"
+  }
   ```
-- **Restrict a check to one service**: join on `operation@base(s, op, _, _), s = "billing"`.
+- **Restrict a check to one service**: join on `operation@base(s, op, _, _), s == "#billing:api"`.
 
 The input relations, their columns and the built-in derived relations are listed in [reference.md](reference.md).

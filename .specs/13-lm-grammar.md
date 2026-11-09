@@ -1,5 +1,7 @@
 # The `.lm` grammar and verification semantics
 
+> A record of its time. YAML has since been removed: a description is always `.lm`. See [document 15](15-one-description-format.md).
+
 Captured: 2026-11-05. Revised: 2026-11-06, draft 0.2. Status: **implemented**, both phases of [section 15](#15-implementation-boundary-and-remaining-work); that section lists what is left. This records the language design, worked through a platform example whose services are named `functions`, `worker` and `gateway`. `lemma.yaml` and grammar YAML keep working beside it. [Changes from draft 0.1](#16-changes-from-draft-01) lists what this revision tightened.
 
 The intended consumer is an AI coding agent. Lemma should give the agent task-specific context, discover technical obligations affected by a change, and return evidence tied to particular input snapshots. The `.lm` surface combines configuration, reusable modules, software declarations, typed relationships, derived graphs, requirements, and the checkers that produce evidence for them.
@@ -126,7 +128,7 @@ repo functions = local("../functions")
 repo functions = git(url: "https://git.example.com/functions.git", rev: "3f2a1c9e04")
 ```
 
-- `local(path)` reads a working tree, with `path` relative to the declaring file. Its identity is its commit plus the content of every changed file Lemma reads.
+- `local(path)` reads a working tree, with `path` relative to the declaring file; `local(path, rev: "...")` reads that clone at a commit. Its identity is its commit plus the content of every changed file Lemma reads.
 - `git(url:, rev:)` reads a commit. `rev` should be a commit; a branch or tag is resolved, and the commit is recorded.
 - The repository holding the entry module is always known under its root module's name.
 

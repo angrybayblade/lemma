@@ -171,40 +171,38 @@ impl Engine {
     ) -> anyhow::Result<u8> {
         let request = Request::new(&cli, invocation);
         match cli.command {
-            Command::Index { path, keep, ttl } => {
-                let retention = lemma_index::retention::Retention {
-                    keep,
-                    ttl: crate::duration::parse_duration(&ttl)?,
-                };
-                self.index(
-                    &request,
-                    &invocation.resolve(&path),
-                    Indexing::Command(retention),
-                    out,
-                )
+            Command::Index {
+                path,
+                keep,
+                ttl,
+                no_clone,
+            } => {
+                let path = invocation.resolve(&path);
+                let indexing = command_indexing(keep, &ttl, no_clone, &path)?;
+                self.index(&request, &path, indexing, out)
             }
             Command::Symbols(args) => {
-                self.refresh_index(&request, Indexing::FilesOnly);
+                self.refresh_index(&request, Indexing::FilesOnly, out)?;
                 self.symbols(&request, args, out)
             }
             Command::Outline { path } => {
-                self.refresh_index(&request, Indexing::FilesOnly);
+                self.refresh_index(&request, Indexing::FilesOnly, out)?;
                 self.outline(&request, &path, out)
             }
             Command::Refs(args) => {
-                self.refresh_index(&request, refresh_for(&args.target));
+                self.refresh_index(&request, refresh_for(&args.target), out)?;
                 self.references(&request, args, out)
             }
             Command::Definition(args) => {
-                self.refresh_index(&request, Indexing::FilesOnly);
+                self.refresh_index(&request, Indexing::FilesOnly, out)?;
                 self.definition(&request, &args, out)
             }
             Command::Implementations(args) => {
-                self.refresh_index(&request, refresh_for(&args.target));
+                self.refresh_index(&request, refresh_for(&args.target), out)?;
                 self.implementations(&request, args, out)
             }
             Command::Signature(args) => {
-                self.refresh_index(&request, refresh_for(&args.target));
+                self.refresh_index(&request, refresh_for(&args.target), out)?;
                 self.signature(&request, args, out)
             }
             Command::Graph(args) => {
@@ -214,7 +212,12 @@ impl Engine {
                     GraphDirection::Callers => refresh_for(&args.target),
                     _ => Indexing::Refresh,
                 };
-                self.refresh_index(&request, indexing);
+                // A drawing is piped to a renderer, which a warning would break.
+                if matches!(args.format, GraphDrawing::Tree) {
+                    self.refresh_index(&request, indexing, out)?;
+                } else {
+                    self.refresh_index(&request, indexing, &mut io::sink())?;
+                }
                 self.graph(&request, args, out)
             }
             Command::Providers => self.providers(&request, out),
@@ -233,22 +236,38 @@ impl Engine {
     /// `lemma index`. Files whose size and times are unchanged cost a `stat`
     /// each. An index given with `--db` is left as it is: what it indexes is
     /// not known from its location.
-    fn refresh_index(&mut self, request: &Request<'_>, indexing: Indexing) {
+    fn refresh_index(
+        &mut self,
+        request: &Request<'_>,
+        indexing: Indexing,
+        out: &mut dyn Write,
+    ) -> io::Result<()> {
         if request.db.is_some() {
-            return;
+            return Ok(());
         }
         // Without an index the query reports that itself.
         let Ok(db_path) = request.find_index() else {
-            return;
+            return Ok(());
         };
         let Some(root) = db_path.parent().and_then(Path::parent) else {
-            return;
+            return Ok(());
         };
         let root = root.to_path_buf();
-        // A refresh that fails (a `lemma.yaml` mid-edit, a pin that needs a
+        // A refresh that fails (a description mid-edit, a pin that needs a
         // fetch while offline) leaves the index as it was: the query still
-        // answers from it, and reports any file that changed as stale.
-        let _ = self.index(request, &root, indexing, &mut io::sink());
+        // answers from it, and says why it may be out of date.
+        let Err(error) = self.index(request, &root, indexing, &mut io::sink()) else {
+            return Ok(());
+        };
+        log::warn!(
+            "could not refresh the index of {}: {error:#}",
+            root.display()
+        );
+        // JSON output has no place for a note, so it stays in the log.
+        if request.format == Format::Json {
+            return Ok(());
+        }
+        writeln!(out, "{}", stale_index_warning(&format!("{error:#}")))
     }
 
     fn index(
@@ -261,7 +280,7 @@ impl Engine {
         let (root, lemma_path) = selection::locate(path)?;
         let source = lemma_path
             .as_deref()
-            .map(selection::read_lemma_file)
+            .map(|file| selection::read_description(file, indexing.cloning()))
             .transpose()?;
         if let (Some(source), Some(lemma_path)) = (&source, &lemma_path) {
             if selection::is_workspace(source) {
@@ -277,15 +296,15 @@ impl Engine {
             return Ok(0);
         }
         let indexed = self.index_repository(&db_path, &root, source.as_ref())?;
-        if let Indexing::Command(retention) = indexing {
+        if let Indexing::Command(retention, _) = indexing {
             self.apply_retention(&db_path, &root, retention)?;
         }
         let mut warnings: Vec<String> = source
             .is_none()
-            .then(|| selection::MISSING_LEMMA_FILE.to_owned())
+            .then(|| selection::MISSING_DESCRIPTION.to_owned())
             .into_iter()
             .collect();
-        warnings.extend(indexed.exports.adapter_warnings.iter().cloned());
+        warnings.extend(indexed.exports.warnings.iter().cloned());
         let report = output::IndexReport {
             summary: &indexed.summary,
             exports: &indexed.exports,
@@ -297,7 +316,7 @@ impl Engine {
             let summary = &indexed.summary;
             // A query's refresh starts no servers: the query starts the one it
             // needs.
-            if matches!(indexing, Indexing::Command(_)) {
+            if matches!(indexing, Indexing::Command(..)) {
                 let languages: Vec<Language> = summary.files_by_language.keys().copied().collect();
                 self.warm_up(&db_path, &root, &languages, &origin)?;
             }
@@ -309,7 +328,7 @@ impl Engine {
     }
 
     /// Indexes the code `source`'s services are made of under `root` into
-    /// `db_path`, with their exports; without a `lemma.yaml`, every
+    /// `db_path`, with their exports; without a description, every
     /// supported file, with no exports.
     fn index_repository(
         &mut self,
@@ -374,7 +393,9 @@ impl Engine {
     ) -> anyhow::Result<u8> {
         let root = lemma_path.parent().unwrap_or(Path::new("."));
         let cache = lemma_graph::repos::cache_directory();
-        let members = lemma_graph::compose::members(lemma_path, &cache)?;
+        let composition =
+            lemma_graph::compose::composition(lemma_path, &cache, indexing.cloning())?;
+        let members = composition.members;
         if matches!(indexing, Indexing::FilesOnly) {
             for member in &members {
                 let indexed_root = member_root(member, &cache)?;
@@ -386,10 +407,16 @@ impl Engine {
         let mut workspace = WorkspaceIndex::default();
         for member in &members {
             let result = self.index_member(member, &cache);
-            if let (Ok(_), Indexing::Command(retention)) = (&result, indexing) {
+            if let (Ok(_), Indexing::Command(retention, _)) = (&result, indexing) {
                 self.apply_retention(&default_index_path(&member.root)?, &member.root, retention)?;
             }
             workspace.record(member, result)?;
+        }
+        for missing in &composition.unavailable {
+            workspace.lines.push(output::MemberLine::skipped(
+                &missing.name,
+                format!("not cloned ({})", missing.url),
+            ));
         }
         let db_path = match &request.db {
             Some(db) => db.clone(),
@@ -811,26 +838,28 @@ impl Engine {
             .as_ref()
             .map(|workspace| request.invocation.resolve(workspace))
             .or(workspace);
-        if let Some(workspace) = &workspace {
-            let root = PathBuf::from(&snapshot.snapshot.root);
-            let across = Across {
-                direction: graph_options.direction,
-                calls: args.across,
-            };
-            add_system_trace(&mut graph, workspace, &root, across)?;
-        }
-        let drawing = match args.format {
-            GraphDrawing::Tree => output::Drawing::Tree,
-            GraphDrawing::Dot => output::Drawing::Dot,
-            GraphDrawing::Mermaid => output::Drawing::Mermaid,
+        let across = Across {
+            direction: graph_options.direction,
+            calls: args.across,
         };
-        output::use_graph(out, &graph, drawing, request.format)?;
-        let is_unanswered = graph.relationships.is_empty() && !graph.notes.is_empty();
-        Ok(if is_unanswered { EXIT_NO_ANSWER } else { 0 })
+        let root = PathBuf::from(&snapshot.snapshot.root);
+        let is_trace_skipped = match &workspace {
+            Some(workspace) => {
+                let is_requested = args.workspace.is_some();
+                follow_workspace(&mut graph, workspace, &root, across, is_requested)?
+            }
+            None => false,
+        };
+        output::use_graph(out, &graph, drawing_for(args.format), request.format)?;
+        Ok(if is_unanswered(&graph, is_trace_skipped) {
+            EXIT_NO_ANSWER
+        } else {
+            0
+        })
     }
 
     /// The symbol a command is about, the index holding it, and what
-    /// lemma.yaml links it to. In a workspace's index the symbol is named by
+    /// the description links it to. In a workspace's index the symbol is named by
     /// an export's address and found in its member's index. `None` when a
     /// name matches several symbols, which are printed.
     fn locate(
@@ -1171,13 +1200,13 @@ fn now_ns() -> i64 {
 }
 
 /// A symbol a command is about, where it is indexed, and the symbols
-/// lemma.yaml links it to.
+/// the description links it to.
 struct Located {
     db_path: PathBuf,
     snapshot: StoredSnapshot,
     symbol: StoredSymbol,
     linked: Vec<output::Linked>,
-    /// The workspace lemma.yaml, when the symbol was found through a
+    /// The workspace description, when the symbol was found through a
     /// workspace's index.
     workspace: Option<PathBuf>,
     /// The workspace member the symbol is in, such as `#billing`, so
@@ -1201,12 +1230,28 @@ enum InWorkspace {
     Several(Vec<StoredSymbol>),
 }
 
-/// The lemma.yaml a workspace's index at `db_path` (`<root>/.lemma/index.db`)
-/// was built from, if it is there.
+/// The description a workspace's index at `db_path`
+/// (`<root>/.lemma/index.db`) was built from, if it is there.
 fn workspace_file(db_path: &Path) -> Option<PathBuf> {
-    let root = db_path.parent()?.parent()?;
-    let file = root.join(lemma_graph::config::LEMMA_FILE);
-    file.exists().then_some(file)
+    selection::description_in(db_path.parent()?.parent()?)
+}
+
+/// What a query says when it answers from an index it could not refresh.
+fn stale_index_warning(reason: &str) -> String {
+    let reason = shortened(reason);
+    format!("warning: answering from the last index, which could not be refreshed: {reason}")
+}
+
+/// `reason`, without the lines past the first few: it is printed on every
+/// query until the description is fixed, and `lm check` lists them all.
+fn shortened(reason: &str) -> String {
+    const SHOWN_LINES: usize = 4;
+    let lines: Vec<&str> = reason.lines().collect();
+    if lines.len() <= SHOWN_LINES {
+        return reason.to_owned();
+    }
+    let hidden = lines.len() - SHOWN_LINES;
+    format!("{}\n  and {hidden} more", lines[..SHOWN_LINES].join("\n"))
 }
 
 /// Where a member is indexed: a worktree at its pin, or its clone.
@@ -1225,7 +1270,7 @@ fn member_root(member: &lemma_graph::compose::Member, cache: &Path) -> anyhow::R
 /// resolved through the exports, so they are brought up to date too. A
 /// symbol named otherwise leaves them as the last refresh did, sparing a
 /// query after an edit the adapters' run; what `refs` lists as linked is
-/// then as of that refresh, which only a lemma.yaml or adapter change
+/// then as of that refresh, which only a description or adapter change
 /// makes out of date.
 fn refresh_for(target: &SymbolTarget) -> Indexing {
     if addresses::as_address(&target.symbol).is_some() {
@@ -1238,8 +1283,9 @@ fn refresh_for(target: &SymbolTarget) -> Indexing {
 #[derive(Clone, Copy)]
 enum Indexing {
     /// `lemma index`: drops snapshots `retention` no longer keeps, and in the
-    /// daemon starts language servers for what it indexed.
-    Command(Retention),
+    /// daemon starts language servers for what it indexed. Only this may
+    /// clone a repository, as the `Cloning` says.
+    Command(Retention, lemma_graph::repos::Cloning),
     /// Before a query: indexes changed files and nothing more, keeping
     /// whatever snapshots the last `lemma index` kept.
     Refresh,
@@ -1248,6 +1294,31 @@ enum Indexing {
     /// a changed file would run. The next query that reads them updates
     /// them.
     FilesOnly,
+}
+
+/// How `lemma index` on `path` indexes.
+fn command_indexing(
+    keep: usize,
+    ttl: &str,
+    no_clone: bool,
+    path: &Path,
+) -> anyhow::Result<Indexing> {
+    let retention = lemma_index::retention::Retention {
+        keep,
+        ttl: crate::duration::parse_duration(ttl)?,
+    };
+    let cloning = crate::cloning::permitted(no_clone, path)?;
+    Ok(Indexing::Command(retention, cloning))
+}
+
+impl Indexing {
+    /// Whether this indexing may clone: a query must never start one.
+    fn cloning(self) -> lemma_graph::repos::Cloning {
+        match self {
+            Indexing::Command(_, cloning) => cloning,
+            Indexing::Refresh | Indexing::FilesOnly => lemma_graph::repos::Cloning::Forbidden,
+        }
+    }
 }
 
 /// What indexing one repository produced.
@@ -1304,7 +1375,7 @@ impl WorkspaceIndex {
 }
 
 /// An address as a workspace names it: one written inside `member`'s
-/// lemma.yaml (`services.a.op`) gets the member's name.
+/// the description (`services.a.op`) gets the member's name.
 fn absolute_address(member: &str, address: &str) -> String {
     if address.starts_with('#') {
         return address.to_owned();
@@ -1312,21 +1383,21 @@ fn absolute_address(member: &str, address: &str) -> String {
     format!("{member}:{address}")
 }
 
-/// Clears exports and links a `lemma.yaml` since removed left behind.
+/// Clears exports and links a description since removed left behind.
 fn clear_exports(
     store: &mut Store,
     summary: &lemma_index::IndexSummary,
 ) -> anyhow::Result<output::ExportCounts> {
-    const NO_LEMMA_FILE: &str = "no lemma.yaml";
+    const NO_DESCRIPTION: &str = "no description";
     let snapshot_id = summary.snapshot_id;
-    if store.exports_fingerprint(snapshot_id)?.as_deref() != Some(NO_LEMMA_FILE) {
-        store.replace_exports(snapshot_id, NO_LEMMA_FILE, &[], &[])?;
+    if store.exports_fingerprint(snapshot_id)?.as_deref() != Some(NO_DESCRIPTION) {
+        store.replace_exports(snapshot_id, NO_DESCRIPTION, &[], &[])?;
     }
     Ok(output::ExportCounts::default())
 }
 
 /// Rebuilds the snapshot's exports and links unless they were built from
-/// this `lemma.yaml` and snapshot already; how many there are.
+/// this description and snapshot already; how many there are.
 fn update_exports(
     store: &mut Store,
     summary: &lemma_index::IndexSummary,
@@ -1334,11 +1405,14 @@ fn update_exports(
     root: &Path,
 ) -> anyhow::Result<output::ExportCounts> {
     let snapshot_id = summary.snapshot_id;
-    let mut adapter_warnings = Vec::new();
+    let mut warnings: Vec<String> = selection::whole_repository_warning(source)
+        .into_iter()
+        .collect();
     // Read every time: a document kept for the code as it is costs a file
     // read, and its warnings are shown on every index, not only the one
     // that rebuilt the exports.
-    let from_code = documents_from_code(source, root, &mut adapter_warnings);
+    warnings.extend(selection::not_cloned_warnings(source));
+    let from_code = documents_from_code(source, root, &mut warnings);
     let from_code_digests: Vec<String> = from_code
         .iter()
         .map(|(service, generated)| format!("{service} {}", generated.digest))
@@ -1386,7 +1460,7 @@ fn update_exports(
             .count(),
         symbols: count(lemma_model::ExportKind::Symbol),
         links: store.export_links(snapshot_id)?.len(),
-        adapter_warnings,
+        warnings,
     })
 }
 
@@ -1821,12 +1895,15 @@ fn is_composed_as(root: &Path, name: &str) -> bool {
         .ancestors()
         .skip(1)
         .take(4)
-        .flat_map(|directory| {
-            ["mod.lm", lemma_graph::config::LEMMA_FILE].map(|file| directory.join(file))
-        })
+        .flat_map(|directory| std::iter::once(directory.join(lemma_lang::load::MODULE_FILE)))
         .filter(|file| file.exists());
     for manifest in manifests {
-        let Ok(members) = lemma_graph::compose::members(&manifest, &cache) else {
+        let composition = lemma_graph::compose::composition(
+            &manifest,
+            &cache,
+            lemma_graph::repos::Cloning::Forbidden,
+        );
+        let Ok(lemma_graph::compose::Composition { members, .. }) = composition else {
             continue;
         };
         let member = members
@@ -1895,6 +1972,45 @@ fn qualified_id(text: &str) -> Option<(String, i64)> {
     let (name, id) = (&rest[..split], &rest[split + 1..]);
     let id = id.strip_prefix('#').unwrap_or(id).parse().ok()?;
     (!name.is_empty()).then(|| (format!("#{name}"), id))
+}
+
+fn drawing_for(format: GraphDrawing) -> output::Drawing {
+    match format {
+        GraphDrawing::Tree => output::Drawing::Tree,
+        GraphDrawing::Dot => output::Drawing::Dot,
+        GraphDrawing::Mermaid => output::Drawing::Mermaid,
+    }
+}
+
+/// Follows `graph`'s callers across `workspace`; whether that was skipped.
+/// Asked for by `--workspace`, a failure is an error. Otherwise the trace is
+/// an extra, and a description mid-edit must not cost the callers the index
+/// already knows, so the failure becomes a note.
+fn follow_workspace(
+    graph: &mut lemma_model::UseGraph,
+    workspace: &Path,
+    index_root: &Path,
+    across: Across,
+    is_requested: bool,
+) -> anyhow::Result<bool> {
+    let Err(error) = add_system_trace(graph, workspace, index_root, across) else {
+        return Ok(false);
+    };
+    if is_requested {
+        return Err(error);
+    }
+    graph.notes.push(format!(
+        "callers were not followed across the workspace: {}",
+        shortened(&format!("{error:#}"))
+    ));
+    Ok(true)
+}
+
+/// Whether a graph has nothing to show because something stopped it from
+/// looking. A skipped workspace trace is not that: the callers within the
+/// repository were still looked for, and there may be none.
+fn is_unanswered(graph: &lemma_model::UseGraph, is_trace_skipped: bool) -> bool {
+    graph.relationships.is_empty() && graph.notes.len() > usize::from(is_trace_skipped)
 }
 
 /// How far a graph follows callers across a workspace.
@@ -2134,6 +2250,35 @@ fn inode_of(_path: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_reason_is_cut_and_says_how_much_was_left_out() {
+        let reason = "one\ntwo\nthree\nfour\nfive\nsix";
+
+        assert_eq!(shortened(reason), "one\ntwo\nthree\nfour\n  and 2 more");
+    }
+
+    fn graph_with_one_note() -> lemma_model::UseGraph {
+        lemma_model::UseGraph {
+            notes: vec!["a note".to_owned()],
+            ..lemma_model::UseGraph::default()
+        }
+    }
+
+    #[test]
+    fn a_skipped_trace_alone_does_not_make_a_graph_unanswered() {
+        assert!(!is_unanswered(&graph_with_one_note(), true));
+    }
+
+    #[test]
+    fn a_note_about_a_provider_still_makes_an_empty_graph_unanswered() {
+        assert!(is_unanswered(&graph_with_one_note(), false));
+    }
+
+    #[test]
+    fn a_short_reason_is_kept_whole() {
+        assert_eq!(shortened("one\ntwo"), "one\ntwo");
+    }
 
     fn candidate(id: i64, name: &str, kind: SymbolKind) -> StoredSymbol {
         let position = Position { line: 0, column: 0 };

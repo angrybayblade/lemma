@@ -27,6 +27,10 @@ pub struct Diagnostic {
     pub span: Span,
     /// What is wrong, in a sentence.
     pub message: String,
+    /// Whether this is the end of a link naming an operation its service
+    /// does not have. Still an error in a module being edited, but
+    /// `lemma check` reports it as a finding about the change.
+    pub is_removed_link_end: bool,
 }
 
 impl Diagnostic {
@@ -37,6 +41,7 @@ impl Diagnostic {
             module: String::new(),
             span,
             message: message.into(),
+            is_removed_link_end: false,
         }
     }
 
@@ -54,6 +59,13 @@ impl Diagnostic {
             severity: Severity::Note,
             ..Self::error(span, message)
         }
+    }
+
+    /// The same diagnostic, marked as a link naming a removed operation.
+    #[must_use]
+    pub fn as_removed_link_end(mut self) -> Self {
+        self.is_removed_link_end = true;
+        self
     }
 
     /// The same diagnostic, attributed to `module`.

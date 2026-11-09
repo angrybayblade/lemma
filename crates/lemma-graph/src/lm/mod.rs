@@ -1,13 +1,11 @@
 //! `.lm` modules as `lemma check` reads them: a checked program lowered into
-//! one [`LemmaFile`] per repository, the same structures `lemma.yaml`
-//! gives, so checks, links and inference run unchanged.
+//! one [`LemmaFile`] per repository, one set of structures, so checks, links and inference run unchanged.
 //!
 //! Services nested in a service that holds nothing else (no operations,
 //! providers or client) are containers: their fields pass down to the
 //! services inside, and only those are lowered, named by their path joined
 //! with `/` (`Functions/serverless`). See `.specs/13-lm-grammar.md` §13.
 
-mod convert;
 mod sources;
 
 use std::collections::BTreeMap;
@@ -22,7 +20,6 @@ use crate::config::{
     OperationsFrom, Resolver, Routes, Runtime, SchemaSource, Schemas, Service,
 };
 
-pub use convert::{convert, convert_workspace, repository_name};
 pub use sources::{CheckoutSources, read_manifest};
 
 /// The relation links are facts of.
@@ -48,7 +45,7 @@ pub enum LowerError {
     },
 }
 
-/// The `lemma.yaml` structures `repository`'s modules describe: its
+/// The structures `repository`'s modules describe: its
 /// services, the links its graphs declare, and the repositories its
 /// modules pin.
 pub fn repository_file(checked: &Checked, repository: &str) -> Result<LemmaFile, LowerError> {
@@ -76,7 +73,30 @@ pub fn repository_file(checked: &Checked, repository: &str) -> Result<LemmaFile,
     Ok(file)
 }
 
-/// The name a service gets in `lemma.yaml`: its path joined with `/`.
+/// The name a repository's root module has: its directory's name as an
+/// identifier, letters, digits and `_`.
+pub fn repository_name(name: &str) -> String {
+    let mut identifier: String = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if identifier.is_empty() || identifier.starts_with(|character: char| character.is_ascii_digit())
+    {
+        identifier.insert(0, '_');
+    }
+    if lemma_lang::syntax::lexer::is_reserved(&identifier) {
+        identifier.push('_');
+    }
+    identifier
+}
+
+/// The name a service gets in a lowered description: its path joined with `/`.
 pub fn service_key(address: &Address) -> String {
     address.path.join("/")
 }
@@ -295,7 +315,7 @@ fn lower_operation(operation: &model::Operation) -> Result<Operation, LowerError
 }
 
 /// Where an old address (`module::Service.op`) puts an operation, as
-/// `previously` in `lemma.yaml` writes it: `Service.op`.
+/// `previously` in a description writes it: `Service.op`.
 fn old_place(address: &str) -> Option<String> {
     let path = address.split_once("::").map_or(address, |(_, path)| path);
     let (service, operation) = path.rsplit_once('.')?;
@@ -498,11 +518,12 @@ fn externals(checked: &Checked, repository: &str) -> Vec<(String, Service)> {
         let external = match &declared.source {
             Some(RepositorySource::Local {
                 path,
+                rev,
                 declared_in,
                 declaring_file,
             }) if declared_in == repository => Service {
                 path: Some(relative_to_root(declaring_file, path)),
-                manifest: Some(lemma_lang::load::MODULE_FILE.to_owned()),
+                reference: rev.clone(),
                 ..Service::default()
             },
             Some(RepositorySource::Git {
@@ -512,7 +533,6 @@ fn externals(checked: &Checked, repository: &str) -> Vec<(String, Service)> {
             }) if declared_in == repository => Service {
                 git: Some(url.clone()),
                 reference: rev.clone(),
-                manifest: Some(lemma_lang::load::MODULE_FILE.to_owned()),
                 ..Service::default()
             },
             _ => continue,
@@ -531,7 +551,7 @@ fn relative_to_root(declaring_file: &str, path: &str) -> String {
     }
 }
 
-/// The links graphs in `repository`'s modules declare, as `lemma.yaml`
+/// The links graphs in `repository`'s modules declare, as a description
 /// writes them.
 fn links(checked: &Checked, repository: &str) -> Result<Vec<String>, LowerError> {
     let link = Address::top(LINK.0, LINK.1);
@@ -572,11 +592,11 @@ fn operation_address(
         Value::Discovered { service, key } => (service.clone(), key.clone()),
         _ => return Err(shape("a link's end", "operation")),
     };
-    let owner = checked
-        .loaded
-        .modules
-        .get(&service.module)
-        .map_or(repository, |module| module.repository.as_str());
+    // A module of a repository that is not here is known only by its name.
+    let owner = checked.loaded.modules.get(&service.module).map_or_else(
+        || service.module.split('.').next().unwrap_or(repository),
+        |module| module.repository.as_str(),
+    );
     let address = format!("services.{}.{operation}", service_key(&service));
     if owner == repository {
         return Ok(address);

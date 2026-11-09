@@ -49,8 +49,8 @@ Modules are typed and checked: a misspelled operation, a link to something that 
 
 | Command | For |
 | --- | --- |
-| `lm` | Writing modules: `lm check` checks them, `lm fmt` formats them, `lm convert` turns a `lemma.yaml` into one, and `lm lsp` serves them to editors. |
-| `lemma` | Checking systems: `lemma check` checks a workspace and a change, and `lemma verify` checks a change against an explicit manifest. It also navigates code with language servers (`lemma refs`, `lemma definition` and more) and serves agents over MCP. |
+| `lm` | Writing modules: `lm check` checks them, `lm fmt` formats them, and `lm lsp` serves them to editors. |
+| `lemma` | Checking systems: `lemma check` checks a workspace and a change, and `lemma verify` checks that a description still matches the code. It also navigates code with language servers (`lemma refs`, `lemma definition` and more) and serves agents over MCP. |
 
 ## Words you will meet
 

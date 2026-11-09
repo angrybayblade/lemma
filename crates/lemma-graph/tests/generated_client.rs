@@ -56,8 +56,8 @@ fn workspace(client_document: &str, client_code: &str) -> tempfile::TempDir {
     let workspace = tempfile::tempdir().unwrap();
     let service = workspace.path().join("billing");
     write(
-        &service.join("lemma.yaml"),
-        "services:\n  api:\n    exports: { openapi: [openapi.json] }\n",
+        &service.join("mod.lm"),
+        "module billing\n\nimport * as http from lemma.http\n\nexport service api {\n    operations: http.openapi(\"openapi.json\")\n}\n",
     );
     write(
         &service.join("openapi.json"),
@@ -70,15 +70,15 @@ fn workspace(client_document: &str, client_code: &str) -> tempfile::TempDir {
     git(&service, &["commit", "-q", "-am", "remove search"]);
     let client = workspace.path().join("client");
     write(
-        &client.join("lemma.yaml"),
-        "services:\n  client:\n    index:\n      include: [python]\n    exports:\n      client:\n        specs: [spec/openapi.json]\n",
+        &client.join("mod.lm"),
+        "module client\n\nimport * as http from lemma.http\n\nexport service client {\n    index: { include: [\"python\"] }\n    client: http.generated_client(generated_from: [], specs: [\"spec/openapi.json\"])\n}\n",
     );
     write(&client.join("spec/openapi.json"), client_document);
     write(&client.join("python/charges.py"), client_code);
     git(&client, &["init", "-q"]);
     write(
-        &workspace.path().join("lemma.yaml"),
-        "services:\n  \"#billing\": { path: billing }\n  \"#client\": { path: client }\n",
+        &workspace.path().join("mod.lm"),
+        "module system\n\nworkspace {\n    repo billing = local(\"billing\")\n    repo client = local(\"client\")\n}\n",
     );
     workspace
 }
@@ -92,6 +92,9 @@ fn errors(workspace: &Path, evaluation: Evaluation) -> Vec<String> {
         }),
         level: Some(Level::Check),
         cache: workspace.join("cache"),
+        cloning: lemma_graph::repos::Cloning::Allowed,
+        explain: false,
+        relations: Vec::new(),
         facts_cache: None,
         evaluation,
         list_links: false,
@@ -101,13 +104,7 @@ fn errors(workspace: &Path, evaluation: Evaluation) -> Vec<String> {
         warm: None,
         environment: None,
     };
-    let report = check(
-        &workspace.join("lemma.yaml"),
-        &options,
-        &ReferenceEngine,
-        None,
-    )
-    .unwrap();
+    let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
     report
         .findings
         .iter()

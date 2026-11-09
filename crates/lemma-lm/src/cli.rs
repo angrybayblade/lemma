@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-/// Work with `.lm` modules: check them, format them, convert a lemma.yaml
-/// into one, or serve them to an editor. `lemma check` and `lemma verify`
+/// Work with `.lm` modules: check them, format them, or serve them to an editor. `lemma check` and `lemma verify`
 /// run what they declare.
 #[derive(Parser)]
 #[command(name = "lm", version)]
@@ -43,19 +42,6 @@ pub(crate) enum Command {
         /// List the files that are not formatted instead of rewriting them.
         #[arg(long)]
         check: bool,
-    },
-    /// Write a lemma.yaml as an `.lm` root module.
-    Convert {
-        /// The lemma.yaml to convert.
-        #[arg(default_value = "lemma.yaml")]
-        file: PathBuf,
-        /// The module's name, its repository's; the directory's name by
-        /// default.
-        #[arg(long)]
-        module: Option<String>,
-        /// Write mod.lm beside the file instead of printing it.
-        #[arg(long)]
-        write: bool,
     },
     /// Serve `.lm` modules to an editor over the Language Server Protocol,
     /// on standard input and output.

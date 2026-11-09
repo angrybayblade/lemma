@@ -1,27 +1,10 @@
-//! User-defined grammars, compiled to Lemma's Datalog.
+//! Grammars, compiled to Lemma's Datalog.
 //!
-//! A grammar names the kinds of things a system has (entities), the
-//! relations between them, rules deriving new relations, requirements whose
-//! results are findings, and facts declared by hand. It is written in YAML,
-//! or in `.lm` modules, which [`lm`] lowers to the same [`GrammarFile`]. See
+//! A grammar names relations, rules deriving new relations, requirements
+//! whose results are findings, and facts declared by hand. It is written in
+//! `.lm` modules, which [`lm`] lowers to a [`GrammarFile`]. See
 //! `.specs/08-relational-grammar-and-verification.md` and
 //! `.specs/13-lm-grammar.md`.
-//!
-//! ```yaml
-//! grammar: http-contracts
-//! entities:
-//!   Operation: { method: Text, path: Text }
-//! relations:
-//!   returns: { args: [Operation], attributes: { field: Text }, sources: [syntax, spec] }
-//!   reads:   { args: [Symbol, Operation], attributes: { field: Text } }
-//! rules:
-//!   - removed_field(op, f) :- returns@base(op, f), !returns@head(op, f).
-//! requirements:
-//!   consumer_reads_removed_field:
-//!     when: reads(c, op, f), removed_field(op, f)
-//!     severity: error
-//!     explain: "{c} reads `{f}` from {op}, which no longer returns it"
-//! ```
 
 mod compile;
 pub mod lm;
@@ -30,7 +13,7 @@ mod twins;
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use lemma_logic::ColumnType;
 
 pub use compile::{CompiledGrammar, RelationInfo, Requirement, Severity, compile};
 pub use rules::{ParseError, RawAtom, RawLiteral, RawRule, RawTerm, parse_body, parse_rule};
@@ -38,82 +21,68 @@ pub use rules::{ParseError, RawAtom, RawLiteral, RawRule, RawTerm, parse_body, p
 /// Snapshot names a rule may select with `@`.
 pub const SNAPSHOTS: [&str; 2] = ["base", "head"];
 
-/// A grammar as written in YAML.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+/// A grammar, as `.lm` lowers to it.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GrammarFile {
     /// The grammar's name.
     pub grammar: String,
-    /// Entity kinds and their attributes, in declaration order.
-    #[serde(default)]
-    pub entities: yaml_serde::Mapping,
-    /// Input relations: facts come from extractors, specs, declarations or
-    /// observations.
-    #[serde(default)]
-    pub relations: yaml_serde::Mapping,
+    /// Input relations by name, in declaration order: facts come from
+    /// extractors, specs, declarations or observations.
+    pub relations: Vec<(String, RelationSpec)>,
     /// Rules, in Lemma's Datalog syntax.
-    #[serde(default)]
     pub rules: Vec<String>,
     /// Requirements: conditions whose matches are findings.
-    #[serde(default)]
     pub requirements: BTreeMap<String, RequirementSpec>,
     /// Facts declared by hand.
-    #[serde(default)]
     pub facts: Vec<DeclaredFact>,
 }
 
-/// An input relation as written.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+/// An input relation.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationSpec {
-    /// Entity kinds of the relation's arguments, in order.
-    #[serde(default)]
-    pub args: Vec<String>,
-    /// Further columns and their types, in order.
-    #[serde(default)]
-    pub attributes: yaml_serde::Mapping,
+    /// Its columns and their types, in order.
+    pub columns: Vec<(String, ColumnType)>,
     /// Which sources may produce its facts: syntax, semantic, spec,
     /// declared, observed.
-    #[serde(default)]
     pub sources: Vec<String>,
     /// What it means, for people reading findings.
-    #[serde(default)]
     pub description: Option<String>,
 }
 
-/// A requirement as written.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+/// A requirement.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequirementSpec {
     /// The condition, a rule body; every match is a finding.
     pub when: String,
     /// How serious a finding is.
-    #[serde(default)]
     pub severity: Severity,
     /// A message with `{variable}` placeholders.
-    #[serde(default)]
     pub explain: Option<String>,
 }
 
+/// One value of a declared fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactValue {
+    /// A symbol.
+    Text(String),
+    /// A number.
+    Number(i64),
+}
+
 /// A fact written by hand.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DeclaredFact {
     /// The relation.
     pub relation: String,
-    /// One value per column: strings for symbols, integers for numbers.
-    pub values: Vec<yaml_serde::Value>,
+    /// One value per column.
+    pub values: Vec<FactValue>,
     /// The snapshot it holds in; the head snapshot if absent.
-    #[serde(default)]
     pub snapshot: Option<String>,
 }
 
 /// Why a grammar could not be compiled.
 #[derive(Debug, thiserror::Error)]
 pub enum GrammarError {
-    /// The YAML is malformed or has unknown fields.
-    #[error("invalid grammar file")]
-    Yaml(#[from] yaml_serde::Error),
     /// An entity, relation or attribute is declared wrongly.
     #[error("{what}: {message}")]
     Declaration {
@@ -121,14 +90,6 @@ pub enum GrammarError {
         what: String,
         /// What is wrong.
         message: String,
-    },
-    /// A type name is neither built in nor a declared entity.
-    #[error("{what} uses unknown type `{name}`; use Text, Number, Symbol or a declared entity")]
-    UnknownType {
-        /// Where.
-        what: String,
-        /// The type.
-        name: String,
     },
     /// Rule or requirement text does not parse.
     #[error("cannot parse `{text}`")]
@@ -152,45 +113,69 @@ pub enum GrammarError {
     Logic(#[from] lemma_logic::LogicError),
 }
 
-/// Parses a grammar from YAML text.
-pub fn parse_grammar(text: &str) -> Result<GrammarFile, GrammarError> {
-    Ok(yaml_serde::from_str(text)?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use lemma_logic::{ReferenceEngine, Request, evaluate};
 
-    const BREAKING_CHANGE: &str = r#"
-grammar: http-contracts
-entities:
-  Operation: { method: Text, path: Text }
-relations:
-  returns: { args: [Operation], attributes: { field: Text }, sources: [syntax, spec] }
-  reads:   { args: [Symbol, Operation], attributes: { field: Text }, sources: [syntax] }
-rules:
-  - removed_field(op, f) :- returns@base(op, f), !returns@head(op, f).
-requirements:
-  consumer_reads_removed_field:
-    when: reads(c, op, f), removed_field(op, f)
-    severity: error
-    explain: "{c} reads `{f}` from {op}, which no longer returns it"
-facts:
-  - { relation: returns, values: [get_account, status], snapshot: base }
-  - { relation: returns, values: [get_account, state], snapshot: base }
-  - { relation: returns, values: [get_account, state] }
-  - { relation: reads, values: [dashboard_card, get_account, status] }
-  - { relation: reads, values: [sdk_get, get_account, state] }
-"#;
+    fn relation(name: &str, columns: &[&str]) -> (String, RelationSpec) {
+        let spec = RelationSpec {
+            columns: columns
+                .iter()
+                .map(|column| ((*column).to_owned(), ColumnType::Symbol))
+                .collect(),
+            sources: vec!["declared".to_owned()],
+            description: None,
+        };
+        (name.to_owned(), spec)
+    }
 
-    fn compiled(text: &str) -> Result<CompiledGrammar, GrammarError> {
-        compile(&parse_grammar(text)?)
+    fn fact(relation: &str, values: &[&str], snapshot: Option<&str>) -> DeclaredFact {
+        DeclaredFact {
+            relation: relation.to_owned(),
+            values: values
+                .iter()
+                .map(|value| FactValue::Text((*value).to_owned()))
+                .collect(),
+            snapshot: snapshot.map(str::to_owned),
+        }
+    }
+
+    fn requirement(when: &str, severity: Severity) -> RequirementSpec {
+        RequirementSpec {
+            when: when.to_owned(),
+            severity,
+            explain: None,
+        }
+    }
+
+    fn breaking_change() -> GrammarFile {
+        GrammarFile {
+            grammar: "http-contracts".to_owned(),
+            relations: vec![
+                relation("returns", &["operation", "field"]),
+                relation("reads", &["symbol", "operation", "field"]),
+            ],
+            rules: vec![
+                "removed_field(op, f) :- returns@base(op, f), !returns@head(op, f).".to_owned(),
+            ],
+            requirements: BTreeMap::from([(
+                "consumer_reads_removed_field".to_owned(),
+                requirement("reads(c, op, f), removed_field(op, f)", Severity::Error),
+            )]),
+            facts: vec![
+                fact("returns", &["get_account", "status"], Some("base")),
+                fact("returns", &["get_account", "state"], Some("base")),
+                fact("returns", &["get_account", "state"], None),
+                fact("reads", &["dashboard_card", "get_account", "status"], None),
+                fact("reads", &["sdk_get", "get_account", "state"], None),
+            ],
+        }
     }
 
     #[test]
     fn a_breaking_change_grammar_finds_the_broken_consumer() {
-        let grammar = compiled(BREAKING_CHANGE).unwrap();
+        let grammar = compile(&breaking_change()).unwrap();
         let requirement = &grammar.requirements[0];
 
         let derived = evaluate(
@@ -215,7 +200,7 @@ facts:
 
     #[test]
     fn reading_the_base_snapshot_adds_a_base_input() {
-        let grammar = compiled(BREAKING_CHANGE).unwrap();
+        let grammar = compile(&breaking_change()).unwrap();
 
         assert_eq!(
             grammar.input_relation("returns", "base").as_deref(),
@@ -227,7 +212,7 @@ facts:
 
     #[test]
     fn derived_columns_are_inferred_from_rule_bodies() {
-        let grammar = compiled(BREAKING_CHANGE).unwrap();
+        let grammar = compile(&breaking_change()).unwrap();
 
         let removed = grammar.program.relation("removed_field").unwrap();
 
@@ -239,44 +224,48 @@ facts:
         assert_eq!(names, ["op", "f"]);
     }
 
-    #[test]
-    fn unknown_types_are_reported() {
-        let text = "grammar: g\nrelations:\n  reads: { args: [Widget] }\n";
-
-        let error = compiled(text).unwrap_err();
-
-        assert!(matches!(error, GrammarError::UnknownType { name, .. } if name == "Widget"));
+    fn edges_with(rule: &str) -> GrammarFile {
+        GrammarFile {
+            grammar: "g".to_owned(),
+            relations: vec![relation("edge", &["a", "b"])],
+            rules: vec![rule.to_owned()],
+            ..GrammarFile::default()
+        }
     }
 
     #[test]
     fn snapshots_on_derived_relations_are_rejected() {
-        let text = "grammar: g\nrelations:\n  edge: { args: [Text, Text] }\nrules:\n  - path(a, b) :- edge(a, b).\n  - again(a) :- path@base(a, _).\n";
+        let mut file = edges_with("path(a, b) :- edge(a, b).");
+        file.rules.push("far(a, b) :- path@base(a, b).".to_owned());
 
-        let error = compiled(text).unwrap_err();
+        let error = compile(&file).unwrap_err();
 
         assert!(error.to_string().contains("path@base"));
     }
 
-    const UNDECLARED_ROUTES: &str = r"
-grammar: g
-relations:
-  route:     { args: [Text], attributes: { path: Text } }
-  specified: { args: [Text], attributes: { path: Text } }
-rules:
-  - declared(s, p) :- specified(s, p).
-requirements:
-  route_not_in_spec:
-    when: route(s, p), !declared(s, p)
-    severity: info
-facts:
-  - { relation: route, values: [api, /old], snapshot: base }
-  - { relation: route, values: [api, /old] }
-  - { relation: route, values: [api, /new] }
-";
+    fn undeclared_routes() -> GrammarFile {
+        GrammarFile {
+            grammar: "g".to_owned(),
+            relations: vec![
+                relation("route", &["service", "path"]),
+                relation("specified", &["service", "path"]),
+            ],
+            rules: vec!["declared(s, p) :- specified(s, p).".to_owned()],
+            requirements: BTreeMap::from([(
+                "route_not_in_spec".to_owned(),
+                requirement("route(s, p), !declared(s, p)", Severity::Info),
+            )]),
+            facts: vec![
+                fact("route", &["api", "/old"], Some("base")),
+                fact("route", &["api", "/old"], None),
+                fact("route", &["api", "/new"], None),
+            ],
+        }
+    }
 
     #[test]
     fn a_requirement_over_one_snapshot_is_also_found_at_the_base() {
-        let grammar = compiled(UNDECLARED_ROUTES).unwrap();
+        let grammar = compile(&undeclared_routes()).unwrap();
         let requirement = &grammar.requirements[0];
         let base_relation = requirement.base_relation.clone().unwrap();
 
@@ -302,21 +291,24 @@ facts:
 
     #[test]
     fn facts_the_grammar_declares_hold_at_the_base_for_a_twin() {
-        let text = r"
-grammar: g
-relations:
-  route:      { args: [Text], attributes: { path: Text } }
-  deprecated: { args: [Text] }
-requirements:
-  serves_deprecated:
-    when: route(s, p), deprecated(p)
-    severity: warning
-facts:
-  - { relation: route, values: [api, /old], snapshot: base }
-  - { relation: route, values: [api, /old] }
-  - { relation: deprecated, values: [/old] }
-";
-        let grammar = compiled(text).unwrap();
+        let file = GrammarFile {
+            grammar: "g".to_owned(),
+            relations: vec![
+                relation("route", &["service", "path"]),
+                relation("deprecated", &["path"]),
+            ],
+            requirements: BTreeMap::from([(
+                "serves_deprecated".to_owned(),
+                requirement("route(s, p), deprecated(p)", Severity::Warning),
+            )]),
+            facts: vec![
+                fact("route", &["api", "/old"], Some("base")),
+                fact("route", &["api", "/old"], None),
+                fact("deprecated", &["/old"], None),
+            ],
+            ..GrammarFile::default()
+        };
+        let grammar = compile(&file).unwrap();
         let base_relation = grammar.requirements[0].base_relation.clone().unwrap();
 
         let derived = evaluate(
@@ -332,7 +324,7 @@ facts:
 
     #[test]
     fn a_requirement_comparing_snapshots_has_no_base_twin() {
-        let grammar = compiled(BREAKING_CHANGE).unwrap();
+        let grammar = compile(&breaking_change()).unwrap();
 
         let requirement = &grammar.requirements[0];
 
@@ -341,9 +333,9 @@ facts:
 
     #[test]
     fn unknown_relations_in_rules_are_reported() {
-        let text = "grammar: g\nrelations:\n  edge: { args: [Text, Text] }\nrules:\n  - path(a, b) :- edgee(a, b).\n";
+        let file = edges_with("path(a, b) :- edgee(a, b).");
 
-        let error = compiled(text).unwrap_err();
+        let error = compile(&file).unwrap_err();
 
         assert!(matches!(error, GrammarError::Rule { .. }));
     }

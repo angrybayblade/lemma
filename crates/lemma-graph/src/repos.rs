@@ -5,7 +5,7 @@
 //! cache on first use. A commit is read from Git without a checkout; a
 //! worktree is created only when a resolver has to run code at a commit.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -294,6 +294,52 @@ fn default_branches(root: &Path) -> Vec<String> {
     }
     branches.extend(names);
     branches
+}
+
+/// Every file Git tracks at `checkout`, and in a working directory only
+/// those still there; `None` where it is no repository.
+pub(crate) fn tracked_files(checkout: &Checkout) -> Option<BTreeSet<String>> {
+    if let Some(commit) = &checkout.commit {
+        let listed = git(&checkout.root, &["ls-tree", "-r", "--name-only", commit]).ok()?;
+        return Some(listed.lines().map(str::to_owned).collect());
+    }
+    let listed = git(&checkout.root, &["ls-files"]).ok()?;
+    let is_present = |file: &&str| checkout.root.join(file).exists();
+    Some(
+        listed
+            .lines()
+            .filter(is_present)
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// Whether `url` at `reference` is in the clone cache.
+pub fn is_cloned(url: &str, reference: Option<&str>, cache: &Path) -> bool {
+    let directory = cache.join("repos").join(sanitize(url));
+    directory.exists() && resolve_commit(&directory, reference.unwrap_or("HEAD")).is_ok()
+}
+
+/// Whether a command may clone or fetch a repository it does not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Cloning {
+    /// It may.
+    #[default]
+    Allowed,
+    /// It works with what is in the clone cache, and says what is missing.
+    Forbidden,
+}
+
+/// A repository named by `git(...)` that is not in the clone cache and may
+/// not be fetched.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub struct UnavailableRepository {
+    /// Its name, as loading names it: `#billing`.
+    pub name: String,
+    /// Where it can be cloned from.
+    pub url: String,
+    /// The commit, branch or tag it is pinned to.
+    pub reference: Option<String>,
 }
 
 /// The local clone of a `git` source, cloned into `cache` on first use and

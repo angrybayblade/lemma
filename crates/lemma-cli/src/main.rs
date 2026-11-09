@@ -9,7 +9,7 @@ mod addresses;
 mod anchors;
 mod check;
 mod cli;
-#[cfg(unix)]
+mod cloning;
 mod config;
 #[cfg(unix)]
 mod daemon;
@@ -36,7 +36,7 @@ use crate::cli::{Cli, Command};
 use crate::engine::{Engine, Invocation};
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     let logger = logging::init(cli.logging);
     log::info!(
         "lemma {} ({})",
@@ -52,17 +52,19 @@ fn main() -> ExitCode {
         }
         return run_daemon(args, logger);
     }
+    let declined_cloning = cloning::ask_before_cloning(&mut cli);
     if let Command::Verify(args) = &cli.command {
         log::info!("running in this process: verify always does");
-        return verify::run(args, cli.json);
-    }
-    if let Command::Check(args) = &cli.command {
-        log::info!("running in this process: check always does");
         let lsp = check::LanguageServers {
             asks_daemon: !cli.no_daemon && !daemon_disabled_by_environment(),
             providers_file: cli.providers.clone(),
         };
-        return check::run(args, &lsp, cli.json);
+        return verify::run(args, &lsp, cli.json);
+    }
+    if let Command::Check(args) = &cli.command {
+        log::info!("running in this process: check always does");
+        let asks_daemon = !cli.no_daemon && !daemon_disabled_by_environment();
+        return check::run(args, asks_daemon, cli.json);
     }
     if matches!(cli.command, Command::Mcp) {
         let uses_daemon = !cli.no_daemon && !daemon_disabled_by_environment();
@@ -80,7 +82,7 @@ fn main() -> ExitCode {
         log::info!("running in this process: {reason}");
         return run_in_process(cli, cwd);
     }
-    if let Some(code) = forward(cwd.clone()) {
+    if let Some(code) = forward(cwd.clone(), declined_cloning) {
         return code;
     }
     log::warn!("no daemon could be reached; running in this process");
@@ -98,7 +100,7 @@ fn manage_servers(cli: &Cli) -> ExitCode {
         eprintln!("error: could not read the current directory");
         return ExitCode::FAILURE;
     };
-    if let Some(code) = forward(cwd) {
+    if let Some(code) = forward(cwd, false) {
         return code;
     }
     eprintln!("error: no lemma daemon could be reached or started");
@@ -160,8 +162,11 @@ fn run_in_process(cli: Cli, cwd: std::path::PathBuf) -> ExitCode {
 }
 
 #[cfg(unix)]
-fn forward(cwd: std::path::PathBuf) -> Option<ExitCode> {
-    let args = std::env::args().skip(1).collect();
+fn forward(cwd: std::path::PathBuf, declined_cloning: bool) -> Option<ExitCode> {
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if declined_cloning {
+        args.push("--no-clone".to_owned());
+    }
     let finished = daemon::forward(args, cwd)?;
     // Output that cannot be written (a closed pipe) is not worth reporting.
     let _ = std::io::stdout().write_all(finished.stdout.as_bytes());
@@ -170,7 +175,7 @@ fn forward(cwd: std::path::PathBuf) -> Option<ExitCode> {
 }
 
 #[cfg(not(unix))]
-fn forward(_cwd: std::path::PathBuf) -> Option<ExitCode> {
+fn forward(_cwd: std::path::PathBuf, _declined_cloning: bool) -> Option<ExitCode> {
     None
 }
 

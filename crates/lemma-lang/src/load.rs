@@ -28,10 +28,13 @@ pub const MODULE_FILE: &str = "mod.lm";
 /// Where a repository comes from, as a `repo` declaration says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepositorySource {
-    /// A working tree, `path` relative to the declaring module's file.
+    /// A local clone, `path` relative to the declaring module's file, read
+    /// in its working tree or at `rev`.
     Local {
         /// The path as written.
         path: String,
+        /// The commit, branch or tag; the working tree if absent.
+        rev: Option<String>,
         /// The repository holding the declaring module.
         declared_in: String,
         /// The declaring module's file, relative to that repository.
@@ -66,6 +69,27 @@ pub struct Repository {
 pub struct SourceError {
     /// What went wrong, in a sentence.
     pub message: String,
+    /// Whether the repository is known but cannot be read here, which is
+    /// not a fault in the program.
+    pub is_unavailable: bool,
+}
+
+impl SourceError {
+    /// A failure to read, with what went wrong in a sentence.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            is_unavailable: false,
+        }
+    }
+
+    /// A repository that is declared but not here, and may not be fetched.
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            is_unavailable: true,
+        }
+    }
 }
 
 /// Reads module texts. The command line reads working trees and commits;
@@ -104,6 +128,17 @@ pub struct Loaded {
     pub repositories: BTreeMap<String, Repository>,
     /// Problems reading and parsing.
     pub diagnostics: Vec<Diagnostic>,
+    /// The repositories declared but not here. Names imported from them are
+    /// unknown rather than wrong.
+    pub unavailable: BTreeSet<String>,
+}
+
+impl Loaded {
+    /// Whether `module` is in a repository that is not here.
+    pub fn is_unavailable(&self, module: &str) -> bool {
+        let repository = module.split('.').next().unwrap_or(module);
+        self.unavailable.contains(repository)
+    }
 }
 
 /// Loads the program whose entry module is the file `entry_path` of the
@@ -311,6 +346,10 @@ impl Loader<'_> {
             match self.sources.read(repository, &path) {
                 Ok(Some(text)) => found.push((path, text)),
                 Ok(None) => {}
+                Err(error) if error.is_unavailable => {
+                    self.loaded.unavailable.insert(repository.name.clone());
+                    return None;
+                }
                 Err(error) => {
                     self.report_at(request.from.as_ref(), error.to_string());
                     return None;
@@ -505,6 +544,7 @@ fn repository_source(
     match function.as_str() {
         "local" => Some(RepositorySource::Local {
             path: text("path", 0)?,
+            rev: text("rev", 1),
             declared_in: declared_in.to_owned(),
             declaring_file: declaring_file.to_owned(),
         }),

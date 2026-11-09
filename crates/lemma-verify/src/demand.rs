@@ -955,16 +955,23 @@ fn negative(literal: &Literal) -> Option<&Atom> {
 mod tests {
     use super::*;
 
-    fn compiled(text: &str) -> CompiledGrammar {
-        lemma_grammar::compile(&lemma_grammar::parse_grammar(text).unwrap()).unwrap()
-    }
-
+    /// The built-in grammar with `extra_rules`, a `- rule` per line, and a
+    /// requirement `extra` over `requirement`.
     fn with(extra_rules: &str, requirement: &str) -> CompiledGrammar {
-        let base = crate::HTTP_CONTRACTS.trim_end();
-        let (head, requirements) = base.split_once("\nrequirements:\n").unwrap();
-        compiled(&format!(
-            "{head}\n{extra_rules}\nrequirements:\n{requirements}\n  extra:\n    when: {requirement}\n    severity: info\n"
-        ))
+        let mut file = crate::built_in_grammar_file().unwrap();
+        let rules = extra_rules
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("- "));
+        file.rules.extend(rules.map(str::to_owned));
+        file.requirements.insert(
+            "extra".to_owned(),
+            lemma_grammar::RequirementSpec {
+                when: requirement.to_owned(),
+                severity: lemma_grammar::Severity::Info,
+                explain: None,
+            },
+        );
+        lemma_grammar::compile(&file).unwrap()
     }
 
     fn refused(grammar: &CompiledGrammar) -> String {
@@ -973,7 +980,7 @@ mod tests {
 
     #[test]
     fn the_built_in_grammar_is_change_driven() {
-        let grammar = compiled(crate::HTTP_CONTRACTS);
+        let grammar = crate::built_in_grammar().unwrap();
 
         let plan = change_driven_plan(&grammar).unwrap();
 

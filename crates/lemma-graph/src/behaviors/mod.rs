@@ -150,17 +150,14 @@ pub(crate) fn run(
     loaded: Option<HeadProgram>,
 ) -> Result<Option<Evaluated>, GraphError> {
     let (cache, has_change) = (options.cache.as_path(), options.change.is_some());
-    let Some(manifest) = parent_module(manifest, repos)? else {
-        return Ok(None);
-    };
     let head = match loaded {
         Some(HeadProgram(program)) => program,
-        None => Program::load(repos, &manifest, HEAD, cache)?,
+        None => Program::load(repos, manifest, HEAD, cache)?,
     };
     // A base that does not load (one from before the repository had
     // modules, or with errors since fixed) only means nothing is compared.
     let base = has_change
-        .then(|| Program::load(repos, &manifest, BASE, cache))
+        .then(|| Program::load(repos, manifest, BASE, cache))
         .transpose()
         .unwrap_or_else(|error| {
             log::warn!(
@@ -236,12 +233,9 @@ pub(crate) fn program_grammar(
 ) -> Result<Option<(lemma_grammar::GrammarFile, HeadProgram)>, GraphError> {
     let cache = options.cache.as_path();
     let manifest = root_file.file_name().map_or_else(
-        || crate::config::LEMMA_FILE.to_owned(),
+        || lemma_lang::load::MODULE_FILE.to_owned(),
         |name| name.to_string_lossy().into_owned(),
     );
-    let Some(manifest) = parent_module(&manifest, repos)? else {
-        return Ok(None);
-    };
     let program = Program::load(repos, &manifest, HEAD, cache)?;
     let checked = &program.checked;
     let main = selected_check(checked, options.select.as_deref())?;
@@ -252,21 +246,6 @@ pub(crate) fn program_grammar(
             source,
         })?;
     Ok(Some((grammar, HeadProgram(program))))
-}
-
-/// The parent's entry module, if its manifest is one.
-fn parent_module(
-    manifest: &str,
-    repos: &BTreeMap<String, Repo>,
-) -> Result<Option<String>, GraphError> {
-    let Some(parent) = repos.get(SELF) else {
-        return Ok(None);
-    };
-    let manifest = crate::check::language_manifest(&parent.checkouts[HEAD], manifest)?;
-    let is_module = Path::new(&manifest)
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("lm"));
-    Ok(is_module.then_some(manifest))
 }
 
 /// A program checked at one snapshot, with where its repositories are.
@@ -296,9 +275,12 @@ impl Program {
             })
             .collect();
         let parent = &repos[SELF].checkouts[snapshot];
-        let mut sources = CheckoutSources::new(parent.clone(), cache).with_pins(pins.clone());
+        let mut sources = CheckoutSources::new(parent.clone(), cache)
+            .with_pins(pins.clone())
+            // Loading already cloned whatever the command may clone.
+            .with_cloning(crate::repos::Cloning::Forbidden);
         let checked = lemma_lang::check_program_including(&mut sources, manifest, &[HTTP]);
-        let errors = checked.error_lines();
+        let errors = checked.stopping_error_lines();
         if !errors.is_empty() {
             return Err(GraphError::Language {
                 path: parent.root.join(manifest),
@@ -703,6 +685,8 @@ pub(crate) fn findings(reports: &[BehaviorReport], level: Level) -> Vec<Finding>
                 affects: Vec::new(),
                 allowed: None,
                 values: std::collections::BTreeMap::new(),
+                derivation: None,
+                description_name: None,
             });
         }
         let worst_case = report.cases.iter().map(|case| rank(case.outcome)).max();
@@ -721,6 +705,8 @@ pub(crate) fn findings(reports: &[BehaviorReport], level: Level) -> Vec<Finding>
                 affects: Vec::new(),
                 allowed: None,
                 values: std::collections::BTreeMap::new(),
+                derivation: None,
+                description_name: None,
             });
         }
     }

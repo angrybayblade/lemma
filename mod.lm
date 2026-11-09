@@ -1,0 +1,10 @@
+module lemma
+
+// Lemma, as Lemma reads it: `lemma index .` indexes the crates.
+export service lemma {
+    index: {
+        include: ["crates"]
+        exclude: ["crates/*/tests/fixtures/**"]
+        languages: ["rust"]
+    }
+}

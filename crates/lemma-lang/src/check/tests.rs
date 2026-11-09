@@ -486,3 +486,33 @@ fn a_workspace_naming_another_language_version_is_refused() {
 
     assert_error(&result, "implements language 0.2, not 0.9");
 }
+
+const LINK_TO_MISSING_OPERATION: &str = "module example\nimport { Link } from lemma.links\nservice Api {\n}\nservice Web {\n    client operation list {\n        implementation: 1\n    }\n}\ngraph links : Link {\n    Web.list -> Api.gone\n}\n";
+
+#[test]
+fn a_link_to_a_missing_operation_is_an_error_that_does_not_stop_a_check() {
+    let found = checked(&[("", "mod.lm", LINK_TO_MISSING_OPERATION)]);
+
+    let stopping: Vec<String> = found
+        .stopping_error_lines()
+        .into_iter()
+        .filter(|line| line.contains("gone"))
+        .collect();
+
+    assert!(found.error_lines().iter().any(|line| line.contains("gone")));
+    assert_eq!(stopping, Vec::<String>::new());
+}
+
+#[test]
+fn a_missing_member_outside_a_link_still_stops_a_check() {
+    let text = "module example\nservice Api {\n}\nlet gone = Api.gone\n";
+
+    let found = checked(&[("", "mod.lm", text)]);
+
+    assert!(
+        found
+            .stopping_error_lines()
+            .iter()
+            .any(|line| line.contains("gone"))
+    );
+}

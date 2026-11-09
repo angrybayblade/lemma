@@ -5,7 +5,6 @@
 //! Engines are a type parameter, so callers pick one at compile time (see
 //! `lemma_logic::Engine`).
 
-mod allowances;
 mod clients;
 mod demand;
 mod extract;
@@ -27,9 +26,6 @@ pub use extract::{is_code_path, operation_key};
 pub use manifest::{Change, GeneratedDocument, Manifest, Repository, Role};
 pub use warm::Warm;
 
-/// The grammar used when a manifest names none.
-pub const HTTP_CONTRACTS: &str = include_str!("../../../grammars/http-contracts.yaml");
-
 /// Why a change could not be verified.
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
@@ -41,15 +37,6 @@ pub enum VerifyError {
         /// Why.
         #[source]
         source: std::io::Error,
-    },
-    /// The manifest is malformed.
-    #[error("invalid manifest {}", path.display())]
-    Manifest {
-        /// The manifest.
-        path: PathBuf,
-        /// Why.
-        #[source]
-        source: yaml_serde::Error,
     },
     /// The change names a repository the manifest does not list.
     #[error("the change names repository `{name}`, which the manifest does not list")]
@@ -110,7 +97,7 @@ pub enum VerifyError {
         #[source]
         source: serde_json::Error,
     },
-    /// A YAML spec is not valid YAML.
+    /// An `OpenAPI` document is not valid YAML.
     #[error("{file} is not valid YAML")]
     YamlSpec {
         /// The spec.
@@ -278,45 +265,41 @@ fn focus<'a>(
     }
 }
 
-/// The grammar `manifest` names, or the built-in one, compiled; for a
-/// `.lm` grammar, also its program, whose allowances apply.
-fn load_grammar(
-    manifest: &Manifest,
-) -> Result<(CompiledGrammar, Option<allowances::Program>), VerifyError> {
-    if let Some(lowered) = &manifest.lowered {
-        return Ok((lemma_grammar::compile(lowered)?, None));
+/// The grammar `manifest` carries, or the built-in one, compiled.
+fn load_grammar(manifest: &Manifest) -> Result<CompiledGrammar, VerifyError> {
+    match &manifest.lowered {
+        Some(lowered) => Ok(lemma_grammar::compile(lowered)?),
+        None => built_in_grammar(),
     }
-    if let Some(path) = manifest
-        .grammar
-        .as_ref()
-        .filter(|path| path.extension().is_some_and(|extension| extension == "lm"))
-    {
-        let (grammar, program) = load_language_grammar(path)?;
-        return Ok((grammar, Some(program)));
-    }
-    let grammar_text = match &manifest.grammar {
-        Some(path) => std::fs::read_to_string(path).map_err(|source| VerifyError::Read {
-            path: path.clone(),
-            source,
-        })?,
-        None => HTTP_CONTRACTS.to_owned(),
-    };
-    let grammar = lemma_grammar::compile(&lemma_grammar::parse_grammar(&grammar_text)?)?;
-    Ok((grammar, None))
 }
 
-/// A `.lm` grammar module and what it imports, checked, lowered and
-/// compiled. Its `check main`, if it has one, selects the requirements.
-fn load_language_grammar(
-    path: &Path,
-) -> Result<(CompiledGrammar, allowances::Program), VerifyError> {
-    let directory = path.parent().unwrap_or(Path::new("."));
-    let file = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let mut sources = lemma_lang::files::WorkingTrees::new(directory);
-    let checked = lemma_lang::check_program(&mut sources, &file);
+/// The one module of the program that is the built-in grammar.
+struct BuiltInGrammar;
+
+impl lemma_lang::load::Sources for BuiltInGrammar {
+    fn read(
+        &mut self,
+        _repository: &lemma_lang::load::Repository,
+        path: &str,
+    ) -> Result<Option<String>, lemma_lang::load::SourceError> {
+        Ok((path == "mod.lm").then(|| "module http_contracts\nimport lemma.http\n".to_owned()))
+    }
+}
+
+/// The standard library's `lemma.http`, compiled: what is checked when a
+/// description names no requirements of its own.
+/// Whether the built-in grammar has a requirement called `name`.
+pub fn is_built_in_requirement(name: &str) -> bool {
+    built_in_grammar_file().is_ok_and(|grammar| grammar.requirements.contains_key(name))
+}
+
+fn built_in_grammar() -> Result<CompiledGrammar, VerifyError> {
+    Ok(lemma_grammar::compile(&built_in_grammar_file()?)?)
+}
+
+fn built_in_grammar_file() -> Result<lemma_grammar::GrammarFile, VerifyError> {
+    let path = Path::new("lemma.http");
+    let checked = lemma_lang::check_program(&mut BuiltInGrammar, "mod.lm");
     let errors = checked.error_lines();
     if !errors.is_empty() {
         return Err(VerifyError::Language {
@@ -324,24 +307,12 @@ fn load_language_grammar(
             errors,
         });
     }
-    let main = checked
-        .model
-        .checks
-        .iter()
-        .find(|check| {
-            check.address.module == checked.loaded.entry && check.address.name() == "main"
-        })
-        .map(|check| check.runs.as_slice());
-    let grammar = lemma_grammar::lm::grammar_file(&checked.model, &checked.loaded.entry, main)
-        .map_err(|source| VerifyError::Lower {
+    lemma_grammar::lm::grammar_file(&checked.model, "http-contracts", None).map_err(|source| {
+        VerifyError::Lower {
             path: path.to_path_buf(),
             source,
-        })?;
-    let program = allowances::Program {
-        names: lemma_grammar::lm::requirement_names(&checked.model),
-        model: checked.model,
-    };
-    Ok((lemma_grammar::compile(&grammar)?, program))
+        }
+    })
 }
 
 /// Verifies a manifest's change with `engine`.
@@ -374,7 +345,7 @@ fn run<E: Engine>(
     listings: &Arc<lemma_http::Listings>,
     operations: Option<&BTreeSet<String>>,
 ) -> Result<Report, VerifyError> {
-    let (mut grammar, program) = load_grammar(manifest)?;
+    let mut grammar = load_grammar(manifest)?;
     check_relations(&grammar, &options.relations)?;
     let evaluability = match options.evaluation {
         Evaluation::Full => None,
@@ -403,10 +374,6 @@ fn run<E: Engine>(
         Some(_) => Vec::new(),
         None => findings(&grammar, &derived),
     };
-    let expired = match (&program, operations) {
-        (Some(program), None) => allow(program, manifest, &mut findings),
-        _ => Vec::new(),
-    };
     let relations = relation_rows(&grammar, &derived, &options.relations);
     if options.explain {
         add_derivations(&grammar, engine, &mut findings)?;
@@ -418,27 +385,9 @@ fn run<E: Engine>(
         evaluation,
         covered: covered.map(|operations| operations.into_iter().collect()),
         facts,
-        findings: findings
-            .into_iter()
-            .map(|(finding, _)| finding)
-            .chain(expired)
-            .collect(),
+        findings: findings.into_iter().map(|(finding, _)| finding).collect(),
         relations,
     })
-}
-
-/// Applies a `.lm` grammar's allowances to its findings; returns a finding
-/// for each expired allowance.
-fn allow(
-    program: &allowances::Program,
-    manifest: &Manifest,
-    findings: &mut [(Finding, Fact)],
-) -> Vec<Finding> {
-    let date = allowances::committer_date(manifest);
-    let covered = findings.iter_mut().map(|(finding, _)| finding);
-    let expired = allowances::apply(program, covered, date);
-    sort_findings(findings);
-    expired
 }
 
 /// What a run checked: the change, or the calls of some operations.
@@ -687,8 +636,7 @@ mod tests {
 
     #[test]
     fn the_built_in_grammar_compiles() {
-        let grammar =
-            lemma_grammar::compile(&lemma_grammar::parse_grammar(HTTP_CONTRACTS).unwrap()).unwrap();
+        let grammar = built_in_grammar().unwrap();
 
         assert!(
             grammar
@@ -697,40 +645,6 @@ mod tests {
                 .any(|requirement| requirement.name == "client_declares_removed_parameter")
         );
         assert!(grammar.input_relation("operation", "base").is_some());
-    }
-
-    #[test]
-    fn a_language_grammar_importing_lemma_http_is_the_built_in_grammar() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("contracts.lm");
-        std::fs::write(&path, "module contracts\nimport lemma.http\n").unwrap();
-        let built_in =
-            lemma_grammar::compile(&lemma_grammar::parse_grammar(HTTP_CONTRACTS).unwrap()).unwrap();
-
-        let (grammar, _) = load_language_grammar(&path).unwrap();
-
-        assert_eq!(grammar.requirements, built_in.requirements);
-        assert_eq!(grammar.program.rules(), built_in.program.rules());
-    }
-
-    #[test]
-    fn a_language_grammar_with_errors_lists_them() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("contracts.lm");
-        std::fs::write(
-            &path,
-            "module contracts\nrequire broken {\n    when: missing(x)\n}\n",
-        )
-        .unwrap();
-
-        let error = load_language_grammar(&path).unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("contracts:3:11: there is no relation"),
-            "{error}"
-        );
     }
 
     #[test]

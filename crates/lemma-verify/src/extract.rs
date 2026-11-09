@@ -278,7 +278,7 @@ fn read_system(manifest: &Manifest, specs: &SpecCache) -> Result<System, VerifyE
                 );
             }
         }
-        declared.insert(service, repository.path_prefixes.clone());
+        declared.insert(service, Vec::new());
     }
     Ok(System::new(&paths, &declared))
 }
@@ -860,9 +860,6 @@ impl SpecCache {
         commit: Option<&str>,
         prefixes: &[String],
     ) -> Result<Vec<ListedFile>, VerifyError> {
-        if commit.is_none() {
-            lemma_http::require_prefixes(repository, prefixes)?;
-        }
         let is_code = |path: &str| {
             let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
             CODE_EXTENSIONS.contains(&extension) && is_under_any(path, prefixes)
@@ -964,8 +961,7 @@ fn service(
         .iter()
         .map(|(_, route)| (route.method.clone(), route.path.clone()))
         .collect();
-    let mut route_aliases = lemma_http::implied_aliases(&documents, &written);
-    route_aliases.extend(repository.route_aliases.clone());
+    let route_aliases = lemma_http::implied_aliases(&documents, &written);
     let scope = ServiceScope {
         name,
         service: service_name,
@@ -1529,8 +1525,8 @@ fn consumer(
         snapshots: snapshot.names,
         known: files.iter().map(|file| file.path.clone()).collect(),
         options: CodeOptions {
-            client_receivers: repository.client_receivers.clone(),
-            client_modules: repository.client_modules.clone(),
+            client_receivers: Vec::new(),
+            client_modules: Vec::new(),
             path_markers: snapshot.system.markers.clone(),
             keeps_written_paths: false,
         },
@@ -2969,8 +2965,7 @@ mod tests {
     }
 
     fn http_contracts() -> CompiledGrammar {
-        let grammar = lemma_grammar::parse_grammar(crate::HTTP_CONTRACTS).unwrap();
-        lemma_grammar::compile(&grammar).unwrap()
+        crate::built_in_grammar().unwrap()
     }
 
     fn derive(grammar: &CompiledGrammar, relation: &str) -> Vec<Vec<String>> {

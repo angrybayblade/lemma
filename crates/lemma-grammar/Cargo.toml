@@ -1,6 +1,6 @@
 [package]
 name = "lemma-grammar"
-description = "User-defined grammars: relations, rules and requirements from YAML, compiled to Lemma's Datalog."
+description = "User-defined grammars: relations, rules and requirements, compiled to Lemma's Datalog."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,4 @@ workspace = true
 [dependencies]
 lemma-lang.workspace = true
 lemma-logic.workspace = true
-serde.workspace = true
 thiserror.workspace = true
-yaml_serde.workspace = true

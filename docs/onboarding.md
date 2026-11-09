@@ -7,8 +7,8 @@ This guide takes a team from nothing to Lemma answering code questions for its a
 | [1. Install](#1-install) | The `lemma` binary, and optionally the agent skills |
 | [2. Code intelligence](#2-code-intelligence) | Symbols, references, definitions and implementations in each repository |
 | [3. Agents](#3-agents) | The same questions as MCP tools for coding agents |
-| [4. Map the system](#4-map-the-system) | A manifest naming your services, clients and consumers |
-| [5. Verify a change](#5-verify-a-change) | Findings for one change, with evidence |
+| [4. Describe the system](#4-describe-the-system) | A `mod.lm` for each repository and a workspace that composes them |
+| [5. Check a change](#5-check-a-change) | Findings for one change, with evidence |
 | [6. Calibrate on history](#6-calibrate-on-history) | Confidence that findings mean something in your codebase |
 | [7. Run in CI](#7-run-in-ci) | Every pull request checked against the repositories that depend on it |
 
@@ -26,7 +26,7 @@ The script installs the newest release, pre-releases included, into `~/.local/bi
 
 From source instead: `cargo install --path crates/lemma-cli --locked`, which installs `lemma` and `lm` (Rust 1.85 or later).
 
-Optional but recommended for `lemma verify`: [Soufflé](https://souffle-lang.github.io), `brew install souffle` on macOS. Without it Lemma uses its built-in engine, which gives the same results about six times slower.
+Optional but recommended for `lemma check`: [Soufflé](https://souffle-lang.github.io), `brew install souffle` on macOS. Without it Lemma uses its built-in engine, which gives the same results about six times slower.
 
 Check the install:
 
@@ -48,7 +48,7 @@ Lemma asks each language's own server, so install the ones your code needs:
 
 Servers answer best when the project's dependencies are installed (`npm install`, a Python virtual environment, `go mod download`, `cargo fetch`).
 
-Give each repository a `lemma.yaml` at its root naming its services and the code each is made of (`index.include`; see [Checking links](check.md#files)), then index it once; the background daemon keeps it current as files change:
+Give each repository a `mod.lm` at its root naming its services and the code each is made of (`index: { include: [...] }`; see [Checking links](check.md#descriptions)), then index it once; the background daemon keeps it current as files change:
 
 ```sh
 cd ~/code/billing
@@ -74,121 +74,121 @@ Other MCP clients take the same command (`lemma mcp`, over stdin and stdout). Th
 
 ### Agent skills
 
-The release includes three skills for agents that support them (Claude Code reads `~/.claude/skills` and a project's `.claude/skills`):
+The release includes four skills for agents that support them (Claude Code reads `~/.claude/skills` and a project's `.claude/skills`):
 
 | Skill | For |
 | --- | --- |
-| `lemma-usage` | Choosing between Lemma and text search, navigating code, reading `lemma verify` findings |
-| `lemma-onboarding` | Setting Lemma up for a set of repositories: install, index, write the manifest, add CI |
-| `lemma-grammar` | Writing and changing grammars: relations, rules, requirements |
+| `lemma-usage` | Choosing between Lemma and text search, navigating code, reading `lemma check` findings |
+| `lemma-onboarding` | Setting Lemma up for a set of repositories: install, index, write the descriptions, add CI |
+| `lemma-grammar` | Writing and changing relations, rules and requirements |
+| `lemma-audit` | Auditing a description against the code and closing the gaps |
 
 Install them with the binary (`LEMMA_SKILLS=1`), or copy `skills/*` from this repository into `.claude/skills/` of the repository where agents work.
 
-## 4. Map the system
+## 4. Describe the system
 
-`lemma verify` needs a manifest: which repositories make up the system, what each one is, and where its contracts and calls live. Keep it in a repository every service can reach, such as a workspace or infrastructure repository, with clones of the others beside it.
+`lemma check` needs a description: which repositories make up the system and what each one is. Each repository describes itself in its `mod.lm`; a workspace module, in a repository every service can reach, composes them, with clones of the others beside it.
 
-Each repository has a role:
+Build the description one repository at a time. The examples below describe a billing service, a users service that calls it, a generated SDK client and a web app.
 
-| Role | Is | Lemma reads |
-| --- | --- | --- |
-| `service` | Serves HTTP operations | Its OpenAPI specs (`specs`), and route code (`routes`) to check the spec against the code and tell strict schemas |
-| `client` | A client generated from a service's spec | The spec it is generated from (`generated_from`), and how it names each operation (`call_names`) |
-| `consumer` | Calls services | Its code (`include`): paths in strings and requests, and calls through clients |
+**Start with one service.** Name the OpenAPI files it publishes. If they are generated, commit them, or a change cannot be read at both commits. `billing/mod.lm`:
 
-One clone can appear under several names. A monorepo holding a service and a caller of another service is two entries with the same `path`.
+```lm
+module billing
 
-Build the manifest one repository at a time. The examples below describe a billing service, a users service that calls it, a generated SDK client and a web app.
+import * as http from lemma.http
 
-**Start with one service.** Name the OpenAPI files it publishes. If they are generated, commit them, or the change cannot be read at both commits.
-
-```yaml
-change: { repository: billing, base: main~1, head: main }
-repositories:
-  billing:
-    path: ../billing
-    role: service
-    specs: [openapi.json]
+export service api {
+    index: { include: ["src"] }
+    operations: http.openapi("openapi.json")
+}
 ```
+
+**Compose it.** The workspace's `mod.lm` names each repository:
+
+```lm
+module system
+
+workspace {
+    repo billing = local("../billing")
+    repo web = local("../web")
+    repo users = local("../users")
+    repo billing_sdk = local("../billing-sdk")
+    config: { level: check }
+}
+```
+
+A repository's name is its root module's, so an identifier: the directory `billing-sdk` holds `module billing_sdk`, and findings print `#billing_sdk`. `lm check` reports any mistake in a module with its file, line and column:
 
 ```sh
-lemma verify manifest.yaml --all
+lm check
 ```
 
-With only a service, findings are empty, but the run proves the specs parse. `--relation removed_operation` shows what the change removed.
+**Read route code.** `index.include` points at the code the service is made of, which holds the routes; Lemma then reports routes the spec leaves out (`route_not_in_spec`, informational), and reads which request schemas are zod `.strict()`. If routes import shared schemas from elsewhere, include those directories too. Lemma derives which paths a service owns from its documents.
 
-**Add the route code.** `routes` points at the directories declaring routes; Lemma then reports routes the spec leaves out (`route_not_in_spec`, informational) and reads which request schemas are zod `.strict()`. If routes import shared schemas from elsewhere, add those directories as `schemas`. Lemma derives which paths a service owns, and which routes a newer spec's version reuses, from its specs; `path_prefixes` and `route_aliases` override that if a spec misleads it.
+**Add the generated clients.** A client generated from a document says so with `http.generated_client`. Generators name functions differently, so say how with `call_names`: `{operationId}` as written, or recased as `{camel}`, `{pascal}` or `{snake}`, with any fixed text around it. Its code is read for what each method requests, and not searched for calls.
 
-```yaml
-    routes: [src/routes]
-    schemas: [src/schemas]
+```lm
+module billing_sdk
+
+import * as http from lemma.http
+
+export service client {
+    index: { include: ["src"] }
+    client: http.generated_client(generated_from: ["openapi.json"], call_names: ["{camel}"]) // createInvoice stays createInvoice; {snake} would be create_invoice
+}
 ```
 
-**Add the generated clients.** A client generated from a spec names it in `generated_from`. Generators name functions differently, so say how with `call_names`: `{operationId}` as written, or recased as `{camel}`, `{pascal}` or `{snake}`, with any fixed text around it.
+**Add the code that calls them.** Point `include` at source directories, not the whole repository, to keep tests, scripts and fixtures out. A service that also calls another service is one repository with one `mod.lm`; its own route declarations are not counted as calls to itself.
 
-```yaml
-  billing-client:
-    path: ../billing-sdk
-    commit: main
-    role: client
-    generated_from: [openapi.json]
-    call_names: ["{camel}"]               # createInvoice stays createInvoice; {snake} would be create_invoice
+```lm
+module web
+
+export service web {
+    index: { include: ["src"] }
+}
 ```
 
-**Add the consumers.** Point `include` at source directories, not the whole repository, to keep tests, scripts and fixtures out. Name the variables code calls its client through (`client_receivers`), and for generated clients imported as functions, the module they come from (`client_modules`).
+Calls through clients need no declaration: a call through a client library reaches the client method its names spell, where the code imports the client's package. A string in code counts as a path only if it contains a leading segment some service in the workspace serves (`/v1/` here), so add every service a repository calls before checking its coverage. Imports through `tsconfig.json` `paths` aliases are followed.
 
-```yaml
-  web:
-    path: ../web
-    commit: main
-    role: consumer
-    include: [src]
-    client_receivers: [billing]          # billing.createInvoice(...)
+**Declare what code does not show.** A service whose code rejects unknown fields without saying so in its documents or zod schemas (Go's `DisallowUnknownFields`, serde's `deny_unknown_fields`) gets `rejects_unknown_fields: true`, so sending a removed field is an error rather than a warning. Calls inference cannot see, such as over a queue or a function runtime, are declared as an operation on each side and a link: see [Checking links](check.md#descriptions).
 
-  users-code:                            # the users service, as a caller of billing
-    path: ../users
-    role: consumer
-    service: users                       # its own route declarations are not calls to itself
-    include: [src]
-    client_modules: [generated/billing]  # import { createInvoice } from '../generated/billing'
-```
-
-A string in code counts as a path only if it contains a leading segment some service in the manifest serves (`/v1/` here), so add every service a consumer calls before checking its coverage. Imports through `tsconfig.json` `paths` aliases are followed.
-
-**Check coverage.** Before trusting findings, check Lemma sees the calls you know about:
+**Check the description against the code.** This is what makes a description done:
 
 ```sh
-lemma verify manifest.yaml --relation calls --json | jq -r '.relations.calls[] | "\(.[1])\t\(.[2])"' | sort -u | less
+lemma verify
 ```
 
-Each row is an operation and the file calling it. Missing calls usually mean an `include` directory is missing, a client receiver is not named, `call_names` does not match the generator, or URLs are built at run time from values the code does not show (see [pre-release checklist](pre-release.md)).
-
-**Declare what code does not show.** A service whose code rejects unknown fields without saying so in its spec or zod schemas (Go's `DisallowUnknownFields`, serde's `deny_unknown_fields`) gets `rejects_unknown_fields: true`, so sending a removed field is an error rather than a warning.
-
-The full field list is in [Verifying changes](verify.md#the-manifest).
-
-## 5. Verify a change
-
-Point `change` at the repository and commits to check, and run:
+It reports what the description says that the code does not bear out: an `include` matching nothing, a document that does not exist, an `implementation` that does not resolve, and the rest of [its findings](verify.md#findings). Fix each one, until there are none. It does not look for what a description leaves out, so also check coverage: Lemma should see the calls you know about.
 
 ```sh
-lemma verify manifest.yaml
-lemma verify manifest.yaml --explain     # with the facts behind each finding
+lemma verify --relation calls --json | jq -r '.relations.calls[] | "\(.[1])\t\(.[2])"' | sort -u | less
 ```
 
-Commits are read from Git without a checkout, so `base` and `head` can be any revisions: `main` and a branch, a merge commit and its parent (`abc123^`), or two tags. Repositories other than the changed one are read at their `commit`, or their working directory if it is absent.
+Each row is an operation and the file calling it. Missing calls usually mean an `include` directory is missing, a generated client's `call_names` does not match the generator, or URLs are built at run time from values the code does not show (see the [pre-release checklist](pre-release.md)). The `lemma-audit` skill works through what a description may leave out.
 
-The changed repository can be a service (what its change breaks for callers) or a consumer (whether the calls it adds exist). Pinning another entry of the same clone to an older `commit` asks how the change meets code from before it, as when a service deploys before its callers.
+## 5. Check a change
+
+Say which repository changed, and its commits before and after:
+
+```sh
+lemma check --change billing --base main --head my-branch
+lemma check --change billing --base main --head my-branch --explain     # with the facts behind each finding
+```
+
+Commits are read from Git without a checkout, so `--base` and `--head` can be any revisions: `main` and a branch, a merge commit and its parent (`abc123^`), or two tags. Without them, `lemma check --change billing` checks the work in progress since the branch left the default branch. Repositories other than the changed one are read at their `rev`, or their working directory if they have none.
+
+The changed repository can be a service (what its change breaks for callers) or a caller (whether the calls it adds exist). Pinning a repository in the workspace to an older commit, `local("../web", rev: "...")`, asks how the change meets code from before it, as when a service deploys before its callers.
 
 Findings come in three severities. Exit code 4 means at least one error.
 
 | Severity | Means | Example |
 | --- | --- | --- |
-| error | A request will fail | A consumer calls a removed operation; sends a field a strict schema now rejects; never sends a newly required field |
-| warning | Behaviour changes without failing | A consumer reads a removed response field, or sends a field the service now ignores |
-| info | Worth knowing | A consumer calls an operation whose request changed but never names the changed field; a route missing from the spec |
+| error | A request will fail | Code calls a removed operation; sends a field a strict schema now rejects; never sends a newly required field |
+| warning | Behaviour changes without failing | Code reads a removed response field, or sends a field the service now ignores |
+| info | Worth knowing | Code calls an operation whose request changed but never names the changed field; a route missing from the spec |
 
-Read a finding by its derivation (`--explain`): each line is a fact or rule, indented under what it supports, down to facts from specs and code. A wrong finding is usually one wrong fact near the bottom: a call matched to the wrong operation, or a common name counted as using a field.
+Read a finding by its derivation (`--explain`): each line is a fact or rule, indented under what it supports, down to facts from documents and code. A wrong finding is usually one wrong fact near the bottom: a call matched to the wrong operation, or a common name counted as using a field.
 
 ## 6. Calibrate on history
 
@@ -198,13 +198,13 @@ Before gating anything, replay changes your team already made and compare the fi
 git -C ../billing log --format=%h -- openapi.json | head -50
 ```
 
-set `change` to `<commit>^..<commit>`, pin each consumer's `commit` to the last commit before the change merged (`git rev-list -1 --before=<date> main`), and run `lemma verify`. Check every error and warning by hand against the pull request and any follow-up in the consumers. A sweep of a hundred changes takes a few minutes.
+pin each other repository to the last commit before the change merged (`git rev-list -1 --before=<date> main`) in the workspace with `local("../web", rev: "...")`, and run `lemma check --change billing --base <commit>^ --head <commit>`. Check every error and warning by hand against the pull request and any follow-up in the callers. A sweep of a hundred changes takes a few minutes.
 
-Keep the manifests that found real breaks as regression cases for upgrades of Lemma or your grammar.
+Keep the changes that found real breaks as regression cases for upgrades of Lemma or your requirements.
 
 ## 7. Run in CI
 
-Run `lemma verify` on pull requests to each service, with the consumers at their default branches. A GitHub Actions job, in the service's repository:
+Run `lemma check` on pull requests to each service, with the other repositories at their default branches. A GitHub Actions job, in the service's repository:
 
 ```yaml
 jobs:
@@ -222,14 +222,16 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Verify the change
+      - name: Check the change
         run: |
-          lemma verify workspace/lemma/manifest.yaml \
+          lemma check workspace/mod.lm --change billing \
             --base "${{ github.event.pull_request.base.sha }}" \
             --head "${{ github.event.pull_request.head.sha }}"
 ```
 
-`--base` and `--head` replace the manifest's `change` commits, so one manifest serves every pull request. The service's clone needs the history between them (`fetch-depth: 0`).
+The workspace's `local(...)` paths are relative to its `mod.lm`, so check out the repositories where it expects them. The service's clone needs the history between the commits (`fetch-depth: 0`). Repositories named by `git(...)` are cloned in CI, which has no one to ask.
+
+Run `lemma verify` too, whenever a pull request touches a `.lm` file, and on a schedule, since code can drift from a description without touching it.
 
 Start with the job reporting only (`continue-on-error: true`), read its findings on real pull requests for a few weeks, then let errors fail the check. Warnings should stay advisory in this release: they rest on name evidence that can be wrong for common names.
 
@@ -237,11 +239,11 @@ Start with the job reporting only (`continue-on-error: true`), read its findings
 
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
-| A call you know about is missing | Directory not in `include`, receiver not in `client_receivers`, URL built at run time | `--relation calls`, widen `include`, name the receiver |
+| A call you know about is missing | Directory not in `include`, `call_names` does not match the generator, URL built at run time | `lemma verify --relation calls`, widen `include` |
 | A finding names the wrong operation | Two operations share a path and the call shows no method | Check the call site; the method is taken from the call when written there |
-| A warning about a common field name (`id`, `slug`) | The consumer uses the name for its own objects | Ignore it; see the [pre-release checklist](pre-release.md) |
-| Every operation looks removed | A spec moved to a new file | List the new file in `specs` |
-| `no file ... at` | A spec or table path is wrong at every commit read | Fix the path in the manifest |
+| A warning about a common field name (`id`, `slug`) | The code uses the name for its own objects | Ignore it; see the [pre-release checklist](pre-release.md) |
+| Every operation looks removed | A spec moved to a new file | Name the new file in `operations` |
+| `no file ... at` | A document path is wrong at every commit read | `lemma verify` reports it as `document_missing`; fix the path |
 | Slow runs | No Soufflé | `brew install souffle` |
 
 More in [Troubleshooting](troubleshooting.md).

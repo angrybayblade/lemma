@@ -1,0 +1,283 @@
+/* Three levels: display, section headings, and reading / controls. */
+:root{--page-display:clamp(44px,6.2vw,96px);--page-heading:clamp(30px,3.3vw,44px);--page-text:16px;--page-label:14px;--page-space:72px}
+html{scroll-behavior:smooth;scroll-padding-top:32px}
+body{margin:0;overflow-x:clip}
+body.lm{font-size:var(--page-text);line-height:1.5}
+::selection{color:var(--lm-color-ink);background:var(--lm-color-steel)}
+.page-wrap{max-width:1536px;padding-inline:var(--lm-grid-margin);margin-inline:auto}
+.skip-link{position:fixed;top:8px;left:16px;z-index:100;padding:12px;color:var(--lm-color-ink);background:var(--lm-color-paper);transform:translateY(-150%)}
+.skip-link:focus{transform:none}
+h1,h2,h3{font-weight:400;margin:0}
+h1{font-size:var(--page-display);line-height:1.02;letter-spacing:-.05em}
+h2,.workflow-step h3{font-size:var(--page-heading);line-height:1.08;letter-spacing:-.035em}
+.plain-link{display:inline-flex;align-items:center;gap:12px;min-height:44px;font-size:var(--page-label);font-weight:500;color:var(--lm-color-ink)!important;text-decoration:none}
+.plain-link:hover{text-decoration:underline;text-underline-offset:5px}
+.lm-button{font-size:var(--page-label)}
+
+/* One message and one diagram establish the page. */
+.hero{padding-top:32px}
+.hero-topline{display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:32px;font-size:var(--page-label)}
+.hero-topline a{color:var(--lm-color-muted)!important;text-decoration:none;min-height:32px;display:inline-flex;align-items:center;gap:8px}
+.hero-topline .hero-logo{color:var(--lm-color-ink)!important;width:44px;height:44px;justify-content:flex-start}
+.hero-logo svg{width:32px;height:32px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:butt;stroke-linejoin:miter}
+.hero-grid{display:grid;grid-template-columns:7fr 5fr;gap:0;align-items:center}
+.hero-copy{padding:32px 32px 32px 0}
+.hero h1{margin-bottom:28px}
+.hero-description{font-size:18px;line-height:1.5;letter-spacing:-.015em;max-width:41ch;margin:0 0 28px}
+.hero-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px 24px}
+.hero-art{margin:0;background:transparent;min-width:0;display:flex;flex-direction:column;padding:16px 0;overflow:hidden}
+.hero-art>.diagram-svg{width:100%;height:auto;margin:auto 0;display:block;overflow:visible}
+
+/* The same 7:5 alignment carries through the explanatory sections. */
+.workflow-section{background:transparent;padding-top:var(--page-space)}
+.section-heading{display:grid;grid-template-columns:7fr 5fr;gap:64px;align-items:end;margin-bottom:32px}
+.section-heading>p{color:var(--lm-color-muted);font-size:var(--page-text);line-height:1.5;margin:0;max-width:32ch}
+.workflow-layout{display:grid;grid-template-columns:7fr 5fr;gap:64px;align-items:start}
+.workflow-visual{position:sticky;top:40px;margin-bottom:32px}
+.workflow-figure{margin:0;background:transparent;padding:0;overflow:hidden}
+.workflow-figure>.diagram-svg{width:100%;height:auto;display:block;margin:12px 0 16px}
+.workflow-figure figcaption{display:flex;justify-content:space-between;align-items:center;gap:20px;font-size:var(--page-label);line-height:1.4}
+.phase-indicators{display:flex;gap:8px;flex:none}
+.phase-indicators i{width:22px;height:3px;background:rgb(24 37 33 / 25%)}
+.phase-indicators i.active{background:var(--lm-color-ink)}
+.workflow-step{min-height:400px;display:flex;flex-direction:column;justify-content:center;padding:40px 0}
+.workflow-step+.workflow-step{border-top:1px solid var(--lm-color-line)}
+.workflow-step h3{margin-bottom:24px}
+.workflow-step>p{color:var(--lm-color-muted);font-size:var(--page-text);line-height:1.5;margin:0;max-width:35ch}
+.workflow-link{margin-top:16px;width:fit-content}
+
+/* Outcomes stay a compact reference beside the main story. */
+.performance-section{padding-block:40px}
+.outcome-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:32px}
+.outcome-strip article{display:grid;grid-template-columns:24px 1fr;gap:4px 12px;align-items:center}
+.outcome-strip .lm-icon{width:20px;height:20px;grid-row:span 2;align-self:start;margin-top:3px}
+.outcome-strip h3{font-size:var(--page-text);font-weight:500}
+.outcome-strip p{font-size:var(--page-label);color:var(--lm-color-muted);margin:0}
+.scope-note{font-size:var(--page-label);color:var(--lm-color-muted);margin:24px 0 0}
+
+.evidence-section{background:transparent;padding-block:var(--page-space)}
+.evidence-layout{display:grid;grid-template-columns:7fr 5fr;gap:64px;align-items:center}
+.evidence-demo{margin:0;background:transparent;padding:0;min-width:0}
+.evidence-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:var(--page-label)}
+.example-switch{display:flex;align-items:center;gap:2px;flex:none;padding:3px;border:1px solid var(--lm-color-control);border-radius:4px;font-size:13px;color:var(--lm-color-muted)}
+.example-switch button{min-height:26px;border:0;border-radius:2px;background:transparent;padding:0 9px;font-size:13px!important;color:var(--lm-color-muted);transition:color .2s}
+.example-switch button:hover{color:var(--lm-color-ink)}
+/* The active side wears the diagram's plate: matte steel with its grain and a fine ink edge. */
+.example-switch button[aria-pressed="true"],.example-switch button[aria-selected="true"]{color:var(--lm-color-ink);font-weight:500;background:url(assets/grain.svg),linear-gradient(168deg,color-mix(in srgb,var(--lm-color-steel) 45%,var(--lm-color-silver)),var(--lm-color-steel));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--lm-color-ink) 55%,transparent)}
+@media(forced-colors:active){.example-switch button[aria-pressed="true"],.example-switch button[aria-selected="true"]{text-decoration:underline}}
+.evidence-demo>.diagram-svg{width:100%;height:auto;display:block;margin:24px 0}
+.evidence-demo figcaption{padding-top:16px}
+.example-result{display:flex;flex-wrap:wrap;align-items:center;gap:12px}
+.example-result h3{font-size:var(--page-text);line-height:1.4;letter-spacing:0}
+.example-result .lm-badge{font-size:13px}
+.evidence-demo .example-note{font-size:var(--page-label);color:var(--lm-color-muted);margin:16px 0 0;max-width:50ch}
+.evidence-copy>p{font-size:var(--page-text);line-height:1.5;max-width:32ch;color:var(--lm-color-muted);margin:24px 0 16px}
+.evidence-demo .replay-output{font-family:var(--lm-font-mono);font-size:14px}
+.evidence-demo[data-state="before"] .replay-output{fill:var(--lm-color-copper-ink)}
+.evidence-demo[data-state="before"] .replay-route{stroke:var(--lm-color-copper-ink)}
+
+.start-section{display:grid;grid-template-columns:7fr 5fr;gap:64px;padding-block:var(--page-space)}
+.start-copy>p{color:var(--lm-color-muted);font-size:var(--page-text);margin:24px 0}
+.start-copy>.plain-link{display:flex;margin-top:12px;width:fit-content}
+.setup-steps{min-width:0}
+.setup-steps article{padding:24px 0}
+.setup-steps article:first-child{padding-top:0}
+.setup-steps article+article{border-top:1px solid var(--lm-color-line)}
+.setup-heading{display:flex;justify-content:space-between;gap:20px;font-size:var(--page-text);margin-bottom:12px}
+.setup-command{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 8px 6px 16px;min-width:0;background:rgb(211 213 208 / 36%);border:1px solid var(--lm-color-line)}
+.evidence-copy p code,.setup-steps p code,.workflow-step>p code{font-family:var(--lm-font-mono);font-size:.9em}
+.setup-command>code{display:block;flex:1;font-size:13px;line-height:1.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.setup-command button{width:44px;height:44px;flex:none;border:0;padding:10px;background:transparent;color:var(--lm-color-ink)}
+.setup-command button:hover{background:var(--lm-color-silver)}
+.setup-steps article>p{color:var(--lm-color-muted);font-size:var(--page-label);margin:12px 0 0;max-width:45ch}
+
+/* A quiet footer closes the page without another display headline. */
+.site-footer{background:transparent;color:var(--lm-color-ink);border-top:1px solid var(--lm-color-line);padding:24px 0 32px}
+.site-brand{display:inline-flex;align-items:center;gap:8px;color:inherit!important;text-decoration:none;font-size:24px;font-weight:500;letter-spacing:-.05em;line-height:1;min-height:44px}
+.site-brand .lm-icon{width:24px;height:24px}
+.footer-bottom{display:grid;grid-template-columns:auto 1fr auto;gap:24px;align-items:center}
+.footer-bottom>span{font-size:var(--page-label);color:var(--lm-color-muted)}
+.footer-bottom nav{display:flex;justify-content:flex-end;gap:8px 24px;flex-wrap:wrap}
+.footer-bottom nav a{font-size:var(--page-label);color:var(--lm-color-ink)!important;min-height:44px;display:inline-flex;align-items:center;text-decoration:none}
+.footer-bottom nav a:hover{text-decoration:underline;text-underline-offset:4px}
+.copy-status{position:fixed;bottom:24px;right:24px;max-width:calc(100vw - 48px);padding:14px 24px;color:var(--lm-color-canvas);background:var(--lm-color-ink);font-size:var(--page-label);z-index:50;margin:0;box-shadow:0 0 0 2px var(--lm-color-canvas)}
+.copy-status:empty{display:none}
+
+/* Preserved drawing and animation rules. */
+.diagram-svg{color:var(--lm-color-ink)}.diagram-svg .context-line{fill:none;stroke:currentColor;stroke-width:1;opacity:.3}.diagram-svg .route{fill:none;stroke:currentColor;stroke-width:2;stroke-linejoin:miter}.diagram-svg .signal{fill:none;stroke:var(--lm-color-copper-ink);stroke-width:5;stroke-dasharray:5 95;animation:signal 5s linear infinite}.diagram-svg .signal--two{animation-delay:-2.1s}.diagram-svg .module{fill:none;stroke:currentColor;stroke-width:1.5}.diagram-svg .module--filled{fill:currentColor;stroke:none}.diagram-svg .accent-fill{fill:var(--lm-color-copper)}.diagram-svg text{fill:currentColor;font-family:var(--lm-font-sans);font-size:12px}.diagram-svg .diagram-label{font-size:14px}.diagram-svg .diagram-small{font-size:11px}.diagram-svg .phase-layer{transition:opacity 400ms ease,transform 600ms cubic-bezier(.2,0,0,1)}.workflow-figure .phase-layer{opacity:0}.workflow-figure[data-phase="model"] .phase-model,.workflow-figure[data-phase="impact"] .phase-impact,.workflow-figure[data-phase="simulate"] .phase-simulate{opacity:1}.workflow-figure .phase-impact{transform:translateX(-16px)}.workflow-figure[data-phase="impact"] .phase-impact{transform:none}.evidence-demo .changed-link{stroke:var(--lm-color-copper-ink)}.evidence-demo[data-state="before"] .changed-link{stroke:var(--lm-color-ink)}.evidence-demo[data-state="before"] .change-mark{opacity:0}@keyframes signal{to{stroke-dashoffset:-100}}
+html[data-motion="on"] [data-reveal]{opacity:0;transform:translateY(28px);transition:opacity 650ms ease,transform 650ms cubic-bezier(.2,0,0,1)}html[data-motion="on"] [data-reveal].is-visible{opacity:1;transform:none}html[data-motion="paused"] *,html[data-motion="off"] *{animation-play-state:paused!important}html[data-motion="paused"] [data-reveal],html[data-motion="off"] [data-reveal]{opacity:1;transform:none}html[data-motion="paused"] .phase-layer,html[data-motion="off"] .phase-layer{transition:none}
+/* A clockwise four-stage loop. Static arrows carry the meaning; motion follows it. */
+.hero-art .loop-rule{stroke:currentColor;stroke-width:1;opacity:.4}
+.hero-art .loop-stage-accent{stroke:var(--lm-color-copper-ink);stroke-width:4;opacity:0;animation:loop-stage 16s linear infinite;animation-delay:calc(var(--stage)*4s - 16s)}
+.hero-art .loop-eyebrow{font-size:16px;fill:var(--lm-color-muted)}
+.hero-art .loop-title{font-size:25.5px;letter-spacing:-.4px}
+.hero-art .loop-detail{font-size:18px;fill:var(--lm-color-muted)}
+.hero-art .loop-return{font-size:16px;fill:var(--lm-color-muted)}
+.hero-art .loop-glyph{fill:none;stroke:currentColor;stroke-width:3;stroke-linejoin:miter}
+.hero-art .loop-source{fill:var(--lm-color-copper);stroke:currentColor;stroke-width:1.5}
+.hero-art .loop-route{fill:none;stroke:currentColor;stroke-width:3;stroke-linejoin:miter}
+.hero-art .loop-signal{stroke-width:6;stroke-dasharray:16 116;stroke-dashoffset:16;opacity:0;animation:loop-packet 16s linear infinite;animation-delay:calc(var(--stage)*4s - 16s)}
+.hero-art .loop-brand{fill:none}
+[data-layer][data-renderer="webgl"] .loop-brand{visibility:hidden}
+@keyframes loop-stage{0%,23%{opacity:1}25%,100%{opacity:0}}
+@keyframes loop-packet{0%{opacity:0;stroke-dashoffset:16}2%{opacity:1;stroke-dashoffset:16}23%{opacity:1;stroke-dashoffset:-100}25%,100%{opacity:0;stroke-dashoffset:-100}}
+.workflow-figure>svg{max-height:min(48vh,440px)}
+/* Compact navigation floats outside the content grid. */
+body{padding-inline:84px}
+html{scroll-padding-top:32px}
+.hero{padding-top:32px}
+.hero-topline strong{font-weight:500;letter-spacing:-.04em}
+.floating-dock{position:fixed;left:16px;top:50%;transform:translateY(-50%);z-index:40;display:flex;flex-direction:column;gap:2px;padding:6px;background:var(--lm-color-canvas);border:1px solid var(--lm-color-line);box-shadow:0 4px 18px rgb(24 37 33 / 8%)}
+.dock-item{position:relative;display:grid;place-items:center;width:44px;height:44px;flex:none;padding:0;border:0;border-radius:0;background:transparent;color:var(--lm-color-muted)!important;text-decoration:none;cursor:pointer}
+.dock-item:hover,.dock-item:focus-visible,.dock-item[aria-current="location"]{background:var(--lm-color-silver);color:var(--lm-color-ink)!important}
+.dock-item[aria-current="location"]::before{content:"";position:absolute;left:-7px;top:14px;width:2px;height:16px;background:var(--lm-color-copper-ink)}
+.dock-item .lm-icon{width:18px;height:18px}
+.dock-home .lm-icon{width:21px;height:21px}
+.dock-divider{height:1px;background:var(--lm-color-line);margin:5px 8px}
+.dock-tooltip{position:absolute;left:calc(100% + 12px);top:50%;transform:translate(3px,-50%);padding:8px 12px;white-space:nowrap;background:var(--lm-color-ink);color:var(--lm-color-canvas);font-size:11px;line-height:1.4;letter-spacing:0;font-weight:400;opacity:0;visibility:hidden;pointer-events:none;transition:opacity 120ms ease,transform 120ms ease;z-index:2}
+.dock-tooltip::before{content:"";position:absolute;right:100%;top:0;bottom:0;width:13px}
+.dock-item:hover .dock-tooltip,.dock-item:focus-visible .dock-tooltip{opacity:1;visibility:visible;transform:translate(0,-50%);pointer-events:auto}
+.floating-dock[data-tooltip-dismissed] .dock-tooltip{opacity:0;visibility:hidden;pointer-events:none}
+.motion-toggle[aria-disabled="true"]{cursor:default}
+.workflow-visual{top:40px}
+@media(max-width:700px){body{padding-inline:0;padding-bottom:88px}.floating-dock[data-tucked]{transform:translate(-50%,calc(100% + 28px))}.floating-dock{left:50%;top:auto;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);transition:transform .22s ease;flex-direction:row;align-items:center;gap:0;padding:5px}.dock-github{display:none}.dock-divider{width:1px;height:20px;margin:0 5px}.dock-item[aria-current="location"]::before{left:14px;top:auto;bottom:-6px;width:16px;height:2px}.dock-tooltip{left:50%;top:auto;bottom:calc(100% + 12px);transform:translate(-50%,3px)}.dock-item:hover .dock-tooltip,.dock-item:focus-visible .dock-tooltip{transform:translate(-50%,0)}.dock-item:first-child .dock-tooltip{left:0;transform:translate(0,3px)}.dock-item:first-child:hover .dock-tooltip,.dock-item:first-child:focus-visible .dock-tooltip{transform:none}.dock-item:last-child .dock-tooltip{left:auto;right:0;transform:translate(0,3px)}.dock-item:last-child:hover .dock-tooltip,.dock-item:last-child:focus-visible .dock-tooltip{transform:none}.dock-tooltip::before{right:0;left:0;top:100%;bottom:auto;width:auto;height:13px}.copy-status{bottom:calc(90px + env(safe-area-inset-bottom))}.hero{padding-top:24px}}
+/* WebGL supplies the engraved landscape; SVG keeps the words and arrows sharp. */
+[data-diagram] .diagram-webgl{position:absolute;pointer-events:none;opacity:0;z-index:0}
+[data-diagram]>.diagram-svg,[data-diagram] figcaption{position:relative;z-index:1}
+.hero-art .loop-arrowheads{display:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linejoin:miter}
+[data-diagram][data-renderer="webgl"] .diagram-webgl{opacity:1}
+.hero-art[data-renderer="webgl"] .loop-pictogram,.hero-art[data-renderer="webgl"] .loop-route,.hero-art[data-renderer="webgl"] .loop-signal{display:none}
+.hero-art[data-renderer="webgl"] .loop-arrowheads{display:block}
+.hero-art[data-renderer="webgl"] .loop-stage-accent{animation:none;opacity:var(--active-stage,0)}
+
+/* Shared transparent material treatment for workflow and behavior verification. */
+[data-diagram]{position:relative;background:transparent}
+.workflow-figure[data-renderer="webgl"] .workflow-pictogram{display:none}
+.evidence-demo[data-renderer="webgl"] .module,.evidence-demo[data-renderer="webgl"] .replay-route{display:none}
+.evidence-demo .replay-arrowheads,.evidence-demo .replay-break{display:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linejoin:miter}
+.evidence-demo[data-renderer="webgl"] .replay-arrowheads{display:block}
+.evidence-demo[data-renderer="webgl"][data-state="before"] .replay-break{display:block;stroke:var(--lm-color-copper-ink)}
+
+/* Layout contracts; the animated artwork keeps its original drawing and timing. */
+@media(max-width:1100px){.workflow-layout,.section-heading,.evidence-layout,.start-section{gap:40px}}
+@media(max-width:960px){:root{--page-display:clamp(48px,8.5vw,80px);--page-heading:clamp(30px,4.4vw,40px)}.hero-grid{grid-template-columns:1fr}.hero-copy{padding:24px 0 28px}.hero-art{width:100%;max-width:600px;margin-inline:auto;padding:0}.hero-art>.diagram-svg{margin:12px 0}.workflow-layout,.section-heading{gap:32px}.footer-bottom{grid-template-columns:1fr 1fr}.footer-bottom>span{text-align:right}.footer-bottom nav{grid-column:span 2;justify-content:flex-start}}
+@media(max-width:850px){.evidence-layout,.start-section{grid-template-columns:1fr;gap:32px}.evidence-demo{max-width:680px}.evidence-copy>p{max-width:44ch}.setup-steps{max-width:680px}}
+@media(max-width:700px){:root{--page-space:48px;--page-heading:32px}.section-heading,.workflow-layout{grid-template-columns:1fr;gap:24px}.section-heading{margin-bottom:28px}.workflow-visual{position:static;margin:0}.workflow-figure>.diagram-svg{max-height:360px}.workflow-step{min-height:0;padding:32px 0 40px}.workflow-step:last-child{padding-bottom:16px}.workflow-step>p{max-width:42ch}.outcome-strip{grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 20px}.performance-section{padding-block:28px}.copy-status{left:20px;right:20px;max-width:none}}
+@media(max-width:600px){:root{--page-display:clamp(40px,11.8vw,56px)}.hero-topline{margin-bottom:24px;gap:16px}.hero-copy{padding-top:16px}.hero-description{font-size:var(--page-text);margin-bottom:24px}.hero-actions{gap:8px 20px}.hero-actions .lm-button{padding:12px 16px}.hero-art>.diagram-svg{margin:16px 0}.outcome-strip article{grid-template-columns:1fr;gap:4px}.outcome-strip .lm-icon{grid-row:auto;margin-bottom:4px}.evidence-toolbar{align-items:flex-start;flex-direction:column;gap:12px}.example-switch{align-self:flex-end}.evidence-demo .replay-output{font-size:16px}.example-result{align-items:flex-start}.scope-note{margin-top:20px}.footer-bottom{gap:16px}.footer-bottom nav{gap:4px 20px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation:none!important;transition:none!important}[data-reveal]{opacity:1!important;transform:none!important}}
+@media(forced-colors:active){.hero-art,.workflow-figure{border:1px solid CanvasText}}
+
+/* A single, continuous stage: narrative left, the same animation surface right. */
+.story{padding-top:32px}
+.story-layout{display:grid;grid-template-columns:7fr 5fr;gap:48px;align-items:stretch}
+.story-copy{grid-column:1;grid-row:1;min-width:0}
+.story-rail{grid-column:2;grid-row:1;min-width:0}
+.story-figure{position:sticky;top:var(--stage-offset,40px);margin:0;background:transparent}
+.story-art{position:relative;width:100%;aspect-ratio:600/568;max-height:min(68svh,560px);container-type:size}
+.story-art .diagram-webgl{inset:0;width:100%;height:100%}
+.story-art .story-layer{position:absolute;inset:0;display:block;width:100%;height:100%;max-width:none;padding:0;margin:0;opacity:0;overflow:visible;pointer-events:none;background:transparent}
+.story-art .story-layer>.diagram-svg{position:relative;display:block;width:100%;height:100%;max-height:none;margin:0;overflow:visible}
+.story-art .story-layer[data-layer="hero"]{opacity:1}
+.story-chapter{min-height:max(400px,58svh);display:flex;flex-direction:column;justify-content:center;padding:48px 0}
+.hero-intro{min-height:max(580px,calc(82svh - 96px));padding:16px 0 48px}
+.hero-intro .hero-copy{padding:0 16px 0 0}
+.hero-intro h1{margin-bottom:28px}
+.story-copy .workflow-section{padding-top:0}
+.story-heading{padding:32px 0 0}
+.story-heading>p{font-size:var(--page-text);color:var(--lm-color-muted);max-width:34ch;margin:24px 0 0}
+.story-copy .workflow-step{min-height:max(400px,58svh);padding:48px 0}
+.story-copy .workflow-step:first-of-type{border-top:0}
+.verification-copy{min-height:max(540px,68svh);padding-bottom:64px}
+.verification-copy .evidence-copy{display:grid;gap:24px;min-width:0}
+.verification-copy .evidence-copy>p,.verification-copy .evidence-copy>.config-example{margin:0}
+.verification-copy .config-example{padding:12px 20px 20px;background:rgb(211 213 208 / 24%)}
+.verification-copy .plain-link{justify-self:start}
+.verification-note{display:block;margin-top:12px;font-size:var(--page-label);color:var(--lm-color-muted)}
+/* In the verification diagram's empty top left: level with its title, in line with its left column.
+   The SVG letterboxes, so --unit is one viewBox unit. */
+.story-replay{--unit:min(100cqw / 600,100cqh / 540);position:absolute;left:calc(50cqw - 264 * var(--unit));top:calc(50cqh - 227 * var(--unit));width:fit-content;z-index:10;visibility:hidden;pointer-events:none}
+.story-figure[data-scene="verification"] .story-replay{visibility:visible}
+/* In a narrow column the diagram's title grows into the switch, so the switch moves above the diagram. */
+@media(max-width:1200px){.story-replay{top:-44px}}
+.story-replay .example-switch{width:fit-content;margin:0;pointer-events:auto}
+.story-art .evidence-demo .replay-output{font-size:14px}
+.chapter-diagram{display:none}
+@media(max-width:1100px){.story-layout{gap:32px}}
+@media(max-width:850px){
+  .story{padding-top:24px}
+  /* The headline leads on phones. The hero loop follows it, and each chapter carries its own diagram. */
+  .story-layout{display:flex;flex-direction:column}
+  .story-copy{display:contents}
+  .story-copy>.hero-intro{order:-1}
+  .story-copy>:not(.hero-intro){order:1}
+  .story-rail{padding-block:8px}
+  .story-figure{position:relative;top:auto;max-width:none}
+  .story-art{aspect-ratio:680/566;max-height:none}
+  .chapter-diagram{display:block;margin:24px 0}
+  .evidence-copy .chapter-diagram{margin:0}
+  .chapter-diagram .story-art{aspect-ratio:600/540}
+  /* Above the diagram, because the phone's larger labels leave no room beside its title. */
+  .chapter-diagram[data-chapter-scene="verification"]{padding-top:44px}
+  .chapter-diagram .story-replay{left:0;top:-44px}
+  .story-art .diagram-svg .flow-meta,.story-art .diagram-svg .flow-label,.story-art .evidence-demo .replay-output{font-size:24px}
+  .story-art .diagram-svg .flow-repository{font-size:27px}
+  .hero-art .loop-title{font-size:28px}
+  .hero-art .loop-eyebrow{font-size:18px}
+  .hero-art .loop-detail{font-size:20px}
+  .hero-art .loop-return{font-size:17px}
+  .story-chapter,.story-copy .workflow-step{min-height:0;padding:36px 0}
+  .story-copy .hero-intro{min-height:0}
+  .hero-intro .hero-copy{padding:16px 0}
+  .story-heading{padding:28px 0 0}
+  .verification-copy{padding-bottom:48px}
+}
+
+/* Let the narrative fill its column; wrapping follows the available width. */
+.story-copy .story-heading>p,.story-copy .workflow-step>p,.story-copy .evidence-copy>p,.story-replay .example-note{max-width:none}
+
+/* Explanatory paragraphs use the established reading scale and chapter spacing. */
+.story-copy .workflow-step>p+p,.story-copy .evidence-copy>p+p{margin-top:16px}
+
+/* A small source specimen connects the system model to real Lemma configuration. */
+.config-example{margin:24px 0;padding:0 0 4px 20px;border-left:2px solid var(--lm-color-copper);min-width:0}
+.config-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:var(--page-label);color:var(--lm-color-muted)}
+.config-heading>button{width:44px;height:44px;flex:none;border:0;background:transparent;padding:10px;color:var(--lm-color-ink)}
+.config-heading>button:hover{background:var(--lm-color-silver)}
+.config-example pre{margin:4px 0 0;font-size:13px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
+/* Every file holds the same grid cell, so switching tabs never moves the page below. */
+.file-tabs{margin:24px 0;min-width:0}
+.file-tabs .example-switch{width:fit-content;margin-bottom:8px}
+.file-tabs .config-example{position:relative;margin:0}
+.file-tabs .config-heading{position:absolute;top:0;right:0}
+.file-tabs pre{margin-top:0}
+.file-panels{display:grid}
+.file-panels>pre{grid-area:1/1}
+.file-panels>pre[hidden]{display:block;visibility:hidden}
+.config-example figcaption{margin-top:12px;font-size:var(--page-label);color:var(--lm-color-muted)}
+.config-keyword{font-weight:500;color:var(--lm-color-ink)}
+.config-string{color:var(--lm-color-copper-ink)}
+.config-value{color:var(--lm-color-steel-ink)}
+@media(max-width:600px){.config-example{padding-left:12px}.config-example pre{font-size:12px}}
+
+/* Illustration labels stay separate from the supporting source examples. */
+.config-scene{display:none}
+.workflow-figure[data-phase="model"] .config-scene--model,.workflow-figure[data-phase="impact"] .config-scene--impact,.workflow-figure[data-phase="setup"] .config-scene--setup{display:inline}
+.workflow-figure .workflow-arrowheads{fill:none;stroke:currentColor;stroke-width:2;stroke-linejoin:miter}
+.workflow-figure .workflow-mark{fill:none;stroke:var(--lm-color-copper-ink);stroke-width:2}
+.workflow-figure .workflow-flag{fill:var(--lm-color-copper-ink)}
+.workflow-figure .workflow-brand{fill:none;stroke:var(--lm-color-ink);stroke-width:4}
+.diagram-svg .flow-meta{font-size:15px}
+.diagram-svg .flow-label{font-size:17px}
+.diagram-svg .flow-repository{font-size:20px;letter-spacing:-.2px}
+.evidence-demo[data-renderer="webgl"] .replay-pictogram{display:none}
+.story-copy .workflow-step h2{margin-bottom:24px}
+.syntax-keyword{color:var(--lm-color-steel-ink);font-weight:600}
+.syntax-name{font-weight:600}
+.syntax-type{color:var(--lm-color-sage-ink)}
+.syntax-property{color:var(--lm-color-muted)}
+.syntax-function{color:var(--lm-color-steel-ink)}
+.syntax-string{color:var(--lm-color-copper-ink)}
+.syntax-number,.syntax-constant{color:var(--lm-color-sage-ink)}
+.syntax-operator{color:var(--lm-color-copper-ink)}
+.syntax-comment{color:var(--lm-color-muted);font-style:italic}
+.code-blank{display:block;height:.75em;overflow:hidden}

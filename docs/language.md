@@ -1,8 +1,8 @@
 # The `.lm` language
 
-`.lm` modules say what `lemma.yaml` files and grammar files say, in one typed language: a repository's services and operations, the links between them, and the relations, rules and requirements `lemma verify` checks. Lemma checks a module before it uses it, so a misspelled operation or a rule reading a relation that does not exist is reported with its line, instead of quietly checking nothing.
+A description of a system is written in `.lm`, one typed language for a repository's services and operations, the links between them, and the relations, rules, requirements, allowances and behaviors `lemma check` runs. Lemma checks a module before it uses it, so a misspelled operation or a rule reading a relation that does not exist is reported with its line, instead of quietly checking nothing.
 
-`lemma.yaml` and YAML grammars keep working. Both forms lower to the same structures, so a check gives the same findings from either. Modules add what YAML cannot say: requirements of your own in a workspace, allowances, and behaviors that run checkers for evidence. The design is in [spec 13](../.specs/13-lm-grammar.md), and every function and declaration of the standard library is in [its reference](standard-library.md).
+The design is in [spec 13](../.specs/13-lm-grammar.md), and every function and declaration of the standard library is in [its reference](standard-library.md).
 
 ## A repository's module
 
@@ -60,7 +60,7 @@ export graph links : Link {
 }
 ```
 
-A workspace composes repositories, as a parent `lemma.yaml` does:
+A workspace composes repositories:
 
 ```lm
 module system
@@ -73,25 +73,15 @@ workspace {
 }
 ```
 
-| `lemma.yaml` | `.lm` |
-| --- | --- |
-| `"#billing": { git: ..., ref: ... }` | `repo billing = git(url: "...", rev: "...")` |
-| `"#billing": { path: ../billing }` | `repo billing = local("../billing")` |
-| `exports.openapi: [openapi.json]` | `operations: http.openapi("openapi.json")` |
-| `exports.operations_from` | `operations: hono.app(entry: [...])`, `fastapi.app(...)`, `http.adapter("express-routes", ...)` or `http.adapter_command(...)` |
-| `path: client/charges.go:Charges.Create` | `implementation: charges.symbol("Charges.Create")` |
-| `request: client/charges.go#CreateChargeRequest` | `request: charges.type("CreateChargeRequest")` |
-| `resolver` and `request: { path: "$.x" }` | `request: spec.at("$.x")` with `let spec = json.command("...")` |
-| `exports.client` | `client: http.generated_client(generated_from: [...])` |
-| `graph.links` | `graph links : Link { caller -> provider }`, an end named by `operationId` (`api.createCharge`) or by method and path (`api["POST /v1/charges"]`) |
-| an operation's `previously: [api.cancel]` | `previously: ["billing::api.cancel"]` on the renamed operation |
-| `graph.level` | `config: { level: check }` in the workspace |
+Repositories are `local("../billing")`, a working directory; `local("../billing", rev: "3f2a1c9e04")`, a clone read at a commit; or `git(url: "...", rev: "...")`, cloned into Lemma's cache. A link's ends name operations, by `operationId` (`api.createCharge`) or by method and path (`api["POST /v1/charges"]`). A renamed operation says what it used to be: `previously: ["billing::api.cancel"]`.
 
-Names are bound, not matched as text. An import names a module (`import { api } from billing`), a module's name is fixed by its file's place in its repository (`checks/replay.lm` in `billing` is `billing.checks.replay`), a directory's module is its `mod.lm` (`checks/mod.lm` is `billing.checks`), and a repository's name is its root module's, the `mod.lm` at its root. A service that only groups other services passes its fields down to them.
+A service's fields, the operations it declares and where schemas come from are listed in [Checking links](check.md#descriptions).
 
-## Grammars
+Names are bound, not matched as text. An import names a module (`import { api } from billing`), a module's name is fixed by its file's place in its repository (`checks/replay.lm` in `billing` is `billing.checks.replay`), a directory's module is its `mod.lm` (`checks/mod.lm` is `billing.checks`), and a repository's name is its root module's, the `mod.lm` at its root, so it is an identifier: a directory `web-app` holds `module web_app`, and findings print `#web_app`. A service that only groups other services passes its fields down to them.
 
-The built-in HTTP contracts grammar is the standard-library module `lemma.http`. A grammar of your own imports it and adds relations, rules and requirements:
+## Requirements of your own
+
+The built-in HTTP contract requirements are the standard-library module `lemma.http`, which is always loaded. A module of your own imports it and adds relations, rules and requirements:
 
 ```lm
 module contracts
@@ -109,7 +99,7 @@ export require consumer_calls_deprecated_removal {
 }
 ```
 
-Name the module in a `lemma verify` manifest (`grammar: contracts.lm`), or write its requirements in a workspace's root module, where `lemma check` runs them beside `lemma.http`'s. A `check main { run ... }` selects which requirements run; without one, every requirement of every loaded module runs. Lowercase names in rules are variables, and uppercase names, dotted paths and literals are constants. See [Grammars](grammar.md) for what the relations mean.
+Write it in a workspace's root module, or in a module the root module imports, and `lemma check` runs its requirements beside `lemma.http`'s. A `check main { run ... }` selects which requirements run; without one, every requirement of every loaded module runs. Lowercase names in rules are variables, and uppercase names, dotted paths and literals are constants. See [Requirements and rules](grammar.md) for what the relations mean.
 
 ### Allowances
 
@@ -212,10 +202,10 @@ The level (the workspace's `config: { level: ... }` or `lemma check --level`) de
 
 - `lm check [mod.lm]` loads a module and everything it imports, and lists every problem as `file:line:column`.
 - `lm fmt [paths...] [--check]` rewrites `.lm` files in one canonical layout, keeping line breaks and comments; with `--check`, it lists the files that are not formatted instead. With no paths, it formats the `.lm` files under the current directory.
-- `lm convert [lemma.yaml] [--module name] [--write]` writes a `lemma.yaml` as a root module. With `--write`, it writes `mod.lm` beside the file.
 - `lm new behavior <name> --handler <operation> [--through <link>]` adds a checker, a behavior and the checker's script for one of the module's operations, to fill in from `TODO`s ([tutorial 4](tutorials/4-behaviors.md#start-from-a-template)).
 - `lm lsp` serves modules to an editor (diagnostics as you type, hovers, go to definition, symbols, completion, formatting).
-- `lemma check` reads `mod.lm` when a repository has no `lemma.yaml`, and takes a `.lm` workspace module as its argument; then it also runs the workspace's requirements, behaviors and allowances (`--select`, `--no-run`, `--level strict`).
+- `lemma check [mod.lm]` checks a change against what a module declares, and runs its requirements, behaviors and allowances (`--select`, `--no-run`, `--level strict`).
+- `lemma verify [mod.lm]` compares a description with the code at one snapshot ([Verifying descriptions](verify.md)).
 
 ## Editors
 

@@ -202,13 +202,18 @@ function stubListen(express: any) {
 // (under a directory entry), so a shared helper the route modules call is
 // passed over for the route's own module; else the first frame outside
 // node_modules and this adapter.
+// Bun links node_modules into its own cache, which is where a frame says it is.
+function isDependency(file: string): boolean {
+  return file.includes('/node_modules/') || file.includes('/.bun/')
+}
+
 function registeredAt(stack: string): Place | undefined {
   const frames: Place[] = []
   for (const frame of stack.split('\n').slice(1)) {
     const match = frame.match(/((?:file:\/\/)?\/.*?):(\d+):\d+\)?\s*$/)
     if (!match) continue
     const file = match[1].startsWith('file://') ? fileURLToPath(match[1]) : match[1]
-    if (file.includes('/node_modules/') || file.endsWith('express-routes.ts')) continue
+    if (isDependency(file) || file.endsWith('express-routes.ts')) continue
     frames.push({ file, line: Number(match[2]) })
   }
   const inRoutes = frames.find(({ file }) => routeDirectories.some((directory) => file === directory || file.startsWith(`${directory}/`)))

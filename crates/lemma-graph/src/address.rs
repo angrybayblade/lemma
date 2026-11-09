@@ -11,7 +11,7 @@
 /// Where an operation is declared.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Address {
-    /// The external service (`#billing`) whose `lemma.yaml` declares it, or
+    /// The external service (`#billing`) whose description declares it, or
     /// `None` for the file the address is written in.
     pub repository: Option<String>,
     /// The service.

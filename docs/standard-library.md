@@ -4,7 +4,7 @@ Every module can use the standard library's modules: `import * as http from lemm
 
 ## Everywhere
 
-- `local(path: Text): Repository`: A repository's working tree, relative to the declaring file.
+- `local(path: Text, rev?: Text): Repository`: A repository's clone, relative to the declaring file: its working tree, or the commit `rev`.
 - `git(url: Text, rev?: Text): Repository`: A repository cloned from `url`, read at `rev` (a commit, preferably).
 
 ### Methods

@@ -1,60 +1,28 @@
-# Grammars
+# Requirements and rules
 
-A grammar says what `lemma verify` checks. It declares the relations facts arrive in, rules that derive new relations from them, and requirements whose matches are findings. Requirements live in grammars, not in Lemma's code, so a team can add a check, tighten one, or turn one off without changing Lemma.
+A requirement says what must hold. It is written in `.lm`, over relations the extractors fill with facts from documents and code, and rules that derive new relations from them. Every match of a requirement is a finding, so a team can add a check, tighten one, or turn one off without changing Lemma.
 
-The built-in grammar is [`grammars/http-contracts.yaml`](../grammars/http-contracts.yaml). A manifest uses it unless it names another:
+The built-in requirements are the standard-library module `lemma.http` ([reference](standard-library.md#lemmahttp)). `lemma.http` is always loaded, and a module of your own adds to it:
 
-```yaml
-grammar: contracts.yaml        # relative to the manifest
-change: { ... }
-repositories: { ... }
+```lm
+module contracts
+
+import { removed_response_field } from lemma.http
+
+rule dropped(op: Text, fld: Text) {
+    (op, fld) :- removed_response_field(op, fld, _)
+}
+
+export require response_field_removed {
+    severity: error
+    when: dropped(op, fld)
+    message: "{op} no longer returns `{fld}`"
+}
 ```
 
-A grammar may also be a `.lm` module, `grammar: contracts.lm`, which imports the built-in grammar as `lemma.http` and adds to it. See [The `.lm` language](language.md#grammars).
+`lemma check` runs a module's requirements when the module is the workspace's root module or one the root module imports. Without a `check main`, every requirement of every loaded module runs, `lemma.http`'s included; a `check main` selects what runs. See [The `.lm` language](language.md#requirements-of-your-own).
 
-Start a custom grammar by copying the built-in one: Lemma's extractors write facts into the relations it declares (see [Relations the extractors fill](#relations-the-extractors-fill)), so keeping those declarations keeps the facts.
-
-Grammars are YAML for now. A `.ls` syntax with the same meaning is planned.
-
-## A grammar file
-
-```yaml
-grammar: http-contracts          # a name, used in messages
-
-entities:                        # optional: named kinds of things
-  Operation: { method: Text, path: Text }
-
-relations:                       # input relations: where facts arrive
-  returns:
-    args: [Operation]            # argument columns, by entity or type
-    attributes: { field: Text }  # further named columns, in order
-    sources: [syntax, spec]      # who may produce its facts
-    description: An operation's response has this field.
-
-rules:                           # derived relations, in Datalog
-  - removed_field(op, f) :- returns@base(op, f), !returns@head(op, f).
-
-requirements:                    # conditions whose matches are findings
-  consumer_reads_removed_field:
-    when: reads(c, op, f), removed_field(op, f)
-    severity: error              # error, warning or info
-    explain: "{c} reads `{f}` from {op}, which no longer returns it"
-
-facts:                           # facts declared by hand
-  - { relation: rejects_unknown_fields, values: [billing] }
-  - { relation: returns, values: [get_account, status], snapshot: base }
-```
-
-| Section | Holds |
-| --- | --- |
-| `grammar` | The grammar's name. Required. |
-| `entities` | Kinds of things and their attributes. Optional; an entity used as a column type is stored as text. |
-| `relations` | Input relations. Each column is typed `Text`, `Number`, `Symbol` or an entity. |
-| `rules` | Rules deriving relations. A derived relation needs no declaration: its columns come from the rule's head. |
-| `requirements` | Named conditions. Every match is a finding with the requirement's severity and message. |
-| `facts` | Facts written by hand: strings for text, integers for numbers. `snapshot: base` puts a fact in the base snapshot; the head is the default. |
-
-Unknown keys are errors, so a misspelled section fails loudly.
+Keep `lemma.http`'s variable names (`c`, `op`, `f`, `l`) in requirements `lemma check` reports on: findings' values are looked up by those names.
 
 ## Snapshots
 
@@ -62,18 +30,35 @@ A change has two snapshots: `base`, before it, and `head`, with it. Every input 
 
 Facts from the changed repository differ between the two; facts from every other repository are the same in both. That is what lets a rule ask what changed:
 
-```text
-removed_operation(op) :- operation@base(s, op, m, p), !operation@head(s, op, m, p).
+```lm
+import { operation } from lemma.http
+
+rule gone(op: Text) {
+    (op) :-
+        operation@base(s, op, m, p),
+        !operation@head(s, op, m, p)
+}
 ```
 
 Derived relations are computed once, from both snapshots' inputs, so `@base` and `@head` apply only to input relations. A rule that needs "derived in the base" derives it from `@base` inputs under its own name.
 
 ## Rules
 
-Lemma's rule language is Datalog: a rule says its head holds whenever every condition in its body holds.
+Lemma's rule language is Datalog: a rule says its head holds whenever every condition in its body holds. A rule declares its columns in place, and each `(head) :- body` inside it is an alternative: the head holds if any of them does.
 
-```text
-head(x, y) :- a(x, z), b@base(z, y), !c(y), y != "skip", n > 120.
+```lm
+relation a(x: Text, z: Text)
+relation b(z: Text, y: Text, n: Int)
+relation c(y: Text)
+
+rule head(x: Text, y: Text) {
+    (x, y) :-
+        a(x, z),
+        b@base(z, y, n),
+        !c(y),
+        y != "skip",
+        n > 120
+}
 ```
 
 | Written | Means |
@@ -81,67 +66,66 @@ head(x, y) :- a(x, z), b@base(z, y), !c(y), y != "skip", n > 120.
 | `name(args)` | The relation holds for these values. |
 | `name@base(args)`, `name@head(args)` | The same, in one snapshot (input relations only). |
 | `!name(args)` | The relation does not hold. |
-| `x`, `op`, `leaf` | Variables: identifiers bind to values. |
+| `x`, `op`, `leaf` | Variables: lowercase names bind to values. |
 | `_` | Matches anything, binding nothing. |
-| `"text"` | A text constant. |
+| `"text"`, uppercase names, dotted paths | Text and named constants. |
 | `120`, `-1` | A number constant. |
-| `=`, `!=` | Compare any two values. |
+| `==`, `!=` | Compare any two values. |
 | `<`, `<=`, `>`, `>=` | Compare numbers. |
 
-The final period is optional. Several rules with the same head are alternatives: the head holds if any of them does.
+Several `(head) :- body` lines are alternatives, and rules can be recursive:
 
-```text
-calls(c, op, f, l) :- calls_path(c, m, p, f, l), operation@base(_, op, m, p).
-calls(c, op, f, l) :- calls_client(c, ch, f, l), client_operation(_, ch, m, p, _, _), operation@base(_, op, m, p).
-```
+```lm
+relation imports_file(file: Text, imported: Text)
 
-Rules can be recursive:
-
-```text
-reaches(a, b) :- imports(a, b).
-reaches(a, c) :- reaches(a, b), imports(b, c).
+rule reaches(a: Text, c: Text) {
+    (a, b) :- imports_file(a, b)
+    (a, c) :- reaches(a, b), imports_file(b, c)
+}
 ```
 
 ### What makes a rule valid
 
-Lemma checks every rule before running it and says which rule is wrong and why:
+Lemma checks every rule before running it and says which rule is wrong and why. `lm check` reports most of these with their line; a wildcard in a negation and a relation depending on its own negation are reported when `lemma check` compiles the rules, and stop it with exit 1:
 
 - **Safe.** Every variable in the head, in a negated atom and in a comparison appears in a positive atom of the body.
-- **No wildcards in negation.** `!parameter@head(op, _, loc)` is rejected; derive the projection first: `has_parameter(op, loc) :- parameter@head(op, _, loc).` then `!has_parameter(op, loc)`.
-- **Stratified.** A relation cannot depend on its own negation, directly or through other rules. `a(x) :- b(x), !a(x).` is rejected.
-- **Typed.** A column holds text or numbers, never both; ordering comparisons need numbers.
-- **Declared.** Every relation in a body is an input relation or derived by some rule; misspellings are errors.
-- **Inputs are inputs.** A rule cannot derive into an input relation.
+- **No wildcards in negation.** `!parameter@head(op, _, loc)` is rejected; derive the projection first with a rule `has_parameter(op, loc)` over `parameter@head(op, _, loc)`, then write `!has_parameter(op, loc)`.
+- **Stratified.** A relation cannot depend on its own negation, directly or through other rules.
+- **Typed.** A column holds one type; ordering comparisons need numbers.
+- **Declared.** Every relation in a body is a declared relation, or derived by some rule; misspellings are errors.
+- **Inputs are inputs.** A rule cannot derive into a declared relation.
 
 ## Requirements
 
-```yaml
-requirements:
-  consumer_sends_rejected_field:
-    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), uses(c, leaf), rejects_unknown(op)
+```lm
+import { calls, removed_request_field, uses, rejects_unknown } from lemma.http
+
+export require consumer_sends_rejected_field {
     severity: error
-    explain: "{c} calls {op} and names `{leaf}`; request field `{fld}` was removed and {op} now rejects requests that send it ({f}:{l})"
+    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), uses(c, leaf), rejects_unknown(op)
+    message: "{c} calls {op} and names `{leaf}`; request field `{fld}` was removed and {op} now rejects requests that send it ({f}:{l})"
+}
 ```
 
-`when` is a rule body. Its variables, in the order they first appear in a positive atom, become the finding's values; `explain` refers to them as `{name}`. Findings are sorted by severity, requirement and message, so output is the same every run.
+`when` is a rule body. Its variables, in the order they first appear in a positive atom, become the finding's values; `message` refers to them as `{name}`. Findings are sorted by severity, requirement and message, so output is the same every run.
 
-Each finding also says whether the change introduced it. A requirement that compares the snapshots (it reads `@base`, directly or through a rule) only matches what changed, so its findings are introduced. A requirement over one snapshot, such as a route its spec does not declare, may already have matched before the change: Lemma evaluates it at the base too, and a finding that matches there as well is reported as not introduced. Findings are matched by their text values, not their numbers, so a route that only moved down its file is the same route. For a relation only such a base evaluation reads, facts the grammar declares without a snapshot hold in both snapshots, unless it declares base facts of its own.
+Each finding also says whether the change introduced it. A requirement that compares the snapshots (it reads `@base`, directly or through a rule) only matches what changed, so its findings are introduced. A requirement over one snapshot, such as a route its spec does not declare, may already have matched before the change: Lemma evaluates it at the base too, and a finding that matches there as well is reported as not introduced. Findings are matched by their text values, not their numbers, so a route that only moved down its file is the same route.
 
-Severity decides what a finding does: `lemma verify` exits with 4 when any finding is an error, so CI can gate on errors while warnings and informational findings only report. Choose severity by what a match proves:
+Severity decides what a finding does: at level `check`, `lemma check` exits with 4 when any finding is an error, so CI can gate on errors while warnings and informational findings only report. Choose severity by what a match proves:
 
 | Severity | Use when a match means | Built-in examples |
 | --- | --- | --- |
 | `error` | A request will fail | calling a removed operation; omitting a newly required field |
 | `warning` | Behaviour changes, but nothing fails | reading a removed response field; sending a field now ignored |
-| `info` | Worth a look | a changed operation the consumer never names the field of; a route missing from the spec |
+| `info` | Worth a look | a changed operation the code never names the field of; a route missing from the spec |
 
-A requirement that rests on a name being present (`uses(c, leaf)`) should look near the call. One that rests on a name being absent (`!sends(c, leaf)`) should look as far as the request can be built, and no further: the caller's function, declarations its file sees, and the functions of its file it calls. Searching the whole file lets an unrelated function naming the field hide a real break. The built-in grammar's comments say what each relation covers.
+A requirement that rests on a name being present (`uses(c, leaf)`) should look near the call. One that rests on a name being absent (`!sends(c, leaf)`) should look as far as the request can be built, and no further: the caller's function, declarations its file sees, and the functions of its file it calls. Searching the whole file lets an unrelated function naming the field hide a real break. `lemma.http`'s comments say what each relation covers.
 
-`--explain` attaches each finding's derivation: the requirement's fact, then the facts and rules supporting it, indented, down to input facts and `not` lines for negations.
+`lemma check --explain` attaches each inferred finding's derivation: the requirement's fact, then the facts and rules supporting it, indented, down to input facts and `not` lines for negations.
 
 ### Reading only what a change touches
 
-By default `lemma verify` reads only the consumer code a finding can rest on (see `--evaluation` in [verify](verify.md)). Lemma decides from the rules' structure whether a grammar allows that. Each requirement must be one of these:
+By default `lemma check` reads only the consumer code a finding can rest on (`--evaluation demand`). Lemma decides from the rules' structure whether a module's requirements allow that. Each requirement must be one of these:
 
 - **Complete**: it reads nothing from consumer code, such as a route its spec does not declare.
 - **Anchored**: every call it rests on is a call of an operation held by a relation computed without consumer code (`removed_operation(op)`), and its other consumer facts are about the calling code: its function, its file, and the files that file imports. Imports followed through a recursive rule are not bounded, so such a requirement is not anchored.
@@ -151,76 +135,66 @@ When any requirement is none of these, every consumer file is read and the repor
 
 ## Relations the extractors fill
 
-`lemma verify` writes these input relations, in both snapshots unless noted. A grammar receives the ones it declares and ignores the rest. Operations are named `METHOD /path` with path parameters as `{}`; consumers are `repository:file::Function` (or `repository:file` outside functions); files are `repository:file`.
+`lemma check` fills these input relations of `lemma.http`, in both snapshots unless noted. Operations are named `METHOD /path` with path parameters as `{}`; consumers are `repository:file::Function` (or `repository:file` outside functions); files are `repository:file`.
 
 | Relation | Columns | From |
 | --- | --- | --- |
-| `operation` | service, operation, method, path | service specs |
-| `parameter` | operation, name, location | service specs |
-| `required_parameter` | operation, name, location | service specs |
-| `request_field` | operation, field path (`hooks[].handler.action`), last name | service specs |
-| `required_request_field` | operation, field path, last name | service specs: required in every enclosing object and every union branch |
-| `response_field` | operation, field path, last name | service specs, 2xx responses |
-| `strict_request` | operation | service specs: `additionalProperties: false` |
+| `operation` | service, operation, method, path | service documents |
+| `parameter` | operation, name, location | service documents |
+| `required_parameter` | operation, name, location | service documents |
+| `request_field` | operation, field path (`hooks[].handler.action`), last name | service documents |
+| `required_request_field` | operation, field path, last name | service documents: required in every enclosing object and every union branch |
+| `response_field` | operation, field path, last name | service documents, 2xx responses |
+| `strict_request` | operation | service documents: `additionalProperties: false` |
 | `route` | service, method, path, file, line | service route code |
 | `route_schema` | service, method, path, part (`body`/`query`), file, schema | service route code |
 | `inline_strict_route` | service, method, path, part | a route's own schema is `.strict()` |
 | `strict_schema` | file, name | `const name = z.object(..).strict()` |
 | `union_member` | file, union, member | `z.union`/`z.discriminatedUnion` members; `*` for a non-strict inline member |
-| `client_operation` | client, function, method, path, file, line | `generated_from` specs, functions named by `call_names` |
-| `client_parameter` | client, method, path, name, location, file, line | client specs; the file and line of the client method sending the operation, or the spec with line 0 |
-| `client_method_name` | client, method, path, name, file, line | the field names a client method's code uses, whatever its copy of the spec declares |
-| `calls_path` | consumer, method (`*` if unknown), path, file, line | consumer code: path strings and request calls |
-| `calls_client` | consumer, chain, file, line | consumer code: calls through client receivers and imported client functions |
+| `client_operation` | client, function, method, path, file, line | `generated_from` documents of `http.generated_client`, functions named by `call_names` |
+| `client_parameter` | client, method, path, name, location, file, line | a client's documents; the file and line of the client method sending the operation, or the document with line 0 |
+| `client_method_name` | client, method, path, name, file, line | the field names a client method's code uses, whatever its documents declare |
+| `calls_path` | consumer, method (`*` if unknown), path, file, line | service code: path strings and request calls |
+| `calls_client` | consumer, chain, file, line | service code: calls through client receivers and imported client functions |
 | `mentions` | scope, name | names used as fields: object keys, members, keyword arguments, dictionary keys, struct fields, JSON tags |
+| `calls_function` | scope, name | functions a function calls by name |
 | `in_file` | scope, file | which file a consumer or function is in |
+| `named` | function, simple name | `update` for `Accounts.update` |
 | `imports` | file, imported file | relative and alias imports; for Go, files of one package |
-| `addressed_to` | path, service | a path called in code that is under a prefix the service owns: derived from its specs, or its `path_prefixes` |
-| `part_of_service` | file, service | files of a consumer entry that names its `service` |
-| `rejects_unknown_fields` | service | manifest `rejects_unknown_fields: true` |
+| `addressed_to` | path, service | a path called in code that is under a prefix the service owns, derived from its documents |
+| `part_of_service` | file, service | a service's own files |
+| `rejects_unknown_fields` | service | `rejects_unknown_fields: true` on the service |
+| `public_operation`, `public_service` | operation; service | stated in a graph, see [Checking links](check.md#is-it-wired-up) |
 
 ## Recipes
 
-**Turn a check off.** Delete the requirement from your copy, or lower its severity to `info` to keep seeing it without failing CI.
+**Turn a check off.** In a `check main`, run the rest and skip it, or lower its severity to keep seeing it without failing CI:
 
-**Ignore a known exception.** Declare it and exclude it:
+```lm
+import lemma.http
 
-```yaml
-relations:
-  allowed_removal: { args: [Text], sources: [declared] }    # operation
-facts:
-  - { relation: allowed_removal, values: ["DELETE /v1/legacy/things/{}"] }
-requirements:
-  consumer_calls_removed_operation:
-    when: calls(c, op, f, l), removed_operation(op), !allowed_removal(op)
-    severity: error
-    explain: "{c} calls {op}, which no longer exists ({f}:{l})"
+check main {
+    run lemma.http.*
+    run lemma.http.consumer_calls_changed_operation { severity: warning }
+    skip lemma.http.consumer_sends_ignored_parameter
+}
 ```
 
-**Add a check.** Say a team never removes a response field without a deprecation period. Make every removed response field an error, whoever reads it:
+**Allow a known finding.** An `allow` keeps it visible, with a reason and an expiry date. See [Allowances](language.md#allowances).
 
-```yaml
-requirements:
-  response_field_removed:
-    when: removed_response_field(op, fld, leaf)
-    severity: error
-    explain: "{op} no longer returns `{fld}`"
-```
+**Add a check.** Say a team never removes a response field without a deprecation period. The example at the top of this page makes every removed response field an error, whoever reads it.
 
-**Look before writing a requirement.** Print a relation to see what a rule concludes on a real change:
+**Look before writing a requirement.** Print a relation to see what Lemma concludes at the working directory (`calls`, `uses`), and explain a finding on a real change to see the facts behind it:
 
 ```sh
-lemma verify manifest.yaml --relation removed_response_field --relation uses --json
+lemma verify --relation calls --relation uses --json
+lemma check --change billing --base main~1 --head main --explain
 ```
 
-**Test a grammar.** Keep manifests for changes whose right answer you know, from replays of your history ([Onboarding](onboarding.md#6-calibrate-on-history)), and run them after every grammar change. Facts declared in the grammar make small self-contained cases:
+`lemma verify` reads one snapshot, so a relation that compares snapshots, such as `removed_response_field`, is empty there.
 
-```yaml
-facts:
-  - { relation: operation, values: [billing, "GET /v1/invoices", GET, /v1/invoices], snapshot: base }
-  - { relation: calls_path, values: ["web:src/a.ts::load", GET, /v1/invoices, "web:src/a.ts", 3] }
-```
+**Test a requirement.** Keep past changes whose right answer you know, from replays of your history ([Onboarding](onboarding.md#6-calibrate-on-history)), and replay them after every change to a requirement.
 
 ## Engines
 
-Rules run on [Soufflé](https://souffle-lang.github.io) when it is installed and on Lemma's built-in engine otherwise; `--engine souffle` or `--engine reference` picks one. Both give the same results; Soufflé is about six times faster on large manifests. Soufflé's numbers are 32-bit: a fact with a larger number is reported, not truncated.
+Rules run on [Soufflé](https://souffle-lang.github.io) when it is installed and on Lemma's built-in engine otherwise; `--engine souffle` or `--engine reference` picks one. Both give the same results; Soufflé is about six times faster on large systems. Soufflé's numbers are 32-bit: a fact with a larger number is reported, not truncated.

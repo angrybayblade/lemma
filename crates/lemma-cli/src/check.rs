@@ -1,4 +1,4 @@
-//! `lemma check`: checks the links declared in composable lemma.yaml files.
+//! `lemma check`: checks the links a composed description declares and infers.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -13,16 +13,17 @@ use lemma_graph::{
 use lemma_logic::ReferenceEngine;
 use lemma_souffle::SouffleEngine;
 
-use crate::anchors::CheckReferences;
 use crate::cli::CheckArgs;
 
 /// Exit code when a finding is an error.
 const EXIT_VIOLATED: u8 = 4;
+/// Exit code when the check finished without covering every repository.
+const EXIT_INCOMPLETE: u8 = 5;
 
-pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCode {
+pub(crate) fn run(args: &CheckArgs, asks_daemon: bool, json: bool) -> ExitCode {
     #[cfg(unix)]
-    if lsp.asks_daemon && !args.anchors {
-        if let Some(answered) = crate::sentry::ask(std::env::args().skip(1).collect()) {
+    if asks_daemon {
+        if let Some(answered) = crate::sentry::ask(asked_arguments(args)) {
             let _ = std::io::stdout().write_all(answered.stdout.as_bytes());
             let _ = std::io::stderr().write_all(answered.stderr.as_bytes());
             return ExitCode::from(answered.exit_code);
@@ -34,7 +35,7 @@ pub(crate) fn run(args: &CheckArgs, lsp: &LanguageServers, json: bool) -> ExitCo
         out: &mut stdout,
         err: &mut stderr,
     };
-    let exit_code = answer(args, lsp, json, None, &mut streams);
+    let exit_code = answer(args, json, None, &mut streams);
     if args.since.is_some() {
         let _ = writeln!(
             streams.err,
@@ -63,12 +64,11 @@ pub(crate) struct Served<'a> {
 /// Checks as `args` ask, printing the report to `streams`; the exit code.
 pub(crate) fn answer(
     args: &CheckArgs,
-    lsp: &LanguageServers,
     json: bool,
     served: Option<&Served<'_>>,
     streams: &mut Streams<'_>,
 ) -> u8 {
-    match evaluate(args, lsp, served) {
+    match evaluate(args, served) {
         Ok(report) => print(&report, args, json, None, streams),
         Err(error) => {
             let _ = writeln!(streams.err, "error: {error:#}");
@@ -78,17 +78,32 @@ pub(crate) fn answer(
 }
 
 /// The report of the check `args` ask for.
-pub(crate) fn evaluate(
-    args: &CheckArgs,
-    lsp: &LanguageServers,
-    served: Option<&Served<'_>>,
-) -> anyhow::Result<Report> {
-    let options = options(args, served);
+pub(crate) fn evaluate(args: &CheckArgs, served: Option<&Served<'_>>) -> anyhow::Result<Report> {
     let manifest = served.map_or_else(
-        || entry_manifest(&args.manifest),
+        || args.manifest.clone(),
         |served| served.manifest.to_path_buf(),
     );
-    check(&manifest, args, &options, lsp)
+    let directory = manifest
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let cloning = crate::cloning::permitted(args.no_clone, directory)?;
+    let options = check_options(args, cloning, served);
+    if args.evaluation.as_deref() == Some("both") {
+        return check_both(&manifest, args, &options);
+    }
+    check(&manifest, args, &options)
+}
+
+/// The command line sentry is asked with: as given, with `--no-clone` when
+/// the person declined cloning at the prompt, which only `args` records.
+#[cfg(unix)]
+fn asked_arguments(args: &CheckArgs) -> Vec<String> {
+    let mut asked: Vec<String> = std::env::args().skip(1).collect();
+    if args.no_clone && !asked.iter().any(|argument| argument == "--no-clone") {
+        asked.push("--no-clone".to_owned());
+    }
+    asked
 }
 
 /// What sentry adds to a report it answers with: the token naming the
@@ -136,11 +151,7 @@ pub(crate) fn print(
     if printed.is_err() {
         return 1;
     }
-    let violated = report
-        .findings
-        .iter()
-        .any(|finding| finding.severity == Severity::Error);
-    if violated { EXIT_VIOLATED } else { 0 }
+    exit_code(report)
 }
 
 /// The token line under a whole report, saying first when `--since` asked
@@ -209,8 +220,27 @@ fn print_json_noted(
     writeln!(out)
 }
 
-/// What to check, from the command's arguments.
-fn options(args: &CheckArgs, served: Option<&Served<'_>>) -> CheckOptions {
+/// The command's exit code: findings first, then whether it covered all.
+fn exit_code(report: &Report) -> u8 {
+    let violated = report
+        .findings
+        .iter()
+        .any(|finding| finding.severity == Severity::Error);
+    if violated {
+        return EXIT_VIOLATED;
+    }
+    if report.not_checked.is_empty() {
+        return 0;
+    }
+    EXIT_INCOMPLETE
+}
+
+/// What `args` ask to check.
+fn check_options(
+    args: &CheckArgs,
+    cloning: lemma_graph::repos::Cloning,
+    served: Option<&Served<'_>>,
+) -> CheckOptions {
     let change = args.change.as_ref().map(|repository| Change {
         repository: repository.clone(),
         base: args.base.clone(),
@@ -224,12 +254,15 @@ fn options(args: &CheckArgs, served: Option<&Served<'_>>) -> CheckOptions {
             _ => Level::Audit,
         }),
         cache: lemma_graph::repos::cache_directory(),
+        cloning,
+        explain: args.explain,
+        relations: Vec::new(),
         facts_cache: crate::verify::facts_cache(),
         evaluation: match args.evaluation.as_deref() {
             Some("full") => lemma_verify::Evaluation::Full,
             _ => lemma_verify::Evaluation::Demand,
         },
-        list_links: args.links,
+        list_links: false,
         run_checkers: !args.no_run,
         runs_base_checkers: args.run_base,
         select: args.select.clone(),
@@ -238,7 +271,7 @@ fn options(args: &CheckArgs, served: Option<&Served<'_>>) -> CheckOptions {
     }
 }
 
-/// Where `--anchors` gets language servers from.
+/// Where `lemma verify` gets language servers from.
 pub(crate) struct LanguageServers {
     /// Whether to ask the running daemon's warm servers first.
     pub asks_daemon: bool,
@@ -246,66 +279,84 @@ pub(crate) struct LanguageServers {
     pub providers_file: Option<PathBuf>,
 }
 
-/// The manifest a check asked from `cwd` starts from, made absolute: what
-/// sentry is attached to.
+/// The description a check asked from `cwd` starts from, made absolute:
+/// what sentry is attached to.
 pub(crate) fn entry_manifest_in(cwd: &Path, manifest: &Path) -> PathBuf {
-    let is_default = manifest == Path::new("lemma.yaml");
-    let absolute = cwd.join(manifest);
-    let language = absolute.with_file_name("mod.lm");
-    if is_default && !absolute.exists() && language.exists() {
-        return language;
-    }
-    absolute
+    cwd.join(manifest)
 }
 
-/// The manifest to start from: `mod.lm` when the default `lemma.yaml` is
-/// absent and it is there.
-fn entry_manifest(manifest: &Path) -> PathBuf {
-    let is_default = manifest == Path::new("lemma.yaml");
-    let language = manifest.with_file_name("mod.lm");
-    if is_default && !manifest.exists() && language.exists() {
-        log::info!("reading mod.lm: there is no lemma.yaml");
-        return language;
-    }
-    manifest.to_path_buf()
-}
-
-fn check(
-    manifest: &Path,
-    args: &CheckArgs,
-    options: &CheckOptions,
-    lsp: &LanguageServers,
-) -> anyhow::Result<Report> {
-    let mut references = args
-        .anchors
-        .then(|| CheckReferences::new(lsp.asks_daemon, lsp.providers_file.clone()));
-    let references = references
-        .as_mut()
-        .map(|references| references as &mut dyn lemma_graph::References);
+fn check(manifest: &Path, args: &CheckArgs, options: &CheckOptions) -> anyhow::Result<Report> {
     if let Some(cache) = &options.facts_cache {
         log::debug!("facts cache: {}", cache.directory.display());
     }
     let report: Result<Report, GraphError> = match args.engine.as_deref() {
         Some("reference") => {
             log::info!("rule engine: reference (--engine reference)");
-            lemma_graph::check(manifest, options, &ReferenceEngine, references)
+            lemma_graph::check(manifest, options, &ReferenceEngine, None)
         }
         Some("souffle") => {
             log::info!("rule engine: souffle (--engine souffle)");
-            lemma_graph::check(manifest, options, &SouffleEngine::find()?, references)
+            lemma_graph::check(manifest, options, &SouffleEngine::find()?, None)
         }
         Some(other) => anyhow::bail!("unknown engine `{other}`; use `souffle` or `reference`"),
         None => {
             if let Ok(souffle) = SouffleEngine::find() {
                 log::info!("rule engine: souffle");
-                lemma_graph::check(manifest, options, &souffle, references)
+                lemma_graph::check(manifest, options, &souffle, None)
             } else {
                 log::info!("rule engine: reference (souffle is not installed)");
-                lemma_graph::check(manifest, options, &ReferenceEngine, references)
+                lemma_graph::check(manifest, options, &ReferenceEngine, None)
             }
         }
     };
     Ok(report?)
+}
+
+/// Checks with full and with change-driven evaluation, and fails if they
+/// found different things: a selection that missed a file a finding rests
+/// on. The change-driven report, otherwise.
+fn check_both(manifest: &Path, args: &CheckArgs, options: &CheckOptions) -> anyhow::Result<Report> {
+    let evaluated = |evaluation| CheckOptions {
+        evaluation,
+        ..options.clone()
+    };
+    let full = check(manifest, args, &evaluated(lemma_verify::Evaluation::Full))?;
+    let demand = check(manifest, args, &evaluated(lemma_verify::Evaluation::Demand))?;
+    let differences = findings_only_in_one(&full, &demand);
+    anyhow::ensure!(
+        differences.is_empty(),
+        "change-driven evaluation found other findings than full evaluation:{differences}"
+    );
+    Ok(demand)
+}
+
+/// The findings of one report and not the other, a line each.
+fn findings_only_in_one(full: &Report, demand: &Report) -> String {
+    let described = |report: &Report| -> std::collections::BTreeSet<String> {
+        report
+            .findings
+            .iter()
+            .map(|finding| {
+                let origin = if finding.introduced {
+                    ""
+                } else {
+                    " (already there)"
+                };
+                format!(
+                    "{:?} {} {} {}{origin}",
+                    finding.severity, finding.check, finding.link, finding.message
+                )
+            })
+            .collect()
+    };
+    let (full_findings, demand_findings) = (described(full), described(demand));
+    let missed = full_findings
+        .difference(&demand_findings)
+        .map(|finding| format!("\n  only in full: {finding}"));
+    let extra = demand_findings
+        .difference(&full_findings)
+        .map(|finding| format!("\n  only in demand: {finding}"));
+    missed.chain(extra).collect()
 }
 
 fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Result<()> {
@@ -319,9 +370,6 @@ fn print_text(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Resul
         .map_or_else(String::new, |count| format!(", {count} inferred"));
     writeln!(out, "{} links{inferred}, level {level}", report.links)?;
     print_repositories(out, report)?;
-    if let Some(list) = &report.link_list {
-        print_link_list(out, list, all)?;
-    }
     print_behaviors(out, report)?;
     for finding in &report.findings {
         if finding.severity == Severity::Info && !all {
@@ -351,6 +399,9 @@ fn print_finding(out: &mut dyn Write, finding: &Finding, all: bool) -> std::io::
         "        [{}] {}  ({origin})",
         finding.check, finding.link
     )?;
+    for line in finding.derivation.iter().flat_map(|text| text.lines()) {
+        writeln!(out, "        {line}")?;
+    }
     print_affects(out, &finding.affects, all)
 }
 
@@ -363,6 +414,7 @@ fn print_counts(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Res
             .filter(|finding| finding.severity == severity)
             .count()
     };
+    print_not_checked(out, report)?;
     let infos = count(Severity::Info);
     let hidden = if all || infos == 0 {
         ""
@@ -563,7 +615,11 @@ const LISTED_CALLS_PER_GROUP: usize = 10;
 
 /// Every link: those declared, then the inferred calls by calling
 /// repository and the service called, each group's count first.
-fn print_link_list(out: &mut dyn Write, list: &LinkList, all: bool) -> std::io::Result<()> {
+pub(crate) fn print_link_list(
+    out: &mut dyn Write,
+    list: &LinkList,
+    all: bool,
+) -> std::io::Result<()> {
     writeln!(out, "declared links: {}", list.declared.len())?;
     for link in &list.declared {
         writeln!(out, "  {link}")?;
@@ -623,6 +679,17 @@ fn plural(count: usize, noun: &str) -> String {
     }
 }
 
+fn print_not_checked(out: &mut dyn Write, report: &Report) -> std::io::Result<()> {
+    for skipped in &report.not_checked {
+        writeln!(
+            out,
+            "not checked: {} links to {} (not cloned)",
+            skipped.links, skipped.repository
+        )?;
+    }
+    Ok(())
+}
+
 fn print_repositories(out: &mut dyn Write, report: &Report) -> std::io::Result<()> {
     let at = |commit: &Option<String>| {
         commit.as_deref().map_or_else(
@@ -637,7 +704,7 @@ fn print_repositories(out: &mut dyn Write, report: &Report) -> std::io::Result<(
             format!("{}..{}", at(&repository.base), at(&repository.head))
         };
         let note = if repository.manifest_from_working_directory {
-            "  (lemma.yaml from the working directory)"
+            "  (the description from the working directory)"
         } else {
             ""
         };

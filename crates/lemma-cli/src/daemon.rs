@@ -55,7 +55,7 @@ enum Request {
         path_env: Option<Vec<u8>>,
     },
     /// Where a symbol under a root that need not be indexed is used, asked
-    /// by `lemma check --anchors` of the daemon's warm language servers.
+    /// by `lemma verify` of the daemon's warm language servers.
     Uses {
         build: String,
         question: UsesRequest,
