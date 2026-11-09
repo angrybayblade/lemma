@@ -1,6 +1,6 @@
 # Sentry: warm paths for checks
 
-**Status: proposal, 2026-11-08.** The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion that followed the November agent benchmark. Everything else is proposal. Measurements come from the `hill-climb` branch (commit 94eb04b), on a five-repository workspace of TypeScript, Python and Go services with their dependencies installed. Agent runs come from a private benchmark on the same workspace, whose figures are not recorded here.
+**Status: experimental, 2026-11-09.** Built as far as [Rollout](#rollout) records, opt-in and labelled experimental: its answers matched fresh checks, but agent runs showed no time or cost benefit. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion that followed the November agent benchmark. Everything else is proposal. Measurements come from the `hill-climb` branch (commit 94eb04b), on a five-repository workspace of TypeScript, Python and Go services with their dependencies installed. Agent runs come from a private benchmark on the same workspace, whose figures are not recorded here.
 
 ## Problem
 
@@ -262,7 +262,15 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
    - One answer is held per ask, up to 16, instead of only the last.
    - A batch drops only the files it touched. Once changes settle, it lists the repository and parses the changed code as the last check read it, and attaching lists each repository. Nothing is evaluated ahead of an ask. Changes settle after 200 ms, or at 2 s; a batch of more than 1,000 paths, or one that lost events, only lists.
 
-   On a five-repository workspace, an ask after an edit takes a median of 1.9 s against 2.7 s for a fresh check, and 2.1 s before this work. An unchanged ask takes 0.01 s. Whether the batch had settled makes no measurable difference (1.94 s settled, 1.92 s raced), since parsing one file takes milliseconds; the gain comes from keeping what did not change. A traced ask after an edit (2.0 s) spends 0.23 s composing manifests, 0.13 s on declared links, 0.28 s before listing, 0.23 s reading documents, 0.08 s on services and clients, 0.25 s in the reference engine, 0.39 s choosing consumer files and reading their facts, and 0.34 s in Soufflé. Preparation covers listings and facts only: the fast and slow batches of section 1, cancellation, and keeping composed manifests and documents are not built. Keeping manifests and documents across batches that do not touch them would save about a quarter of such an ask, and a batch of files no check reads (editing a test file cost 1.8 s) may not need an evaluation at all. On a generated 100k-file system the first ask after attaching took 16 s and the first after an edit 11 s (a fresh check, run second, took 0.5 s and 2.4 s), and later asks about 1.4 s, so the memory it fills is paid for once per attachment.
+   On a five-repository workspace, an ask after an edit takes a median of 1.9 s against 2.7 s for a fresh check, and 2.1 s before this work. An unchanged ask takes 0.01 s. Whether the batch had settled makes no measurable difference (1.94 s settled, 1.92 s raced), since parsing one file takes milliseconds; the gain comes from keeping what did not change. A traced ask after an edit (2.0 s) spends 0.23 s parsing OpenAPI documents as it loads, 0.13 s on declared links, 0.28 s before listing, 0.23 s reading documents, 0.08 s on services and clients, 0.25 s in the reference engine, 0.39 s choosing consumer files and reading their facts, and 0.34 s in Soufflé. Preparation covers listings and facts only: the fast and slow batches of section 1 and cancellation are not built. On a generated 100k-file system the first ask after attaching took 16 s and the first after an edit 11 s (a fresh check, run second, took 0.5 s and 2.4 s), and later asks about 1.4 s, so the memory it fills is paid for once per attachment.
+
+6. **After the trace.**
+   - Parsed OpenAPI documents are kept by their content, so a batch that does not touch one does not parse it again.
+   - A batch touching only test code or prose leaves answers standing, unless the last check read one of those files or ran a behavior. This assumes a schema or adapter command does not depend on test code or prose.
+
+   An ask after an edit now takes a median of 1.65–1.69 s. Every answer across 982 differential cases on all builds equalled a check with nothing kept, and none fell back. Lost events and resource limits were not simulated.
+
+   **A second round, stopped early (build 1d7bf8e),** showed the same. The tasks that finished differ between the arms, so it gives no like-for-like comparison. Checks are a small part of an agent's run and the model most of it, which is the ceiling on what sentry can save an agent.
 
 **Later:**
 
