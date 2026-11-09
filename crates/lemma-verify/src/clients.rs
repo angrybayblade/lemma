@@ -355,10 +355,7 @@ mod tests {
         let typed = clients.resolve(&call("this.client.apiKeys.list"));
         let python = clients.resolve(&call("self._client.api_keys.update_status"));
 
-        assert_eq!(
-            typed.map(|found| found.path.as_str()),
-            Some("/v1/api_keys")
-        );
+        assert_eq!(typed.map(|found| found.path.as_str()), Some("/v1/api_keys"));
         assert_eq!(python.map(|found| found.method.as_str()), Some("PATCH"));
     }
 
@@ -417,14 +414,8 @@ mod tests {
         assert!(clients.is_client_module("@acme/client/resources"));
         assert!(clients.is_client_module("acme_client.types"));
         assert!(!clients.is_client_module("@acme/clientele"));
-        assert!(starts_locally(
-            &call("this.client.apiKeys.list"),
-            &imported
-        ));
-        assert!(!starts_locally(
-            &call("prisma.apiKey.delete"),
-            &imported
-        ));
+        assert!(starts_locally(&call("this.client.apiKeys.list"), &imported));
+        assert!(!starts_locally(&call("prisma.apiKey.delete"), &imported));
     }
 
     #[test]
