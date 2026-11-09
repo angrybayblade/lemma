@@ -3,3 +3,6 @@
 .experiments/
 .test/
 __pycache__/
+
+# Kept locally until it becomes a coherent component system.
+brand/

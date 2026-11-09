@@ -72,7 +72,7 @@ Links Lemma cannot infer (queues, function runtimes) can be declared, and a brea
 | Limitation | Effect | Until fixed |
 | --- | --- | --- |
 | Binaries are unstripped | Larger downloads | Fine for now |
-| No Windows build | — | Use WSL |
+| No Windows build | Does not run natively on Windows | Use WSL |
 | CI's macOS jobs moved to `macos-15` runners in rc1, after GitHub stopped running `macos-14` ones | Until a run passes on them, macOS builds and tests are unproven in CI | Run `cargo fmt`, `cargo clippy` and `cargo test` locally ([CONTRIBUTING](../CONTRIBUTING.md)) |
 | Soufflé is optional and not bundled | `lemma check` is about six times slower without it, same results | `brew install souffle` |
 
