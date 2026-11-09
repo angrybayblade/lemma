@@ -50,9 +50,9 @@ Open `http://127.0.0.1:8765/`. The Site source builds independently from its ven
 - `scripts/build_change_story_art.py`: config-driven SVG labels, fallback geometry, and browser-data generation.
 - `src/hero.svg`, `workflow.svg`, `verify.svg`: original illustrations embedded at build time.
 - `scripts/build_landing_art.py`: deterministic SVG and sharing-artwork generator.
-- `scripts/sync_brand.mjs`: sync the canonical brand system and standalone mark.
+- `scripts/sync_brand.mjs`: sync the brand system and standalone mark. Needs a local `brand/` folder, which is not in the repository.
 - `scripts/build.mjs`: assemble public output under `dist/`.
-- `design-system/`: the files of the design system the site needs. The rest, and `brand/system/`, are out of date and ignored for now.
+- `design-system/`: the files of the design system the site needs. The rest, and `brand/`, are ignored for now.
 - `assets/social-card.svg`, `.png`: page-specific sharing artwork.
 - `scripts/export_previews.cjs`: desktop, full-page, mobile, and sharing-image exports.
 
@@ -63,8 +63,6 @@ The earlier architectural illustration and its generator are retained as explora
 From the repository root:
 
 ```sh
-python3 brand/system/scripts/build.py --package
-node website/scripts/sync_brand.mjs
 python3 website/scripts/build_landing_art.py
 node website/scripts/build.mjs
 ```
