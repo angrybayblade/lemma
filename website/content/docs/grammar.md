@@ -153,6 +153,7 @@ When any requirement is none of these, Lemma reads every consumer file and the r
 | `union_member` | file, union, member | `z.union`/`z.discriminatedUnion` members; `*` for a non-strict inline member |
 | `client_operation` | client, function, method, path, file, line | `generated_from` documents of `http.generated_client`, functions named by `call_names` |
 | `client_parameter` | client, method, path, name, location, file, line | a client's documents; the file and line of the client method sending the operation, or the document with line 0 |
+| `client_method_name` | client, method, path, name, file, line | the field names a client method's code uses, whatever its documents declare |
 | `calls_path` | consumer, method (`*` if unknown), path, file, line | service code: path strings and request calls |
 | `calls_client` | consumer, chain, file, line | service code: calls through client receivers and imported client functions |
 | `mentions` | scope, name | names used as fields: object keys, members, keyword arguments, dictionary keys, struct fields, JSON tags |

@@ -39,6 +39,7 @@ HTTP contracts between services, their generated clients and consumers.
 - relation `code_names_path`: `(service: Text, path: Text)`
 - relation `client_operation`: `(client: Text, chain: Text, method: Text, path: Text, file: Text, line: Int)`
 - relation `client_parameter`: `(client: Text, method: Text, path: Text, name: Text, location: Text, file: Text, line: Int)`
+- relation `client_method_name`: `(client: Text, method: Text, path: Text, name: Text, file: Text, line: Int)`
 - relation `calls_path`: `(consumer: Text, method: Text, path: Text, file: Text, line: Int)`
 - relation `calls_client`: `(consumer: Text, chain: Text, file: Text, line: Int)`
 - relation `mentions`: `(scope: Text, name: Text)`
@@ -65,6 +66,7 @@ HTTP contracts between services, their generated clients and consumers.
 - rule `sends`: `(c: Text, n: Text)`
 - rule `removed_operation`: `(op: Text)`
 - rule `kept_operation`: `(op: Text)`
+- rule `still_a_parameter`: `(op: Text, n: Text)`
 - rule `removed_parameter`: `(op: Text, n: Text, loc: Text)`
 - rule `new_required_parameter`: `(op: Text, n: Text, loc: Text)`
 - rule `removed_request_field`: `(op: Text, fld: Text, leaf: Text)`
@@ -102,6 +104,7 @@ HTTP contracts between services, their generated clients and consumers.
 - requirement `consumer_uses_removed_response_field`: `requirement`
 - requirement `consumer_calls_changed_operation`: `requirement`
 - requirement `client_declares_removed_parameter`: `requirement`
+- requirement `client_code_sends_removed_parameter`: `requirement`
 - requirement `client_calls_removed_operation`: `requirement`
 - requirement `consumer_calls_unrouted_operation`: `requirement`
 - requirement `operation_without_route`: `requirement`

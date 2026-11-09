@@ -227,9 +227,10 @@ Checks a change against every repository the entry module composes: declared lin
 | --- | --- |
 | `--change <name>` | The changed repository: its name (`billing`), its directory (`web-app`, for the repository named `web_app`), or `self`. |
 | `--base <commit>`, `--head <commit>` | The commits before and with the change. Without `--head`, the working directory, uncommitted edits included. Without `--base`, where the checked-out commit left the repository's default branch (the branch a remote's `HEAD` names, else `main`, `master`, `develop`, `trunk` or `init.defaultBranch` on a remote, `origin` first, then locally): on a feature branch, everything the branch adds; on the default branch, only uncommitted edits. When no such branch shares the commit's history, as in a shallow CI checkout, a merge commit's first parent is the base (CI checks a pull request out as a merge); otherwise a clean checkout is an error naming `--base`, since the change would be empty and pass unchecked. So `lemma check --change billing` checks the work in progress. |
-| `--level <level>` | `audit` (problems are warnings), `check` (problems and violated behaviors are errors) or `strict` (error-severity behaviors that are unknown or stale are errors too, and so is code an adapter could not read, whole or in part: in CI, a job without the dependencies an adapter needs fails instead of checking committed documents only). Overrides the workspace's `level`. |
+| `--level <level>` | `audit` (problems are warnings), `check` (problems and violated behaviors are errors) or `strict` (error-severity behaviors that are unknown or stale are errors too, and so is code an adapter or schema resolver could not read, whole or in part: in CI, a job without the dependencies an adapter or resolver needs fails instead of checking committed documents only; below `strict` that is a warning, `[adapter]` or `[resolver]`). Overrides the workspace's `level`. |
 | `--all` | List informational findings too, not just their count. |
-| `--select <name>` | Run this check of a parent `mod.lm` instead of its `check main`; or, when no check has the name, just the behavior or requirement it names, by address (`checks::retries`, `lemma.http.operation_without_consumer`) or by name alone when only one thing has it. A behavior that takes arguments runs only from a check. |
+| `--select <name>` | Run this check of a parent `mod.lm` instead of its `check main`; or, when no check has the name, just the behavior or requirement it names, by address (`checks::retries`, `lemma.http.operation_without_consumer`) or by name alone when only one thing has it. A behavior that takes arguments runs only from a check. From a description with no program, it names one requirement of the built-in HTTP checks and lists only its findings. |
+| `--since <token>` | With the daemon's sentry attached to the workspace: list only the findings that came and went since the answer the token names (the `sentry token:` line under an earlier answer with the same options), then the counts. A token sentry no longer keeps gets the whole report, saying so. |
 | `--no-run` | Run no checkers: behaviors use the evidence already kept in Lemma's cache. A case whose inputs changed since is `stale`; one never run is `unknown`. |
 | `--run-base` | With `--change`, also run checkers at the base, so a case that ended violated before the change and holds after it is reported as fixed: the behavior's line ends with `N fixed by this change`, and each fixed case follows with how it ended at the base, its operands' values there included. Without it, the base uses kept evidence only and a fix is reported only when that evidence was kept. Doubles the checkers' runs when nothing is kept. |
 | `--engine <name>` | The rule engine for inferred links: `souffle` or `reference`. Default: Soufflé if installed. |
@@ -249,14 +250,20 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 
 | Command | Meaning |
 | --- | --- |
-| `lemma daemon status` | Whether it runs as a login service, and its language servers: starting, running or paused, how long idle, and memory. |
+| `lemma daemon status` | Whether it runs as a login service; its language servers: starting, running or paused, how long idle, and memory; and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. |
 | `lemma daemon stop` | Stop the running daemon. |
 | `lemma daemon install` | Run the daemon as a login service (launchd on macOS, systemd on Linux), so it is already up when an agent asks its first question. It is restarted only if it crashes, and a command that finds it stopped starts it through the service. The service keeps the `PATH` of the shell that installed it; run `install` again after installing a toolchain elsewhere. |
 | `lemma daemon uninstall` | Remove the login service and stop its daemon. |
 | `lemma daemon lsp [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |
 | `lemma daemon lsp start [path] [--language <l>] [--provider <id>] [--wait]` | Start those servers in the daemon, in the background, or with `--wait` until each has loaded its project, reporting how long it took or why it failed (exit 1). A language's providers are tried in order, as a lookup tries them: when the first cannot start (typescript-language-server without a TypeScript it can use), the next serves. |
 | `lemma daemon lsp stop [path] [--language <l>] [--provider <id>]` | Stop those servers. |
+| `lemma daemon sentry start [manifest]` | Attach the daemon's sentry to a workspace (its `mod.lm`, by default the one in this directory). Sentry watches the workspace's repositories, and `lemma check` on that workspace is then answered by the daemon: what earlier checks read is kept and only what changed is read again, and a check is answered again at once when nothing it read changed. The report is the same as a check run on its own. It attaches only to a daemon already running, to one workspace at a time. |
+| `lemma daemon sentry stop` | Detach sentry. It also detaches when the workspace's directory is gone and when the daemon exits. |
+| `lemma daemon sentry status` | The workspace, the directories watched in each repository, and how many checks sentry answered and reused. |
+| `lemma daemon sentry events [--since <token>] [--wait <duration>]` | What happened since a token, a line each: repositories whose files changed, and checks answered (reused or checked, how long, and their counts), then the latest token. With `--wait`, it waits that long for an event when there is none yet, for a hook or a script to follow sentry. `--json` prints the events. |
 | `lemma daemon --idle-secs <n>` | Run in the foreground, exiting after this many seconds without a command instead of the configured `idle_exit`. |
+
+Sentry is experimental and off unless you start it: its answers match a fresh check, but it can change or go away between releases.
 
 On Linux, `install` uses a systemd user unit. On a server you reach over SSH there may be no user session to run it in; `sudo loginctl enable-linger $USER` gives you one that starts at boot and outlives your logins.
 
@@ -275,7 +282,12 @@ pause_after = "10m"        # pause idle language servers
 stop_after = "2h"          # stop idle language servers
 memory_budget = "none"     # e.g. "2GB": stop the least recently used servers beyond this
 warm_on_activity = true    # start a project's servers again when its files change
+
+[sentry]
+auto_attach = false        # attach sentry to a workspace on its first `lemma check`
 ```
+
+Under each report it answers, sentry adds a line `sentry token: <token>`, and JSON output a `sentry` object; the findings and the exit code are the same as a check run on its own. A token stays the same while nothing a check reads changes. Sentry answers a check only from a daemon already running; `lemma check` never starts one for it. A check that asks for logs (`-l`) or for anchors (`--anchors`) runs in its own process, and `LEMMA_SENTRY=off` keeps every check there. A check sentry answers runs resolvers, adapters and checkers with the environment of the process that asked, as a check run on its own does. `auto_attach` applies only in the user's own settings, and never when `CI` is set. `LEMMA_DAEMON_SOCKET` names another socket for the daemon, to run a separate one.
 
 Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `none`. The values above are the defaults. The daemon rejects unknown settings, so a typo shows up instead of being ignored; a file that stops parsing while the daemon runs leaves the previous settings in force.
 
