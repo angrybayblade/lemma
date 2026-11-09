@@ -72,6 +72,8 @@ claude mcp add lemma -- lemma mcp
 
 Configure other MCP clients with the same command (`lemma mcp`, over stdin and stdout). Guide your agents explicitly: in Lemma's benchmark they used the tools mostly when guided to. Install the `lemma-usage` skill (below), or add this line to your agent instructions: "Use Lemma's tools for references, definitions and impact; use text search for strings and one-off lookups."
 
+For a change other code depends on, have the agent work in [Lemma mode](lemma-mode.md): it maps what the change reaches, checks each unit, and reports what it proved.
+
 ### Agent skills
 
 The release includes these skills for agents that support them (Claude Code reads `~/.claude/skills` and a project's `.claude/skills`):
