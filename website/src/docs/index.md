@@ -6,9 +6,9 @@ Connect your agent. Model your system. Check the next change.
 
 The quickstart walks through two repositories and a breaking change. Describe the system, see the finding, and make the next change with evidence.
 
-- **[Quickstart](quickstart.md)** — build a small workspace in about ten minutes.
-- **[Introduction](introduction.md)** — understand what Lemma checks and how the pieces fit.
-- **[Team setup](onboarding.md)** — connect your repositories, agents, and CI.
+- **[Quickstart](quickstart.md)**: build a small workspace in about ten minutes.
+- **[Introduction](introduction.md)**: understand what Lemma checks and how the pieces fit.
+- **[Team setup](onboarding.md)**: connect your repositories, agents, and CI.
 
 ## Follow the development loop
 
