@@ -108,6 +108,7 @@ A string in code counts as a path only if it contains a leading segment some ser
 | `consumer_uses_removed_request_field` | warning | A consumer names a request field the change removed or renamed; the operation now ignores it, so whatever it set no longer takes effect. |
 | `consumer_uses_removed_response_field` | warning | A consumer names a response field the change removed or renamed. |
 | `client_declares_removed_parameter` | error | A generated client still declares a parameter the service removed. |
+| `client_code_sends_removed_parameter` | error | A generated client's code still sends a parameter the service removed, though its copy of the spec no longer declares it. |
 | `client_calls_removed_operation` | error | A client function calls an operation the change removed. |
 | `consumer_calls_changed_operation` | info | A consumer calls an operation whose request changed, but never names the changed field. |
 | `consumer_calls_unrouted_operation` | error | A consumer calls an operation the spec still declares whose route the change removed: a deleted handler. Only for services whose routes are read. |

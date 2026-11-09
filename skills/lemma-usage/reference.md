@@ -53,6 +53,7 @@ Every command takes `--json`. Positions in JSON are zero-based.
 | `consumer_uses_removed_request_field` | warning | As above, where the operation ignores unknown fields |
 | `consumer_uses_removed_response_field` | warning | A consumer reads a response field the change removed |
 | `client_declares_removed_parameter` | error | A generated client still declares a removed parameter |
+| `client_code_sends_removed_parameter` | error | A generated client's code still sends a removed parameter; its copy of the spec was updated without generating the code again |
 | `client_calls_removed_operation` | error | A generated client method calls a removed operation |
 | `consumer_calls_changed_operation` | info | A consumer calls an operation whose request changed, but never names the changed field |
 | `consumer_calls_unrouted_operation` | error | A consumer calls an operation whose route the change removed, though the spec still declares it. Only when no route code still writes the path, so a route moved where Lemma cannot read it is not reported |

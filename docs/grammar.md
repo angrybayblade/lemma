@@ -169,6 +169,7 @@ When any requirement is none of these, every consumer file is read and the repor
 | `union_member` | file, union, member | `z.union`/`z.discriminatedUnion` members; `*` for a non-strict inline member |
 | `client_operation` | client, function, method, path, file, line | `generated_from` specs, functions named by `call_names` |
 | `client_parameter` | client, method, path, name, location, file, line | client specs; the file and line of the client method sending the operation, or the spec with line 0 |
+| `client_method_name` | client, method, path, name, file, line | the field names a client method's code uses, whatever its copy of the spec declares |
 | `calls_path` | consumer, method (`*` if unknown), path, file, line | consumer code: path strings and request calls |
 | `calls_client` | consumer, chain, file, line | consumer code: calls through client receivers and imported client functions |
 | `mentions` | scope, name | names used as fields: object keys, members, keyword arguments, dictionary keys, struct fields, JSON tags |

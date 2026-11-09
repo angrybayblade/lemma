@@ -24,6 +24,7 @@ export relation route(service: Text, method: Text, path: Text, file: Text, line:
 export relation code_names_path(service: Text, path: Text)
 export relation client_operation(client: Text, chain: Text, method: Text, path: Text, file: Text, line: Int)
 export relation client_parameter(client: Text, method: Text, path: Text, name: Text, location: Text, file: Text, line: Int)
+export relation client_method_name(client: Text, method: Text, path: Text, name: Text, file: Text, line: Int)
 export relation calls_path(consumer: Text, method: Text, path: Text, file: Text, line: Int)
 export relation calls_client(consumer: Text, chain: Text, file: Text, line: Int)
 // The function a name is mentioned in, or the file outside functions.
@@ -151,6 +152,10 @@ export rule kept_operation(op: Text) {
     (op) :-
         operation@base(s, op, m, p),
         operation@head(s, op, m, p)
+}
+
+export rule still_a_parameter(op: Text, n: Text) {
+    (op, n) :- parameter@head(op, n, _)
 }
 
 export rule removed_parameter(op: Text, n: Text, loc: Text) {
@@ -456,6 +461,20 @@ export require client_declares_removed_parameter {
         operation@base(_, op, m, p),
         removed_parameter(op, n, loc)
     message: "{cl} still declares {loc} parameter `{n}` on {op}, which the service removed ({f}:{l})"
+}
+
+// A client's copy of the spec can be updated without generating its code
+// again, which leaves the requirement above nothing to report: the code is
+// the evidence here. A parameter that only moved elsewhere is not removed.
+export require client_code_sends_removed_parameter {
+    severity: error
+    when:
+        client_method_name(cl, m, p, n, f, l),
+        operation@base(_, op, m, p),
+        removed_parameter(op, n, loc),
+        !client_parameter(cl, m, p, n, loc, f, l),
+        !still_a_parameter(op, n)
+    message: "{cl}'s code still sends {loc} parameter `{n}` on {op}, which the service removed ({f}:{l})"
 }
 
 export require client_calls_removed_operation {

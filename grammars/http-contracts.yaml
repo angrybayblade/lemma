@@ -50,6 +50,10 @@ relations:
     args: [Text]                       # client
     attributes: { method: Text, path: Text, name: Text, location: Text, file: Text, line: Number }
     sources: [spec]
+  client_method_name:
+    args: [Text]                       # client
+    attributes: { method: Text, path: Text, name: Text, file: Text, line: Number }
+    sources: [syntax]
   calls_path:
     args: [Text]                       # consumer
     attributes: { method: Text, path: Text, file: Text, line: Number }
@@ -147,6 +151,7 @@ rules:
   # operation is reported once, not once per field it had.
   - removed_operation(op) :- operation@base(s, op, m, p), !operation@head(s, op, m, p).
   - kept_operation(op) :- operation@base(s, op, m, p), operation@head(s, op, m, p).
+  - still_a_parameter(op, n) :- parameter@head(op, n, _).
   - removed_parameter(op, n, loc) :- parameter@base(op, n, loc), !parameter@head(op, n, loc), kept_operation(op).
   - new_required_parameter(op, n, loc) :- required_parameter@head(op, n, loc), !required_parameter@base(op, n, loc), kept_operation(op).
   - removed_request_field(op, fld, leaf) :- request_field@base(op, fld, leaf), !request_field@head(op, fld, leaf), kept_operation(op).
@@ -269,6 +274,14 @@ requirements:
     when: client_parameter(cl, m, p, n, loc, f, l), operation@base(_, op, m, p), removed_parameter(op, n, loc)
     severity: error
     explain: "{cl} still declares {loc} parameter `{n}` on {op}, which the service removed ({f}:{l})"
+
+  # A client's copy of the spec can be updated without generating its code
+  # again, which leaves the requirement above nothing to report: the code is
+  # the evidence here. A parameter that only moved elsewhere is not removed.
+  client_code_sends_removed_parameter:
+    when: client_method_name(cl, m, p, n, f, l), operation@base(_, op, m, p), removed_parameter(op, n, loc), !client_parameter(cl, m, p, n, loc, f, l), !still_a_parameter(op, n)
+    severity: error
+    explain: "{cl}'s code still sends {loc} parameter `{n}` on {op}, which the service removed ({f}:{l})"
 
   client_calls_removed_operation:
     when: client_operation(cl, ch, m, p, f, l), operation@base(_, op, m, p), removed_operation(op)

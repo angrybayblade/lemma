@@ -41,6 +41,9 @@ pub(crate) struct ClientMethod {
     pub file: String,
     /// Its line.
     pub line: u32,
+    /// The names its body uses as fields: what it still sends, whatever the
+    /// client's copy of the spec says.
+    pub names: BTreeSet<String>,
 }
 
 impl ClientMethod {
@@ -296,6 +299,7 @@ mod tests {
             path: path.to_owned(),
             file: file.to_owned(),
             line: 1,
+            names: BTreeSet::new(),
         }
     }
 

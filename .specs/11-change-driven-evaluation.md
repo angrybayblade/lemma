@@ -75,6 +75,7 @@ The selection loads exactly that reach.
 | `consumer_uses_removed_response_field` | anchored: `removed_response_field` |
 | `consumer_calls_changed_operation` | anchored: `removed_request_field` |
 | `client_declares_removed_parameter` | always-read: client parameters |
+| `client_code_sends_removed_parameter` | always-read: client parameters and the names client methods use |
 | `client_calls_removed_operation` | anchored: `removed_operation`; generated clients' `client_operation` rows come from the consumer files that call them, which are selected through the name index |
 | `consumer_calls_unserved_operation` | change-local |
 | `route_not_in_spec` | always-read |

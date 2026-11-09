@@ -381,18 +381,33 @@ fn generated_names(
 /// with their method known. A table describing operations (`{ method, path
 /// }` objects, `Operation("get", "/v1/x")` rows of a constant) issues none.
 fn client_methods(client: &str, facts: &CodeFacts) -> Vec<ClientMethod> {
+    let mut names_by_function: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    for mention in &facts.mentions {
+        if let Some(function) = &mention.function {
+            names_by_function
+                .entry(function)
+                .or_default()
+                .insert(mention.name.clone());
+        }
+    }
     facts
         .path_references
         .iter()
         .filter(|reference| reference.method != "*")
         .filter_map(|reference| {
+            let symbol = reference.location.function.clone()?;
+            let names = names_by_function
+                .get(symbol.as_str())
+                .cloned()
+                .unwrap_or_default();
             Some(ClientMethod {
                 client: client.to_owned(),
-                symbol: reference.location.function.clone()?,
+                symbol,
                 method: reference.method.clone(),
                 path: reference.path.clone(),
                 file: reference.location.file.clone(),
                 line: reference.location.line,
+                names,
             })
         })
         .collect()
@@ -1356,6 +1371,7 @@ fn client(
             Arg::Number(i64::from(method.line)),
         ];
         writer.add("client_operation", both, &args);
+        client_method_names(name, method, writer, both);
     }
     let default_names = [DEFAULT_CALL_NAME.to_owned()];
     let templates = if repository.call_names.is_empty() {
@@ -1390,6 +1406,27 @@ fn client(
         }
     }
     Ok(())
+}
+
+/// The names `method`'s body uses, so a parameter its code still sends is
+/// found even when the client's copy of the spec no longer declares it.
+fn client_method_names(
+    client: &str,
+    method: &ClientMethod,
+    writer: &mut FactWriter<'_>,
+    snapshots: &[&str],
+) {
+    for used in &method.names {
+        let args = [
+            Arg::Text(client),
+            Arg::Text(&method.method),
+            Arg::Text(&method.path),
+            Arg::Text(used),
+            Arg::Text(&method.file),
+            Arg::Number(i64::from(method.line)),
+        ];
+        writer.add("client_method_name", snapshots, &args);
+    }
 }
 
 /// Where a client declares `operation`'s parameters: every client method
@@ -2918,6 +2955,7 @@ mod tests {
             path: path.to_owned(),
             file: "resources/session_options.py".to_owned(),
             line,
+            names: BTreeSet::new(),
         };
         let get = method("GET", "/v3/session_options", 96);
         let post = method("POST", "/v3/session_options", 140);
