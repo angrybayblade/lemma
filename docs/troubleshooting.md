@@ -12,7 +12,7 @@ Run `lemma index <project>` first, then run other commands from inside that proj
 - check whether `lemma index` reported syntax errors in that file;
 - re-index if the symbol was added since the last run.
 
-Only definitions are indexed: functions, methods, classes, interfaces, structs, enums, type aliases, and top-level constants and variables. Local variables and parameters are not.
+Lemma indexes only definitions: functions, methods, classes, interfaces, structs, enums, type aliases, and top-level constants and variables. It skips local variables and parameters.
 
 ## `matches N symbols`
 
@@ -30,7 +30,7 @@ None of the configured commands for that language is on `PATH`. Install one (see
 
 The message comes from the server or the process start-up. Common causes:
 
-- **`Could not find a valid TypeScript installation`** from `typescript-language-server`: it needs TypeScript 6 or older, installed in the project or globally. With TypeScript 7, the `typescript-native` provider (`tsc --lsp`) is used instead.
+- **`Could not find a valid TypeScript installation`** from `typescript-language-server`: it needs TypeScript 6 or older, installed in the project or globally. With TypeScript 7, Lemma uses the `typescript-native` provider (`tsc --lsp`) instead.
 - **Timed out**: large projects can take longer than 60 seconds to load the first time. Retry with `--timeout-secs 180`.
 - **Server exited**: run the provider's command by hand to see its error output, for example `pyright-langserver --stdio`.
 
@@ -49,7 +49,7 @@ Then ask again with `lemma refs <symbol> --refresh`, because the earlier answer 
 
 - `lemma daemon stop` stops it; the next command starts a fresh one.
 - `--no-daemon`, or `LEMMA_NO_DAEMON=1`, runs a command in-process.
-- Language servers are found on the `PATH` of the command you run, but a server already running keeps its environment. After changing a server's environment, stop the daemon.
+- Lemma finds language servers on the `PATH` of the command you run, but a server already running keeps its environment. After changing a server's environment, stop the daemon.
 - A warm server learns about edits when they are indexed, which every query does first.
 
 ## `index uses schema version ...`
@@ -58,4 +58,4 @@ The index was written by another version of Lemma. Run `lemma index`; it rebuild
 
 ## Results look out of date
 
-Cached answers are reused until the project is re-indexed with changes or the provider's configuration changes. Use `--refresh` to bypass the cache for one lookup, or delete `.lemma/index.db` and index again to start fresh.
+Lemma reuses cached answers until the project is re-indexed with changes or the provider's configuration changes. Use `--refresh` to bypass the cache for one lookup, or delete `.lemma/index.db` and index again to start fresh.

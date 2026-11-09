@@ -15,11 +15,11 @@ Lemma reads every repository of the system, the changed one at its commits befor
 - **Requirements you write.** A requirement is a rule over facts about the system, such as "no code calls a deprecated operation". Lemma reports each match as a finding.
 - **Behaviors you test.** A behavior runs statements that may ask a checker, a command that exercises your code, for evidence, such as "when billing says a failure may be retried, orders passes that on". Lemma runs the checker, keeps what it observed, and reuses it while the code is unchanged.
 
-Known exceptions are allowed with a reason and, optionally, a date after which they count again.
+An allowance allows a known finding with a reason and, optionally, a date after which it counts again.
 
-## How you describe a system
+## Describe your system
 
-Each repository describes itself in a module, `mod.lm`, at its root:
+Describe each repository in a module, `mod.lm`, at its root:
 
 ```lm
 module billing
@@ -31,7 +31,7 @@ export service api {
 }
 ```
 
-A workspace module composes the repositories you check together:
+Compose the repositories you check together in a workspace module:
 
 ```lm
 module shop
@@ -43,28 +43,28 @@ workspace {
 }
 ```
 
-Modules are typed and checked: a misspelled operation, a link to something that does not exist, or a rule reading a relation that is not there is reported with its line before anything runs. Editors show those problems as you type.
+Modules are typed. Lemma checks them before anything runs and reports a misspelled operation, a link to something that does not exist, or a rule reading a missing relation, with its line. Editors show those problems as you type.
 
-## Two commands
+## Commands
 
 | Command | For |
 | --- | --- |
 | `lm` | Writing modules: `lm check` checks them, `lm fmt` formats them, and `lm lsp` serves them to editors. |
 | `lemma` | Checking systems: `lemma check` checks a workspace and a change, and `lemma verify` checks that a description still matches the code. It also navigates code with language servers (`lemma refs`, `lemma definition` and more) and serves agents over MCP. |
 
-## Words you will meet
+## Terms
 
 | Word | Means |
 | --- | --- |
 | module | One `.lm` file, named by its place in its repository. A directory's module is its `mod.lm`. |
 | service, operation | Something a repository runs, and what it serves or calls, with a request and a response. |
-| link | A connection from an operation that calls to the operation it calls. |
+| link | A relationship from an operation that calls to the operation it calls. |
 | requirement | A property that must hold, written as a rule over facts. |
 | behavior, checker, evidence | A property tested by running code; the command that runs it; what the command observed. |
 | check | A named selection of requirements and behaviors to run; `check main` by default. |
 | finding, outcome | One problem a check reports; whether a behavior was satisfied, violated, unknown or stale. |
 
-## Where to go next
+## Next steps
 
 - [Quickstart](quickstart.md): two repositories, a breaking change, and Lemma catching it, in about ten minutes.
 - [Tutorials](tutorials/README.md): links, your own requirements, allowances, behaviors, and editor setup.

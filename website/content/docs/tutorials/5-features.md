@@ -1,11 +1,11 @@
 <!-- after: ../quickstart.md -->
 # 5. Add a feature
 
-A change that adds to an API breaks nothing, so the checks so far stay quiet even when a feature is half done: an operation in the spec that no code serves, or that no consumer calls yet. Lemma checks what a change adds, too.
+A change that adds to an API breaks nothing, so the checks so far stay quiet even when a feature is half done: an operation in the spec that no code serves, or that no consumer calls yet. Lemma checks what a change adds, too. Use these findings to confirm a feature is specified, served and called before you ship it.
 
-This tutorial starts where the [quickstart](../quickstart.md) ends, in `shop`.
+Prerequisite: the end state of the [quickstart](../quickstart.md), in `shop`. Result: a refunds operation that is specified, served and called, with no findings.
 
-## Billing's routes
+## Serve billing's routes
 
 Lemma compares a spec with the routes that serve it when it can read them. Give billing an Express server for its one operation:
 
@@ -134,9 +134,9 @@ $ lemma check --change billing --base HEAD~2 --head HEAD
 
 The feature is wired up: specified, served and called.
 
-## A route the spec leaves out
+## Find a route the spec leaves out
 
-The other way round counts as well. Add a route without specifying it; append to `billing/src/server.ts`:
+Lemma also checks the reverse. Add a route without specifying it; append to `billing/src/server.ts`:
 
 <!-- append: billing/src/server.ts -->
 ```ts
@@ -156,9 +156,9 @@ warning #billing:api adds a route for DELETE /v1/charges/{} (src/server.ts:15) t
 
 The informational finding is `route_not_in_spec`, which lists every route a spec leaves out, introduced or not; `--all` shows it. Only what a change adds is warned about, so routes and operations that were already out of step stay out of the way.
 
-## Operations called from outside
+## Mark operations called from outside
 
-An operation that only callers outside the workspace use, such as one in a public API, has no consumer to find. State it in a graph and Lemma expects none:
+An operation that only callers outside the workspace use, such as one in a public API, has no consumer to find. Declare it in a graph so Lemma expects none:
 
 ```lm
 import { public_operation, public_service } from lemma.http
@@ -168,6 +168,6 @@ graph public : public_operation {
 }
 ```
 
-`public_service` does the same for every operation of a service, such as `"#billing:api"`.
+Use `public_service` to do the same for every operation of a service, such as `"#billing:api"`.
 
 Next: [set up your editor](6-editors.md).

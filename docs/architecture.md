@@ -1,6 +1,6 @@
 # Architecture
 
-Lemma answers questions about code: where a symbol is defined, used and implemented, and what it looks like. Its code is split into four layers so each can change, or get faster, without the others noticing.
+Lemma answers questions about code: where a symbol is defined, used and implemented, and what it looks like. Its code has four layers, so each can change, or get faster, without affecting the others.
 
 ```text
  consumption   lemma CLI, its daemon, and the MCP server for agents
@@ -14,7 +14,7 @@ Lemma answers questions about code: where a symbol is defined, used and implemen
  (SQLite)       (Tree-sitter)
 ```
 
-## The operations
+## Operations
 
 Every interface offers the same six questions, from spec 07's normalized operations:
 
@@ -33,7 +33,7 @@ Provider answers share one shape: an outcome with a `state` (`found`, `empty`, `
 
 ### Consumption
 
-`lemma-cli` turns commands into operations and prints their answers. The daemon (`daemon.rs`) and the MCP server (`mcp.rs`) are ways of delivering the same commands: the daemon keeps state warm between them, and the MCP server exposes each operation as a tool whose result is the command's text output, which carries the same facts and ids as its JSON in a fraction of the size. Output shapes are defined in `output/`, separately from internal types, so internals can change without breaking scripts or agents.
+`lemma-cli` turns commands into operations and prints their answers. The daemon (`daemon.rs`) and the MCP server (`mcp.rs`) deliver the same commands: the daemon keeps state warm between them, and the MCP server exposes each operation as a tool whose result is the command's text output, which carries the same facts and ids as its JSON in a fraction of the size. Output shapes are defined in `output/`, separately from internal types, so internals can change without breaking scripts or agents.
 
 ### Query
 
@@ -61,7 +61,7 @@ Two producers fill the store:
 
 `lemma-index` walks and watches directories and decides which files to re-parse. `lemma-model` holds the types every layer shares and depends on nothing else.
 
-## Where optimizations go
+## Optimization points
 
 | Layer | Room to grow |
 | --- | --- |

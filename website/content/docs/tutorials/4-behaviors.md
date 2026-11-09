@@ -1,13 +1,13 @@
 <!-- after: ../quickstart.md -->
 # 4. Test a behavior
 
-Some properties are not in any schema. *When billing declines a charge and says the failure may be retried, orders passes that on to its own caller* is about what code does, so Lemma has to run it. A *behavior* says what should hold; a *checker* is a command that runs your code and reports what it observed, its *evidence*; Lemma runs the checker for each case, keeps the evidence, and reuses it while the code is unchanged.
+Write a *behavior* for a property that is not in any schema. *When billing declines a charge and says the failure may be retried, orders passes that on to its own caller* is about what code does, so Lemma has to run it. A behavior says what must hold; a *checker* is a command that runs your code and reports what it observed, its *evidence*; Lemma runs the checker for each case, keeps the evidence, and reuses it while the code is unchanged.
 
-This tutorial adds a Python service, `orders`, to the [quickstart's](../quickstart.md) `shop`. You need `python3`.
+Prerequisites: the end state of the [quickstart](../quickstart.md), in `shop`, and `python3`. Result: a behavior that finds a dropped flag in a new Python service, `orders`, passes after the fix, and reuses its evidence.
 
-## A service that calls billing
+## Create a service that calls billing
 
-Orders charges the customer through billing. When the charge fails, it answers its caller with a 502, but it forgets billing's `retriable` flag:
+Create `orders`. It charges the customer through billing. When the charge fails, it answers its caller with a 502, but it drops billing's `retriable` flag:
 
 ```console
 $ mkdir -p orders/orders orders/tools
@@ -32,9 +32,9 @@ def place_order(order):
     return {"status": 201, "body": {"id": result["id"]}}
 ```
 
-## The checker
+## Write the checker
 
-A checker is any command. Lemma writes its arguments to the JSON file `LEMMA_INPUT` names and runs it in its repository; it writes what it observed to the file `LEMMA_OUTPUT` names. This one imports orders' handler, replaces the call to billing with a declined charge, calls the handler, and reports billing's answer and the handler's response. It finds the code to run from its arguments: each operation comes with its file and symbol.
+A checker is any command. Lemma writes its arguments to the JSON file `LEMMA_INPUT` names and runs it in its repository; it writes what it observed to the file `LEMMA_OUTPUT` names. Save this one as `orders/tools/replay.py`. It imports orders' handler, replaces the call to billing with a declined charge, calls the handler, and reports billing's answer and the handler's response. It finds the code to run from its arguments: each operation comes with its file and symbol.
 
 <!-- file: orders/tools/replay.py -->
 ```python
@@ -63,7 +63,7 @@ with open(os.environ["LEMMA_OUTPUT"], "w") as output:
     json.dump({"observed": {"billing": declined, "response": response}}, output)
 ```
 
-## The behavior
+## Write the behavior
 
 Save `orders/mod.lm`:
 
@@ -141,12 +141,14 @@ workspace {
 }
 ```
 
-Then check the modules and commit orders. Git should ignore what Python writes while the checker runs, or every run would change the repository's state:
+Make Git ignore what Python writes while the checker runs, or every run changes the repository's state:
 
 <!-- file: orders/.gitignore -->
 ```text
 __pycache__/
 ```
+
+Check the modules and commit orders:
 
 ```console
 $ lm check
@@ -158,7 +160,7 @@ $ git -C orders commit -q -m "Orders"
 
 ## Run it
 
-`lemma check` runs the behaviors with the rest of the checks:
+Run `lemma check`. It runs the behaviors with the rest of the checks:
 
 ```console
 $ lemma check
@@ -199,7 +201,7 @@ behavior orders::passes_on_retriable: satisfied (3 of 3 cases held, 0 of 2 evide
 0 errors, 0 warnings, 0 informational
 ```
 
-## Evidence is kept
+## Reuse evidence
 
 Lemma keeps each piece of evidence under a key made of the checker's declaration, its arguments, the state of the code it reads and its environment. Run the check again, and nothing runs:
 
@@ -210,7 +212,7 @@ behavior orders::passes_on_retriable: satisfied (3 of 3 cases held, 2 of 2 evide
 ...
 ```
 
-When the code changes, the key changes and the checker runs again. `--no-run` forbids running checkers, as in a CI job that should only use what is kept; then the evidence is reported as stale:
+When the code changes, the key changes and the checker runs again. Pass `--no-run` to forbid running checkers, as in a CI job that must use only what is kept. Lemma then reports the evidence as stale:
 
 ```console
 $ echo "# reviewed" >> orders/orders/handlers.py
@@ -225,7 +227,7 @@ At level `check`, only violated behaviors fail. At level `strict` (`config: { le
 
 ## Start from a template
 
-The next behavior need not start from a blank file. `lm new behavior` writes the checker, the behavior and the checker's script for one of a module's operations, and with `--through` the script replaces the call that link makes, as `replay.py` does:
+Start your next behavior from a template. `lm new behavior` writes the checker, the behavior and the checker's script for one of a module's operations, and with `--through` the script replaces the call that link makes, as `replay.py` does:
 
 ```console
 $ lm new behavior keeps_the_customer --handler orders.place_order --through "orders.charge -> api.createCharge" --module orders/mod.lm
@@ -239,6 +241,6 @@ $ lm check
 [..]2 behaviors, 2 checkers, 0 allowances; 0 errors
 ```
 
-The script finds the handler and the call to replace from its arguments; what it cannot know, the input a case sends and what the replaced call answers, is marked `TODO`. The behavior starts at `severity: warning`, so it reports without failing the check until it says what must hold. A Python handler gets a script that runs it in place, a TypeScript one a script for Bun, and a Go one a script that says which test to write. `lemma check --select keeps_the_customer` runs that behavior alone while you work on it.
+The script finds the handler and the call to replace from its arguments; what it cannot know, the input a case sends and what the replaced call answers, is marked `TODO`. The behavior starts at `severity: warning`, so it reports without failing the check until it says what must hold. A Python handler gets a script that runs it in place, a TypeScript one a script for Bun, and a Go one a script that says which test to write. Run that behavior alone with `lemma check --select keeps_the_customer` while you work on it.
 
 Next: [add a feature](5-features.md).

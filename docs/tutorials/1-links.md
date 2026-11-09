@@ -1,13 +1,13 @@
 <!-- after: ../quickstart.md -->
 # 1. Declare a link
 
-In the quickstart, Lemma found web's call to billing by reading web's code. That needs no setup, but it only knows what the code names. A *link* says exactly which operation calls which, and lets Lemma compare the caller's own types with the provider's schemas, field by field and in both directions.
+In the quickstart, Lemma found web's call to billing by reading web's code. Inference needs no setup, but it knows only what the code names. A *link* says exactly which operation calls which, and makes Lemma compare the caller's own types with the provider's schemas, field by field and in both directions. Declare a link for a call inference cannot see, or when you need those type checks.
 
-This tutorial starts where the [quickstart](../quickstart.md) ends, in `shop`.
+Prerequisite: the end state of the [quickstart](../quickstart.md), in `shop`. Result: a link that reports two more errors for billing's change.
 
 ## Give the client types
 
-Web's request and response get TypeScript types. Replace `web/src/charge.ts` with:
+Add TypeScript types for web's request and response. Replace `web/src/charge.ts` with:
 
 <!-- file: web/src/charge.ts -->
 ```ts
@@ -69,7 +69,7 @@ What each part says:
 - `client operation create_charge` is web's outbound call. Its `implementation` is the function that makes it, and `sends` and `accepts` are the types it sends and reads.
 - `graph links : Link { ... }` states one fact of the standard library's `Link` relation: web's `create_charge` calls billing's `createCharge`, the operation billing's document names with that `operationId`.
 
-`lm check` confirms the names resolve. A typo in `createCharge` would be an error here, with its line:
+Run `lm check` to confirm the names resolve. It reports a typo in `createCharge` as an error with its line:
 
 ```console
 $ lm check web/mod.lm
@@ -107,9 +107,9 @@ Both are marked *introduced*: at the base commit the two sides agreed. The findi
 
 A link is checked even when no code calls the operation yet, and it fails when either end disappears: delete `createCharge` from billing's document and the link reports that the provider operation no longer exists.
 
-## Naming an operation by its route
+## Name an operation by its route
 
-An operation without an `operationId` can be named by its method and path, path parameters written in braces:
+Name an operation without an `operationId` by its method and path, with path parameters in braces:
 
 ```lm
 export graph links : Link {

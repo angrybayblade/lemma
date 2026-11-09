@@ -249,4 +249,4 @@ The same shape as `refs`, with `outcome.implementations` holding entries like `d
 
 ## Errors
 
-Errors such as a missing index or an unknown symbol are printed as text on stderr, even with `--json`, and the exit code is `1`.
+Lemma prints errors such as a missing index or an unknown symbol as text on stderr, even with `--json`, and exits with `1`.

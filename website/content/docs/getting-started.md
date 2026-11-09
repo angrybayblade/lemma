@@ -1,18 +1,18 @@
 # Getting started
 
-This guide takes you from a fresh checkout to your first reference lookup.
+Install Lemma, index a project, and look up your first references. Complete this page to use Lemma for code navigation. To check changes across repositories, continue with the [quickstart](quickstart.md).
 
 ## 1. Install
 
-Lemma is a single binary. Releases ship it for macOS and Linux (arm64 and x86_64):
+Install the binary. Releases support macOS and Linux on arm64 and x86_64:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
 ```
 
-It goes into `~/.local/bin`. Options (a pinned version, the agent skills, another directory) are in [Onboarding](onboarding.md#1-install).
+The script installs into `~/.local/bin`. Add that directory to your `PATH` if it is not there. For a pinned version, the agent skills or another directory, see [Onboarding](onboarding.md#1-install).
 
-To build from source instead, you need a Rust toolchain, 1.85 or newer ([rustup](https://rustup.rs) is the easiest way to get one).
+To build from source, install Rust 1.85 or newer with [rustup](https://rustup.rs), then run:
 
 ```sh
 git clone https://github.com/angrybayblade/lemma.git
@@ -20,7 +20,7 @@ cd lemma
 cargo install --path crates/lemma-cli --locked   # installs lemma and lm
 ```
 
-This puts `lemma` in `~/.cargo/bin`. Check it works:
+This installs `lemma` and `lm` into `~/.cargo/bin`. Verify the install:
 
 ```sh
 lemma --version
@@ -30,7 +30,7 @@ To build without installing, run `cargo build --release` and use `target/release
 
 ## 2. Install a language server
 
-Lemma reads definitions itself, but asks a language server where symbols are used. It does not bundle any servers, so install one for each language you care about:
+Lemma parses definitions itself and asks a language server where symbols are used. It bundles no servers. Install one for each language you index:
 
 | Language | Install one of | Command Lemma looks for |
 | --- | --- | --- |
@@ -59,11 +59,11 @@ Tried in order for each language:
   go           gopls
 ```
 
-Language servers work best when the project's own dependencies are installed (`npm install`, a Python virtual environment, `go mod download`, `cargo fetch`). Without them, references that go through imports may be missing.
+Install each project's own dependencies first (`npm install`, a Python virtual environment, `go mod download`, `cargo fetch`). Without them, references that go through imports may be missing.
 
 ## 3. Index a project
 
-Lemma indexes what a project's description says it is made of; without one it indexes every supported file and warns. To scope it, create a `mod.lm` at the project's root with a service for each part of it, listing the directories its code is in:
+Without a description, Lemma indexes every supported file and warns. Create a `mod.lm` at the project's root, with a service for each part of the project and the directories that hold its code:
 
 ```lm
 // ~/code/my-project/mod.lm
@@ -77,9 +77,9 @@ export service api {
 }
 ```
 
-A module's name is an identifier, so a directory called `my-project` has the module `my_project`.
+Name the module with an identifier: the directory `my-project` takes the module `my_project`.
 
-The same file later describes what each service offers and how it relates to others (see [Checking links](check.md)). Then:
+Extend this file later to describe what each service offers and how it relates to others; see [Check links](check.md). Index the project:
 
 ```sh
 lemma index ~/code/my-project
@@ -95,7 +95,7 @@ index /Users/me/code/my-project/.lemma/index.db
 
 Lemma reads every `.ts`, `.mts`, `.cts`, `.tsx`, `.py`, `.pyi` and `.go` file, respecting `.gitignore`, and stores what it finds in `.lemma/index.db` inside the project. Add `.lemma/` to the project's `.gitignore`.
 
-Indexing does not start any language server, so it is fast and works offline. Run it again whenever the code changes: only changed files are read again, so on a large repository it takes a fraction of a second. If nothing changed, Lemma says `unchanged`.
+Indexing starts no language server and works offline. Run it again when the code changes: Lemma reads only changed files, so on a large repository it takes a fraction of a second, and prints `unchanged` if nothing changed.
 
 ## 4. Find a symbol
 
@@ -129,9 +129,9 @@ via pyright
   tests/test_router.py:40:5  in test_delete_unknown_route
 ```
 
-Commands run in a background daemon that `lemma` starts on first use. It starts each language's server in the background after `lemma index`, so by the time you look something up the server has usually loaded the project; later lookups, even of other symbols, take milliseconds. Answers are also cached until the code changes.
+Commands run in a background daemon that `lemma` starts on first use. The daemon starts each language server after `lemma index` and caches answers until the code changes. The first lookup may wait for the server to load the project; later lookups, even of other symbols, take milliseconds.
 
-If a name matches more than one symbol, Lemma lists the candidates and asks you to choose. Use the qualified name, a filter such as `--language python` or `--path api/`, or the id: `lemma refs '#415'`.
+If a name matches more than one symbol, Lemma lists the candidates. Choose one with the qualified name, a filter such as `--language python` or `--path api/`, or the id: `lemma refs '#415'`.
 
 ## 6. Ask other questions
 
@@ -144,17 +144,19 @@ lemma outline src/router.py                # what a file defines
 
 ## 7. Connect an agent
 
-`lemma mcp` serves the same questions as MCP tools. In Claude Code, from the project directory:
+Run `lemma mcp` as an MCP server to give agents the same answers. In Claude Code, run this from the project directory:
 
 ```sh
 claude mcp add lemma -- lemma mcp
 ```
 
+Then tell agents when to use it; see [Connect agents](onboarding.md#3-connect-agents).
+
 ## Next steps
 
 - [Commands](commands.md): every command, option, and exit code.
 - [Language servers](providers.md): built-in servers, adding your own, and how one is chosen.
-- [How Lemma works](concepts.md): snapshots, stale results, and caching.
+- [Concepts](concepts.md): snapshots, stale results, and caching.
 - [Architecture](architecture.md): how the layers fit together.
 - [JSON output](json-output.md): using Lemma from scripts and agents.
 - [Comparison](comparison.md): when to use Lemma and when to use grep or ripgrep.

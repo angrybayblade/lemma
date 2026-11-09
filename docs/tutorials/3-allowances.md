@@ -1,13 +1,13 @@
 <!-- after: ../quickstart.md -->
 # 3. Allow a known finding
 
-Sometimes a finding is known and accepted for now: the client that reads a removed field is being retired, or a fix ships next week. An *allowance* keeps such a finding visible, says why it is accepted, and stops it failing the check, until a date you choose.
+Add an *allowance* when a finding is known and accepted for now: the client that reads a removed field is being retired, or a fix ships next week. An allowance keeps the finding visible, records why it is accepted, and stops it failing the check until a date you choose. Set that date on every allowance, so it cannot outlive its reason.
 
-This tutorial starts where the [quickstart](../quickstart.md) ends, in `shop`.
+Prerequisite: the end state of the [quickstart](../quickstart.md), in `shop`. Result: an accepted finding that counts again after its date.
 
 ## Allow it
 
-The quickstart's change produced a warning: web reads `receipt_url`, which billing no longer returns. Say that's accepted while web moves off it. Replace `mod.lm` with:
+The quickstart's change produced a warning: web reads `receipt_url`, which billing no longer returns. Accept it while web moves off the field. Replace `mod.lm` with:
 
 <!-- file: mod.lm -->
 ```lm
@@ -45,7 +45,7 @@ info    #web:web:src/charge.ts::charge calls POST /v1/charges and names `receipt
 
 The warning is now informational and says why; `--all` lists informational findings. The error, the missing `currency`, still fails the check: the allowance covers only the requirement it names.
 
-## When an allowance expires
+## Expire an allowance
 
 After `until`, the findings count again and Lemma says the allowance expired. Set a date in the past to see it; replace `mod.lm` with:
 
@@ -78,4 +78,6 @@ warning the allowance for lemma.http::consumer_uses_removed_response_field expir
 1 errors, 2 warnings, 0 informational
 ```
 
-An allowance for a behavior that ran and covered none of its cases is reported too, so stale ones get removed. Behaviors are next: [test a behavior](4-behaviors.md).
+Lemma also reports an allowance for a behavior that ran and covered none of its cases. Remove those allowances.
+
+Next: [test a behavior](4-behaviors.md).

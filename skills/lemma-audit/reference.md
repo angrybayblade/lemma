@@ -1,6 +1,6 @@
 # `.lm` description reference
 
-The full description is in [Checking links](https://github.com/angrybayblade/lemma/blob/main/docs/check.md) and [The `.lm` language](https://github.com/angrybayblade/lemma/blob/main/docs/language.md). This is the field list.
+The full description is in [Check links](https://github.com/angrybayblade/lemma/blob/main/docs/check.md) and [The `.lm` language](https://github.com/angrybayblade/lemma/blob/main/docs/language.md). This is the field list.
 
 A repository's root module, `mod.lm`:
 

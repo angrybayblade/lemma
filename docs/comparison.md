@@ -1,6 +1,6 @@
 # Lemma vs grep, ripgrep, git grep and ast-grep
 
-Agents usually answer "where is this used?" with a text search. This page compares Lemma with grep, git grep, ripgrep and ast-grep on that question, measured to a protocol written before any measurement, with symbols drawn at random and the answers checked by language servers independent of Lemma's.
+Agents usually answer "where is this used?" with a text search. Lemma, grep, git grep, ripgrep and ast-grep answered that question here under a protocol written before any measurement, with symbols drawn at random and the answers checked by language servers independent of Lemma's.
 
 ## Summary
 
@@ -10,7 +10,7 @@ Agents usually answer "where is this used?" with a text search. This page compar
 - **Lemma is faster only when it is already running.** A symbol's first lookup on a running server took 19-126 ms (median per repository); repeating it took 5-37 ms, and a cached answer 1-3 ms. ripgrep took 11-86 ms with the files in memory and 55 ms-1 s from disk. From nothing running, Lemma needed 0.5-6.6 s for the first answer, against 0.06-1 s for ripgrep, and never caught up within 32 questions.
 - **Lemma needs memory.** On a 71,000-file Python repository, ty, Lemma's Python server, needed more than 6.6 GB; on a 7 GB machine it was killed.
 
-## How it was measured
+## Method
 
 The protocol ([`PROTOCOL`](#protocol)) was written and its hash recorded before any measurement; every change made afterwards is listed with its reason.
 
@@ -84,11 +84,11 @@ Precision / with mentions / recall, pooled:
 
 Against the second oracle, Lemma's precision was 97% for Python and 95% for TypeScript.
 
-### Why Lemma loses where it does
+### Where Lemma loses
 
 - **Calls through an interface.** Every symbol where Lemma reported non-references was a method implementing an interface (Go and TypeScript): the language server counts calls through the interface as uses of the method, while "go to definition" at those calls returns the interface. Such a call may reach this method or another implementation. This is why Go's precision is 91%, and nest's TypeScript 71%.
 - **Type inference.** ty found 189 of the 334 calls to django's `Template.render`; the others need type inference ty does not do. That one symbol accounts for most of Python's 70% pooled recall; averaged per symbol, Lemma's recall across all languages was 99%.
-- **Project boundaries.** In TypeScript, the language server searches the project it loaded; references in test files outside that `tsconfig.json` were missed.
+- **Project boundaries.** In TypeScript, the language server searches the project it loaded; it missed references in test files outside that `tsconfig.json`.
 
 ### Latency
 
@@ -120,9 +120,9 @@ From a stopped daemon and an empty file cache: `lemma index` followed by N looku
 | monorepo A TypeScript | 5.23 s / 0.16 s | 4.99 s / 0.50 s | 5.14 s / 0.83 s (17 questions) |
 | monorepo A Python | 3.41 s / 1.03 s | 7.12 s / 1.96 s | 11.43 s / 4.27 s |
 
-Most of a cold session is the language server starting and loading the project (1-3 s for TypeScript and Go, about 0.1-0.2 s for ty) and indexing with an empty cache (0.2-0.5 s). Keeping the daemon running removes both; see [How Lemma works](concepts.md#the-daemon-and-warm-language-servers).
+Most of a cold session is the language server starting and loading the project (1-3 s for TypeScript and Go, about 0.1-0.2 s for ty) and indexing with an empty cache (0.2-0.5 s). Keeping the daemon running removes both; see [Concepts](concepts.md#the-daemon-and-warm-language-servers).
 
-## Remaining biases and limits
+## Biases and limits
 
 | Issue | Effect |
 | --- | --- |
@@ -153,7 +153,7 @@ An earlier, smaller comparison (10 hand-picked symbols, on a Mac) showed Lemma 6
 | Memory | None kept | None kept | A daemon plus a language server per language and project; ty needed more than 6.6 GB on 71,000 Python files |
 | Misses | Never misses a spelling | Names in strings | Calls through interfaces (over-reports), files outside a TypeScript project, references needing deeper type inference |
 
-## Which to use
+## Choose a tool
 
 - **Lemma** to trace a function, method or class through code before changing it, especially when its name is common, and when asking many questions about one repository with Lemma already running.
 - **ripgrep** for one-off questions, small repositories, strings, configuration and other text, languages Lemma does not support, and as a cross-check before renaming or deleting anything.
