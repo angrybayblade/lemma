@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="diagram-svg" viewBox="0 0 640 594" fill="none" role="img" aria-labelledby="task-loop-title task-loop-desc"><title id="task-loop-title">The verification loop on one task</title><desc id="task-loop-desc">Clockwise, for the task "implement support for payment failure retries": 1. Your agent adds a retriable field to billing's charge response. 2. Lemma traces the callers: orders and web. 3. Lemma simulates a declined charge and finds orders drops the retry flag before it reaches the caller. 4. Your agent fixes orders and reruns the check, which passes for both cases. Illustrative.</desc>
+<g class="loop-stage" data-loop-stage="change" style="--stage:0">
+<path class="loop-rule" d="M0 8h40"/><path class="loop-stage-accent" d="M0 8h40"/>
+<text x="0" y="32" class="loop-eyebrow">01 / Your agent</text><text x="0" y="66" class="loop-title">Add the retry flag.</text>
+<text x="0" y="104" class="loop-code">billing/openapi.json</text><text x="0" y="130" class="loop-code"><tspan class="loop-code-ink">+ retriable</tspan>: boolean</text>
+</g>
+<g class="loop-stage" data-loop-stage="trace" style="--stage:1">
+<path class="loop-rule" d="M360 8h40"/><path class="loop-stage-accent" d="M360 8h40"/>
+<text x="360" y="32" class="loop-eyebrow">02 / Lemma</text><text x="360" y="66" class="loop-title">Trace the callers.</text>
+<text x="360" y="104" class="loop-code">orders.place_order</text><text x="360" y="130" class="loop-code">web/src/charge.ts</text>
+</g>
+<g class="loop-stage" data-loop-stage="simulate" style="--stage:2">
+<path class="loop-rule" d="M360 526h40"/><path class="loop-stage-accent" d="M360 526h40"/>
+<text x="360" y="550" class="loop-eyebrow">03 / Lemma</text><text x="360" y="584" class="loop-title">Simulate a decline.</text>
+<text x="360" y="474" class="loop-code">replay_declined_charge</text><text x="360" y="500" class="loop-code">retriable: <tspan class="loop-code-fail">missing</tspan></text>
+</g>
+<g class="loop-stage" data-loop-stage="recheck" style="--stage:3">
+<path class="loop-rule" d="M0 526h40"/><path class="loop-stage-accent" d="M0 526h40"/>
+<text x="0" y="550" class="loop-eyebrow">04 / Your agent</text><text x="0" y="584" class="loop-title">Fix and recheck.</text>
+<text x="0" y="474" class="loop-code">orders passes it through</text><text x="0" y="500" class="loop-code"><tspan class="loop-code-ink">2 cases pass</tspan>, 0 errors</text>
+</g>
+<g class="loop-connectors">
+<path class="loop-route" d="M216 212h144m-14-12 14 12-14 12M490 276v60m-12-14 12 14 12-14M384 398H236m14-12-14 12 14 12M130 336v-60m-12 14 12-14 12 14"/>
+<path class="loop-arrowheads" d="M346 200l14 12-14 12M478 322l12 14 12-14M250 386l-14 12 14 12M118 290l12-14 12 14"/>
+<path class="signal loop-signal" style="--stage:0" pathLength="100" d="M216 212h144"/>
+<path class="signal loop-signal" style="--stage:1" pathLength="100" d="M490 276v60"/>
+<path class="signal loop-signal" style="--stage:2" pathLength="100" d="M384 398H236"/>
+<path class="signal loop-signal" style="--stage:3" pathLength="100" d="M130 336v-60"/>
+</g>
+<g class="loop-brand" transform="translate(310 305) scale(1.4) translate(-300 -316)"><path d="M278 320v-24h24M298 336h24v-24M290 323l20-20" stroke="currentColor" stroke-width="4.8"/></g></svg>

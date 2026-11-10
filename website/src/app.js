@@ -21,6 +21,10 @@ const revealObserver = new IntersectionObserver(entries => {
 }, {threshold:0.12});
 document.querySelectorAll('[data-reveal]').forEach(element => revealObserver.observe(element));
 const story = document.querySelector('[data-diagram="story"]');
+const storyRail = document.querySelector('.story-rail');
+// The behavior is the chapter's last code block; the setup block comes before it.
+const stageStop = [...document.querySelectorAll('.verification-copy .config-example')].at(-1);
+const stageStopDropPx = 48;
 const chapters = [...document.querySelectorAll('[data-scene-step]')];
 const sceneAnchors = [...document.querySelectorAll('[data-scene-anchor]')];
 const sceneCaptions = {hero:'The agent development loop.'};
@@ -58,12 +62,20 @@ function updateStory() {
 function scheduleStory() { if (!storyFrame) storyFrame = requestAnimationFrame(updateStory); }
 function positionStory() {
   story.style.setProperty('--stage-offset', `${Math.max(24,(window.innerHeight-story.offsetHeight)/2)}px`);
+  // A sticky element stops at its parent's end, so ending the rail here leaves the stage
+  // just below the center of the behavior example, rather than following the copy to the section's end.
+  const stopBounds = stageStop.getBoundingClientRect();
+  const stopCenter = stopBounds.top + stopBounds.height / 2 + stageStopDropPx;
+  storyRail.style.setProperty('--rail-height', `${stopCenter - storyRail.getBoundingClientRect().top + story.offsetHeight / 2}px`);
   scheduleStory();
 }
 window.addEventListener('scroll', scheduleStory, {passive:true});
 window.addEventListener('resize', positionStory);
 mobileStory.addEventListener('change', positionStory);
-new ResizeObserver(positionStory).observe(story);
+// The copy is watched too: a late web font moves the behavior example without resizing the window.
+const storyResize = new ResizeObserver(positionStory);
+storyResize.observe(story);
+storyResize.observe(document.querySelector('.story-copy'));
 const dock = document.querySelector('.floating-dock');
 dock.querySelectorAll('.dock-item').forEach(item => {
   item.addEventListener('pointerenter', () => dock.removeAttribute('data-tooltip-dismissed'));
@@ -105,16 +117,22 @@ dock.addEventListener('focusin', () => dock.removeAttribute('data-tucked'));
 positionStory();
 const copyStatus = document.getElementById('copy-status');
 let statusTimeout;
+const copyMessages = {
+  command: {copied:'Command copied.', failed:'Select the command text to copy it.'},
+  config: {copied:'Config copied.', failed:'Select the config text to copy it.'},
+  snippet: {copied:'Code copied.', failed:'Select the code text to copy it.'},
+  // The prompt is not shown on the page, so selecting it by hand is not an option.
+  prompt: {copied:'Prompt copied. Paste it into your coding agent.', failed:'Could not copy the prompt. The setup guide below has the same steps.'},
+};
 document.querySelectorAll('[data-copy]').forEach(button => button.addEventListener('click', async () => {
-  const isConfig = button.dataset.copyKind === 'config';
-  const noun = isConfig ? 'Config' : button.dataset.copyKind === 'snippet' ? 'Code' : 'Command';
-  try { await navigator.clipboard.writeText(button.dataset.copy); copyStatus.textContent = `${noun} copied.`; }
-  catch { copyStatus.textContent = `Select the ${noun.toLowerCase()} text to copy it.`; }
+  const messages = copyMessages[button.dataset.copyKind] ?? copyMessages.command;
+  try { await navigator.clipboard.writeText(button.dataset.copy); copyStatus.textContent = messages.copied; }
+  catch { copyStatus.textContent = messages.failed; }
   clearTimeout(statusTimeout); statusTimeout = setTimeout(() => { copyStatus.textContent = ''; }, 4000);
 }));
-document.querySelectorAll('[data-file-tabs]').forEach(figure => {
-  const tabs = [...figure.querySelectorAll('[role="tab"]')];
-  const copyButton = figure.querySelector('[data-copy]');
+// Tabs show one panel at a time; onSelect hears which panel is now shown.
+function wireTabs(container, onSelect = () => {}) {
+  const tabs = [...container.querySelectorAll('[role="tab"]')];
   function selectTab(selected) {
     tabs.forEach(tab => {
       const isSelected = tab === selected;
@@ -122,7 +140,7 @@ document.querySelectorAll('[data-file-tabs]').forEach(figure => {
       tab.tabIndex = isSelected ? 0 : -1;
       const panel = document.getElementById(tab.getAttribute('aria-controls'));
       panel.hidden = !isSelected;
-      if (isSelected) copyButton.dataset.copy = panel.textContent;
+      if (isSelected) onSelect(panel);
     });
   }
   tabs.forEach((tab, index) => {
@@ -135,7 +153,12 @@ document.querySelectorAll('[data-file-tabs]').forEach(figure => {
       next.focus();
     });
   });
+}
+document.querySelectorAll('[data-file-tabs]').forEach(figure => {
+  const copyButton = figure.querySelector('[data-copy]');
+  wireTabs(figure, panel => { copyButton.dataset.copy = panel.textContent; });
 });
+document.querySelectorAll('[data-tabs]').forEach(container => wireTabs(container));
 // Delegated, because phones add a copy of this switch to the behavior chapter.
 document.addEventListener('click', event => {
   const button = event.target.closest('[data-example]');
@@ -148,7 +171,7 @@ document.addEventListener('click', event => {
   updateNavigation();
   document.querySelectorAll('[data-example]').forEach(control => control.setAttribute('aria-pressed', String(control.dataset.example === state)));
   document.querySelectorAll('[data-replay-value]').forEach(label => { label.textContent = before ? 'missing' : label.dataset.replayValue; });
-  const status = before ? 'Before fix: the retry flag is lost in both cases.' : 'After fix: the retry flag reaches the caller in both cases.';
+  const status = before ? 'With the change: the retry flag is lost in both cases.' : 'With the fix: the retry flag reaches the caller in both cases.';
   document.querySelectorAll('.story-replay [role="status"]').forEach(element => { element.textContent = status; });
 });
 

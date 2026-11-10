@@ -183,11 +183,13 @@ function createBuilder() {
     quad([[a[0]+nx,a[1]+ny],[b[0]+nx,b[1]+ny],
       [b[0]-nx,b[1]-ny],[a[0]-nx,a[1]-ny]],kind,phase,seed,flow,[length,width]);
   }
-  function path(points,width,kind,phase,seed=0.5) {
+  // `span` is the part of the stage's flow this path covers, so a pulse can cross several paths in turn.
+  function path(points,width,kind,phase,seed=0.5,span=[0,1]) {
     const lengths=points.slice(1).map((p,i)=>Math.hypot(p[0]-points[i][0],p[1]-points[i][1]));
     const total=lengths.reduce((a,b)=>a+b,0);let distance=0;
+    const flow=part=>span[0]+part*(span[1]-span[0]);
     points.slice(1).forEach((p,i)=>{
-      line(points[i],p,width,kind,phase,seed,[distance/total,(distance+lengths[i])/total]);
+      line(points[i],p,width,kind,phase,seed,[flow(distance/total),flow((distance+lengths[i])/total)]);
       distance+=lengths[i];
     });
   }
@@ -379,6 +381,39 @@ function createDeprecatedCallMesh() {
   return mesh.finish();
 }
 
+// The scene before the behavior: a break no contract shows. Billing's retry flag
+// reaches orders over a contract that matches, then stops: the caller never gets it.
+const DROPPED_REPOSITORIES={billing:100,orders:300,caller:500};
+const DROPPED_CELLS_ORIGIN=[200,272];
+
+function createDroppedMesh() {
+  const mesh=createBuilder();
+  const {billing,orders,caller}=DROPPED_REPOSITORIES;
+  const arriving=x=>{const end=workflowCorner(x,-1);return [end[0]-4,end[1]];};
+  const contract=replayPipe(workflowCorner(billing,1),arriving(orders));
+  const handoff=replayPipe(workflowCorner(orders,1),arriving(caller));
+  for(let lane=-1;lane<=1;lane++){
+    mesh.path(stopAtArrow(replayLanes(contract,lane),lane*4,REPLAY_ARROW_RUN),1.1,4,0,.35+lane*.12);
+    // Orders answers its caller, but the flag is not in the answer: only a trace goes on.
+    mesh.path(replayLanes(handoff.slice(0,2),lane),1.2,4,0,.35+lane*.12);
+    mesh.path(stopAtArrow(replayLanes(handoff.slice(2),lane),lane*4,REPLAY_ARROW_RUN),.7,0,0,.7);
+  }
+  // One pulse carries the flag: across the contract, out of orders, and no further.
+  mesh.path(stopAtArrow(contract,PULSE_HALF_WIDTH,REPLAY_ARROW_RUN),6,7,0,.5,[0,.55]);
+  mesh.path(handoff.slice(0,2),6,7,0,.6,[.55,.72]);
+  // The contract checks, settling as they pass: every schema still matches.
+  for(let cell=0;cell<4;cell++){
+    const along=-22+cell*12,side=9,seed=.3+cell*.15;
+    const corners=[[along,0],[along+side,0],[along+side,side],[along,side]].map(([u,v])=>mesh.iso(u,v,0,DROPPED_CELLS_ORIGIN));
+    mesh.quad(corners,3,0,seed,[seed,seed],[side,side]);
+  }
+  workflowRepository(mesh,billing,.12);
+  workflowRepository(mesh,orders,.5);
+  // A plate lights when the pulse passes its seed; the caller's is never reached.
+  workflowRepository(mesh,caller,1.2);
+  return mesh.finish();
+}
+
 function createWorkflowMeshes() {
   return {impact:createFindingMesh(),setup:createSetupMesh(),model:createDeprecatedCallMesh()};
 }
@@ -437,6 +472,104 @@ function createVerificationMeshes() {
   return scenes;
 }
 
+// The closing section's loop: the hero's four stages, told for one task,
+// "implement support for payment failure retries". Same material and timing as the hero.
+const TASK_SIZE=[640,594];
+const TASK_STAGES=[[130,212],[490,212],[490,398],[130,398]];
+const TASK_MARK=[310,305];
+
+// Stage 1: billing's contract, a stack of etched folios, gains one field.
+function taskContract(mesh,[x,y]) {
+  const origin=[x,y+8];
+  for(let layer=0;layer<3;layer++)mesh.plate(-50,-30,100,60,layer*9,origin,0,.18+layer*.24);
+  for(let row=0;row<6;row++)for(let col=0;col<9;col++){
+    const u=-40+col*9,v=-22+row*8;
+    const isAdded=row===3&&col>1&&col<7;
+    mesh.line(mesh.iso(u,v,29,origin),mesh.iso(u+6,v,29,origin),isAdded?2.4:.8,isAdded?4:0,0,(row*9+col)/54,[col/9,(col+1)/9]);
+  }
+}
+
+// A repository plate with its symbols; pipes meet its left or right corner.
+const TASK_REPOSITORY={w:58,h:48};
+const taskRepositoryCorner=([x,y],side)=>[x+side*(TASK_REPOSITORY.w+TASK_REPOSITORY.h)/2*.83,y+side*(TASK_REPOSITORY.w-TASK_REPOSITORY.h)/2*.36];
+function taskRepository(mesh,origin,seed) {
+  const {w,h}=TASK_REPOSITORY;
+  mesh.plate(-w/2,-h/2,w,h,0,origin,1,seed);
+  for(let row=0;row<4;row++)for(let col=0;col<5;col++){
+    const cellSeed=seed+(row+col)/9*.25;
+    mesh.plate(-24+col*10,-18+row*10,7.4,7.4,3+cellSeed*4,origin,1,cellSeed);
+  }
+}
+
+// Stage 2: the change reaches out from billing to the two repositories that call it, orders and web.
+function taskCallers(mesh,[x,y]) {
+  const billing=[x-70,y-4],callers=[[x+62,y-32],[x+62,y+30]];
+  callers.forEach((caller,index)=>{
+    const from=taskRepositoryCorner(billing,1),to=taskRepositoryCorner(caller,-1);
+    mesh.path(replayPipe(from,to),1.4,0,1,.3+index*.3);
+  });
+  taskRepository(mesh,billing,.08);
+  callers.forEach((caller,index)=>taskRepository(mesh,caller,.4+index*.25));
+}
+
+// Stages 3 and 4: one declined charge per case, billing to orders to the caller.
+// Before the fix the flag dies at orders: its pulse stops there and the caller never lights.
+const TASK_NODE={w:30,h:20,spacing:70};
+function taskReplay(mesh,[x,y],phase,isFixed) {
+  const {w,h,spacing}=TASK_NODE;
+  [-28,28].forEach((offset,row)=>{
+    const rowY=y+offset,columns=[x-spacing,x,x+spacing];
+    const corner=(column,side)=>[column+side*(w+h)/2*.83,rowY+side*(w-h)/2*.36-4];
+    const pipe=(from,to)=>replayPipe(corner(from,1),[corner(to,-1)[0]-3,corner(to,-1)[1]]);
+    const incoming=pipe(columns[0],columns[1]),outgoing=pipe(columns[1],columns[2]);
+    mesh.path(incoming,1.4,4,phase,.4);
+    mesh.path(incoming,5,7,phase,.3+row*.2,[0,.5]);
+    if(isFixed){
+      mesh.path(outgoing,1.4,4,phase,.4);
+      mesh.path(outgoing,5,7,phase,.3+row*.2,[.5,1]);
+    }else{
+      mesh.path(outgoing,.7,0,phase,.7);
+    }
+    // A plate turns copper once the pulse has passed its seed; a seed above 1 is never reached.
+    const seeds=[.05,.45,isFixed?.95:1.4];
+    columns.forEach((column,index)=>{
+      for(let layer=0;layer<3;layer++)mesh.plate(-w/2,-h/2,w,h,layer*4,[column,rowY],phase,seeds[index]);
+    });
+    if(!isFixed)return;
+    // The caller's received fields settle into place: the check passes for this case.
+    const edge=h/2+5,side=4.5;
+    for(let cell=0;cell<4;cell++){
+      const along=-13+cell*7.5;
+      const cellCorners=[[along,edge],[along+side,edge],[along+side,edge+side],[along,edge+side]].map(([u,v])=>mesh.iso(u,v,0,[columns[2],rowY]));
+      const seed=.2+cell*.15;
+      mesh.quad(cellCorners,3,phase,seed,[seed,seed],[side,side]);
+    }
+  });
+}
+
+function createTaskLoopMesh() {
+  const mesh=createBuilder();
+  taskContract(mesh,TASK_STAGES[0]);
+  taskCallers(mesh,TASK_STAGES[1]);
+  taskReplay(mesh,TASK_STAGES[2],2,false);
+  taskReplay(mesh,TASK_STAGES[3],3,true);
+  // The hero's three-lane buses, each jogging away from the mark at the center.
+  for(let lane=-1;lane<=1;lane++){
+    const offset=lane*4;
+    mesh.path(stopAtArrow([[216,212+offset],[262,212+offset],[280,194+offset],[300,194+offset],[318,212+offset],[360,212+offset]],offset,HERO_ARROW_RUN),1.1,4,0,.5+lane*.1);
+    mesh.path(stopAtArrow([[490+offset,276],[490+offset,288],[478+offset,300],[478+offset,312],[490+offset,324],[490+offset,336]],offset,HERO_ARROW_RUN),1.1,4,1,.5+lane*.1);
+    mesh.path(stopAtArrow([[384,398+offset],[338,398+offset],[320,416+offset],[300,416+offset],[282,398+offset],[236,398+offset]],offset,HERO_ARROW_RUN),1.1,4,2,.5+lane*.1);
+    mesh.path(stopAtArrow([[130+offset,336],[130+offset,324],[142+offset,312],[142+offset,300],[130+offset,288],[130+offset,276]],offset,HERO_ARROW_RUN),1.1,4,3,.5+lane*.1);
+  }
+  const markExtent=38;
+  mesh.tile(TASK_MARK[0]-markExtent,TASK_MARK[1]-markExtent,markExtent*2,markExtent*2,8,0,0);
+  const vertices=mesh.finish();
+  for(let index=0;index<vertices.length;index+=10)if(vertices[index+4]===8){
+    vertices[index+6]=TASK_MARK[0]/1000;vertices[index+7]=TASK_MARK[1]/1000;
+  }
+  return vertices;
+}
+
 function createStoryEntries() {
   const workflow=createWorkflowMeshes(),verification=createVerificationMeshes();
   return {
@@ -444,6 +577,7 @@ function createStoryEntries() {
     impact:{mesh:workflow.impact,mode:1,size:[600,540],layer:'workflow'},
     setup:{mesh:workflow.setup,mode:1,size:[600,540],layer:'workflow'},
     model:{mesh:workflow.model,mode:1,size:[600,540],layer:'workflow'},
+    dropped:{mesh:createDroppedMesh(),mode:1,size:[600,540],layer:'dropped'},
     'verification-before':{mesh:verification.before,mode:2,size:[600,540],layer:'verification'},
     'verification-after':{mesh:verification.after,mode:2,size:[600,540],layer:'verification'},
   };
@@ -516,7 +650,7 @@ function initStory(figure,entries) {
       gl.uniform1f(uniforms.time,elapsed);gl.uniform2fv(uniforms.pointer,pointer);gl.clear(gl.COLOR_BUFFER_BIT);
       for(const key of Object.keys(entries))if(weights[key]>.001)drawEntry(key,weights[key]);
     }
-    const amounts={hero:0,workflow:0,verification:0};
+    const amounts=Object.fromEntries(Object.keys(layers).map(name=>[name,0]));
     for(const [key,weight]of Object.entries(weights))amounts[entries[key].layer]+=weight;
     for(const [name,layer]of Object.entries(layers)){
       layer.style.opacity=String(amounts[name]);
@@ -529,11 +663,13 @@ function initStory(figure,entries) {
         lastLabelOpacity[name]=labelOpacity;
       }
     }
-    layers.workflow.dataset.phase=figure.dataset.phase;
-    layers.verification.dataset.state=figure.dataset.state;
+    if(layers.workflow)layers.workflow.dataset.phase=figure.dataset.phase;
+    if(layers.verification)layers.verification.dataset.state=figure.dataset.state;
     if(gpu){
       const phase=Math.floor(elapsed%16/4);
-      layers.hero.querySelectorAll('[data-loop-stage]').forEach((stage,index)=>stage.style.setProperty('--active-stage',index===phase?'1':'0'));
+      for(const layer of Object.values(layers)){
+        layer.querySelectorAll('[data-loop-stage]').forEach((stage,index)=>stage.style.setProperty('--active-stage',index===phase?'1':'0'));
+      }
     }
     figure.dataset.renderScene=selected;
     figure.dataset.transitioning=String(mixing());
@@ -609,7 +745,7 @@ function makeIdsUnique(root,suffix) {
 }
 
 // Inline, these scenes show only the band their content fills, phone labels included.
-const CHAPTER_CROPS={impact:{top:156,height:280},model:{top:156,height:280}};
+const CHAPTER_CROPS={impact:{top:156,height:280},model:{top:156,height:280},dropped:{top:156,height:280}};
 
 function cropEntry(entry,{top,height}) {
   const mesh=entry.mesh.slice();
@@ -624,8 +760,8 @@ function chapterEntries(scene,entries) {
   return Object.fromEntries(keys.map(key=>[key,entries[key]]));
 }
 
-function cropFigure(figure,{top,height}) {
-  figure.querySelector('[data-layer="workflow"] svg').setAttribute('viewBox',`0 ${top} 600 ${height}`);
+function cropFigure(figure,{top,height},layer) {
+  figure.querySelector(`[data-layer="${layer}"] svg`).setAttribute('viewBox',`0 ${top} 600 ${height}`);
   figure.querySelector('.story-art').style.aspectRatio=`600/${height}`;
 }
 
@@ -647,10 +783,13 @@ function mountChapterDiagram(slot,source,entries) {
   figure.setAttribute('aria-label',slot.dataset.caption);
   figure.querySelector('figcaption').textContent=slot.dataset.caption;
   prepareChapterSwitch(figure,scene);
-  if(CHAPTER_CROPS[scene])cropFigure(figure,CHAPTER_CROPS[scene]);
+  if(CHAPTER_CROPS[scene])cropFigure(figure,CHAPTER_CROPS[scene],entries[scene].layer);
   slot.replaceChildren(figure);
   initStory(figure,chapterEntries(scene,entries));
 }
+
+const taskFigure=document.querySelector('[data-diagram="task"]');
+if(taskFigure)initStory(taskFigure,{task:{mesh:createTaskLoopMesh(),mode:0,size:TASK_SIZE,layer:'task'}});
 
 const storyFigure=document.querySelector('[data-diagram="story"]');
 if(storyFigure){

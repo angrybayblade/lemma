@@ -10,8 +10,8 @@ def build_change_story(root, wrap_svg):
     def text(x, y, value, cls='flow-label', extra=''):
         return f'<text x="{x}" y="{y}" class="{cls}" {extra}>{escape(str(value))}</text>'
 
-    replay_detail = 'Illustrative replay through billing, orders and a caller. The proposed Orders change preserves the retry flag; two declared behavior cases are simulated and checked. Repositories supply their own declarations and checker.'
-    verify = text(300, 62, 'Proposed change', 'flow-repository', 'text-anchor="middle"')
+    replay_detail = 'Illustrative replay through billing, orders and a caller, for the change to orders’ error helper. With the change, orders drops the retry flag; with the fix, it passes it on. Both declared behavior cases are simulated and checked. Repositories supply their own declarations and checker.'
+    verify = text(300, 62, 'orders/handlers.py', 'flow-repository', 'text-anchor="middle"')
     verify += '<g class="replay-pictogram"><path class="module" d="M202 140l98-42 98 42-98 42zM202 150l98 42 98-42"/></g>'
     # Columns as diagrams-webgl.js draws them: center, plate width and depth.
     nodes = [(85, 82, 46), (300, 120, 56), (510, 92, 50)]
@@ -99,5 +99,5 @@ def build_change_story(root, wrap_svg):
         verify += f'<path class="route replay-route" d="{points(incoming)}{arrow(incoming[-1])}{points(outgoing)}{arrow(outgoing[-1])}"/>'
         middle = ((outgoing[1][0] + outgoing[2][0]) / 2, (outgoing[1][1] + outgoing[2][1]) / 2)
         verify += f'<path class="replay-arrowheads" d="{arrow(incoming[-1])}{arrow(outgoing[-1])}"/><path class="replay-break" d="M{middle[0] - 6:.1f} {middle[1] - 6:.1f}l12 12m0-12-12 12"/>'
-    verify += text(300, 508, 'Requirement: preserve the retry flag', 'flow-label', 'text-anchor="middle"')
+    verify += text(300, 508, 'orders must pass on billing’s retry flag', 'flow-label', 'text-anchor="middle"')
     (root / 'src/verify.svg').write_text(wrap_svg(verify, 'verify-flow', 'Check that the retry flag reaches the caller in both declared cases.', '0 0 600 540', replay_detail))

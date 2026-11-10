@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="diagram-svg" viewBox="0 0 600 540" fill="none" role="img" aria-labelledby="dropped-flow-title dropped-flow-desc"><title id="dropped-flow-title">Billing's retry flag stops at orders.</title><desc id="dropped-flow-desc">Billing declines a charge and sends a retriable flag to orders over a contract whose schema matches. Orders answers its caller with a 502 but leaves the flag out, so the caller never receives it. Every contract check passes.</desc>
+<g class="dropped-pictogram"><path class="module" d="M37 240l63-27 63 27-63 27zM237 240l63-27 63 27-63 27zM437 240l63-27 63 27-63 27z"/><path class="route" d="M163 243H233M363 243H433"/></g>
+<path class="dropped-arrowheads" d="M221 227l12 10-12 10"/>
+<path class="dropped-mark" d="M388 231l14 14m0-14-14 14"/>
+<text x="200" y="196" class="flow-meta" text-anchor="middle">Schema matches</text>
+<text x="400" y="196" class="flow-meta dropped-lost" text-anchor="middle">retriable dropped</text>
+<text x="100" y="302" class="flow-repository" text-anchor="middle">billing</text><text x="100" y="326" class="flow-meta" text-anchor="middle">Sends the flag</text>
+<text x="300" y="302" class="flow-repository" text-anchor="middle">orders</text><text x="300" y="326" class="flow-meta" text-anchor="middle">Returns a 502</text>
+<text x="500" y="302" class="flow-repository" text-anchor="middle">caller</text><text x="500" y="326" class="flow-meta" text-anchor="middle">No retry flag</text>
+<text x="300" y="420" class="flow-label" text-anchor="middle">Every contract check passes</text></svg>
