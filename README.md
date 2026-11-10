@@ -93,7 +93,9 @@ The [landing page](website/README.md) leads with agent speed and system precisio
 | `lemma-syntax` | Tree-sitter extraction of definitions and declarations |
 | `lemma-lsp` | Generic LSP client: framing, lifecycle, readiness, encodings |
 | `lemma-providers` | The `SemanticProvider` trait, provider registry, and the LSP adapter |
-| `lemma-store` | The `FactStore` trait and its SQLite storage format |
+| `lemma-store` | `index.ls`: a repository's files and symbols in one append-only tree (spec 17) |
+| `lemma-mapped` | A read-only memory map: the one crate allowed `unsafe` |
+| `lemma-legacy-store` | The `FactStore` trait and its SQLite storage, until the Lemma store replaces it |
 | `lemma-index` | Walking, hashing, and snapshotting a directory |
 | `lemma-query` | The operations: symbols, outline, references, definitions, implementations, signatures |
 | `lemma-logic` | Lemma's Datalog: programs, facts, the `Engine` trait and a reference engine |

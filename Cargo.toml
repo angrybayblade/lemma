@@ -16,7 +16,9 @@ lemma-lang = { path = "crates/lemma-lang" }
 lemma-lang-server = { path = "crates/lemma-lang-server" }
 lemma-lm = { path = "crates/lemma-lm" }
 lemma-logic = { path = "crates/lemma-logic" }
+lemma-store = { path = "crates/lemma-store" }
 lemma-lsp = { path = "crates/lemma-lsp" }
+lemma-mapped = { path = "crates/lemma-mapped" }
 lemma-model = { path = "crates/lemma-model" }
 lemma-providers = { path = "crates/lemma-providers" }
 lemma-query = { path = "crates/lemma-query" }

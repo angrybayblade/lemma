@@ -1,0 +1,23 @@
+[package]
+name = "lemma-store"
+description = "The index.ls store: a repository's source, files and symbols in one append-only tree."
+version.workspace = true
+edition.workspace = true
+# File locks in the standard library arrived in 1.89.
+rust-version = "1.89"
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3.workspace = true
+ignore.workspace = true
+lemma-mapped.workspace = true
+lemma-model.workspace = true
+lemma-syntax.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
