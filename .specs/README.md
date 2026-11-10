@@ -2,6 +2,8 @@
 
 Captured: 2026-10-28
 
+Updated 2026-11-10: [document 17](17-lemma-store.md) proposes one store for everything read from code: a per-repository `index.ls` holding source, file and symbol, with attributes filled in lazily, which a workspace mounts instead of copying.
+
 Updated 2026-11-08: [document 14](14-sentry.md) proposes sentry. The daemon, attached to one workspace, listens to file changes and keeps that workspace's check inputs prepared, so a check costs what the change costs. It records the decisions taken so far, the prior art reviewed, and a rollout gated on matching fresh checks.
 
 Updated 2026-11-08: [document 15](15-one-description-format.md) removed Lemma's YAML formats, so a description is always `.lm`. [Document 16](16-verifying-descriptions.md) gave `lemma verify` a new job, checking that a description still matches the code; its first rollout step is implemented, and the rest is proposal.
@@ -36,6 +38,7 @@ These notes consolidate the design discussion leading to Lemma. They include acc
 14. [Sentry: warm paths for checks](14-sentry.md)
 15. [One description format: removing YAML](15-one-description-format.md)
 16. [`lemma verify`: does the description match the code?](16-verifying-descriptions.md)
+17. [The Lemma store](17-lemma-store.md)
 
 ## Status conventions
 

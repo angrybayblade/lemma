@@ -1,5 +1,7 @@
 # Segments and shared storage
 
+**Superseded in its physical design by [spec 17](17-lemma-store.md), 2026-11-10.** What landed here stays in use until that spec's second stage replaces it.
+
 **Status: partly implemented, 2026-11-05.** Function records, per-repository segments for tracing's functions and selection's terms, and the unit cache's write path have landed; see [What landed](#what-landed) for what differs from the proposal and why. The rest is a proposal. It refines the storage half of [spec 10](10-native-datastore.md): that document's logical model (three identities, units owned by producers, coverage as data, receipts) and its review follow-up (content-addressed units, snapshots as manifests of units) stand. This document decides the physical format those units take, how they group into shareable segments, and how segments move between a laptop, a devbox and CI. Measurements are from `main` at `db6848e` on the generated systems in `bench/lemmabench/scale.py`.
 
 ## Goals
