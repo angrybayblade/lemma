@@ -28,7 +28,7 @@ export service api {
 ```
 
 ```sh
-lemma index ~/code/project              # writes ~/code/project/.lemma/index.db
+lemma index ~/code/project              # writes ~/code/project/.lemma/index.ls
 cd ~/code/project
 lemma symbols Router                    # search by name or qualified name
 lemma refs Router.delete                # references via the language's server

@@ -139,5 +139,5 @@ Providers can declare the message they send once a project is loaded (`ready_mes
 - **Edits** still pay for one `git status` process (about 50 ms here). Comparing file contents with the commit in-process would remove it.
 - **Lookups with thousands of results** spend most of their time naming the enclosing function of each reference, one query each.
 - **The first lookup of each symbol** costs the language server's own search (about 100-250 ms here, seconds for very common names). Lemma cannot make the server faster, but it could store answers as symbol occurrences shared across lookups and fill them in while idle, so most lookups never reach a server.
-- **The first index** of monorepo A takes 5-6 s. Writing to SQLite while parsing, and a hand-written tree walk instead of Tree-sitter queries, could shorten it.
+- **The first index** of monorepo A takes 5-6 s. Writing the store while parsing, and a hand-written tree walk instead of Tree-sitter queries, could shorten it.
 - **The daemon** runs one command at a time.

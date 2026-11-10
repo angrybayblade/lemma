@@ -2,7 +2,7 @@
 
 ## `no index found here or in any parent directory`
 
-Run `lemma index <project>` first, then run other commands from inside that project, or pass `--db <project>/.lemma/index.db`.
+Run `lemma index <project>` first, then run other commands from inside that project, or pass `--db <project>/.lemma/index.ls`.
 
 ## `no indexed symbol matches ...`
 
@@ -58,4 +58,4 @@ The index was written by another version of Lemma. Run `lemma index`; it rebuild
 
 ## Results look out of date
 
-Lemma reuses cached answers until the project is re-indexed with changes or the provider's configuration changes. Use `--refresh` to bypass the cache for one lookup, or delete `.lemma/index.db` and index again to start fresh.
+Lemma reuses cached answers until the project is re-indexed with changes or the provider's configuration changes. Use `--refresh` to bypass the cache for one lookup, or delete `.lemma/index.ls` and index again to start fresh.

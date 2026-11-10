@@ -38,7 +38,7 @@ Used by `symbols`, `refs`, and ambiguous results.
 
 ```json
 {
-  "database": "./.lemma/index.db",
+  "database": "./.lemma/index.ls",
   "snapshot_id": 1,
   "root": "/Users/me/code/my-project",
   "revision": "4f2c1e9a...",

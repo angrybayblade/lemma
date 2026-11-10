@@ -4,7 +4,7 @@
 
 | Command | Does |
 | --- | --- |
-| `lemma index <directory>` | Indexes the code `<directory>/mod.lm` says its services are made of (`index`: `include`, `exclude`, `languages`); writes `<directory>/.lemma/index.db`. The daemon then keeps it current. Without a `mod.lm`, or when no service names its code, indexes every supported file and warns. |
+| `lemma index <directory>` | Indexes the code `<directory>/mod.lm` says its services are made of (`index`: `include`, `exclude`, `languages`); writes `<directory>/.lemma/index.ls`. The daemon then keeps it current. Without a `mod.lm`, or when no service names its code, indexes every supported file and warns. |
 | `lemma symbols <query>` | Searches indexed symbols by name or qualified name. |
 | `lemma outline <file>` | Lists a file's symbols in source order. |
 | `lemma refs <symbol>` | References through the symbol's language server. |
