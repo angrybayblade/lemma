@@ -12,6 +12,7 @@ mod cache;
 mod codec;
 mod facts;
 mod navigation;
+mod reach;
 mod read;
 mod records;
 mod scan;
@@ -31,6 +32,7 @@ pub use facts::{
     SymbolFilter, SymbolKey,
 };
 pub use navigation::Store;
+pub use reach::{SymbolAddress, reaching};
 pub use read::{
     FileChange, Index, ReadMode, Root, SymbolChange, SymbolChangeKind, changed_symbols,
 };
