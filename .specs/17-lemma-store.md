@@ -1,6 +1,6 @@
 # The Lemma store
 
-**Status: proposal, 2026-11-10. Nothing here is implemented or measured.** This spec replaces the two pipelines that read code today with one store that every command reads. It takes over from the physical designs in [spec 10](10-native-datastore.md) and [spec 12](12-segments-and-shared-storage.md), and keeps their logical rules: coverage as data, four outcomes, determinism, safe Rust and full evaluation as the oracle. [Spec 14](14-sentry.md)'s prepared inputs shrink to keeping this store current.
+**Status: in progress, 2026-11-10. Stages 1–3 are on the `lemma-store` branch; the layout below replaces stage 1's tree of nodes.** This spec replaces the two pipelines that read code today with one store that every command reads. It takes over from the physical designs in [spec 10](10-native-datastore.md) and [spec 12](12-segments-and-shared-storage.md), and keeps their logical rules: coverage as data, four outcomes, determinism, safe Rust and full evaluation as the oracle. [Spec 14](14-sentry.md)'s prepared inputs shrink to keeping this store current.
 
 ## Why
 
@@ -31,7 +31,7 @@ Facts about one symbol and connections between symbols are separate. "Calls `foo
 
 ## Eager and lazy
 
-**Eager, on every change:** the tree down to symbols, with name-level references and index terms. Tree-sitter produces all of it from one file, in one parse.
+**Eager, on every change:** files and symbols, with name-level references and index terms. Tree-sitter produces all of it from one file, in one parse.
 
 **Lazy, only when required:** attributes. An attribute is looked up by its input key. On a miss its provider runs and the answer is stored.
 
@@ -82,53 +82,93 @@ Today's adapters remain as the fallback when file-level extraction cannot answer
 
 ## Format: `index.ls`
 
-Each repository, or module with its own index, has one `.lemma/index.ls`. It is a single append-only file of immutable nodes; a commit appends new nodes and then a footer.
+Each repository, or module with its own index, has one `.lemma/index.ls`. The tree in the model is how Lemma names things; it is not how they are stored. Storage follows the reads and writes Lemma makes:
+
+| Access | Served by |
+|---|---|
+| A batch of edited files | A delta segment holding only those files |
+| A fresh index, or a merge | A full segment built in one sorted pass |
+| One file, by path | The files table of the newest segment holding the path |
+| Symbols by name | Each segment's string table, then its name lists |
+| What mentions a name | Each segment's reverse mention lists |
+| One symbol, by id | Each segment's sorted id table |
+| A value under a key | Sorted attribute runs, each with a filter |
 
 ```text
-file      magic[4]  major:u16  minor:u16  nodes...  footer
-node      kind:u8  length:u32  payload  blake3[32]
-footer    magic[4]  roots:u64  attributes:u64  previous_footer:u64  blake3[32]
-
-roots       (name, node offset)[]          -- head, work, commit:<id>
-source      repository, revision, profile digest, tree offset, description offset
-directory   (name, kind, digest, offset)[] -- sorted by name
-file        blob digest, language, string table, symbols
-symbol      name:sid, qualified:sid, kind:u8, spans, discriminator, digest, mentions:sid[]
+file      magic "LMLS"  major:u16  minor:u16  commits...
+commit    nodes and values, then a footer
+node      kind:u8  length:u32  payload               -- roots, segment, run, run list
+value     bytes                                      -- found through its run entry
+footer    "LSFT"  roots:u64  runs:u64  previous:u64  start:u64  synced:u64  checked:u64
+          commit:blake3[32]  footer:blake3[32]
 ```
 
-Index terms join the file node at stage 2, when `check` starts reading the store. The layout may change freely until that stage is on `main`.
+**Roots** are the sources a store keeps: `head` and `work` for a repository, and one per indexed directory for navigation. Each lists its segments, oldest first, with its source record and a digest of its files. History beyond the roots a store keeps is out of scope here.
 
-**Merkle tree.** A directory's digest covers its children's digests, not their offsets. The same content has the same digest in any file, at any offset. An edit appends one file node and the directories above it, and a new source and footer, so the size of a write follows the depth of the path, not the size of the repository. That removes spec 12's cost of rewriting a whole repository's segment after one edit.
+**Segments** are immutable and position-independent: every offset inside one is relative to its start, so a segment can be copied into another file unchanged.
 
-**Base and head are roots of one tree.** They share every node they have in common, and comparing them descends only where digests differ. The change-to-symbol step is that walk.
+```text
+segment     counts and a section table, then:
+  paths       sorted; a file's ordinal is its position
+  files       blob[32]  language  flags  stamp  symbols:(start, count)
+  strings     sorted and deduplicated: names, qualified names, mentions
+  symbols     name  qualified  kind  span  name_span  discriminator  digest[32]  id[16]  file  mentions
+  mentions    symbol → string ids
+  ids         sorted (id, symbol)
+  by name, by qualified name, mentioned by     -- string id → symbols
+```
 
-**Attributes sit beside the tree, not inside it.** Filling in a lazy attribute must not change any digest above it. The footer points at a second structure: file path to a block of `(symbol digest, kind, input key) → value`, updated by appending a new block and the small path above it. Logically an attribute belongs under its symbol. Physically it is a side table keyed by that symbol's digest, so a symbol that moves keeps its attributes.
+A delta segment has the same layout and holds only the files a commit changed; a removed file is a row flagged as removed. **A newer segment replaces whole files in older ones.** Every row of a segment belongs to one file, so a delta never deletes a single symbol, and a read takes the newest segment that holds a path.
 
-**Durability.** A reader takes the last footer whose digest checks. A crash leaves at worst a tail that is ignored. There is one writer at a time, under a file lock. A run that cannot get the lock keeps its results in memory and tries again at the end. Readers need no lock, because bytes before a footer never change.
+**Merging.** A root stacks at most eight delta segments on its full segment, which holds every file. Past that, its deltas merge into one, and when that one holds more than a quarter of the full segment's files, everything merges into a new full segment. `work` stacks on `head`'s segments, so the two share a full segment. ("Full" rather than "base", which already names the old side of a change.)
 
-**Reads** are memory-mapped, with positional reads as the fallback for filesystems where maps are unreliable. The workspace forbids `unsafe`; the `lemma-mapped` crate is the one exception, an experiment holding a single call that hands everyone else a `&[u8]`. Decoding stays safe and bounds-checked, and both paths read the same bytes. Each node's digest is checked when it is first read. The conventions of `records.rs` carry over: little-endian fixed-width integers, sorted string tables, every length checked before use.
+**Symbol ids** are the first 16 bytes of a BLAKE3 digest of the symbol's path, qualified name, kind and discriminator. They are the same in any store and any build and are never handed out from a counter, so nothing is stored to keep a symbol's id across edits. In a workspace, a symbol's address adds its member's name.
 
-**Compaction** copies what the kept roots reach into a new file and renames it over the old one. It runs when the unreachable share of the file passes a threshold.
+**Root digests** add up a BLAKE3 digest of each file's path and blob in four 64-bit lanes, wrapping. Order does not matter, so a commit updates a root's digest from only the files it changed, and the same files give the same digest whichever segments hold them.
+
+**Comparing roots.** When one root's segments extend the other's, as `work` extends `head`, only paths in the extra segments can differ, so the cost follows the change. Otherwise the two sorted file tables are walked side by side. Changed files then compare symbol digests.
+
+**Attributes** are values filed under 32-byte keys. A write appends its values and then a run: its keys, sorted, each with its value's offset and length, then a Bloom filter. The footer names the list of runs, newest first, and a lookup skips a run whose filter rules the key out. Past eight runs they merge into one; values are not copied.
+
+**A cache, not a record.** Everything in `index.ls` can be derived again from source, so commits are not flushed one by one: a commit is written whole and the operating system writes it back when it likes. A commit larger than 1 MiB, and an explicit checkpoint, flush the file and then append a footer whose `synced` says so. On opening, every commit after the last `synced` offset is checked against its footer's commit digest, and the first that fails ends the store there. Bytes before `synced` are trusted. Decoding checks every length and offset, so damage there is an error and never a crash, but damage that keeps a valid shape is not detected. A crash loses at most the commits since the last flush, which the next run computes again.
+
+**Compaction** writes the live segments and the newest value under each key into a new file, flushes it and renames it over the old one. It runs when the file has doubled since the last check and less than half of it is live. A reader that mapped the old file keeps reading it until it reopens.
+
+**One writer** at a time, under a lock on `index.ls.lock`. Readers take no lock: bytes before a footer never change, and compaction replaces the file instead of changing it.
+
+**Reads** are memory-mapped, with positional reads as the fallback for filesystems where maps are unreliable. The workspace forbids `unsafe`; the `lemma-mapped` crate is the one exception, holding a single call that hands everyone else a `&[u8]`. Decoding stays safe and bounds-checked, and both paths read the same bytes. The conventions of `records.rs` carry over: little-endian fixed-width integers, sorted string tables, every length checked before use.
 
 **Portability.** Language-server and interpreter attributes depend on the machine's installed dependencies. They are flagged local and dropped by a pack for sharing. Uncommitted work is a root that never leaves the machine.
 
+### Precedents
+
+| System | What this layout borrows |
+|---|---|
+| Git's index and cache-tree | A flat sorted file table, with tree digests computed instead of stored |
+| Lucene, Tantivy, Zoekt | Immutable segments merged in the background, sorted term dictionaries, memory-mapped reads |
+| RocksDB, LevelDB | Small sorted runs over a large sorted file, a filter per run, a small record of what is current |
+| Glean, IntelliJ's file indexes | Every fact owned by one file, so a delta replaces whole files |
+| clangd | Per-file symbols and relations merged into one index for reads, with hashed symbol ids |
+| Salsa, ccache, Bazel | Values keyed by what they were computed from, so stale ones stop matching instead of being deleted |
+| GitHub's stack graphs | Name-level facts per file, resolved across files when read |
+
 ## Workspaces subsume members
 
-A workspace's `index.ls` **mounts** its members. It holds no copy of their nodes.
+A workspace's `index.ls` **mounts** its members. It holds no copy of their segments.
 
 ```text
 mount     (member name, path to its index.ls, root name, root digest)[]
 ```
 
-Joining reads each member's last footer and compares the root digest. **The cost follows the number of members, not the number of symbols**, and it is only possible because nothing in a member's tree refers to anything outside it:
+Joining reads each member's last footer and compares the root digest. **The cost follows the number of members, not the number of symbols**, and it is only possible because nothing in a member's store refers to anything outside it:
 
-- Slots and string ids are private to a file node, and are never compared across nodes.
+- String ids and symbol ordinals are private to a segment, and are never compared across segments.
 - References across members go through names, and are resolved in the workspace's own layer.
-- Digests are independent of position, so a mounted node is the same node wherever it is read.
+- Symbol ids depend only on a symbol's identity in its repository, so a mounted symbol has the same id wherever it is read.
 
 **What a workspace stores for itself** is only what no member can know: the description, links, cross-member resolved references and term postings, each kept per member and keyed by that member's root digest. A change in one member rebuilds that member's contribution and leaves the others.
 
-**Lookups** across members probe each member's sorted sections, as spec 12 reads several segments. A merged index is built only if a measured query needs one; spec 12 found rebuilding is often cheaper than storing.
+**Lookups** across members probe each member's segments, newest first. A merged index is built only if a measured query needs one.
 
 **Packing** copies a workspace and its members into one self-contained file for CI or a shared store. Mounting is for local work; packing is for moving.
 
@@ -177,5 +217,4 @@ A full build took 11 s to parse and under 1 s to write, for a 71 MiB file. A one
 - **One process per batch or per file.** Import order can change results through global registries, and batches depend on timing. Start with one per batch, and let the sentry comparison decide.
 - **Evaluating rules for part of a workspace.** The store says what changed; limiting Datalog evaluation to it needs its own design at stage 5, building on [spec 11](11-change-driven-evaluation.md).
 - **Language servers at base.** A base-side answer needs a checkout of the base. Decide whether to pay for it or to answer `unknown`.
-- **Directory fan-out.** Very large directories make a node expensive to rewrite; decide whether to split them.
 - **Whether the file should be committed.** Sharing through Git would be simple, but it would add a binary that changes on every commit. The default is no.

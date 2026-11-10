@@ -129,7 +129,8 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | index term | A string a file's code facts are indexed by, standing for calls the file may make | key, tag, token |
 | covered operations | The operations whose calls a change-driven run read in full | scope, focus, subset |
 | unit record | One file's parse in Lemma's binary format, kept under a key naming its contents | blob, entry, row |
-| segment | An immutable object built from many unit records at once, such as a repository's functions, named by a digest of its inputs | pack, bundle, snapshot |
+| segment | An immutable object built from many records at once: a repository's functions for checks, named by a digest of its inputs, or a set of files and their symbols in `index.ls` | pack, bundle, snapshot |
+| full segment, delta segment | In `index.ls`, a segment holding every file of a root, or only the files a commit changed; a newer segment replaces whole files in older ones | base layer, overlay, patch |
 | module | One `.lm` file, named by its place in its repository | package, file, library |
 | graph | A named set of facts of one relation, written as rows, supplied by a provider or derived by a rule | edge list, table |
 | fact | One tuple of a relation, with the provenance of each support | edge, row, triple |
