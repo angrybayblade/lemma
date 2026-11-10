@@ -18,7 +18,7 @@ use lemma_model::{Language, Span, SymbolKind};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::codec::{self, Decoder, Encoder};
+use crate::codec::{self, Decoder, Encoder, Slot};
 use crate::ids::SymbolId;
 use crate::{Digest, FileRecord, FileStamp, StoreError, SymbolRecord};
 
@@ -107,6 +107,16 @@ struct Bases {
     mention: u32,
 }
 
+impl Bases {
+    /// How many symbols and mentions lie between these bases and `later`.
+    fn until(self, later: Bases) -> (usize, usize) {
+        (
+            (later.symbol - self.symbol) as usize,
+            (later.mention - self.mention) as usize,
+        )
+    }
+}
+
 type Sids<'a> = FxHashMap<&'a str, u32>;
 
 /// Segments of fewer files, such as a commit's delta, are built on the
@@ -139,31 +149,67 @@ struct FileSlots<'a> {
 
 /// A segment holding `files`, which are sorted by path with no path twice.
 pub(crate) fn build(files: &[(&str, Entry<'_>)]) -> Result<Vec<u8>, StoreError> {
-    let mut bytes = Vec::new();
-    build_into(files, &mut bytes)?;
-    Ok(bytes)
+    build_after(files, 0)
 }
 
-/// Appends a segment holding `files` to `out`. Every table's size is known
-/// before anything is written, so the segment is laid out at once and
-/// each file fills its own share of each table, in parallel, in place.
-pub(crate) fn build_into(files: &[(&str, Entry<'_>)], out: &mut Vec<u8>) -> Result<(), StoreError> {
+/// A segment holding `files`, after `prefix` zeroed bytes left for the
+/// caller. Every table's size is known before anything is written, so the
+/// segment is laid out at once and each file fills its own share of each
+/// table, in parallel, in place. The buffer is allocated zeroed at its
+/// final size, which the system hands over as untouched pages, so the
+/// threads filling it touch its pages first rather than one thread zeroing
+/// them all beforehand.
+pub(crate) fn build_after(
+    files: &[(&str, Entry<'_>)],
+    prefix: usize,
+) -> Result<Vec<u8>, StoreError> {
     let strings = string_table(files);
     let sids: Sids<'_> = strings
         .iter()
         .enumerate()
         .map(|(sid, text)| Ok((*text, small(sid)?)))
         .collect::<Result<_, StoreError>>()?;
-    let (bases, symbols, mentions) = bases(files)?;
+    let layout = layout(files)?;
+    let (symbols, mentions) = (layout.end.symbol as usize, layout.end.mention as usize);
     let counts = [files.len(), symbols, strings.len(), mentions];
     let lengths = section_lengths(files, &strings, counts)?;
-    let start = out.len();
-    out.resize(start + HEADER_BYTES + lengths.iter().sum::<usize>(), 0);
-    let (header, body) = out[start..].split_at_mut(HEADER_BYTES);
+    let mut out = vec![0; prefix + HEADER_BYTES + lengths.iter().sum::<usize>()];
+    let (header, body) = out[prefix..].split_at_mut(HEADER_BYTES);
     write_header(header, counts, &lengths)?;
     let mut sections = split_sections(body, &lengths);
-    write_paths(files, &mut sections)?;
-    write_strings(&strings, &mut sections)?;
+    fill_sections(files, &strings, &sids, &layout, &mut sections)?;
+    Ok(out)
+}
+
+/// Where each file's rows start, and where the rows after the last end.
+struct Layout {
+    bases: Vec<Bases>,
+    end: Bases,
+}
+
+/// Fills a laid-out segment's sections: paths and strings beside the
+/// files' rows and columns, then the lists built from the columns.
+fn fill_sections(
+    files: &[(&str, Entry<'_>)],
+    strings: &[&str],
+    sids: &Sids<'_>,
+    layout: &Layout,
+    sections: &mut [&mut [u8]],
+) -> Result<(), StoreError> {
+    let (symbols, mentions) = (layout.end.symbol as usize, layout.end.mention as usize);
+    let [
+        path_offsets,
+        path_bytes,
+        file_rows,
+        string_offsets,
+        string_bytes,
+        symbol_rows,
+        mention_rows,
+        lists @ ..,
+    ] = sections
+    else {
+        return Err(DAMAGED);
+    };
     let mut columns = Columns {
         names: vec![0; symbols],
         qualified: vec![0; symbols],
@@ -171,23 +217,71 @@ pub(crate) fn build_into(files: &[(&str, Entry<'_>)], out: &mut Vec<u8>) -> Resu
         owners: vec![0; mentions],
         ids: vec![(SymbolId::from(0), 0); symbols],
     };
-    let slots = file_slots(files, &bases, &mut sections, &mut columns);
+    let slots = FileSlots {
+        file_row: file_rows,
+        symbol_rows,
+        mention_rows,
+        names: &mut columns.names,
+        qualified: &mut columns.qualified,
+        mentions: &mut columns.mentions,
+        owners: &mut columns.owners,
+        ids: &mut columns.ids,
+    };
+    let mut texts = || {
+        write_texts(
+            files.iter().map(|(path, _)| *path),
+            path_offsets,
+            path_bytes,
+        )?;
+        write_texts(strings.iter().copied(), string_offsets, string_bytes)
+    };
+    let fill = || fill_files(files, &layout.bases, layout.end, sids, slots);
     let is_small = files.len() < PARALLEL_FILES;
-    if is_small {
-        for (((path, entry), bases), slots) in files.iter().zip(&bases).zip(slots) {
-            fill_file(path, entry, *bases, &sids, slots)?;
-        }
+    let (written, filled) = if is_small {
+        (texts(), fill())
     } else {
-        files
-            .par_iter()
-            .zip(bases.par_iter())
-            .zip(slots)
-            .try_for_each(|(((path, entry), bases), slots)| {
-                fill_file(path, entry, *bases, &sids, slots)
-            })?;
-    }
-    write_lists(&mut sections, &mut columns, strings.len(), is_small);
+        rayon::join(texts, fill)
+    };
+    written?;
+    filled?;
+    write_lists(lists, &mut columns, strings.len(), is_small);
     Ok(())
+}
+
+/// Below this many files, a share of the files is filled on one thread.
+const FILL_GRAIN: usize = 512;
+
+/// Fills `files`, whose shares of the tables are `slots`, halving them and
+/// filling the halves at once until a half is small. `end` is where the
+/// rows after the last file would start.
+fn fill_files(
+    files: &[(&str, Entry<'_>)],
+    bases: &[Bases],
+    end: Bases,
+    sids: &Sids<'_>,
+    slots: FileSlots<'_>,
+) -> Result<(), StoreError> {
+    let (Some(first), Some(_)) = (bases.first().copied(), files.first()) else {
+        return Ok(());
+    };
+    if files.len() <= FILL_GRAIN {
+        let mut rest = slots;
+        for (at, ((path, entry), base)) in files.iter().zip(bases).enumerate() {
+            let next = bases.get(at + 1).copied().unwrap_or(end);
+            let (taken, left) = cut(rest, 1, base.until(next));
+            fill_file(path, entry, *base, sids, taken)?;
+            rest = left;
+        }
+        return Ok(());
+    }
+    let middle = files.len() / 2;
+    let split = bases[middle];
+    let (left_slots, right_slots) = cut(slots, middle, first.until(split));
+    let (left, right) = rayon::join(
+        || fill_files(&files[..middle], &bases[..middle], split, sids, left_slots),
+        || fill_files(&files[middle..], &bases[middle..], end, sids, right_slots),
+    );
+    left.and(right)
 }
 
 /// Each section's length, from the counts and the paths' and strings' text.
@@ -246,8 +340,8 @@ fn split_sections<'a>(mut body: &'a mut [u8], lengths: &[usize; SECTIONS]) -> Ve
     sections
 }
 
-/// Where each file's symbols and mentions start, and how many there are.
-fn bases(files: &[(&str, Entry<'_>)]) -> Result<(Vec<Bases>, usize, usize), StoreError> {
+/// Where each file's symbols and mentions start, and where they end.
+fn layout(files: &[(&str, Entry<'_>)]) -> Result<Layout, StoreError> {
     let mut bases = Vec::with_capacity(files.len());
     let (mut symbol, mut mention) = (0usize, 0usize);
     for (file, (_, entry)) in files.iter().enumerate() {
@@ -265,53 +359,21 @@ fn bases(files: &[(&str, Entry<'_>)]) -> Result<(Vec<Bases>, usize, usize), Stor
                 .sum::<usize>();
         }
     }
-    small(symbol)?;
-    small(mention)?;
-    Ok((bases, symbol, mention))
+    let end = Bases {
+        file: small(files.len())?,
+        symbol: small(symbol)?,
+        mention: small(mention)?,
+    };
+    Ok(Layout { bases, end })
 }
 
-/// Every file's share of each table, cut in file order.
-fn file_slots<'a>(
-    files: &[(&str, Entry<'_>)],
-    bases: &[Bases],
-    sections: &'a mut [&mut [u8]],
-    columns: &'a mut Columns,
-) -> Vec<FileSlots<'a>> {
-    let [_, _, file_rows, _, _, symbol_rows, mention_rows, ..] = sections else {
-        return Vec::new();
-    };
-    let mut rest = FileSlots {
-        file_row: file_rows,
-        symbol_rows,
-        mention_rows,
-        names: &mut columns.names,
-        qualified: &mut columns.qualified,
-        mentions: &mut columns.mentions,
-        owners: &mut columns.owners,
-        ids: &mut columns.ids,
-    };
-    let mut slots = Vec::with_capacity(files.len());
-    for ((_, entry), _) in files.iter().zip(bases) {
-        let (symbols, mentions) = match entry {
-            Entry::Put { record, .. } => (
-                record.symbols.len(),
-                record
-                    .symbols
-                    .iter()
-                    .map(|symbol| symbol.mentions.len())
-                    .sum(),
-            ),
-            Entry::Removed => (0, 0),
-        };
-        let (taken, left) = cut(rest, symbols, mentions);
-        slots.push(taken);
-        rest = left;
-    }
-    slots
-}
-
-/// The first file's share of `slots`, and what is left.
-fn cut(slots: FileSlots<'_>, symbols: usize, mentions: usize) -> (FileSlots<'_>, FileSlots<'_>) {
+/// The share of `slots` of the first `files` files, which hold `symbols`
+/// and `mentions` between them, and what is left.
+fn cut(
+    slots: FileSlots<'_>,
+    files: usize,
+    (symbols, mentions): (usize, usize),
+) -> (FileSlots<'_>, FileSlots<'_>) {
     let FileSlots {
         file_row,
         symbol_rows,
@@ -322,7 +384,7 @@ fn cut(slots: FileSlots<'_>, symbols: usize, mentions: usize) -> (FileSlots<'_>,
         owners,
         ids,
     } = slots;
-    let file_row = file_row.split_at_mut(FILE_ROW);
+    let file_row = file_row.split_at_mut(files * FILE_ROW);
     let symbol_rows = symbol_rows.split_at_mut(symbols * SYMBOL_ROW);
     let mention_rows = mention_rows.split_at_mut(mentions * 4);
     let names = names.split_at_mut(symbols);
@@ -373,8 +435,12 @@ fn string_table<'a>(files: &'a [(&str, Entry<'_>)]) -> Vec<&'a str> {
         strings.dedup();
         return strings;
     }
+    // Each piece of work gathers its strings into a set of its own, which
+    // are merged after; few large pieces mean few sets to merge.
+    let grain = files.len() / (rayon::current_num_threads() * 2) + 1;
     let seen = files
         .par_iter()
+        .with_min_len(grain)
         .fold(
             FxHashSet::default,
             |mut seen: FxHashSet<&'a str>, (_, entry)| {
@@ -420,20 +486,6 @@ fn write_texts<'t>(
     Ok(())
 }
 
-fn write_paths(files: &[(&str, Entry<'_>)], sections: &mut [&mut [u8]]) -> Result<(), StoreError> {
-    let [offsets, bytes, ..] = sections else {
-        return Err(DAMAGED);
-    };
-    write_texts(files.iter().map(|(path, _)| *path), offsets, bytes)
-}
-
-fn write_strings(strings: &[&str], sections: &mut [&mut [u8]]) -> Result<(), StoreError> {
-    let [_, _, _, offsets, bytes, ..] = sections else {
-        return Err(DAMAGED);
-    };
-    write_texts(strings.iter().copied(), offsets, bytes)
-}
-
 /// Fills one file's row, its symbols' rows and its share of the columns.
 fn fill_file(
     path: &str,
@@ -452,20 +504,17 @@ fn fill_file(
         owners,
         ids,
     } = slots;
-    let mut row = Encoder {
-        bytes: Vec::with_capacity(FILE_ROW),
-    };
+    let mut row = Slot::new(file_row);
     let Entry::Put { record, stamp } = entry else {
-        row.digest(&[0; 32]);
+        row.bytes(&[0; 32]);
         row.u8(0);
         row.u8(REMOVED);
         write_stamp(&mut row, FileStamp::default());
         row.u32(bases.symbol);
         row.u32(0);
-        file_row.copy_from_slice(&row.bytes);
         return Ok(());
     };
-    row.digest(&record.blob);
+    row.bytes(&record.blob);
     row.u8(codec::language_code(record.language));
     row.u8(if record.has_syntax_errors {
         SYNTAX_ERRORS
@@ -475,7 +524,6 @@ fn fill_file(
     write_stamp(&mut row, *stamp);
     row.u32(bases.symbol);
     row.u32(small(record.symbols.len())?);
-    file_row.copy_from_slice(&row.bytes);
     let mut mention = 0;
     for (position, symbol) in record.symbols.iter().enumerate() {
         let ordinal = bases.symbol + small(position)?;
@@ -497,7 +545,7 @@ fn fill_file(
     Ok(())
 }
 
-fn write_stamp(row: &mut Encoder, stamp: FileStamp) {
+fn write_stamp(row: &mut Slot<'_>, stamp: FileStamp) {
     row.u64(stamp.size_bytes);
     row.i64(stamp.modified_ns);
     row.i64(stamp.changed_ns);
@@ -521,27 +569,23 @@ fn fill_symbol(
     );
     let name = sid(&symbol.name)?;
     let qualified = sid(&symbol.qualified_name)?;
-    let mut row = Encoder {
-        bytes: Vec::with_capacity(SYMBOL_ROW),
-    };
+    let mut row = Slot::new(out);
     row.u32(name);
     row.u32(qualified);
     row.u8(codec::kind_code(symbol.kind));
     row.span(symbol.span);
     row.span(symbol.name_span);
     row.u32(symbol.discriminator);
-    row.digest(&symbol.digest);
-    row.bytes.extend_from_slice(&id.to_bytes());
+    row.bytes(&symbol.digest);
+    row.bytes(&id.to_bytes());
     row.u32(file);
     row.u32(first_mention);
-    out.copy_from_slice(&row.bytes);
     Ok((name, qualified, id))
 }
 
 /// Writes the id table and the three lists from a string to its symbols.
-fn write_lists(sections: &mut [&mut [u8]], columns: &mut Columns, strings: usize, is_small: bool) {
+fn write_lists(lists: &mut [&mut [u8]], columns: &mut Columns, strings: usize, is_small: bool) {
     let [
-        ..,
         ids,
         by_name,
         by_name_rows,
@@ -549,7 +593,7 @@ fn write_lists(sections: &mut [&mut [u8]], columns: &mut Columns, strings: usize
         by_qualified_rows,
         mentioned_by,
         mentioned_by_rows,
-    ] = sections
+    ] = lists
     else {
         return;
     };
@@ -1127,6 +1171,38 @@ mod tests {
         let id = SymbolId::of("api.py", "post", SymbolKind::Function, 0);
         assert_eq!(segment.find_id(id).unwrap(), Some(0));
         assert_eq!(segment.symbol(0).unwrap().id, id);
+    }
+
+    #[test]
+    fn a_segment_built_in_parallel_reads_back_every_file() {
+        let records: Vec<(String, FileRecord)> = (0..3000)
+            .map(|n| {
+                let name = format!("f{n}");
+                let qualified_name = format!("m{}.f{n}", n % 7);
+                let group = format!("g{}", n % 13);
+                let symbols = vec![symbol(&name, &qualified_name, &["shared", &group])];
+                (format!("src/file{n:05}.py"), record(symbols))
+            })
+            .collect();
+        let files: Vec<(&str, Entry<'_>)> = records
+            .iter()
+            .map(|(path, record)| {
+                let entry = Entry::Put {
+                    record: Cow::Borrowed(record),
+                    stamp: FileStamp::default(),
+                };
+                (path.as_str(), entry)
+            })
+            .collect();
+
+        let bytes = build(&files).unwrap();
+
+        let segment = Segment::parse(Cow::Borrowed(&bytes)).unwrap();
+        for (file, (_, record)) in records.iter().enumerate() {
+            assert_eq!(&segment.record(file).unwrap(), record);
+        }
+        let shared = segment.find_string("shared").unwrap().unwrap();
+        assert_eq!(segment.mentioned_by(shared).unwrap().len(), 3000);
     }
 
     /// Reads every file of a damaged segment, if it parses at all.

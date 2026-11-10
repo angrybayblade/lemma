@@ -172,7 +172,7 @@ impl Writer {
             runs: Some(runs),
             ..Named::default()
         };
-        self.publish_after(streamed, &pending.bytes, named)?;
+        self.publish_after(streamed, &pending.parts(), named)?;
         self.compact_if_due()
     }
 

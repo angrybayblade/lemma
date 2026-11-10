@@ -67,10 +67,6 @@ impl Encoder {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    pub fn i64(&mut self, value: i64) {
-        self.bytes.extend_from_slice(&value.to_le_bytes());
-    }
-
     pub fn digest(&mut self, value: &Digest) {
         self.bytes.extend_from_slice(value);
     }
@@ -84,6 +80,52 @@ impl Encoder {
     pub fn text(&mut self, value: &str) {
         self.count(value.len());
         self.bytes.extend_from_slice(value.as_bytes());
+    }
+
+    pub fn span(&mut self, span: Span) {
+        self.u32(span.start.line);
+        self.u32(span.start.column);
+        self.u32(span.end.line);
+        self.u32(span.end.column);
+    }
+}
+
+/// Writes values one after another into a row of a fixed size, in place.
+/// Rows are sized from the same constants their writers follow; a value
+/// that would not fit is dropped rather than panicking, and the tests that
+/// read rows back catch it.
+pub(crate) struct Slot<'a> {
+    out: &'a mut [u8],
+    at: usize,
+}
+
+impl<'a> Slot<'a> {
+    pub fn new(out: &'a mut [u8]) -> Self {
+        Self { out, at: 0 }
+    }
+
+    pub fn bytes(&mut self, value: &[u8]) {
+        let end = self.at + value.len();
+        if let Some(target) = self.out.get_mut(self.at..end) {
+            target.copy_from_slice(value);
+        }
+        self.at = end;
+    }
+
+    pub fn u8(&mut self, value: u8) {
+        self.bytes(&[value]);
+    }
+
+    pub fn u32(&mut self, value: u32) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    pub fn u64(&mut self, value: u64) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    pub fn i64(&mut self, value: i64) {
+        self.bytes(&value.to_le_bytes());
     }
 
     pub fn span(&mut self, span: Span) {

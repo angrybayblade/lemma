@@ -66,23 +66,59 @@ pub(crate) struct Named {
     pub checked: Option<u64>,
 }
 
-/// Bytes appended by a commit, in memory until it is written whole.
+/// Bytes appended by a commit, in memory until it is written whole: large
+/// nodes as parts of their own, built in place, and the small ones between
+/// them gathered in `bytes`.
 pub(crate) struct Pending {
     start: u64,
-    pub(crate) bytes: Vec<u8>,
+    parts: Vec<Vec<u8>>,
+    /// Bytes in `parts`.
+    parted: u64,
+    bytes: Vec<u8>,
 }
 
 impl Pending {
     pub(crate) fn new(start: u64) -> Self {
         Self {
             start,
+            parts: Vec::new(),
+            parted: 0,
             bytes: Vec::new(),
         }
     }
 
     /// Where the next byte appended will be in the file.
     pub(crate) fn position(&self) -> u64 {
-        self.start + self.bytes.len() as u64
+        self.start + self.parted + self.bytes.len() as u64
+    }
+
+    /// Everything appended, in order.
+    pub(crate) fn parts(&self) -> Vec<&[u8]> {
+        let mut parts: Vec<&[u8]> = self.parts.iter().map(Vec::as_slice).collect();
+        parts.push(&self.bytes);
+        parts
+    }
+
+    /// Frees the commit's bytes. A large commit's take long enough to give
+    /// back to the system, about 20 ms for 100 MB, that another thread
+    /// does it while the writer returns.
+    pub(crate) fn let_go(self) {
+        if self.parted + (self.bytes.len() as u64) < FLUSH_BYTES as u64 {
+            return;
+        }
+        let freeing = std::thread::Builder::new().name("lemma-store-free".to_owned());
+        // A thread that cannot be started leaves the bytes to be freed here.
+        let _ = freeing.spawn(move || drop(self));
+    }
+
+    fn push_part(&mut self, part: Vec<u8>) {
+        if !self.bytes.is_empty() {
+            let bytes = std::mem::take(&mut self.bytes);
+            self.parted += bytes.len() as u64;
+            self.parts.push(bytes);
+        }
+        self.parted += part.len() as u64;
+        self.parts.push(part);
     }
 
     /// Appends a node and returns its offset.
@@ -104,15 +140,14 @@ impl Pending {
         files: &[(&str, crate::segment::Entry<'_>)],
     ) -> Result<u64, StoreError> {
         let offset = self.position();
-        let header = self.bytes.len();
-        self.bytes.push(read::SEGMENT_NODE);
-        self.bytes.extend_from_slice(&[0; 4]);
-        crate::segment::build_into(files, &mut self.bytes)?;
-        let length =
-            u32::try_from(self.bytes.len() - header - 5).map_err(|_| StoreError::Damaged {
-                what: "a node would be larger than 4 GiB",
-            })?;
-        self.bytes[header + 1..header + 5].copy_from_slice(&length.to_le_bytes());
+        let header = read::usize_of(read::NODE_HEADER_BYTES)?;
+        let mut node = crate::segment::build_after(files, header)?;
+        let length = u32::try_from(node.len() - header).map_err(|_| StoreError::Damaged {
+            what: "a node would be larger than 4 GiB",
+        })?;
+        node[0] = read::SEGMENT_NODE;
+        node[1..header].copy_from_slice(&length.to_le_bytes());
+        self.push_part(node);
         Ok(offset)
     }
 
@@ -233,7 +268,7 @@ impl Writer {
             None
         };
         self.publish(
-            &pending.bytes,
+            &pending.parts(),
             Named {
                 roots,
                 runs,
@@ -241,13 +276,14 @@ impl Writer {
             },
         )?;
         self.compact_if_due()?;
+        pending.let_go();
         Ok(digest)
     }
 
-    /// Writes a commit's bytes and then its footer in one append. `None`
-    /// keeps what the last footer named.
-    pub(crate) fn publish(&mut self, bytes: &[u8], named: Named) -> Result<(), StoreError> {
-        self.publish_after(0, bytes, named)
+    /// Writes a commit's parts and then its footer. `None` keeps what the
+    /// last footer named.
+    pub(crate) fn publish(&mut self, parts: &[&[u8]], named: Named) -> Result<(), StoreError> {
+        self.publish_after(0, parts, named)
     }
 
     /// Writes the rest of a commit whose first `streamed` bytes are
@@ -257,14 +293,17 @@ impl Writer {
     pub(crate) fn publish_after(
         &mut self,
         streamed: u64,
-        bytes: &[u8],
+        parts: &[&[u8]],
         named: Named,
     ) -> Result<(), StoreError> {
         let last = self.index.footer();
         let unsynced = self.index.tail().map_or(0, |tail| tail.unsynced);
         let start = self.index.length();
-        let offset = start + streamed + bytes.len() as u64;
-        self.append(bytes)?;
+        let length: usize = parts.iter().map(|part| part.len()).sum();
+        let offset = start + streamed + length as u64;
+        for part in parts {
+            self.append(part)?;
+        }
         let last_synced = last.map_or(read::HEADER_BYTES, |footer| footer.synced);
         let is_large = offset - start >= FLUSH_BYTES as u64;
         // Readers check every commit since the last flush when they open
@@ -276,8 +315,12 @@ impl Writer {
         } else {
             let synced = last_synced;
             // Streaming is only for commits large enough to be flushed, so a
-            // hashed commit is all in `bytes`.
-            (synced, *blake3::hash(bytes).as_bytes(), unsynced + 1)
+            // hashed commit is all in `parts`.
+            let mut hasher = blake3::Hasher::new();
+            for part in parts {
+                hasher.update(part);
+            }
+            (synced, *hasher.finalize().as_bytes(), unsynced + 1)
         };
         let footer = Footer {
             offset,

@@ -146,7 +146,7 @@ impl Cache {
     /// Keeps `entries` now.
     pub fn put_many(&mut self, entries: &[(String, Vec<u8>)]) -> Result<(), StoreError> {
         let entries: Vec<(Digest, &[u8])> = entries
-            .iter()
+            .par_iter()
             .map(|(key, value)| (unit_key(key), value.as_slice()))
             .collect();
         let known = self
