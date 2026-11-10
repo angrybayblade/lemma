@@ -196,6 +196,16 @@ Each stage passes the gates before the next starts, and the existing evaluation 
 | **6** | File-level interpreter runners, Python first, then TypeScript | Same findings; fewer imports per change |
 | **7** | Sentry reduced to keeping the eager layer current and starting runners | Sentry's comparison with fresh runs shows no differences |
 
+### One parse per file
+
+Decided 2026-11-10 for what remains of stage 2, by where a 100k-file check (20 repositories of 5k) spends its time. Warm, 1.95 s: listing repositories 0.13 s, choosing files 0.19 s, reading kept facts (JSON) under 0.1 s, writing facts into the grammar 0.38 s, Soufflé 0.5 s, tracing 0.24 s. Cold, 18.7 s: parsing every file for code facts about 10 s, encoding them as JSON 0.2 s, Soufflé and inference 1.7 s, and tracing parsing every file again, 5.9 s. A fresh `lemma index` of the same files parses them a third time, 4.7 s. The format of facts matters little; the number of parses matters a lot.
+
+- **Tracing reads the store, first.** Its function records come from the same syntax extraction as `lemma index`, and hold nearly what segments hold: names, spans and mention lists. Segments gain what tracing needs besides, such as a file's top-level code and the names it binds. `check` commits each repository it reads, at a commit or in the working directory, as a root of that repository's `index.ls`, and tracing walks the stored mention lists (`Index::reaching`). Function records and functions segments go. This removes tracing's second parse, about 5 s of a cold 100k check.
+- **Code facts do not depend on the description.** Extraction keeps every string that may be a path and every call through a receiver; path markers and client receivers are applied when facts are read. One parse then serves `lemma index` and `check`, so a check after an index parses nothing.
+- **Facts are records of typed columns** in the store's record codec (`lemma-store::records`): a sorted string table, length-prefixed columns per relation, and a closing digest, filed as attributes beside the segment. Selection reads the terms column alone.
+- **Records live in each repository's `index.ls`, keyed by a profile digest**: the format version, each language's declared extractor version and the segment policy, with a golden test per language that fails when extraction output changes without a version bump. Upgrading Lemma keeps a repository's records unless its profile changed.
+- **Listings stay with Git.** `lemma index` and `check` choose files the same way, and Git remains the source of each file's blob id.
+
 ## What landed
 
 Stages 1–3 are on the `lemma-store` branch. `index.ls` holds segments as described above; navigation, check's unit records, index terms and segments, and workspace mounts all read it, and SQLite is gone. `Index::reaching` follows the stored mention lists; nothing calls it until stage 5. Commit roots built from Git, and the scan adopting `lemma-index`'s file selection, remain.
@@ -237,3 +247,13 @@ Commands against `main`, as medians of three interleaved rounds, on one 5,100-fi
 - **Evaluating rules for part of a workspace.** The store says what changed; limiting Datalog evaluation to it needs its own design at stage 5, building on [spec 11](11-change-driven-evaluation.md).
 - **Language servers at base.** A base-side answer needs a checkout of the base. Decide whether to pay for it or to answer `unknown`.
 - **Whether the file should be committed.** Sharing through Git would be simple, but it would add a binary that changes on every commit. The default is no.
+
+### Parked for experiment
+
+Alternatives to the decisions in [One parse per file](#one-parse-per-file), to be measured rather than argued:
+
+- **A stat cache for listings** in `index.ls`, like Git's index and untracked cache, Mercurial's dirstate or Jujutsu's working-copy state: about 0.1 s per run at 100k files outside the daemon, against reimplementing Git's rules for racily clean files, sparse checkouts, submodules, links and conversions, where a mistake gives a wrong blob id and stale facts.
+- **Facts keyed by the description's options**, if keeping every candidate path and receiver makes records too large or reading them too slow.
+- **A serde binary format** such as postcard for facts, if reading only some columns turns out not to matter.
+- **Keeping facts as JSON**, which costs about 0.2 s cold and under 0.1 s warm at 100k files.
+- **Records in the per-build user cache** rather than each repository's `index.ls`.
