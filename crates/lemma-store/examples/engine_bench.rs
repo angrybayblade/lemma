@@ -196,9 +196,36 @@ fn bench_reads(bench: &Bench, files: &Files) -> Result<(), Failure> {
             .map(drop)
             .map_err(Into::into)
     })?;
+    bench_reach(bench, &index, &work, files)
+}
+
+/// Reaching from a common name, and from every symbol of 100 files.
+fn bench_reach(
+    bench: &Bench,
+    index: &Index,
+    work: &lemma_store::Root,
+    files: &Files,
+) -> Result<(), Failure> {
     let start = vec![most_mentioned(files)];
+    let reached = index.reaching(work, &start)?.len();
+    println!("{:28} {reached} symbols from {}", "reach", start[0].1);
+    let many: Vec<(String, String)> = files
+        .iter()
+        .step_by(files.len() / 100 + 1)
+        .flat_map(|(path, record)| {
+            record
+                .symbols
+                .iter()
+                .map(move |symbol| (path.clone(), symbol.qualified_name.clone()))
+        })
+        .collect();
+    let reached = index.reaching(work, &many)?.len();
+    println!("{:28} {reached} symbols from {}", "reach", many.len());
+    bench.time("reach from 100 files", || {
+        index.reaching(work, &many).map(drop).map_err(Into::into)
+    })?;
     bench.time("reach from a common name", || {
-        index.reaching(&work, &start).map(drop).map_err(Into::into)
+        index.reaching(work, &start).map(drop).map_err(Into::into)
     })?;
     Ok(())
 }

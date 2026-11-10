@@ -99,21 +99,7 @@ fn small(value: usize) -> Result<u32, StoreError> {
     u32::try_from(value).map_err(|_| TOO_LARGE)
 }
 
-/// One file's rows and the columns its symbols add, built on their own so
-/// that files can be built in parallel and joined in path order.
-#[derive(Default)]
-struct FileRows {
-    file_row: Vec<u8>,
-    symbol_rows: Vec<u8>,
-    mention_rows: Vec<u8>,
-    names: Vec<u32>,
-    qualified: Vec<u32>,
-    mentions: Vec<u32>,
-    mention_owners: Vec<u32>,
-    ids: Vec<(SymbolId, u32)>,
-}
-
-/// Where a file's symbols and mentions start in the segment.
+/// Where a file's rows start in the segment's tables.
 #[derive(Clone, Copy)]
 struct Bases {
     file: u32,
@@ -123,6 +109,34 @@ struct Bases {
 
 type Sids<'a> = FxHashMap<&'a str, u32>;
 
+/// Segments of fewer files, such as a commit's delta, are built on the
+/// calling thread: handing them to other threads costs more than it saves.
+const PARALLEL_FILES: usize = 256;
+
+/// The columns the reverse lists and the id table are built from: each
+/// symbol's name and qualified name, each mention and its symbol, and
+/// each symbol's id.
+struct Columns {
+    names: Vec<u32>,
+    qualified: Vec<u32>,
+    mentions: Vec<u32>,
+    owners: Vec<u32>,
+    ids: Vec<(SymbolId, u32)>,
+}
+
+/// One file's share of every table it writes to, borrowed from the
+/// segment and the columns, so that files fill them in parallel.
+struct FileSlots<'a> {
+    file_row: &'a mut [u8],
+    symbol_rows: &'a mut [u8],
+    mention_rows: &'a mut [u8],
+    names: &'a mut [u32],
+    qualified: &'a mut [u32],
+    mentions: &'a mut [u32],
+    owners: &'a mut [u32],
+    ids: &'a mut [(SymbolId, u32)],
+}
+
 /// A segment holding `files`, which are sorted by path with no path twice.
 pub(crate) fn build(files: &[(&str, Entry<'_>)]) -> Result<Vec<u8>, StoreError> {
     let mut bytes = Vec::new();
@@ -130,7 +144,9 @@ pub(crate) fn build(files: &[(&str, Entry<'_>)]) -> Result<Vec<u8>, StoreError> 
     Ok(bytes)
 }
 
-/// Appends a segment holding `files` to `out`.
+/// Appends a segment holding `files` to `out`. Every table's size is known
+/// before anything is written, so the segment is laid out at once and
+/// each file fills its own share of each table, in parallel, in place.
 pub(crate) fn build_into(files: &[(&str, Entry<'_>)], out: &mut Vec<u8>) -> Result<(), StoreError> {
     let strings = string_table(files);
     let sids: Sids<'_> = strings
@@ -138,54 +154,100 @@ pub(crate) fn build_into(files: &[(&str, Entry<'_>)], out: &mut Vec<u8>) -> Resu
         .enumerate()
         .map(|(sid, text)| Ok((*text, small(sid)?)))
         .collect::<Result<_, StoreError>>()?;
-    let bases = bases(files)?;
-    let rows: Vec<FileRows> = files
-        .par_iter()
-        .zip(bases.par_iter())
-        .map(|((path, entry), bases)| file_rows(path, entry, *bases, &sids))
-        .collect::<Result<_, _>>()?;
-    let mut sections: [Vec<u8>; SECTIONS] = Default::default();
+    let (bases, symbols, mentions) = bases(files)?;
+    let counts = [files.len(), symbols, strings.len(), mentions];
+    let lengths = section_lengths(files, &strings, counts)?;
+    let start = out.len();
+    out.resize(start + HEADER_BYTES + lengths.iter().sum::<usize>(), 0);
+    let (header, body) = out[start..].split_at_mut(HEADER_BYTES);
+    write_header(header, counts, &lengths)?;
+    let mut sections = split_sections(body, &lengths);
     write_paths(files, &mut sections)?;
     write_strings(&strings, &mut sections)?;
-    let symbols: usize = rows.iter().map(|file| file.names.len()).sum();
-    let mut joined = FileRows::default();
-    for file in rows {
-        sections[FILES].extend_from_slice(&file.file_row);
-        sections[SYMBOLS].extend_from_slice(&file.symbol_rows);
-        sections[MENTIONS].extend_from_slice(&file.mention_rows);
-        joined.names.extend(file.names);
-        joined.qualified.extend(file.qualified);
-        joined.mentions.extend(file.mentions);
-        joined.mention_owners.extend(file.mention_owners);
-        joined.ids.extend(file.ids);
+    let mut columns = Columns {
+        names: vec![0; symbols],
+        qualified: vec![0; symbols],
+        mentions: vec![0; mentions],
+        owners: vec![0; mentions],
+        ids: vec![(SymbolId::from(0), 0); symbols],
+    };
+    let slots = file_slots(files, &bases, &mut sections, &mut columns);
+    let is_small = files.len() < PARALLEL_FILES;
+    if is_small {
+        for (((path, entry), bases), slots) in files.iter().zip(&bases).zip(slots) {
+            fill_file(path, entry, *bases, &sids, slots)?;
+        }
+    } else {
+        files
+            .par_iter()
+            .zip(bases.par_iter())
+            .zip(slots)
+            .try_for_each(|(((path, entry), bases), slots)| {
+                fill_file(path, entry, *bases, &sids, slots)
+            })?;
     }
-    joined.ids.par_sort_unstable();
-    for (id, symbol) in &joined.ids {
-        sections[IDS].extend_from_slice(&id.to_bytes());
-        sections[IDS].extend_from_slice(&symbol.to_le_bytes());
-    }
-    let owners: Vec<u32> = (0..small(symbols)?).collect();
-    let lists = [
-        (BY_NAME, BY_NAME_ROWS, &joined.names, &owners),
-        (BY_QUALIFIED, BY_QUALIFIED_ROWS, &joined.qualified, &owners),
-        (
-            MENTIONED_BY,
-            MENTIONED_BY_ROWS,
-            &joined.mentions,
-            &joined.mention_owners,
-        ),
-    ];
-    for (offsets, rows, keys, owners) in lists {
-        let (starts, owned) = reverse(strings.len(), keys, owners);
-        sections[offsets] = starts;
-        sections[rows] = owned;
-    }
-    let counts = [files.len(), symbols, strings.len(), joined.mentions.len()];
-    assemble(counts, &sections, out)
+    write_lists(&mut sections, &mut columns, strings.len(), is_small);
+    Ok(())
 }
 
-/// Where each file's symbols and mentions start, from the counts before it.
-fn bases(files: &[(&str, Entry<'_>)]) -> Result<Vec<Bases>, StoreError> {
+/// Each section's length, from the counts and the paths' and strings' text.
+fn section_lengths(
+    files: &[(&str, Entry<'_>)],
+    strings: &[&str],
+    [files_count, symbols, strings_count, mentions]: [usize; 4],
+) -> Result<[usize; SECTIONS], StoreError> {
+    let table = |count: usize| (count + 1) * 4;
+    let lengths = [
+        table(files_count),
+        files.iter().map(|(path, _)| path.len()).sum(),
+        files_count * FILE_ROW,
+        table(strings_count),
+        strings.iter().map(|text| text.len()).sum(),
+        symbols * SYMBOL_ROW,
+        mentions * 4,
+        symbols * ID_ROW,
+        table(strings_count),
+        symbols * 4,
+        table(strings_count),
+        symbols * 4,
+        table(strings_count),
+        mentions * 4,
+    ];
+    small(HEADER_BYTES + lengths.iter().sum::<usize>())?;
+    Ok(lengths)
+}
+
+fn write_header(
+    header: &mut [u8],
+    counts: [usize; 4],
+    lengths: &[usize; SECTIONS],
+) -> Result<(), StoreError> {
+    let mut encoder = Encoder::default();
+    for count in counts {
+        encoder.u32(small(count)?);
+    }
+    let mut at = HEADER_BYTES;
+    for length in lengths {
+        encoder.u32(small(at)?);
+        encoder.u32(small(*length)?);
+        at += length;
+    }
+    header.copy_from_slice(&encoder.bytes);
+    Ok(())
+}
+
+fn split_sections<'a>(mut body: &'a mut [u8], lengths: &[usize; SECTIONS]) -> Vec<&'a mut [u8]> {
+    let mut sections = Vec::with_capacity(SECTIONS);
+    for length in lengths {
+        let (section, rest) = std::mem::take(&mut body).split_at_mut(*length);
+        sections.push(section);
+        body = rest;
+    }
+    sections
+}
+
+/// Where each file's symbols and mentions start, and how many there are.
+fn bases(files: &[(&str, Entry<'_>)]) -> Result<(Vec<Bases>, usize, usize), StoreError> {
     let mut bases = Vec::with_capacity(files.len());
     let (mut symbol, mut mention) = (0usize, 0usize);
     for (file, (_, entry)) in files.iter().enumerate() {
@@ -205,11 +267,112 @@ fn bases(files: &[(&str, Entry<'_>)]) -> Result<Vec<Bases>, StoreError> {
     }
     small(symbol)?;
     small(mention)?;
-    Ok(bases)
+    Ok((bases, symbol, mention))
+}
+
+/// Every file's share of each table, cut in file order.
+fn file_slots<'a>(
+    files: &[(&str, Entry<'_>)],
+    bases: &[Bases],
+    sections: &'a mut [&mut [u8]],
+    columns: &'a mut Columns,
+) -> Vec<FileSlots<'a>> {
+    let [_, _, file_rows, _, _, symbol_rows, mention_rows, ..] = sections else {
+        return Vec::new();
+    };
+    let mut rest = FileSlots {
+        file_row: file_rows,
+        symbol_rows,
+        mention_rows,
+        names: &mut columns.names,
+        qualified: &mut columns.qualified,
+        mentions: &mut columns.mentions,
+        owners: &mut columns.owners,
+        ids: &mut columns.ids,
+    };
+    let mut slots = Vec::with_capacity(files.len());
+    for ((_, entry), _) in files.iter().zip(bases) {
+        let (symbols, mentions) = match entry {
+            Entry::Put { record, .. } => (
+                record.symbols.len(),
+                record
+                    .symbols
+                    .iter()
+                    .map(|symbol| symbol.mentions.len())
+                    .sum(),
+            ),
+            Entry::Removed => (0, 0),
+        };
+        let (taken, left) = cut(rest, symbols, mentions);
+        slots.push(taken);
+        rest = left;
+    }
+    slots
+}
+
+/// The first file's share of `slots`, and what is left.
+fn cut(slots: FileSlots<'_>, symbols: usize, mentions: usize) -> (FileSlots<'_>, FileSlots<'_>) {
+    let FileSlots {
+        file_row,
+        symbol_rows,
+        mention_rows,
+        names,
+        qualified,
+        mentions: mention_sids,
+        owners,
+        ids,
+    } = slots;
+    let file_row = file_row.split_at_mut(FILE_ROW);
+    let symbol_rows = symbol_rows.split_at_mut(symbols * SYMBOL_ROW);
+    let mention_rows = mention_rows.split_at_mut(mentions * 4);
+    let names = names.split_at_mut(symbols);
+    let qualified = qualified.split_at_mut(symbols);
+    let mention_sids = mention_sids.split_at_mut(mentions);
+    let owners = owners.split_at_mut(mentions);
+    let ids = ids.split_at_mut(symbols);
+    let taken = FileSlots {
+        file_row: file_row.0,
+        symbol_rows: symbol_rows.0,
+        mention_rows: mention_rows.0,
+        names: names.0,
+        qualified: qualified.0,
+        mentions: mention_sids.0,
+        owners: owners.0,
+        ids: ids.0,
+    };
+    let left = FileSlots {
+        file_row: file_row.1,
+        symbol_rows: symbol_rows.1,
+        mention_rows: mention_rows.1,
+        names: names.1,
+        qualified: qualified.1,
+        mentions: mention_sids.1,
+        owners: owners.1,
+        ids: ids.1,
+    };
+    (taken, left)
 }
 
 /// Every name, qualified name and mention in `files`, sorted, once each.
 fn string_table<'a>(files: &'a [(&str, Entry<'_>)]) -> Vec<&'a str> {
+    if files.len() < PARALLEL_FILES {
+        let mut strings: Vec<&str> = files
+            .iter()
+            .filter_map(|(_, entry)| match entry {
+                Entry::Put { record, .. } => Some(record),
+                Entry::Removed => None,
+            })
+            .flat_map(|record| &record.symbols)
+            .flat_map(|symbol| {
+                [symbol.name.as_str(), symbol.qualified_name.as_str()]
+                    .into_iter()
+                    .chain(symbol.mentions.iter().map(String::as_str))
+            })
+            .collect();
+        strings.sort_unstable();
+        strings.dedup();
+        return strings;
+    }
     let seen = files
         .par_iter()
         .fold(
@@ -225,54 +388,73 @@ fn string_table<'a>(files: &'a [(&str, Entry<'_>)]) -> Vec<&'a str> {
                 seen
             },
         )
-        .reduce(FxHashSet::default, |mut left, right| {
-            if left.len() < right.len() {
-                return merge(right, left);
-            }
-            left.extend(right);
-            left
+        .reduce(FxHashSet::default, |left, right| {
+            let (mut larger, smaller) = if left.len() < right.len() {
+                (right, left)
+            } else {
+                (left, right)
+            };
+            larger.extend(smaller);
+            larger
         });
     let mut strings: Vec<&str> = seen.into_iter().collect();
     strings.par_sort_unstable();
     strings
 }
 
-fn merge<'a>(mut into: FxHashSet<&'a str>, from: FxHashSet<&'a str>) -> FxHashSet<&'a str> {
-    into.extend(from);
-    into
-}
-
-fn write_paths(files: &[(&str, Entry<'_>)], sections: &mut [Vec<u8>]) -> Result<(), StoreError> {
+/// Writes texts and the offsets that delimit them into a pair of sections.
+fn write_texts<'t>(
+    texts: impl Iterator<Item = &'t str>,
+    offsets: &mut [u8],
+    bytes: &mut [u8],
+) -> Result<(), StoreError> {
     let mut length = 0;
-    for (path, _) in files {
-        sections[PATH_OFFSETS].extend_from_slice(&small(length)?.to_le_bytes());
-        sections[PATH_BYTES].extend_from_slice(path.as_bytes());
-        length += path.len();
-    }
-    sections[PATH_OFFSETS].extend_from_slice(&small(length)?.to_le_bytes());
-    Ok(())
-}
-
-fn write_strings(strings: &[&str], sections: &mut [Vec<u8>]) -> Result<(), StoreError> {
-    let mut length = 0;
-    for text in strings {
-        sections[STRING_OFFSETS].extend_from_slice(&small(length)?.to_le_bytes());
-        sections[STRING_BYTES].extend_from_slice(text.as_bytes());
+    let mut at = 0;
+    for text in texts {
+        offsets[at..at + 4].copy_from_slice(&small(length)?.to_le_bytes());
+        bytes[length..length + text.len()].copy_from_slice(text.as_bytes());
         length += text.len();
+        at += 4;
     }
-    sections[STRING_OFFSETS].extend_from_slice(&small(length)?.to_le_bytes());
+    offsets[at..at + 4].copy_from_slice(&small(length)?.to_le_bytes());
     Ok(())
 }
 
-/// One file's row, and its symbols' rows and columns.
-fn file_rows(
+fn write_paths(files: &[(&str, Entry<'_>)], sections: &mut [&mut [u8]]) -> Result<(), StoreError> {
+    let [offsets, bytes, ..] = sections else {
+        return Err(DAMAGED);
+    };
+    write_texts(files.iter().map(|(path, _)| *path), offsets, bytes)
+}
+
+fn write_strings(strings: &[&str], sections: &mut [&mut [u8]]) -> Result<(), StoreError> {
+    let [_, _, _, offsets, bytes, ..] = sections else {
+        return Err(DAMAGED);
+    };
+    write_texts(strings.iter().copied(), offsets, bytes)
+}
+
+/// Fills one file's row, its symbols' rows and its share of the columns.
+fn fill_file(
     path: &str,
     entry: &Entry<'_>,
     bases: Bases,
     sids: &Sids<'_>,
-) -> Result<FileRows, StoreError> {
-    let mut rows = FileRows::default();
-    let mut row = Encoder::default();
+    slots: FileSlots<'_>,
+) -> Result<(), StoreError> {
+    let FileSlots {
+        file_row,
+        symbol_rows,
+        mention_rows,
+        names,
+        qualified,
+        mentions,
+        owners,
+        ids,
+    } = slots;
+    let mut row = Encoder {
+        bytes: Vec::with_capacity(FILE_ROW),
+    };
     let Entry::Put { record, stamp } = entry else {
         row.digest(&[0; 32]);
         row.u8(0);
@@ -280,8 +462,8 @@ fn file_rows(
         write_stamp(&mut row, FileStamp::default());
         row.u32(bases.symbol);
         row.u32(0);
-        rows.file_row = row.bytes;
-        return Ok(rows);
+        file_row.copy_from_slice(&row.bytes);
+        return Ok(());
     };
     row.digest(&record.blob);
     row.u8(codec::language_code(record.language));
@@ -293,15 +475,26 @@ fn file_rows(
     write_stamp(&mut row, *stamp);
     row.u32(bases.symbol);
     row.u32(small(record.symbols.len())?);
-    rows.file_row = row.bytes;
-    rows.symbol_rows.reserve(record.symbols.len() * SYMBOL_ROW);
-    let mut bases = bases;
-    for symbol in &record.symbols {
-        write_symbol(path, symbol, bases, sids, &mut rows)?;
-        bases.symbol += 1;
-        bases.mention += small(symbol.mentions.len())?;
+    file_row.copy_from_slice(&row.bytes);
+    let mut mention = 0;
+    for (position, symbol) in record.symbols.iter().enumerate() {
+        let ordinal = bases.symbol + small(position)?;
+        let first_mention = bases.mention + small(mention)?;
+        let symbol_row = &mut symbol_rows[position * SYMBOL_ROW..(position + 1) * SYMBOL_ROW];
+        let (name, qualified_name, id) =
+            fill_symbol(path, symbol, (bases.file, first_mention), sids, symbol_row)?;
+        names[position] = name;
+        qualified[position] = qualified_name;
+        ids[position] = (id, ordinal);
+        for text in &symbol.mentions {
+            let sid = sids.get(text.as_str()).copied().ok_or(DAMAGED)?;
+            mention_rows[mention * 4..mention * 4 + 4].copy_from_slice(&sid.to_le_bytes());
+            mentions[mention] = sid;
+            owners[mention] = ordinal;
+            mention += 1;
+        }
     }
-    Ok(rows)
+    Ok(())
 }
 
 fn write_stamp(row: &mut Encoder, stamp: FileStamp) {
@@ -311,13 +504,14 @@ fn write_stamp(row: &mut Encoder, stamp: FileStamp) {
     row.u64(stamp.inode);
 }
 
-fn write_symbol(
+/// Writes one symbol's row and returns its name, qualified name and id.
+fn fill_symbol(
     path: &str,
     symbol: &SymbolRecord,
-    bases: Bases,
+    (file, first_mention): (u32, u32),
     sids: &Sids<'_>,
-    rows: &mut FileRows,
-) -> Result<(), StoreError> {
+    out: &mut [u8],
+) -> Result<(u32, u32, SymbolId), StoreError> {
     let sid = |text: &str| sids.get(text).copied().ok_or(DAMAGED);
     let id = SymbolId::of(
         path,
@@ -328,7 +522,7 @@ fn write_symbol(
     let name = sid(&symbol.name)?;
     let qualified = sid(&symbol.qualified_name)?;
     let mut row = Encoder {
-        bytes: std::mem::take(&mut rows.symbol_rows),
+        bytes: Vec::with_capacity(SYMBOL_ROW),
     };
     row.u32(name);
     row.u32(qualified);
@@ -338,24 +532,91 @@ fn write_symbol(
     row.u32(symbol.discriminator);
     row.digest(&symbol.digest);
     row.bytes.extend_from_slice(&id.to_bytes());
-    row.u32(bases.file);
-    row.u32(bases.mention);
-    rows.symbol_rows = row.bytes;
-    rows.names.push(name);
-    rows.qualified.push(qualified);
-    for mention in &symbol.mentions {
-        let mention = sid(mention)?;
-        rows.mention_rows.extend_from_slice(&mention.to_le_bytes());
-        rows.mentions.push(mention);
-        rows.mention_owners.push(bases.symbol);
-    }
-    rows.ids.push((id, bases.symbol));
-    Ok(())
+    row.u32(file);
+    row.u32(first_mention);
+    out.copy_from_slice(&row.bytes);
+    Ok((name, qualified, id))
 }
 
-/// A list from each string to its owners, in owner order: offsets into the
-/// rows, then the rows. `keys[i]` is the string of `owners[i]`.
-fn reverse(strings: usize, keys: &[u32], owners: &[u32]) -> (Vec<u8>, Vec<u8>) {
+/// Writes the id table and the three lists from a string to its symbols.
+fn write_lists(sections: &mut [&mut [u8]], columns: &mut Columns, strings: usize, is_small: bool) {
+    let [
+        ..,
+        ids,
+        by_name,
+        by_name_rows,
+        by_qualified,
+        by_qualified_rows,
+        mentioned_by,
+        mentioned_by_rows,
+    ] = sections
+    else {
+        return;
+    };
+    let Columns {
+        names,
+        qualified,
+        mentions,
+        owners,
+        ids: id_column,
+    } = columns;
+    if is_small {
+        id_column.sort_unstable();
+    } else {
+        id_column.par_sort_unstable();
+    }
+    let owners: &[u32] = owners;
+    let jobs: Vec<Box<dyn FnOnce() + Send + '_>> = vec![
+        Box::new(|| write_id_table(id_column, ids)),
+        Box::new(|| reverse(strings, names, ordinal, (by_name, by_name_rows))),
+        Box::new(|| {
+            reverse(
+                strings,
+                qualified,
+                ordinal,
+                (by_qualified, by_qualified_rows),
+            );
+        }),
+        Box::new(|| {
+            reverse(
+                strings,
+                mentions,
+                |at| owners[at],
+                (mentioned_by, mentioned_by_rows),
+            );
+        }),
+    ];
+    if is_small {
+        for job in jobs {
+            job();
+        }
+    } else {
+        jobs.into_par_iter().for_each(|job| job());
+    }
+}
+
+/// A symbol's position as stored; `bases` checked that every one fits.
+fn ordinal(symbol: usize) -> u32 {
+    u32::try_from(symbol).unwrap_or(u32::MAX)
+}
+
+/// The id table from ids already sorted.
+fn write_id_table(ids: &[(SymbolId, u32)], out: &mut [u8]) {
+    for ((id, symbol), row) in ids.iter().zip(out.as_chunks_mut::<ID_ROW>().0) {
+        row[..16].copy_from_slice(&id.to_bytes());
+        row[16..].copy_from_slice(&symbol.to_le_bytes());
+    }
+}
+
+/// A list from each string to its owners, in owner order: offsets into
+/// the rows, then the rows. `keys[i]` is the string of the `i`th entry,
+/// whose owner is `owner(i)`.
+fn reverse(
+    strings: usize,
+    keys: &[u32],
+    owner: impl Fn(usize) -> u32,
+    (offsets, rows): (&mut [u8], &mut [u8]),
+) {
     let mut starts = vec![0u32; strings + 1];
     for key in keys {
         starts[*key as usize + 1] += 1;
@@ -363,47 +624,15 @@ fn reverse(strings: usize, keys: &[u32], owners: &[u32]) -> (Vec<u8>, Vec<u8>) {
     for at in 1..starts.len() {
         starts[at] += starts[at - 1];
     }
-    let mut next = starts.clone();
-    let mut rows = vec![0u32; keys.len()];
-    for (key, owner) in keys.iter().zip(owners) {
-        let slot = &mut next[*key as usize];
-        rows[*slot as usize] = *owner;
+    for (start, slot) in starts.iter().zip(offsets.as_chunks_mut::<4>().0) {
+        slot.copy_from_slice(&start.to_le_bytes());
+    }
+    for (entry, key) in keys.iter().enumerate() {
+        let slot = &mut starts[*key as usize];
+        let at = *slot as usize * 4;
+        rows[at..at + 4].copy_from_slice(&owner(entry).to_le_bytes());
         *slot += 1;
     }
-    let encode = |values: &[u32]| {
-        values
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect()
-    };
-    (encode(&starts), encode(&rows))
-}
-
-fn assemble(
-    counts: [usize; 4],
-    sections: &[Vec<u8>; SECTIONS],
-    out: &mut Vec<u8>,
-) -> Result<(), StoreError> {
-    let total = HEADER_BYTES + sections.iter().map(Vec::len).sum::<usize>();
-    small(total)?;
-    out.reserve(total);
-    let mut encoder = Encoder {
-        bytes: std::mem::take(out),
-    };
-    for count in counts {
-        encoder.u32(small(count)?);
-    }
-    let mut at = HEADER_BYTES;
-    for section in sections {
-        encoder.u32(small(at)?);
-        encoder.u32(small(section.len())?);
-        at += section.len();
-    }
-    for section in sections {
-        encoder.bytes.extend_from_slice(section);
-    }
-    *out = encoder.bytes;
-    Ok(())
 }
 
 /// A segment read in place.

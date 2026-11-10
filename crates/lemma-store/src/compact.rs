@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::attributes::{self, Located};
 use crate::read::{self, Footer, Root};
-use crate::write::Writer;
+use crate::write::{Named, Writer};
 use crate::{Digest, StoreError};
 
 /// Files smaller than this are never compacted: there is little to gain.
@@ -28,7 +28,11 @@ impl Writer {
         if self.live_bytes()?.saturating_mul(2) < length {
             return self.compact();
         }
-        self.publish(&[], None, None, Some(length))
+        let named = Named {
+            checked: Some(length),
+            ..Named::default()
+        };
+        self.publish(&[], named)
     }
 
     /// Bytes that the roots and the newest attribute values still use.

@@ -32,6 +32,9 @@ use crate::read::{Index, ReadMode, Root};
 use crate::view::{At, SymbolAt, View};
 use crate::{Commit, Digest, SourceRecord, StoreError, SymbolId, Write, Writer};
 
+/// Candidates a thread ranks at a time: fewer are not worth a thread.
+const PARALLEL_CANDIDATES: usize = 4096;
+
 /// How many answers wait in memory before they are written.
 const PENDING_ANSWERS: usize = 256;
 
@@ -926,12 +929,18 @@ impl FactStore for Store {
             NameMatch::Exact => view.exactly_named(&filter.text)?,
             NameMatch::Contains => view.containing(&filter.text)?,
         };
-        let mut found = Vec::new();
-        for at in candidates {
-            found.extend(ranked(&view, filter, at)?);
+        let mut found: Vec<Ranked<'_>> = candidates
+            .into_par_iter()
+            .with_min_len(PARALLEL_CANDIDATES)
+            .filter_map(|at| ranked(&view, filter, at).transpose())
+            .collect::<Result<_, _>>()?;
+        let limit = filter.limit as usize;
+        // Only the first `limit` are shown: pick them, then sort just those.
+        if found.len() > limit && limit > 0 {
+            found.select_nth_unstable_by(limit - 1, |left, right| left.order().cmp(&right.order()));
         }
-        found.sort_by(|left, right| left.order().cmp(&right.order()));
-        found.truncate(filter.limit as usize);
+        found.truncate(limit);
+        found.sort_unstable_by(|left, right| left.order().cmp(&right.order()));
         found
             .into_iter()
             .map(|ranked| stored_symbol(&view, ranked.at))

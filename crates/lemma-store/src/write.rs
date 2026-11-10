@@ -15,12 +15,16 @@ use crate::read::{self, Footer, Index, ReadMode};
 use crate::{Change, Digest, SourceRecord, StoreError};
 
 /// A commit this large is flushed at once: it is costly to compute again.
-const FLUSH_BYTES: usize = 1 << 20;
+pub(crate) const FLUSH_BYTES: usize = 1 << 20;
+
+/// How many bytes of commits may wait unflushed before the next commit
+/// flushes them all: a reader opening the store hashes at most this much.
+const UNSYNCED_BYTES: u64 = 4 << 20;
 
 /// The one writer of a store. Holding it holds the store's lock.
 pub struct Writer {
     path: PathBuf,
-    file: File,
+    pub(crate) file: File,
     pub(crate) index: Index,
     /// Released when the writer is dropped.
     _lock: File,
@@ -46,6 +50,14 @@ pub struct Write<'a> {
     pub removed_roots: &'a [String],
     /// Values to file in the attribute table.
     pub attributes: &'a [(Digest, Vec<u8>)],
+}
+
+/// What a commit's footer names; `None` keeps what the last footer named.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Named {
+    pub roots: Option<u64>,
+    pub runs: Option<u64>,
+    pub checked: Option<u64>,
 }
 
 /// Bytes appended by a commit, in memory until it is written whole.
@@ -203,41 +215,63 @@ impl Writer {
         } else {
             None
         };
-        self.publish(&pending.bytes, roots, runs, None)?;
+        self.publish(
+            &pending.bytes,
+            Named {
+                roots,
+                runs,
+                checked: None,
+            },
+        )?;
         self.compact_if_due()?;
         Ok(digest)
     }
 
     /// Writes a commit's bytes and then its footer in one append. `None`
     /// keeps what the last footer named.
-    pub(crate) fn publish(
+    pub(crate) fn publish(&mut self, bytes: &[u8], named: Named) -> Result<(), StoreError> {
+        self.publish_after(0, bytes, named)
+    }
+
+    /// Writes the rest of a commit whose first `streamed` bytes are
+    /// already in the file, then its footer. A commit of 1 MiB or more is
+    /// flushed before its footer is written, so the footer can say it is
+    /// on disk and no reader need hash it.
+    pub(crate) fn publish_after(
         &mut self,
+        streamed: u64,
         bytes: &[u8],
-        roots: Option<u64>,
-        runs: Option<u64>,
-        checked: Option<u64>,
+        named: Named,
     ) -> Result<(), StoreError> {
         let last = self.index.footer();
         let start = self.index.length();
-        let offset = start + bytes.len() as u64;
+        let offset = start + streamed + bytes.len() as u64;
         self.append(bytes)?;
-        // A large commit is flushed before its footer is written, so the
-        // footer can say it is on disk and no reader need hash it.
-        let (synced, commit) = if bytes.len() >= FLUSH_BYTES {
+        let last_synced = last.map_or(read::HEADER_BYTES, |footer| footer.synced);
+        let is_large = offset - start >= FLUSH_BYTES as u64;
+        // Readers check every commit since the last flush when they open
+        // the store, so that stretch is kept short.
+        let is_overdue = offset - last_synced >= UNSYNCED_BYTES;
+        let (synced, commit) = if is_large || is_overdue {
             self.sync()?;
             (offset, [0; 32])
         } else {
-            let synced = last.map_or(read::HEADER_BYTES, |footer| footer.synced);
+            let synced = last_synced;
+            // Streaming is only for commits large enough to be flushed, so a
+            // hashed commit is all in `bytes`.
             (synced, *blake3::hash(bytes).as_bytes())
         };
         let footer = Footer {
             offset,
-            roots: roots.or(last.map(|footer| footer.roots)).unwrap_or(0),
-            runs: runs.or(last.map(|footer| footer.runs)).unwrap_or(0),
+            roots: named.roots.or(last.map(|footer| footer.roots)).unwrap_or(0),
+            runs: named.runs.or(last.map(|footer| footer.runs)).unwrap_or(0),
             previous: last.map_or(0, |footer| footer.offset),
             start,
             synced,
-            checked: checked.or(last.map(|footer| footer.checked)).unwrap_or(0),
+            checked: named
+                .checked
+                .or(last.map(|footer| footer.checked))
+                .unwrap_or(0),
             commit,
         };
         self.append(&read::encode_footer(&footer))?;

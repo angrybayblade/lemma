@@ -465,3 +465,25 @@ fn scanning_again_reports_only_what_changed() {
     assert!(matches!(&second[0], Change::Put { path, .. } if path == "a.py"));
     assert!(matches!(&second[1], Change::Remove { path } if path == "b.py"));
 }
+
+#[test]
+fn small_commits_are_flushed_before_their_unchecked_stretch_grows_long() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store_in(&directory);
+    commit(&store, "head", None, &first_files());
+    let filler = vec![7u8; 200_000];
+    for round in 0..40u8 {
+        let mut writer = Writer::open(&store).unwrap();
+        writer
+            .put_attributes(&[([round; 32], filler.clone())])
+            .unwrap();
+    }
+
+    let index = Index::open(&store, ReadMode::Mapped).unwrap();
+    let footer = index.footer().unwrap();
+    assert!(
+        footer.offset - footer.synced < 5 << 20,
+        "{} unflushed bytes",
+        footer.offset - footer.synced
+    );
+}

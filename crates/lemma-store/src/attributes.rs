@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use crate::codec::{Decoder, Encoder};
 use crate::read::{self, Index};
-use crate::write::{Pending, Writer};
+use crate::write::{FLUSH_BYTES, Named, Pending, Writer};
 use crate::{Digest, StoreError, filter};
 
 /// Bytes of one run entry: a key, its value's offset and length.
@@ -146,11 +146,58 @@ impl Writer {
         if entries.is_empty() {
             return Ok(());
         }
-        let mut pending = Pending::new(self.index.length());
-        let runs = pending.append_attributes(&self.index, entries)?;
-        self.publish(&pending.bytes, None, Some(runs), None)?;
+        let total: usize = entries.iter().map(|(_, value)| value.as_ref().len()).sum();
+        let start = self.index.length();
+        let (fresh, streamed) = if total >= FLUSH_BYTES {
+            // Many values go straight to the file, not through the commit's
+            // buffer: the commit is flushed whole before its footer anyway.
+            self.stream_values(start, entries)?
+        } else {
+            (BTreeMap::new(), 0)
+        };
+        let mut pending = Pending::new(start + streamed);
+        let runs = if streamed > 0 {
+            pending.append_runs(&self.index, fresh)?
+        } else {
+            pending.append_attributes(&self.index, entries)?
+        };
+        let named = Named {
+            runs: Some(runs),
+            ..Named::default()
+        };
+        self.publish_after(streamed, &pending.bytes, named)?;
         self.compact_if_due()
     }
+
+    /// Writes `entries`' values at `start`, the file's end, and returns
+    /// where each went and how many bytes they took.
+    fn stream_values<V: AsRef<[u8]>>(
+        &mut self,
+        start: u64,
+        entries: &[(Digest, V)],
+    ) -> Result<(BTreeMap<Digest, Located>, u64), StoreError> {
+        let io = |source| StoreError::Io {
+            path: self.path().to_owned(),
+            source,
+        };
+        let mut out = std::io::BufWriter::with_capacity(1 << 20, &self.file);
+        let mut fresh = BTreeMap::new();
+        let mut offset = start;
+        for (key, value) in entries {
+            let value = value.as_ref();
+            std::io::Write::write_all(&mut out, value).map_err(io)?;
+            fresh.insert(*key, (offset, value_length(value)?));
+            offset += value.len() as u64;
+        }
+        std::io::Write::flush(&mut out).map_err(io)?;
+        Ok((fresh, offset - start))
+    }
+}
+
+fn value_length(value: &[u8]) -> Result<u32, StoreError> {
+    u32::try_from(value.len()).map_err(|_| StoreError::Damaged {
+        what: "an attribute would be larger than 4 GiB",
+    })
 }
 
 impl Pending {
@@ -164,11 +211,18 @@ impl Pending {
         let mut fresh: BTreeMap<Digest, Located> = BTreeMap::new();
         for (key, value) in entries {
             let value = value.as_ref();
-            let length = u32::try_from(value.len()).map_err(|_| StoreError::Damaged {
-                what: "an attribute would be larger than 4 GiB",
-            })?;
-            fresh.insert(*key, (self.append_value(value), length));
+            fresh.insert(*key, (self.append_value(value), value_length(value)?));
         }
+        self.append_runs(index, fresh)
+    }
+
+    /// Appends a run of `fresh` and a new list of runs, merging the runs
+    /// when there are too many; returns the list's offset.
+    pub(crate) fn append_runs(
+        &mut self,
+        index: &Index,
+        mut fresh: BTreeMap<Digest, Located>,
+    ) -> Result<u64, StoreError> {
         let runs = index.runs()?;
         let list = if runs.len() < MAX_RUNS {
             let mut list = vec![self.append_node(read::RUN_NODE, &encode_run(&fresh))?];
