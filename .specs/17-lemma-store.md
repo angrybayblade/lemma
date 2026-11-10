@@ -198,18 +198,23 @@ Each stage passes the gates before the next starts, and the existing evaluation 
 
 ## What landed
 
-Stage 1's format, reader, writer and recovery exist in `lemma-store`; the SQLite crate that held that name is `lemma-legacy-store` until stage 2 removes it, and `lemma-syntax`'s `outline` gives each symbol its digest and mentions from one parse. Nothing else reads the store yet. Compaction, attributes and adopting `lemma-index`'s file selection remain.
+Stages 1–3 are on the `lemma-store` branch. `index.ls` holds segments as described above; navigation, check's unit records, index terms and segments, and workspace mounts all read it, and SQLite is gone. `Index::reaching` follows the stored mention lists; nothing calls it until stage 5. Commit roots built from Git, and the scan adopting `lemma-index`'s file selection, remain.
 
-Measured with `crates/lemma-store/examples/store_bench.rs` on an 8-CPU Linux VM, on a system from `bench/lemmabench/scale.py` read as one tree: 102,000 files, 400,000 symbols, medians of seven runs with the file already in the page cache.
+Stage 1's tree of nodes was measured and replaced. A one-file commit appended 9.7 KiB to a 102,000-file system, and on a real repository a fresh `lemma index` took eight times as long as SQLite and a symbol search 27 times as long, because search decoded every file and indexing wrote attributes for every symbol.
 
-| | Mapped | Positional |
-|---|---|---|
-| Open | 0.02 ms | 0.06 ms |
-| Compare two sources after a one-file edit | 0.10–0.14 ms | 0.19 ms |
-| 2,000 file lookups | 31–40 ms | 50 ms |
-| Decode every file | 470–514 ms | 675–746 ms |
+Segments against SQLite on `main`, as medians of three interleaved rounds on an 8-CPU Linux VM. Scale systems come from `bench/lemmabench/scale.py`, and findings were identical in every case. Each cell is full evaluation, then change-driven.
 
-A full build took 11 s to parse and under 1 s to write, for a 71 MiB file. A one-file commit appended 9.7 KiB and took 4–51 ms across two runs, mostly the two flushes. Mapping is a real but modest gain; opening and comparing are already negligible either way. Whether to keep it should wait for stage 2, when the store is on a real read path.
+| | SQLite | `index.ls` | Gain |
+|---|---|---|---|
+| `check`, 10k files, cold | 3.19 s, 2.38 s | 2.69 s, 1.95 s | 1.19×, 1.22× |
+| `check`, 10k files, warm | 1.63 s, 0.57 s | 1.46 s, 0.56 s | 1.12×, 1.01× |
+| `check`, 100k files, cold | 35.1 s, 25.9 s | 27.6 s, 18.6 s | 1.27×, 1.39× |
+| `check`, 100k files, warm | 16.1 s, 4.21 s | 14.6 s, 4.00 s | 1.10×, 1.05× |
+| Check cache, 100k files | 496 MB, 501 MB | 418 MB, 441 MB | 1.19×, 1.14× smaller |
+
+On a private repository whose SQLite index is 14 MB, a fresh `lemma index` took the same time as SQLite (7.7 s), a re-index with nothing changed 99 ms against 109 ms, `lemma symbols` 5 ms against 7 ms, and the index is 10.5 MB, a quarter smaller.
+
+Peak memory is 7–19% lower on cold runs, but higher on warm change-driven runs at 100k files: 327 MB against 219 MB. Anonymous memory is the same, 208 MB against 199 MB; the difference is pages of the mapped cache file counted as resident, 197 MB against 43 MB. They are clean pages the kernel can drop, but peak resident memory counts them, so whether to read values positionally is left to tuning.
 
 ## Open questions
 
