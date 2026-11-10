@@ -6,8 +6,8 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+use lemma_legacy_store::Store;
 use lemma_model::{Export, ExportLink};
-use lemma_store::Store;
 
 const SPEC: &str = r#"{ "openapi": "3.0.0", "info": { "title": "B", "version": "1" }, "paths": { "/v1/charges": { "post": { "operationId": "createCharge", "responses": { "200": { "description": "ok" } } } } } }"#;
 

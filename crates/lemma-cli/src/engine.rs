@@ -19,15 +19,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, bail};
 use lemma_index::LiveIndex;
 use lemma_index::retention::Retention;
+use lemma_legacy_store::{
+    FactStore, NameMatch, Store, StoreError, StoredMember, StoredSnapshot, StoredSymbol,
+    SymbolFilter,
+};
 use lemma_model::{Language, Outcome, Position, SymbolKind};
 use lemma_providers::ProviderRegistry;
 use lemma_query::{
     IdlePolicy, LookupContext, LookupOptions, ServerState, SessionPool, SymbolResolution,
     SymbolSearch, SymbolSelector, UsesAnswer, WarmUp,
-};
-use lemma_store::{
-    FactStore, NameMatch, Store, StoreError, StoredMember, StoredSnapshot, StoredSymbol,
-    SymbolFilter,
 };
 
 mod lsp;
@@ -2310,7 +2310,7 @@ mod tests {
             fingerprint: "fp".to_owned(),
         };
         let execute = candidate(0, "Tools.execute", SymbolKind::Method).symbol;
-        let files = [lemma_store::StampedFile {
+        let files = [lemma_legacy_store::StampedFile {
             file: lemma_model::IndexedFile {
                 path: "src/models/tools.py".to_owned(),
                 language: Language::Python,
@@ -2318,10 +2318,10 @@ mod tests {
                 has_syntax_errors: false,
                 symbols: vec![execute],
             },
-            stamp: lemma_store::FileStamp::default(),
+            stamp: lemma_legacy_store::FileStamp::default(),
         }];
         store
-            .replace_snapshot(&lemma_store::NewSnapshot {
+            .replace_snapshot(&lemma_legacy_store::NewSnapshot {
                 snapshot: &snapshot,
                 extractor_version: "1",
                 indexed_at_ns: 0,
@@ -2479,7 +2479,7 @@ mod tests {
         };
         let filter = |path: &str| SymbolFilter {
             text: "Session".to_owned(),
-            name_match: lemma_store::NameMatch::Contains,
+            name_match: lemma_legacy_store::NameMatch::Contains,
             kind: None,
             language: None,
             path_contains: Some(path.to_owned()),

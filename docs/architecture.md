@@ -48,7 +48,7 @@ Each kind of question implements a small `Ask` trait: how to ask a provider, and
 
 ### Storage
 
-`lemma-store` defines `FactStore`: the facts the query layer reads and records. These are symbols and files from the syntax index, and provider answers keyed by question, position, provider and configuration. SQLite is the implementation today. Provider answers are stored as rows of locations, not opaque blobs, so another implementation, such as memory-mapped sorted tables or a graph of symbol occurrences shared across lookups, can replace or sit in front of SQLite without changing the query layer.
+`lemma-legacy-store` defines `FactStore`: the facts the query layer reads and records. These are symbols and files from the syntax index, and provider answers keyed by question, position, provider and configuration. SQLite is the implementation today. Provider answers are stored as rows of locations, not opaque blobs, so another implementation, such as memory-mapped sorted tables or a graph of symbol occurrences shared across lookups, can replace or sit in front of SQLite without changing the query layer.
 
 Writing snapshots (`replace_snapshot`, `update_snapshot`) stays on `Store` itself. Only the indexer writes snapshots, and it is tied to SQLite's transactions.
 

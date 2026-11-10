@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+use lemma_legacy_store::{FileStamp, StampedFile, StoredFile};
 use lemma_model::{IndexedFile, content_hash};
-use lemma_store::{FileStamp, StampedFile, StoredFile};
 use lemma_syntax::ExtractorPool;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 

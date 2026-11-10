@@ -3,8 +3,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use lemma_legacy_store::{FileStamp, StampedFile, StoredFile};
 use lemma_model::Language;
-use lemma_store::{FileStamp, StampedFile, StoredFile};
 use lemma_syntax::EXTRACTOR_VERSION;
 
 use crate::scan::Scan;

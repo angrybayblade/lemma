@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use lemma_store::{FactStore, StoredSymbol};
+use lemma_legacy_store::{FactStore, StoredSymbol};
 
 use crate::QueryError;
 use crate::lookup::{Answered, Hover, LookupContext, ask_providers, is_stale};

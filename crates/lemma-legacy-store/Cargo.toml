@@ -1,6 +1,6 @@
 [package]
-name = "lemma-store"
-description = "Storage for snapshots, symbols, provider results, units and segments."
+name = "lemma-legacy-store"
+description = "The SQLite storage that the Lemma store (spec 17) replaces: snapshots, symbols, provider answers, units and segments."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

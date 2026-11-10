@@ -21,7 +21,7 @@ lemma-model = { path = "crates/lemma-model" }
 lemma-providers = { path = "crates/lemma-providers" }
 lemma-query = { path = "crates/lemma-query" }
 lemma-souffle = { path = "crates/lemma-souffle" }
-lemma-store = { path = "crates/lemma-store" }
+lemma-legacy-store = { path = "crates/lemma-legacy-store" }
 lemma-syntax = { path = "crates/lemma-syntax" }
 lemma-verify = { path = "crates/lemma-verify" }
 lemma-graph = { path = "crates/lemma-graph" }

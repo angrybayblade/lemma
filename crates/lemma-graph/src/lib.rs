@@ -245,7 +245,7 @@ pub enum GraphError {
         path: String,
         /// Why.
         #[source]
-        source: lemma_store::RecordError,
+        source: lemma_legacy_store::RecordError,
     },
 }
 

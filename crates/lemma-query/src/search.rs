@@ -9,8 +9,8 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use lemma_legacy_store::{Store, StoreError, StoredSnapshot, StoredSymbol, SymbolFilter};
 use lemma_model::{Language, SymbolKind};
-use lemma_store::{Store, StoreError, StoredSnapshot, StoredSymbol, SymbolFilter};
 use memchr::memmem;
 
 /// Separates names in the search buffer. Names never contain it.

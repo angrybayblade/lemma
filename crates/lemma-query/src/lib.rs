@@ -32,7 +32,7 @@ pub use uses::{UnindexedRoot, UsesAnswer, find_uses};
 pub enum QueryError {
     /// Reading or writing the index failed.
     #[error("could not access the index")]
-    Store(#[from] lemma_store::StoreError),
+    Store(#[from] lemma_legacy_store::StoreError),
     /// A file's language is not one Lemma supports.
     #[error("{path} is not a TypeScript, Python, or Go file")]
     UnsupportedFile {

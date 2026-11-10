@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
+use lemma_legacy_store::{AnswerKey, FactStore, Question, StoredSymbol};
 use lemma_model::{Location, LocationQuery, Outcome, ProviderAnswer, Reference};
 use lemma_providers::SourcePoint;
-use lemma_store::{AnswerKey, FactStore, Question, StoredSymbol};
 
 use crate::QueryError;
 use crate::lookup::{Answered, LookupContext, ask_providers};

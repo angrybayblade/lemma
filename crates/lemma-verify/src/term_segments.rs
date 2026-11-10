@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use lemma_store::{RecordError, RecordReader, RecordWriter, SegmentKey};
+use lemma_legacy_store::{RecordError, RecordReader, RecordWriter, SegmentKey};
 
 const MAGIC: [u8; 4] = *b"LMTS";
 const VERSION: u16 = 1;

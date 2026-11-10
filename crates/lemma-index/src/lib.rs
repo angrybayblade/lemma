@@ -18,8 +18,10 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use lemma_legacy_store::{
+    FactStore, NewSnapshot, SnapshotUpdate, Store, StoreError, StoredSnapshot,
+};
 use lemma_model::{Language, Snapshot};
-use lemma_store::{FactStore, NewSnapshot, SnapshotUpdate, Store, StoreError, StoredSnapshot};
 use lemma_syntax::{EXTRACTOR_VERSION, ExtractorPool, SyntaxError};
 
 pub use crate::selection::{InvalidPattern, RuleSpec, Selection};
@@ -616,7 +618,7 @@ fn now_ns() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lemma_store::{NameMatch, SymbolFilter};
+    use lemma_legacy_store::{NameMatch, SymbolFilter};
     use std::fs;
 
     fn write(root: &Path, relative_path: &str, contents: &str) {
@@ -679,7 +681,7 @@ mod tests {
         };
         assert_eq!(
             store.find_symbols(summary.snapshot_id, &ignored).unwrap(),
-            [] as [lemma_store::StoredSymbol; 0]
+            [] as [lemma_legacy_store::StoredSymbol; 0]
         );
     }
 
