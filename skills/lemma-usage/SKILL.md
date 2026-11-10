@@ -29,7 +29,7 @@ Prefer Lemma's MCP tools when they are available (`references`, `definition`, `i
 ## Name symbols precisely
 
 - A name: `Router`. A qualified name: `Router.delete` (class or type, then member; Go methods by receiver type, Rust methods by impl type).
-- An id from `lemma symbols`, as shown: `'#415'`, or `'#billing:415'` in a workspace, where each repository numbers its own symbols. An id survives edits to its file while the definition keeps its name and kind.
+- An id from `lemma symbols`, as shown: `'#f256e26e20067a8c'`, or `'#billing:f256e26e20067a8c'` in a workspace, where each repository's ids are its own. Any unique prefix of six or more digits works too. An id survives edits to its file while the definition keeps its name and kind.
 - An export's address from a description: `services.api.createCharge` (a declared operation or an `operationId`), which resolves to the symbol implementing it.
 - Narrow an ambiguous name with `--language python` or by qualifying it.
 - `lemma refs` exits with 2 when the name matched several symbols: the output lists them; pick one.

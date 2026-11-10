@@ -9,7 +9,7 @@ The point is the list a text search would get wrong: callers in other repositori
 
 ## Steps
 
-1. **Name the target precisely.** An operation as method and path (`POST /v1/charges`), or a symbol by qualified name (`Router.delete`). Find it with `search_symbols` (or `lemma symbols`) and keep its id (`#415`, or `#billing:415` in a workspace).
+1. **Name the target precisely.** An operation as method and path (`POST /v1/charges`), or a symbol by qualified name (`Router.delete`). Find it with `search_symbols` (or `lemma symbols`) and keep its id (`#f256e26e20067a8c`, or `#billing:f256e26e20067a8c` in a workspace).
 2. **Uses in its own repository.** `references` on the symbol; `implementations` too for an interface member. Each answer carries the function it sits in.
 3. **Callers in other repositories.** Run from the workspace directory (the one whose `mod.lm` composes the repositories):
    - `graph` on the operation's handler with `direction: callers` follows the route to its operation and on to the code that calls it, whether through a URL or a generated client.

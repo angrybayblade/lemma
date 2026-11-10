@@ -54,7 +54,7 @@ Searches indexed symbols by name or qualified name.
 
 Qualified names join enclosing definitions with dots: a method `delete` in class `Router` is `Router.delete`. For Go methods the receiver type is used: `func (s *Server) Start()` is `Server.Start`.
 
-Ids (`#412`) name a definition for as long as it keeps its name and kind: editing its file, even moving it, keeps the id. In a workspace each repository numbers its own symbols, so ids are written with the repository, `#billing:412`; pass them as shown.
+Ids (`#31919f572763121e`) name a definition for as long as it keeps its file, name and kind: editing its file, even moving it within the file, keeps the id. Any unique prefix of six or more digits names it too (`#31919f57`). In a workspace each repository's ids are its own, so ids are written with the repository, `#billing:31919f572763121e`; pass them as shown.
 
 ## `lemma outline <file>`
 
@@ -68,7 +68,7 @@ Finds references to one symbol by asking a language server for its language.
 
 - a name, such as `delete`;
 - a qualified name, such as `Router.delete`;
-- an id from `lemma symbols`, such as `'#415'`. Quote it, because `#` starts a comment in most shells;
+- an id from `lemma symbols`, such as `'#f256e26e20067a8c'`, or a unique prefix of it, such as `'#f256e26e'`. Quote it, because `#` starts a comment in most shells;
 - an export's address from a description, such as `services.worker.submit_task` (a declared operation) or `services.gateway.listProducts` (an `operationId`): the symbol implementing it. An address in another repository (`'#functions:services.serverless.submit_task'`) is resolved from inside a workspace's directory, through its index, in the member's index at its pin. From a workspace's directory, a plain name is looked up in every member: one match is used, and a name several members define is listed with each one's repository (`#platform:apps/...`); narrow it with `--path`.
 
 When the symbol implements an export that a graph of `Link` links to or from, `refs` lists those links after the server's references (`linked by the description`, and `linked` in JSON), resolved to the code on the other end when a workspace index knows it.
@@ -104,7 +104,7 @@ Lines starting with `skipped` name servers that could not start before one did.
 
 Finds where the symbol used at a position is defined, such as the function a call goes to. Lines and columns count from 1, as editors show them: `lemma definition src/app.py:12:5`. From a workspace's directory, a file inside a member (`repos/platform/apps/api/handler.go:229:43`) is looked up in that member's index, at its pin when it has one.
 
-Each definition shows its location and, when it is an indexed symbol, its qualified name and id, so you can ask about it next (`lemma refs '#415'`). It takes `--refresh` and `--timeout-secs` like `refs`, and exits with 3 when no server could answer.
+Each definition shows its location and, when it is an indexed symbol, its qualified name and id, so you can ask about it next (`lemma refs '#f256e26e'`). It takes `--refresh` and `--timeout-secs` like `refs`, and exits with 3 when no server could answer.
 
 ## `lemma implementations <symbol>`
 

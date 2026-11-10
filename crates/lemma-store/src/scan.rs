@@ -8,7 +8,7 @@ use lemma_model::{Language, SymbolKind};
 use lemma_syntax::{Extractor, Outline, SyntaxError};
 use rayon::prelude::*;
 
-use crate::{Change, Digest, FileRecord, SymbolRecord};
+use crate::{Change, Digest, FileRecord, FileStamp, SymbolRecord};
 
 /// Why a directory could not be read.
 #[derive(Debug, thiserror::Error)]
@@ -134,6 +134,7 @@ fn read_one(
     let change = Change::Put {
         path: relative.clone(),
         record,
+        stamp: FileStamp::default(),
     };
     Ok(Some((relative, Some(change))))
 }

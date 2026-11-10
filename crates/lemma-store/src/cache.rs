@@ -36,7 +36,9 @@ pub struct Cache {
 struct Opened {
     index: Index,
     runs: Vec<Run>,
-    length: u64,
+    /// The file's length and change time: appends change the length, and
+    /// compaction replaces the file.
+    identity: (u64, Option<std::time::SystemTime>),
 }
 
 struct Background {
@@ -78,10 +80,10 @@ impl Cache {
         })
     }
 
-    /// The store as it is now, reopened only when it has grown.
+    /// The store as it is now, reopened only when it has changed.
     fn opened(&self) -> Result<Option<Arc<Opened>>, StoreError> {
-        let length = match std::fs::metadata(&self.path) {
-            Ok(metadata) => metadata.len(),
+        let identity = match std::fs::metadata(&self.path) {
+            Ok(metadata) => (metadata.len(), metadata.modified().ok()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(source) => {
                 return Err(StoreError::Io {
@@ -91,16 +93,23 @@ impl Cache {
             }
         };
         if let Ok(current) = self.current.read()
-            && let Some(opened) = current.as_ref().filter(|opened| opened.length == length)
+            && let Some(opened) = current
+                .as_ref()
+                .filter(|opened| opened.identity == identity)
         {
             return Ok(Some(Arc::clone(opened)));
         }
-        let index = Index::open(&self.path, ReadMode::Mapped)?;
+        let index = match Index::open(&self.path, ReadMode::Mapped) {
+            // Another layout's store holds nothing this build can use; the
+            // next write starts it again.
+            Err(StoreError::UnsupportedVersion { .. }) => return Ok(None),
+            opened => opened?,
+        };
         let runs = index.runs()?;
         let opened = Arc::new(Opened {
             index,
             runs,
-            length,
+            identity,
         });
         if let Ok(mut current) = self.current.write() {
             *current = Some(Arc::clone(&opened));

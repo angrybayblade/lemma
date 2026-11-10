@@ -21,7 +21,8 @@ Used by `symbols`, `refs`, and ambiguous results.
 
 ```json
 {
-  "id": 1,
+  "id": "6d0a51c3e98f2b47",
+  "qualified_id": "#6d0a51c3e98f2b47",
   "name": "greet",
   "qualified_name": "greet",
   "kind": "function",
@@ -61,7 +62,7 @@ An array of [symbols](#symbol), possibly empty.
 ## `lemma --json outline`
 
 ```json
-{ "path": "src/router.py", "symbols": [ { "id": 412, "qualified_name": "Router", "...": "..." } ] }
+{ "path": "src/router.py", "symbols": [ { "id": "31919f572763121e", "qualified_name": "Router", "...": "..." } ] }
 ```
 
 `symbols` holds [symbols](#symbol) in source order.
@@ -70,7 +71,7 @@ An array of [symbols](#symbol), possibly empty.
 
 ```json
 {
-  "symbol": { "id": 1, "name": "greet", "...": "..." },
+  "symbol": { "id": "6d0a51c3e98f2b47", "name": "greet", "...": "..." },
   "provenance": {
     "provider_id": "pyright",
     "provider_version": null,
@@ -126,11 +127,11 @@ When the name matches several symbols, `refs`, `implementations` and `signature`
 {
   "state": "ambiguous",
   "query": "delete",
-  "candidates": [ { "id": 415, "qualified_name": "Router.delete", "...": "..." } ]
+  "candidates": [ { "id": "f256e26e20067a8c", "qualified_name": "Router.delete", "...": "..." } ]
 }
 ```
 
-Pick one and run `lemma --json refs '#415'`.
+Pick one and run `lemma --json refs '#f256e26e'`.
 
 ## `lemma --json definition`
 
@@ -148,7 +149,7 @@ Pick one and run `lemma --json refs '#415'`.
         "path": "shapes.py",
         "span": { "start": { "line": 17, "column": 4 }, "end": { "line": 17, "column": 14 } },
         "is_external": false,
-        "symbol": { "id": 6, "qualified_name": "total_area", "...": "..." }
+        "symbol": { "id": "a4e1c07b5d3f9862", "qualified_name": "total_area", "...": "..." }
       }
     ]
   }
@@ -165,7 +166,7 @@ The same shape as `refs`, with `outcome.implementations` holding entries like `d
 
 ```json
 {
-  "symbol": { "id": 5, "qualified_name": "Square.area", "...": "..." },
+  "symbol": { "id": "0c7d2e94f1a6b385", "qualified_name": "Square.area", "...": "..." },
   "declaration": "def area(self) -> float:",
   "hover": {
     "provenance": { "provider_id": "pyright", "...": "..." },

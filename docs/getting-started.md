@@ -107,8 +107,8 @@ lemma symbols Router
 ```
 
 ```text
-#412     class      Router  src/router.py:8:7
-#415     method     Router.delete  src/router.py:31:9
+#31919f572763121e class      Router  src/router.py:8:7
+#f256e26e20067a8c method     Router.delete  src/router.py:31:9
 #418     method     Router.register  src/router.py:44:9
 ```
 
@@ -121,7 +121,7 @@ lemma refs Router.delete
 ```
 
 ```text
-#415     method     Router.delete  src/router.py:31:9
+#f256e26e20067a8c method     Router.delete  src/router.py:31:9
 via pyright
 3 references
   src/api/routes.py:22:12  in remove_route
@@ -131,7 +131,7 @@ via pyright
 
 Commands run in a background daemon that `lemma` starts on first use. The daemon starts each language server after `lemma index` and caches answers until the code changes. The first lookup may wait for the server to load the project; later lookups, even of other symbols, take milliseconds.
 
-If a name matches more than one symbol, Lemma lists the candidates. Choose one with the qualified name, a filter such as `--language python` or `--path api/`, or the id: `lemma refs '#415'`.
+If a name matches more than one symbol, Lemma lists the candidates. Choose one with the qualified name, a filter such as `--language python` or `--path api/`, or the id: `lemma refs '#f256e26e'`.
 
 ## 6. Ask other questions
 

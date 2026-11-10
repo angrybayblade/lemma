@@ -1,13 +1,20 @@
 //! Writing a store: append what changed, then a footer that makes it real.
+//!
+//! The store is a cache (spec 17), so commits are not flushed one by one:
+//! each is written whole, nodes then footer, and the operating system
+//! writes it back when it likes. A large commit, or a checkpoint, flushes
+//! the file and then appends a footer recording that everything before it
+//! is on disk, so a reader after a crash checks only what came since.
 
-use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::codec::{self, Encoder, Entry, EntryKind};
-use crate::read::{self, Index, ReadMode};
-use crate::{Change, Digest, FileRecord, SourceRecord, StoreError};
+use crate::read::{self, Footer, Index, ReadMode};
+use crate::{Change, Digest, SourceRecord, StoreError};
+
+/// A commit this large is flushed at once: it is costly to compute again.
+const FLUSH_BYTES: usize = 1 << 20;
 
 /// The one writer of a store. Holding it holds the store's lock.
 pub struct Writer {
@@ -40,17 +47,43 @@ pub struct Write<'a> {
     pub attributes: &'a [(Digest, Vec<u8>)],
 }
 
-/// One path's change, as it descends the tree.
-struct Step<'a> {
-    rest: &'a str,
-    record: Option<&'a FileRecord>,
+/// Bytes appended by a commit, in memory until it is written whole.
+pub(crate) struct Pending {
+    start: u64,
+    pub(crate) bytes: Vec<u8>,
 }
 
-/// Nodes appended by a commit, in memory until it is written whole.
-pub(crate) struct Pending<'a> {
-    index: &'a Index,
-    start: u64,
-    bytes: Vec<u8>,
+impl Pending {
+    pub(crate) fn new(start: u64) -> Self {
+        Self {
+            start,
+            bytes: Vec::new(),
+        }
+    }
+
+    /// Where the next byte appended will be in the file.
+    pub(crate) fn position(&self) -> u64 {
+        self.start + self.bytes.len() as u64
+    }
+
+    /// Appends a node and returns its offset.
+    pub(crate) fn append_node(&mut self, kind: u8, payload: &[u8]) -> Result<u64, StoreError> {
+        let length = u32::try_from(payload.len()).map_err(|_| StoreError::Damaged {
+            what: "a node would be larger than 4 GiB",
+        })?;
+        let offset = self.position();
+        self.bytes.push(kind);
+        self.bytes.extend_from_slice(&length.to_le_bytes());
+        self.bytes.extend_from_slice(payload);
+        Ok(offset)
+    }
+
+    /// Appends a value's bare bytes and returns their offset.
+    pub(crate) fn append_value(&mut self, value: &[u8]) -> u64 {
+        let offset = self.position();
+        self.bytes.extend_from_slice(value);
+        offset
+    }
 }
 
 impl Writer {
@@ -75,21 +108,19 @@ impl Writer {
             std::fs::create_dir_all(parent).map_err(io)?;
         }
         let lock = hold_lock(path, waits)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(io)?;
-        if file.metadata().map_err(io)?.len() < read::HEADER_BYTES {
-            file.set_len(0).map_err(io)?;
-            file.write_all(&read::MAGIC).map_err(io)?;
-            file.write_all(&read::MAJOR.to_le_bytes()).map_err(io)?;
-            file.write_all(&0u16.to_le_bytes()).map_err(io)?;
-            file.sync_data().map_err(io)?;
+        let is_new = std::fs::metadata(path).map_or(true, |found| found.len() < read::HEADER_BYTES);
+        if is_new {
+            replace_with_empty(path)?;
         }
-        // A commit that did not finish stays as ignored bytes before the
-        // next one; truncating could pull pages from under a mapped reader.
-        let index = Index::open(path, ReadMode::Positional)?;
+        let index = match Index::open(path, ReadMode::Mapped) {
+            // Another layout's store is a cache like any other: start again.
+            Err(StoreError::UnsupportedVersion { .. }) => {
+                replace_with_empty(path)?;
+                Index::open(path, ReadMode::Mapped)?
+            }
+            opened => opened?,
+        };
+        let file = OpenOptions::new().append(true).open(path).map_err(io)?;
         Ok(Self {
             path: path.to_owned(),
             file,
@@ -99,7 +130,7 @@ impl Writer {
     }
 
     /// Applies `changes` and publishes the result as `commit.root`, and
-    /// returns the digest of its tree. Either all of it is visible to the
+    /// returns the digest of its files. Either all of it is visible to the
     /// next reader, or none of it.
     pub fn commit(
         &mut self,
@@ -115,58 +146,139 @@ impl Writer {
     }
 
     /// Applies everything in `write` as one commit, and returns the digest
-    /// of the committed tree, if it commits one.
+    /// of the committed source's files, if it commits one.
     pub fn write(&mut self, write: &Write<'_>) -> Result<Option<Digest>, StoreError> {
-        let mut roots = self.index.root_offsets()?;
-        let mut pending = Pending::new(&self.index);
+        let mut roots = self.index.roots()?;
+        let mut pending = Pending::new(self.index.length());
         let mut digest = None;
         if let Some((commit, changes)) = &write.commit {
-            let (source, tree) = pending.commit_tree(commit, changes)?;
-            roots.insert(commit.root.to_owned(), source);
-            digest = Some(tree);
+            let root = pending.commit_root(&self.index, &roots, commit, changes)?;
+            digest = Some(root.digest);
+            roots.insert(commit.root.to_owned(), root);
         }
         for name in write.removed_roots {
             roots.remove(name);
         }
-        let attributes = match write.attributes {
+        let runs = match write.attributes {
             [] => None,
-            entries => Some(pending.append_attributes(entries)?),
+            entries => Some(pending.append_attributes(&self.index, entries)?),
         };
         let roots_changed = write.commit.is_some() || !write.removed_roots.is_empty();
-        let roots = roots_changed.then(|| pending.append(read::ROOTS_NODE, &encode_roots(&roots)));
-        let nodes = pending.into_bytes();
-        self.publish(&nodes, roots, attributes)?;
+        let roots = if roots_changed {
+            Some(pending.append_node(read::ROOTS_NODE, &read::encode_roots(&roots))?)
+        } else {
+            None
+        };
+        let is_large = pending.bytes.len() >= FLUSH_BYTES;
+        self.publish(pending.bytes, roots, runs, None)?;
+        if is_large {
+            self.checkpoint()?;
+        }
+        self.compact_if_due()?;
         Ok(digest)
     }
 
-    /// Writes nodes and then the footer, each durable before the next, so
-    /// a footer on disk always means its nodes are too.
-    /// `None` keeps what the last footer named.
+    /// Writes a commit's bytes and then its footer in one append. `None`
+    /// keeps what the last footer named.
     pub(crate) fn publish(
         &mut self,
-        nodes: &[u8],
+        mut bytes: Vec<u8>,
         roots: Option<u64>,
-        attributes: Option<u64>,
+        runs: Option<u64>,
+        checked: Option<u64>,
     ) -> Result<(), StoreError> {
-        let io = |source| StoreError::Io {
-            path: self.path.clone(),
-            source,
+        let last = self.index.footer();
+        let start = self.index.length();
+        let footer = Footer {
+            offset: start + bytes.len() as u64,
+            roots: roots.or(last.map(|footer| footer.roots)).unwrap_or(0),
+            runs: runs.or(last.map(|footer| footer.runs)).unwrap_or(0),
+            previous: last.map_or(0, |footer| footer.offset),
+            start,
+            synced: last.map_or(read::HEADER_BYTES, |footer| footer.synced),
+            checked: checked.or(last.map(|footer| footer.checked)).unwrap_or(0),
+            commit: *blake3::hash(&bytes).as_bytes(),
         };
-        let footer = self.index.footer();
-        let previous = footer.map_or(0, |footer| footer.offset);
-        let roots = roots.or(footer.map(|footer| footer.roots)).unwrap_or(0);
-        let attributes = attributes
-            .or(footer.map(|footer| footer.attributes))
-            .unwrap_or(0);
-        self.file.write_all(nodes).map_err(io)?;
-        self.file.sync_data().map_err(io)?;
+        bytes.extend_from_slice(&read::encode_footer(&footer));
         self.file
-            .write_all(&read::encode_footer(roots, attributes, previous))
-            .map_err(io)?;
-        self.file.sync_data().map_err(io)?;
-        self.index = Index::open(&self.path, ReadMode::Positional)?;
+            .write_all(&bytes)
+            .map_err(|source| StoreError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
+        self.index = Index::open(&self.path, ReadMode::Mapped)?;
         Ok(())
     }
+
+    /// Flushes the file, then appends a footer saying everything before it
+    /// is on disk, so that a reader after a crash need not check it again.
+    pub fn checkpoint(&mut self) -> Result<(), StoreError> {
+        let Some(last) = self.index.footer() else {
+            return Ok(());
+        };
+        self.file.sync_data().map_err(|source| StoreError::Io {
+            path: self.path.clone(),
+            source,
+        })?;
+        let start = self.index.length();
+        let footer = Footer {
+            offset: start,
+            previous: last.offset,
+            start,
+            synced: start,
+            commit: *blake3::hash(&[]).as_bytes(),
+            ..last
+        };
+        self.file
+            .write_all(&read::encode_footer(&footer))
+            .map_err(|source| StoreError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
+        self.index = Index::open(&self.path, ReadMode::Mapped)?;
+        Ok(())
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Takes up the file compaction put in place of the old one.
+    pub(crate) fn reopen(&mut self) -> Result<(), StoreError> {
+        self.file = OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| StoreError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
+        self.index = Index::open(&self.path, ReadMode::Mapped)?;
+        Ok(())
+    }
+}
+
+/// Puts an empty store at `path` by renaming a new file over it, so that a
+/// reader that mapped an old file keeps its pages.
+pub(crate) fn replace_with_empty(path: &Path) -> Result<(), StoreError> {
+    let mut header = read::MAGIC.to_vec();
+    header.extend_from_slice(&read::MAJOR.to_le_bytes());
+    header.extend_from_slice(&0u16.to_le_bytes());
+    replace_with(path, &header)
+}
+
+/// Puts `bytes` at `path`, flushed, by renaming a new file over it.
+pub(crate) fn replace_with(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+    let io = |source| StoreError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let mut name = path.as_os_str().to_owned();
+    name.push(".new");
+    let fresh = PathBuf::from(name);
+    let mut file = File::create(&fresh).map_err(io)?;
+    file.write_all(bytes).map_err(io)?;
+    file.sync_data().map_err(io)?;
+    std::fs::rename(&fresh, path).map_err(io)
 }
 
 fn hold_lock(path: &Path, waits: bool) -> Result<File, StoreError> {
@@ -192,171 +304,5 @@ fn hold_lock(path: &Path, waits: bool) -> Result<File, StoreError> {
             path: path.to_owned(),
         }),
         Err(TryLockError::Error(source)) => Err(io(source)),
-    }
-}
-
-fn step_of(change: &Change) -> Step<'_> {
-    match change {
-        Change::Put { path, record } => Step {
-            rest: path,
-            record: Some(record),
-        },
-        Change::Remove { path } => Step {
-            rest: path,
-            record: None,
-        },
-    }
-}
-
-fn encode_roots(roots: &BTreeMap<String, u64>) -> Vec<u8> {
-    let mut encoder = Encoder::default();
-    encoder.count(roots.len());
-    for (name, offset) in roots {
-        encoder.text(name);
-        encoder.u64(*offset);
-    }
-    encoder.bytes
-}
-
-impl<'a> Pending<'a> {
-    pub(crate) fn new(index: &'a Index) -> Self {
-        Self {
-            index,
-            start: index.length(),
-            bytes: Vec::new(),
-        }
-    }
-
-    pub(crate) fn index(&self) -> &'a Index {
-        self.index
-    }
-
-    pub(crate) fn into_bytes(self) -> Vec<u8> {
-        self.bytes
-    }
-
-    /// Appends a source's new tree and its source node, returning the
-    /// source node's offset and the tree's digest.
-    fn commit_tree(
-        &mut self,
-        commit: &Commit<'_>,
-        changes: &[Change],
-    ) -> Result<(u64, Digest), StoreError> {
-        let old_tree = match commit.parent {
-            Some(name) => Some(self.index.root(name)?.tree),
-            None => None,
-        };
-        let mut sorted: Vec<&Change> = changes.iter().collect();
-        sorted.sort_by(|left, right| left.path().cmp(right.path()));
-        let steps: Vec<Step<'_>> = sorted.iter().map(|change| step_of(change)).collect();
-        let tree = match self.rewrite(old_tree.as_ref(), &steps)? {
-            Some(tree) => tree,
-            None => self.empty_directory(),
-        };
-        let source = codec::encode_source(commit.source, &tree);
-        Ok((self.append(read::SOURCE_NODE, &source), tree.digest))
-    }
-
-    pub(crate) fn append(&mut self, kind: u8, payload: &[u8]) -> u64 {
-        let offset = self.start + self.bytes.len() as u64;
-        let begin = self.bytes.len();
-        self.bytes.push(kind);
-        let length = u32::try_from(payload.len()).unwrap_or(u32::MAX);
-        self.bytes.extend_from_slice(&length.to_le_bytes());
-        self.bytes.extend_from_slice(payload);
-        let digest = blake3::hash(&self.bytes[begin..]);
-        self.bytes.extend_from_slice(digest.as_bytes());
-        offset
-    }
-
-    fn empty_directory(&mut self) -> Entry {
-        let entries: BTreeMap<String, Entry> = BTreeMap::new();
-        Entry {
-            kind: EntryKind::Directory,
-            digest: codec::directory_digest(entries.iter()),
-            offset: self.append(
-                read::DIRECTORY_NODE,
-                &codec::encode_directory(entries.iter()),
-            ),
-        }
-    }
-
-    /// The directory `old` with `steps` applied, or `None` when nothing is
-    /// left in it. Unchanged children keep their nodes.
-    fn rewrite(
-        &mut self,
-        old: Option<&Entry>,
-        steps: &[Step<'_>],
-    ) -> Result<Option<Entry>, StoreError> {
-        let mut entries: BTreeMap<String, Entry> = match old {
-            Some(entry) => self.index.directory(entry.offset)?.into_iter().collect(),
-            None => BTreeMap::new(),
-        };
-        let mut below: BTreeMap<&str, Vec<Step<'_>>> = BTreeMap::new();
-        for step in steps {
-            match step.rest.split_once('/') {
-                None => self.apply_file(&mut entries, step),
-                Some((name, rest)) => below.entry(name).or_default().push(Step {
-                    rest,
-                    record: step.record,
-                }),
-            }
-        }
-        for (name, steps) in below {
-            let child = entries
-                .get(name)
-                .filter(|entry| entry.kind == EntryKind::Directory)
-                .copied();
-            match self.rewrite(child.as_ref(), &steps)? {
-                Some(entry) => entries.insert(name.to_owned(), entry),
-                None => entries.remove(name),
-            };
-        }
-        if entries.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(self.finish_directory(old, &entries)))
-    }
-
-    fn apply_file(&mut self, entries: &mut BTreeMap<String, Entry>, step: &Step<'_>) {
-        let Some(record) = step.record else {
-            entries.remove(step.rest);
-            return;
-        };
-        let payload = codec::encode_file(record);
-        let digest = *blake3::hash(&payload).as_bytes();
-        let unchanged = entries
-            .get(step.rest)
-            .is_some_and(|entry| entry.kind == EntryKind::File && entry.digest == digest);
-        if unchanged {
-            return;
-        }
-        let offset = self.append(read::FILE_NODE, &payload);
-        let entry = Entry {
-            kind: EntryKind::File,
-            digest,
-            offset,
-        };
-        entries.insert(step.rest.to_owned(), entry);
-    }
-
-    fn finish_directory(
-        &mut self,
-        old: Option<&Entry>,
-        entries: &BTreeMap<String, Entry>,
-    ) -> Entry {
-        let digest = codec::directory_digest(entries.iter());
-        if let Some(old) = old.filter(|old| old.digest == digest) {
-            return *old;
-        }
-        let offset = self.append(
-            read::DIRECTORY_NODE,
-            &codec::encode_directory(entries.iter()),
-        );
-        Entry {
-            kind: EntryKind::Directory,
-            digest,
-            offset,
-        }
     }
 }

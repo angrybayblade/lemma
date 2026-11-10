@@ -48,7 +48,7 @@ Each kind of question implements a small `Ask` trait: how to ask a provider, and
 
 ### Storage
 
-`lemma-store` defines `FactStore`: the facts the query layer reads and records. These are symbols and files from the syntax index, and provider answers keyed by question, position, provider and configuration. `Store` implements it over `.lemma/index.ls`, an append-only tree of immutable nodes: source, directory, file and symbol, with an attribute table beside the tree for what is not part of it (stamps, symbol ids, exports, answers, and what checks keep). The design is in `.specs/17-lemma-store.md`.
+`lemma-store` defines `FactStore`: the facts the query layer reads and records. These are symbols and files from the syntax index, and provider answers keyed by question, position, provider and configuration. `Store` implements it over `.lemma/index.ls`: each source's files and symbols in immutable segments, a full one with every file and small deltas with the files later commits changed, beside an attribute table for what is not about files (exports, answers, and what checks keep). Symbol ids are digests of each symbol's identity, so nothing is stored to keep them. The design is in `.specs/17-lemma-store.md`.
 
 Writing snapshots (`replace_snapshot`, `update_snapshot`) stays on `Store` itself. Only the indexer writes snapshots, and each write is one commit of the store: a reader sees all of it or none of it.
 

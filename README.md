@@ -33,7 +33,7 @@ cd ~/code/project
 lemma symbols Router                    # search by name or qualified name
 lemma refs Router.delete                # references via the language's server
 lemma refs delete --language python     # narrow an ambiguous name
-lemma refs '#415'                       # or pick by id from `lemma symbols`
+lemma refs '#f256e26e'                  # or pick by id from `lemma symbols`
 lemma outline src/router.py             # symbols in a file
 lemma definition src/app.py:12:5        # where the symbol used there is defined
 lemma implementations Shape.area        # what implements or overrides it

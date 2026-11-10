@@ -1,21 +1,28 @@
 //! The Lemma store (spec 17): one `index.ls` file per repository, holding
-//! each source's files and symbols as a tree of immutable nodes.
+//! each source's files and symbols in segments, and values computed from
+//! them in an attribute table.
 //!
-//! The file only ever grows. A commit appends the nodes it changed, then a
-//! footer naming the new roots, so a reader takes the last footer whose
-//! digest checks and never needs a lock. Sources that share files share
-//! the nodes for them, and comparing two sources descends only where their
-//! digests differ.
+//! The file only ever grows until it is compacted. A commit appends a
+//! segment with the files it changed, then a footer naming the new roots,
+//! so a reader takes the last complete footer and never needs a lock. A
+//! source derived from another shares its segments, and comparing the two
+//! reads only the segments they do not share.
 
 mod attributes;
 mod cache;
 mod codec;
+mod commit;
+mod compact;
 mod facts;
+mod filter;
+mod ids;
 mod navigation;
 mod reach;
 mod read;
 mod records;
 mod scan;
+mod segment;
+mod view;
 mod write;
 
 #[cfg(test)]
@@ -31,6 +38,7 @@ pub use facts::{
     StampedFile, StoredAnswer, StoredFile, StoredMember, StoredSnapshot, StoredSymbol,
     SymbolFilter, SymbolKey,
 };
+pub use ids::{IdPrefix, SymbolId};
 pub use navigation::Store;
 pub use reach::{SymbolAddress, reaching};
 pub use read::{
@@ -185,18 +193,28 @@ pub enum Change {
         path: String,
         /// Its contents.
         record: FileRecord,
+        /// Its metadata when it was read; zero for a commit's files.
+        stamp: FileStamp,
     },
     /// The file at this path is gone.
     Remove {
         /// Relative to the repository, with `/` separators.
         path: String,
     },
+    /// The file at this path is unchanged, but its metadata moved on.
+    Restamp {
+        /// Relative to the repository, with `/` separators.
+        path: String,
+        /// Its metadata now.
+        stamp: FileStamp,
+    },
 }
 
 impl Change {
-    fn path(&self) -> &str {
+    /// The path the change is to.
+    pub fn path(&self) -> &str {
         match self {
-            Self::Put { path, .. } | Self::Remove { path } => path,
+            Self::Put { path, .. } | Self::Remove { path } | Self::Restamp { path, .. } => path,
         }
     }
 }

@@ -8,7 +8,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::FileRecord;
+use crate::read::{Index, Root};
+use crate::{FileRecord, StoreError};
 
 /// A symbol by its file and qualified name.
 pub type SymbolAddress = (String, String);
@@ -22,30 +23,68 @@ pub fn reaching(
     changed: &[SymbolAddress],
 ) -> BTreeSet<SymbolAddress> {
     let mentioned_by = mentioners(files);
+    let found = reaching_with(changed, |name| {
+        let addresses = mentioned_by.get(name).map_or_else(Vec::new, |found| {
+            found
+                .iter()
+                .map(|(path, symbol)| ((*path).to_owned(), (*symbol).to_owned()))
+                .collect()
+        });
+        Ok::<_, std::convert::Infallible>(addresses)
+    });
+    match found {
+        Ok(reached) => reached,
+        Err(never) => match never {},
+    }
+}
+
+impl Index {
+    /// The symbols of `root` that can reach a symbol named in `changed`, as
+    /// [`reaching`] finds them, read from the root's reverse mention lists
+    /// instead of from every file.
+    pub fn reaching(
+        &self,
+        root: &Root,
+        changed: &[SymbolAddress],
+    ) -> Result<BTreeSet<SymbolAddress>, StoreError> {
+        let view = self.view(root)?;
+        reaching_with(changed, |name| {
+            let mut addresses = Vec::new();
+            for at in view.mentioning(name)? {
+                let segment = view.segment(at.segment)?;
+                let row = segment.symbol(at.symbol)?;
+                let path = segment.path(row.file)?.to_owned();
+                addresses.push((path, row.qualified_name.to_owned()));
+            }
+            Ok(addresses)
+        })
+    }
+}
+
+/// Follows names outwards from `changed`; `mentioners` gives the symbols
+/// whose code mentions a name.
+fn reaching_with<E>(
+    changed: &[SymbolAddress],
+    mut mentioners: impl FnMut(&str) -> Result<Vec<SymbolAddress>, E>,
+) -> Result<BTreeSet<SymbolAddress>, E> {
     let mut reached: BTreeSet<SymbolAddress> = changed.iter().cloned().collect();
-    let mut names_seen: BTreeSet<&str> = BTreeSet::new();
+    let mut names_seen: BTreeSet<String> = BTreeSet::new();
     let mut queue: VecDeque<String> = changed
         .iter()
         .map(|(_, name)| last_name(name).to_owned())
         .collect();
     while let Some(name) = queue.pop_front() {
-        let Some(name) = mentioned_by
-            .get_key_value(name.as_str())
-            .map(|(name, _)| *name)
-        else {
-            continue;
-        };
-        if !names_seen.insert(name) {
+        if !names_seen.insert(name.clone()) {
             continue;
         }
-        for (path, symbol) in &mentioned_by[name] {
-            let address = ((*path).to_owned(), (*symbol).to_owned());
+        for address in mentioners(&name)? {
+            let next = last_name(&address.1).to_owned();
             if reached.insert(address) {
-                queue.push_back(last_name(symbol).to_owned());
+                queue.push_back(next);
             }
         }
     }
-    reached
+    Ok(reached)
 }
 
 /// For each name, the symbols whose code mentions it.
@@ -141,6 +180,53 @@ mod tests {
         let reached = reaching(&files, &changed("a.py", "ping"));
 
         assert_eq!(names(&reached), ["ping", "pong"]);
+    }
+
+    #[test]
+    fn the_store_reaches_what_the_files_reach() {
+        let files = files(&[
+            ("models.py", "def total(order):\n    return order.sum\n"),
+            (
+                "service.py",
+                "def charge(order):\n    return total(order)\n",
+            ),
+            (
+                "routes.py",
+                "def create():\n    return charge(1)\n\ndef other():\n    return 2\n",
+            ),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("index.ls");
+        let changes: Vec<crate::Change> = files
+            .iter()
+            .map(|(path, record)| crate::Change::Put {
+                path: path.clone(),
+                record: record.clone(),
+                stamp: crate::FileStamp::default(),
+            })
+            .collect();
+        let source = crate::SourceRecord {
+            repository: "r".to_owned(),
+            revision: "v".to_owned(),
+            profile: [0; 32],
+        };
+        let commit = crate::Commit {
+            root: "head",
+            parent: None,
+            source: &source,
+        };
+        crate::Writer::open(&path)
+            .unwrap()
+            .commit(&commit, &changes)
+            .unwrap();
+        let index = Index::open(&path, crate::ReadMode::Mapped).unwrap();
+
+        let stored = index
+            .reaching(&index.root("head").unwrap(), &changed("models.py", "total"))
+            .unwrap();
+
+        assert_eq!(stored, reaching(&files, &changed("models.py", "total")));
+        assert_eq!(names(&stored), ["charge", "create", "total"]);
     }
 
     #[test]

@@ -1,38 +1,37 @@
 //! Navigation's view of a store (spec 17): snapshots of directories, with
-//! their files' stamps, stable symbol ids, exports, workspace members and
-//! providers' answers, all in one `index.ls`.
+//! their files' stamps, symbols, exports, workspace members and providers'
+//! answers, all in one `index.ls`.
 //!
-//! Each snapshot is a source named `snapshot:<id>`. What is not part of a
-//! source's tree is filed in the attribute table: a catalog of snapshots
-//! and exports, each file's stamp, each symbol's id, and answers. A write
-//! is one commit, so a reader sees all of it or none of it.
+//! Each snapshot is a root named `snapshot:<id>` whose segments hold its
+//! files with their stamps; symbol ids come from each symbol's identity, so
+//! nothing is stored per symbol beyond its row. What is not about files is
+//! filed in the attribute table: a catalog of snapshots, exports and
+//! members, and answers. A write is one commit, so a reader sees all of it
+//! or none of it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::SystemTime;
 
-use lemma_model::{Export, ExportLink, Location, Position, ProviderAnswer, Snapshot, SymbolKind};
+use lemma_model::{Export, ExportLink, Location, Position, ProviderAnswer, Snapshot};
 use serde::{Deserialize, Serialize};
 
 use crate::attributes::Run;
-use crate::codec::{self, Decoder, Encoder};
+use crate::codec::{Decoder, Encoder};
 use crate::facts::{
-    AnswerKey, FactStore, FileKey, FileStamp, NameMatch, NewSnapshot, SnapshotUpdate, StampedFile,
+    AnswerKey, FactStore, FileKey, NameMatch, NewSnapshot, SnapshotUpdate, StampedFile,
     StoredAnswer, StoredFile, StoredMember, StoredSnapshot, StoredSymbol, SymbolFilter, SymbolKey,
     hex,
 };
+use crate::ids::IdPrefix;
 use crate::read::{Index, ReadMode, Root};
-use crate::{Change, Commit, Digest, FileRecord, SourceRecord, StoreError, Write, Writer};
+use crate::view::{SymbolAt, View};
+use crate::{Change, Commit, Digest, SourceRecord, StoreError, SymbolId, Write, Writer};
 
 /// How many answers wait in memory before they are written.
 const PENDING_ANSWERS: usize = 256;
-
-/// Values to file in the attribute table.
-type Attributes = Vec<(Digest, Vec<u8>)>;
-
-/// A file of a snapshot with its symbols' ids.
-type IdentifiedFile = (String, FileRecord, Vec<i64>);
 
 /// Navigation's store in one `index.ls`.
 pub struct Store {
@@ -48,15 +47,18 @@ pub struct Store {
 struct Opened {
     index: Index,
     runs: Vec<Run>,
-    length: u64,
+    identity: FileIdentity,
     catalog: Catalog,
 }
 
-/// What the store holds beside its sources' trees.
+/// What tells one version of the file from another: appends change its
+/// length, and compaction replaces it with a newer file.
+type FileIdentity = (u64, Option<SystemTime>);
+
+/// What the store holds beside its roots.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Catalog {
     next_snapshot: i64,
-    next_symbol: i64,
     snapshots: Vec<Entry>,
     /// The repositories a workspace mounts: each is read from its own
     /// store when asked, never copied into this one.
@@ -104,30 +106,6 @@ fn key(space: &str, parts: &[&[u8]]) -> Digest {
 
 fn catalog_key() -> Digest {
     key("catalog", &[])
-}
-
-fn stamp_key(snapshot_id: i64, path: &str) -> Digest {
-    key("stamp", &[&snapshot_id.to_le_bytes(), path.as_bytes()])
-}
-
-fn ids_key(path: &str, file: &Digest) -> Digest {
-    key("ids", &[path.as_bytes(), file])
-}
-
-fn identity_key(path: &str, qualified_name: &str, kind: SymbolKind, discriminator: u32) -> Digest {
-    key(
-        "identity",
-        &[
-            path.as_bytes(),
-            qualified_name.as_bytes(),
-            &[codec::kind_code(kind)],
-            &discriminator.to_le_bytes(),
-        ],
-    )
-}
-
-fn symbol_key(id: i64) -> Digest {
-    key("symbol", &[&id.to_le_bytes()])
 }
 
 fn answer_key(generation: u64, answer: &AnswerKey<'_>) -> Digest {
@@ -180,16 +158,11 @@ impl Store {
         })
     }
 
-    /// The store as it is now, reopened when another writer has grown it.
+    /// The store as it is now, reopened when another writer has changed it.
     fn opened(&self) -> Result<Arc<Opened>, StoreError> {
-        let length = std::fs::metadata(&self.path)
-            .map_err(|source| StoreError::Io {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
+        let identity = identity_of(&self.path)?;
         if let Ok(current) = self.current.read()
-            && current.length == length
+            && current.identity == identity
         {
             return Ok(Arc::clone(&current));
         }
@@ -214,8 +187,8 @@ impl Store {
     }
 
     /// Stores a snapshot and its files, replacing earlier snapshots of the
-    /// same root. A symbol still there under the same path, qualified name
-    /// and kind keeps its id.
+    /// same root. A symbol keeps its id while its path, qualified name,
+    /// kind and discriminator stay the same.
     pub fn replace_snapshot(&mut self, new: &NewSnapshot<'_>) -> Result<i64, StoreError> {
         let mut catalog = self.catalog()?;
         let replaced: Vec<String> = catalog
@@ -238,8 +211,7 @@ impl Store {
             generation: 0,
             exports: None,
         });
-        let written = self.file_changes(id, &mut catalog, new.files, &[])?;
-        let (changes, attributes) = written.split(&catalog)?;
+        let changes: Vec<Change> = new.files.iter().map(put).collect();
         let name = root_name(id);
         let source = source_of(new.snapshot, new.extractor_version);
         let commit = Commit {
@@ -250,12 +222,12 @@ impl Store {
         self.write(&Write {
             commit: Some((commit, &changes)),
             removed_roots: &replaced,
-            attributes: &attributes,
+            attributes: &[(catalog_key(), encode_catalog(&catalog)?)],
         })?;
         Ok(id)
     }
 
-    /// Updates a stored snapshot, rewriting only the files that changed.
+    /// Updates a stored snapshot, writing only the files that changed.
     /// When any file's contents changed, every cached answer for the
     /// snapshot is retired: an edit in one file can change the references
     /// to a symbol defined in another.
@@ -275,22 +247,27 @@ impl Store {
         entry.snapshot = update.snapshot.clone();
         entry.indexed_at_ns = update.indexed_at_ns;
         entry.uncommitted = sorted(update.uncommitted_paths);
-        let contents_changed = !update.changed.is_empty() || !update.removed.is_empty();
-        if contents_changed {
+        if !update.changed.is_empty() || !update.removed.is_empty() {
             entry.generation += 1;
         }
-        let extractor_version = entry.extractor_version.clone();
-        let mut changes =
-            self.file_changes(snapshot_id, &mut catalog, update.changed, update.restamped)?;
-        changes.changes.extend(
+        let source = source_of(update.snapshot, &entry.extractor_version);
+        let mut changes: Vec<Change> = update.changed.iter().map(put).collect();
+        changes.extend(
             update
                 .removed
                 .iter()
                 .map(|path| Change::Remove { path: path.clone() }),
         );
-        let (changes, attributes) = changes.split(&catalog)?;
+        changes.extend(
+            update
+                .restamped
+                .iter()
+                .map(|(path, stamp)| Change::Restamp {
+                    path: path.clone(),
+                    stamp: *stamp,
+                }),
+        );
         let name = root_name(snapshot_id);
-        let source = source_of(update.snapshot, &extractor_version);
         let commit = Commit {
             root: &name,
             parent: Some(&name),
@@ -299,44 +276,8 @@ impl Store {
         self.write(&Write {
             commit: Some((commit, &changes)),
             removed_roots: &[],
-            attributes: &attributes,
+            attributes: &[(catalog_key(), encode_catalog(&catalog)?)],
         })
-    }
-
-    /// The changes and attributes for files written to a snapshot, giving
-    /// new symbols the next ids.
-    fn file_changes(
-        &self,
-        snapshot_id: i64,
-        catalog: &mut Catalog,
-        files: &[StampedFile],
-        restamped: &[(String, FileStamp)],
-    ) -> Result<FileChanges, StoreError> {
-        let opened = self.opened()?;
-        let mut written = FileChanges::default();
-        for file in files {
-            let digest = codec::file_digest(&file.record);
-            let mut ids = Vec::with_capacity(file.record.symbols.len());
-            for symbol in &file.record.symbols {
-                ids.push(id_for(&opened, catalog, &mut written, &file.path, symbol)?);
-            }
-            written
-                .attributes
-                .push((ids_key(&file.path, &digest), encode_ids(&ids)));
-            written
-                .attributes
-                .push((stamp_key(snapshot_id, &file.path), encode_stamp(file.stamp)));
-            written.changes.push(Change::Put {
-                path: file.path.clone(),
-                record: file.record.clone(),
-            });
-        }
-        for (path, stamp) in restamped {
-            written
-                .attributes
-                .push((stamp_key(snapshot_id, path), encode_stamp(*stamp)));
-        }
-        Ok(written)
     }
 
     /// The stored snapshot of a directory, if it has been indexed.
@@ -511,19 +452,22 @@ impl Store {
     /// Every symbol in a snapshot, in the compact form used for searching
     /// in memory.
     pub fn symbol_keys(&self, snapshot_id: i64) -> Result<Vec<SymbolKey>, StoreError> {
+        let opened = self.opened()?;
+        let Some(view) = view_of(&opened, snapshot_id)? else {
+            return Ok(Vec::new());
+        };
         let mut keys = Vec::new();
-        for (file_id, (path, record, ids)) in
-            self.files_with_ids(snapshot_id)?.into_iter().enumerate()
-        {
-            let _ = path;
-            for (symbol, id) in record.symbols.iter().zip(ids) {
+        for (file_id, at) in view.files()?.into_iter().enumerate() {
+            let segment = view.segment(at.segment)?;
+            for symbol in view.row(at)?.symbols {
+                let row = segment.symbol(symbol)?;
                 keys.push(SymbolKey {
-                    id,
+                    id: row.id,
                     file_id: i64::try_from(file_id).unwrap_or(i64::MAX),
-                    qualified_name: symbol.qualified_name.clone(),
-                    name_length: symbol.name.len(),
-                    kind: symbol.kind,
-                    start_line: symbol.span.start.line,
+                    qualified_name: row.qualified_name.to_owned(),
+                    name_length: row.name.len(),
+                    kind: row.kind,
+                    start_line: row.span.start.line,
                 });
             }
         }
@@ -533,32 +477,60 @@ impl Store {
     /// Every file in a snapshot, as needed for searching its symbols.
     pub fn file_keys(&self, snapshot_id: i64) -> Result<Vec<FileKey>, StoreError> {
         let opened = self.opened()?;
-        let Some(root) = root_of(&opened, snapshot_id)? else {
+        let Some(view) = view_of(&opened, snapshot_id)? else {
             return Ok(Vec::new());
         };
-        Ok(opened
-            .index
-            .files(&root)?
+        view.files()?
             .into_iter()
             .enumerate()
-            .map(|(id, (path, record))| FileKey {
-                id: i64::try_from(id).unwrap_or(i64::MAX),
-                path,
-                language: record.language,
+            .map(|(id, at)| {
+                Ok(FileKey {
+                    id: i64::try_from(id).unwrap_or(i64::MAX),
+                    path: view.path(at)?.to_owned(),
+                    language: view.row(at)?.language,
+                })
             })
-            .collect())
+            .collect()
     }
 
     /// Symbols by id, in the order given, skipping any not in the snapshot.
     pub fn symbols_by_ids(
         &self,
         snapshot_id: i64,
-        ids: &[i64],
+        ids: &[SymbolId],
     ) -> Result<Vec<StoredSymbol>, StoreError> {
+        let opened = self.opened()?;
+        let Some(view) = view_of(&opened, snapshot_id)? else {
+            return Ok(Vec::new());
+        };
         let mut found = Vec::with_capacity(ids.len());
         for id in ids {
-            found.extend(self.symbol(snapshot_id, *id)?);
+            if let Some(at) = view.find_id(*id)? {
+                found.push(stored_symbol(&view, at)?);
+            }
         }
+        Ok(found)
+    }
+
+    /// The symbols whose ids begin with `prefix`, sorted by path and line.
+    pub fn symbols_with_id_prefix(
+        &self,
+        snapshot_id: i64,
+        prefix: IdPrefix,
+    ) -> Result<Vec<StoredSymbol>, StoreError> {
+        let opened = self.opened()?;
+        let Some(view) = view_of(&opened, snapshot_id)? else {
+            return Ok(Vec::new());
+        };
+        let mut found = view
+            .ids_with(prefix)?
+            .into_iter()
+            .map(|at| stored_symbol(&view, at))
+            .collect::<Result<Vec<_>, _>>()?;
+        found.sort_by(|left, right| {
+            (&left.path, left.symbol.span.start.line)
+                .cmp(&(&right.path, right.symbol.span.start.line))
+        });
         Ok(found)
     }
 
@@ -576,37 +548,6 @@ impl Store {
         })
     }
 
-    /// Each file of a snapshot with its symbols' ids, sorted by path.
-    fn files_with_ids(&self, snapshot_id: i64) -> Result<Vec<IdentifiedFile>, StoreError> {
-        let opened = self.opened()?;
-        let Some(root) = root_of(&opened, snapshot_id)? else {
-            return Ok(Vec::new());
-        };
-        let mut files = Vec::new();
-        for (path, record) in opened.index.files(&root)? {
-            let ids = ids_of(&opened, &path, &record)?;
-            files.push((path, record, ids));
-        }
-        Ok(files)
-    }
-
-    /// One file of a snapshot with its symbols' ids.
-    fn file_with_ids(
-        &self,
-        snapshot_id: i64,
-        path: &str,
-    ) -> Result<Option<(FileRecord, Vec<i64>)>, StoreError> {
-        let opened = self.opened()?;
-        let Some(root) = root_of(&opened, snapshot_id)? else {
-            return Ok(None);
-        };
-        let Some(record) = opened.index.file(&root, path)? else {
-            return Ok(None);
-        };
-        let ids = ids_of(&opened, path, &record)?;
-        Ok(Some((record, ids)))
-    }
-
     fn generation(&self, snapshot_id: i64) -> Result<u64, StoreError> {
         let catalog = self.catalog()?;
         Ok(entry(&catalog, snapshot_id).map_or(0, |entry| entry.generation))
@@ -617,7 +558,8 @@ impl Store {
         if let Some(bytes) = self.pending.get(&digest) {
             return Ok(Some(bytes.clone()));
         }
-        lookup(&*self.opened()?, &digest)
+        let opened = self.opened()?;
+        opened.index.attribute_in(&opened.runs, &digest)
     }
 
     fn save_answer(&mut self, key: &AnswerKey<'_>, bytes: Vec<u8>) -> Result<(), StoreError> {
@@ -643,63 +585,25 @@ impl Drop for Store {
     }
 }
 
-/// The id of a file's symbol: the one it had, or the next.
-fn id_for(
-    opened: &Opened,
-    catalog: &mut Catalog,
-    written: &mut FileChanges,
-    path: &str,
-    symbol: &crate::SymbolRecord,
-) -> Result<i64, StoreError> {
-    let identity = identity_key(
-        path,
-        &symbol.qualified_name,
-        symbol.kind,
-        symbol.discriminator,
-    );
-    if let Some(id) = written.identities.get(&identity) {
-        return decode_id(id);
+fn put(file: &StampedFile) -> Change {
+    Change::Put {
+        path: file.path.clone(),
+        record: file.record.clone(),
+        stamp: file.stamp,
     }
-    if let Some(bytes) = lookup(opened, &identity)? {
-        return decode_id(&bytes);
-    }
-    catalog.next_symbol += 1;
-    let id = catalog.next_symbol;
-    written
-        .identities
-        .insert(identity, id.to_le_bytes().to_vec());
-    let symbol_identity = encode_symbol_identity(
-        path,
-        symbol.discriminator,
-        &symbol.qualified_name,
-        symbol.kind,
-    );
-    written.attributes.push((symbol_key(id), symbol_identity));
-    Ok(id)
 }
 
-/// Files written by one store call: the tree's changes, the attributes
-/// beside them, and identities given ids by this call.
-#[derive(Default)]
-struct FileChanges {
-    changes: Vec<Change>,
-    attributes: Vec<(Digest, Vec<u8>)>,
-    identities: BTreeMap<Digest, Vec<u8>>,
-}
-
-impl FileChanges {
-    /// The tree's changes, and every attribute to write, the catalog last.
-    fn split(self, catalog: &Catalog) -> Result<(Vec<Change>, Attributes), StoreError> {
-        let mut attributes = self.attributes;
-        attributes.extend(self.identities);
-        attributes.push((catalog_key(), encode_catalog(catalog)?));
-        Ok((self.changes, attributes))
-    }
+fn identity_of(path: &Path) -> Result<FileIdentity, StoreError> {
+    let metadata = std::fs::metadata(path).map_err(|source| StoreError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    Ok((metadata.len(), metadata.modified().ok()))
 }
 
 fn open_current(path: &Path) -> Result<Opened, StoreError> {
+    let identity = identity_of(path)?;
     let index = Index::open(path, ReadMode::Mapped)?;
-    let length = index.length();
     let runs = index.runs()?;
     let catalog = match index.attribute_in(&runs, &catalog_key())? {
         Some(bytes) => serde_json::from_slice(&bytes).map_err(|_| StoreError::Damaged {
@@ -710,13 +614,9 @@ fn open_current(path: &Path) -> Result<Opened, StoreError> {
     Ok(Opened {
         index,
         runs,
-        length,
+        identity,
         catalog,
     })
-}
-
-fn lookup(opened: &Opened, key: &Digest) -> Result<Option<Vec<u8>>, StoreError> {
-    opened.index.attribute_in(&opened.runs, key)
 }
 
 fn root_of(opened: &Opened, snapshot_id: i64) -> Result<Option<Root>, StoreError> {
@@ -730,16 +630,11 @@ fn root_of(opened: &Opened, snapshot_id: i64) -> Result<Option<Root>, StoreError
     }
 }
 
-fn ids_of(opened: &Opened, path: &str, record: &FileRecord) -> Result<Vec<i64>, StoreError> {
-    let digest = codec::file_digest(record);
-    let Some(bytes) = lookup(opened, &ids_key(path, &digest))? else {
-        return Err(StoreError::Damaged {
-            what: "a file's symbol ids are missing",
-        });
+fn view_of(opened: &Opened, snapshot_id: i64) -> Result<Option<View<'_>>, StoreError> {
+    let Some(root) = root_of(opened, snapshot_id)? else {
+        return Ok(None);
     };
-    let mut decoder = Decoder::new(&bytes);
-    let count = decoder.count(8)?;
-    (0..count).map(|_| decoder.i64()).collect()
+    opened.index.view(&root).map(Some)
 }
 
 fn entry(catalog: &Catalog, snapshot_id: i64) -> Option<&Entry> {
@@ -826,113 +721,71 @@ fn encode_catalog(catalog: &Catalog) -> Result<Vec<u8>, StoreError> {
     })
 }
 
-fn encode_ids(ids: &[i64]) -> Vec<u8> {
-    let mut encoder = Encoder::default();
-    encoder.count(ids.len());
-    for id in ids {
-        encoder.i64(*id);
-    }
-    encoder.bytes
-}
-
-fn decode_id(bytes: &[u8]) -> Result<i64, StoreError> {
-    Decoder::new(bytes).i64()
-}
-
-fn encode_symbol_identity(
-    path: &str,
-    discriminator: u32,
-    qualified_name: &str,
-    kind: SymbolKind,
-) -> Vec<u8> {
-    let mut encoder = Encoder::default();
-    encoder.text(path);
-    encoder.text(qualified_name);
-    encoder.u8(codec::kind_code(kind));
-    encoder.u32(discriminator);
-    encoder.bytes
-}
-
-fn encode_stamp(stamp: FileStamp) -> Vec<u8> {
-    let mut encoder = Encoder::default();
-    encoder.u64(stamp.size_bytes);
-    encoder.i64(stamp.modified_ns);
-    encoder.i64(stamp.changed_ns);
-    encoder.u64(stamp.inode);
-    encoder.bytes
-}
-
-fn decode_stamp(bytes: &[u8]) -> Result<FileStamp, StoreError> {
-    let mut decoder = Decoder::new(bytes);
-    Ok(FileStamp {
-        size_bytes: decoder.u64()?,
-        modified_ns: decoder.i64()?,
-        changed_ns: decoder.i64()?,
-        inode: decoder.u64()?,
+fn stored_symbol(view: &View<'_>, at: SymbolAt) -> Result<StoredSymbol, StoreError> {
+    let segment = view.segment(at.segment)?;
+    let row = segment.symbol(at.symbol)?;
+    Ok(StoredSymbol {
+        id: row.id,
+        path: segment.path(row.file)?.to_owned(),
+        language: segment.file(row.file)?.language,
+        symbol: lemma_model::Symbol {
+            name: row.name.to_owned(),
+            qualified_name: row.qualified_name.to_owned(),
+            kind: row.kind,
+            span: row.span,
+            name_span: row.name_span,
+        },
     })
 }
 
-fn stored_symbol(path: &str, record: &FileRecord, position: usize, id: i64) -> StoredSymbol {
-    let symbol = &record.symbols[position];
-    StoredSymbol {
-        id,
-        path: path.to_owned(),
-        language: record.language,
-        symbol: lemma_model::Symbol {
-            name: symbol.name.clone(),
-            qualified_name: symbol.qualified_name.clone(),
-            kind: symbol.kind,
-            span: symbol.span,
-            name_span: symbol.name_span,
-        },
+/// A symbol a search found, with what ranks it: exact names first, then
+/// shorter qualified names, then by path and line.
+struct Ranked<'v> {
+    is_exact: bool,
+    qualified_length: usize,
+    path: &'v str,
+    line: u32,
+    at: SymbolAt,
+}
+
+impl Ranked<'_> {
+    fn order(&self) -> (bool, usize, &str, u32, SymbolAt) {
+        (
+            !self.is_exact,
+            self.qualified_length,
+            self.path,
+            self.line,
+            self.at,
+        )
     }
 }
 
-fn matches(
+/// The candidate at `at`, if it passes the filter's kind, language and path.
+fn ranked<'v>(
+    view: &'v View<'_>,
     filter: &SymbolFilter,
-    path: &str,
-    record: &FileRecord,
-    symbol: &crate::SymbolRecord,
-) -> bool {
-    let named = match filter.name_match {
-        NameMatch::Exact => symbol.name == filter.text || symbol.qualified_name == filter.text,
-        NameMatch::Contains => symbol
-            .qualified_name
-            .to_ascii_lowercase()
-            .contains(&filter.text.to_ascii_lowercase()),
-    };
-    named
-        && filter.kind.is_none_or(|kind| kind == symbol.kind)
-        && filter
-            .language
-            .is_none_or(|language| language == record.language)
+    at: SymbolAt,
+) -> Result<Option<Ranked<'v>>, StoreError> {
+    let segment = view.segment(at.segment)?;
+    let row = segment.symbol(at.symbol)?;
+    let path = segment.path(row.file)?;
+    let language = segment.file(row.file)?.language;
+    let passes = filter.kind.is_none_or(|kind| kind == row.kind)
+        && filter.language.is_none_or(|wanted| wanted == language)
         && filter
             .path_contains
             .as_deref()
-            .is_none_or(|text| path.contains(text))
-}
-
-/// The symbols of one file a filter matches, each marked by whether its
-/// name matches exactly.
-fn matching_symbols(
-    filter: &SymbolFilter,
-    path: &str,
-    record: &FileRecord,
-    ids: &[i64],
-) -> Vec<(bool, StoredSymbol)> {
-    record
-        .symbols
-        .iter()
-        .enumerate()
-        .filter(|(_, symbol)| matches(filter, path, record, symbol))
-        .map(|(position, symbol)| {
-            let is_exact = symbol.name == filter.text || symbol.qualified_name == filter.text;
-            (
-                is_exact,
-                stored_symbol(path, record, position, ids[position]),
-            )
-        })
-        .collect()
+            .is_none_or(|text| path.contains(text));
+    if !passes {
+        return Ok(None);
+    }
+    Ok(Some(Ranked {
+        is_exact: row.name == filter.text || row.qualified_name == filter.text,
+        qualified_length: row.qualified_name.len(),
+        path,
+        line: row.span.start.line,
+        at,
+    }))
 }
 
 const FOUND: u8 = 0;
@@ -1012,25 +865,23 @@ fn read_locations(decoder: &mut Decoder<'_>) -> Result<Vec<Location>, StoreError
 impl FactStore for Store {
     fn files(&self, snapshot_id: i64) -> Result<Vec<StoredFile>, StoreError> {
         let opened = self.opened()?;
-        let Some(root) = root_of(&opened, snapshot_id)? else {
+        let Some(view) = view_of(&opened, snapshot_id)? else {
             return Ok(Vec::new());
         };
-        let mut files = Vec::new();
-        for (path, record) in opened.index.files(&root)? {
-            let stamp = match lookup(&opened, &stamp_key(snapshot_id, &path))? {
-                Some(bytes) => decode_stamp(&bytes)?,
-                None => FileStamp::default(),
-            };
-            files.push(StoredFile {
-                content_hash: hex(&record.blob),
-                language: record.language,
-                has_syntax_errors: record.has_syntax_errors,
-                symbol_count: record.symbols.len(),
-                stamp,
-                path,
-            });
-        }
-        Ok(files)
+        view.files()?
+            .into_iter()
+            .map(|at| {
+                let row = view.row(at)?;
+                Ok(StoredFile {
+                    path: view.path(at)?.to_owned(),
+                    language: row.language,
+                    content_hash: hex(&row.blob),
+                    has_syntax_errors: row.has_syntax_errors,
+                    symbol_count: row.symbols.len(),
+                    stamp: row.stamp,
+                })
+            })
+            .collect()
     }
 
     fn find_symbols(
@@ -1038,45 +889,39 @@ impl FactStore for Store {
         snapshot_id: i64,
         filter: &SymbolFilter,
     ) -> Result<Vec<StoredSymbol>, StoreError> {
-        let mut found: Vec<(bool, StoredSymbol)> = Vec::new();
-        for (path, record, ids) in self.files_with_ids(snapshot_id)? {
-            found.extend(matching_symbols(filter, &path, &record, &ids));
+        let opened = self.opened()?;
+        let Some(view) = view_of(&opened, snapshot_id)? else {
+            return Ok(Vec::new());
+        };
+        let candidates = match filter.name_match {
+            NameMatch::Exact => view.exactly_named(&filter.text)?,
+            NameMatch::Contains => view.containing(&filter.text)?,
+        };
+        let mut found = Vec::new();
+        for at in candidates {
+            found.extend(ranked(&view, filter, at)?);
         }
-        found.sort_by(|(left_exact, left), (right_exact, right)| {
-            right_exact
-                .cmp(left_exact)
-                .then(
-                    left.symbol
-                        .qualified_name
-                        .len()
-                        .cmp(&right.symbol.qualified_name.len()),
-                )
-                .then(left.path.cmp(&right.path))
-                .then(
-                    left.symbol
-                        .span
-                        .start
-                        .line
-                        .cmp(&right.symbol.span.start.line),
-                )
-        });
+        found.sort_by(|left, right| left.order().cmp(&right.order()));
         found.truncate(filter.limit as usize);
-        Ok(found.into_iter().map(|(_, symbol)| symbol).collect())
+        found
+            .into_iter()
+            .map(|ranked| stored_symbol(&view, ranked.at))
+            .collect()
     }
 
-    fn symbol(&self, snapshot_id: i64, symbol_id: i64) -> Result<Option<StoredSymbol>, StoreError> {
-        let Some(bytes) = lookup(&*self.opened()?, &symbol_key(symbol_id))? else {
+    fn symbol(
+        &self,
+        snapshot_id: i64,
+        symbol_id: SymbolId,
+    ) -> Result<Option<StoredSymbol>, StoreError> {
+        let opened = self.opened()?;
+        let Some(view) = view_of(&opened, snapshot_id)? else {
             return Ok(None);
         };
-        let mut decoder = Decoder::new(&bytes);
-        let path = decoder.text()?.to_owned();
-        let Some((record, ids)) = self.file_with_ids(snapshot_id, &path)? else {
+        let Some(at) = view.find_id(symbol_id)? else {
             return Ok(None);
         };
-        Ok(ids
-            .iter()
-            .position(|id| *id == symbol_id)
-            .map(|position| stored_symbol(&path, &record, position, symbol_id)))
+        stored_symbol(&view, at).map(Some)
     }
 
     fn symbols_in_file(
@@ -1084,12 +929,15 @@ impl FactStore for Store {
         snapshot_id: i64,
         path: &str,
     ) -> Result<Vec<StoredSymbol>, StoreError> {
-        let Some((record, ids)) = self.file_with_ids(snapshot_id, path)? else {
+        let opened = self.opened()?;
+        let Some(view) = view_of(&opened, snapshot_id)? else {
             return Ok(Vec::new());
         };
-        let mut symbols: Vec<StoredSymbol> = (0..record.symbols.len())
-            .map(|position| stored_symbol(path, &record, position, ids[position]))
-            .collect();
+        let mut symbols = view
+            .symbols_in(path)?
+            .into_iter()
+            .map(|at| stored_symbol(&view, at))
+            .collect::<Result<Vec<_>, _>>()?;
         symbols.sort_by_key(|symbol| {
             (
                 symbol.symbol.span.start.line,
@@ -1116,9 +964,14 @@ impl FactStore for Store {
     }
 
     fn file_hash(&self, snapshot_id: i64, path: &str) -> Result<Option<String>, StoreError> {
-        Ok(self
-            .file_with_ids(snapshot_id, path)?
-            .map(|(record, _)| hex(&record.blob)))
+        let opened = self.opened()?;
+        let Some(view) = view_of(&opened, snapshot_id)? else {
+            return Ok(None);
+        };
+        let Some(at) = view.locate(path)? else {
+            return Ok(None);
+        };
+        Ok(Some(hex(&view.row(at)?.blob)))
     }
 
     fn enclosing_symbol(
@@ -1193,8 +1046,11 @@ impl FactStore for Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facts::Question;
-    use lemma_model::{ExportKind, FoundBy, IndexedFile, Language, LocationQuery, Span, Symbol};
+    use crate::FileRecord;
+    use crate::facts::{FileStamp, Question};
+    use lemma_model::{
+        ExportKind, FoundBy, IndexedFile, Language, LocationQuery, Span, Symbol, SymbolKind,
+    };
 
     /// A file's record as indexing would give it, with a digest standing in
     /// for its contents.
@@ -1373,7 +1229,7 @@ mod tests {
         key
     }
 
-    fn symbol_id(store: &Store, snapshot_id: i64, name: &str) -> i64 {
+    fn symbol_id(store: &Store, snapshot_id: i64, name: &str) -> SymbolId {
         store
             .find_symbols(snapshot_id, &filter(name, NameMatch::Exact))
             .unwrap()[0]

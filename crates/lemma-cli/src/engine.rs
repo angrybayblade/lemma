@@ -26,7 +26,7 @@ use lemma_query::{
     SymbolSearch, SymbolSelector, UsesAnswer, WarmUp,
 };
 use lemma_store::{
-    FactStore, NameMatch, Store, StoreError, StoredMember, StoredSnapshot, StoredSymbol,
+    FactStore, IdPrefix, NameMatch, Store, StoreError, StoredMember, StoredSnapshot, StoredSymbol,
     SymbolFilter,
 };
 
@@ -1768,9 +1768,9 @@ fn select_symbol(
     if let Some(address) = addresses::as_address(symbol) {
         return addresses::resolve_export(store, snapshot, &address);
     }
-    // A member's ids are its own index's, so `#billing:607` copied from
-    // the workspace names the same symbol inside billing, and nothing in
-    // another repository, where 607 is some other symbol.
+    // A member's ids are its own index's, so `#billing:9f3c0a12` copied
+    // from the workspace names the same symbol inside billing, and nothing
+    // in another repository.
     if let Some((repository, id)) = qualified_id(symbol) {
         let root = Path::new(&snapshot.snapshot.root);
         let here = root
@@ -1779,25 +1779,17 @@ fn select_symbol(
             .unwrap_or_default();
         if !is_same_repository(&repository, &here) && !is_composed_as(root, &repository) {
             bail!(
-                "`{symbol}` is an id in {repository}, but this index is of `{here}`: ids are \
-                 numbered per repository, so ask from the workspace or inside {repository}, or \
-                 use an id this repository's `lemma symbols` shows"
+                "`{symbol}` is an id in {repository}, but this index is of `{here}`: ask from \
+                 the workspace or inside {repository}, or use an id this repository's \
+                 `lemma symbols` shows"
             );
         }
         // An id names one symbol already: a filter given with it is about
         // something else, such as where its uses are, and must not hide it.
-        let found = store.symbol(snapshot.id, id)?;
-        return Ok(found.map_or(SymbolResolution::Unresolved, SymbolResolution::Resolved));
+        return symbols_with_id(store, snapshot, symbol, &id);
     }
     if let Some(id) = symbol.strip_prefix('#') {
-        let id: i64 = id.parse().with_context(|| {
-            format!(
-                "`{symbol}` is not a symbol id: ids are written `#607`, or `#billing:607` for a \
-                 workspace member"
-            )
-        })?;
-        let found = store.symbol(snapshot.id, id)?;
-        return Ok(found.map_or(SymbolResolution::Unresolved, SymbolResolution::Resolved));
+        return symbols_with_id(store, snapshot, symbol, id);
     }
     let prefers_implementable = filters.prefers_implementable;
     let selector = SymbolSelector {
@@ -1960,12 +1952,35 @@ fn member_qualified_name(members: &[StoredMember], text: &str) -> Option<(String
 
 /// A repository-qualified symbol id: `#billing:607`, also written
 /// `#billing:#607` or `#billing#607`. The repository keeps its `#`.
-fn qualified_id(text: &str) -> Option<(String, i64)> {
+fn qualified_id(text: &str) -> Option<(String, String)> {
     let rest = text.strip_prefix('#')?;
     let split = rest.find([':', '#'])?;
     let (name, id) = (&rest[..split], &rest[split + 1..]);
-    let id = id.strip_prefix('#').unwrap_or(id).parse().ok()?;
-    (!name.is_empty()).then(|| (format!("#{name}"), id))
+    let id = id.strip_prefix('#').unwrap_or(id);
+    IdPrefix::parse(id)?;
+    (!name.is_empty()).then(|| (format!("#{name}"), id.to_owned()))
+}
+
+/// The symbols whose ids begin with the digits `id`, as `symbol` wrote them.
+fn symbols_with_id(
+    store: &Store,
+    snapshot: &StoredSnapshot,
+    symbol: &str,
+    id: &str,
+) -> anyhow::Result<SymbolResolution> {
+    let Some(prefix) = IdPrefix::parse(id) else {
+        bail!(
+            "`{symbol}` is not a symbol id: ids are written as `lemma symbols` shows them, \
+             such as `#9f3c0a12d4e5b6a7`, or at least their first six digits, and \
+             `#billing:9f3c0a12` for a workspace member"
+        );
+    };
+    let mut found = store.symbols_with_id_prefix(snapshot.id, prefix)?;
+    Ok(match found.len() {
+        0 => SymbolResolution::Unresolved,
+        1 => SymbolResolution::Resolved(found.remove(0)),
+        _ => SymbolResolution::Ambiguous(found),
+    })
 }
 
 fn drawing_for(format: GraphDrawing) -> output::Drawing {
@@ -2243,6 +2258,8 @@ fn inode_of(_path: &Path) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use lemma_store::SymbolId;
+
     use super::*;
 
     #[test]
@@ -2274,14 +2291,14 @@ mod tests {
         assert_eq!(shortened("one\ntwo"), "one\ntwo");
     }
 
-    fn candidate(id: i64, name: &str, kind: SymbolKind) -> StoredSymbol {
+    fn candidate(id: u128, name: &str, kind: SymbolKind) -> StoredSymbol {
         let position = Position { line: 0, column: 0 };
         let span = lemma_model::Span {
             start: position,
             end: position,
         };
         StoredSymbol {
-            id,
+            id: SymbolId::from(id),
             path: "store.go".to_owned(),
             language: Language::Go,
             symbol: lemma_model::Symbol {
@@ -2332,7 +2349,8 @@ mod tests {
             prefers_implementable: false,
         };
 
-        let found = select_symbol(&store, &stored, &format!("#{id}"), filters).unwrap();
+        let short = &id.short()[..8];
+        let found = select_symbol(&store, &stored, &format!("#{short}"), filters).unwrap();
 
         assert!(matches!(found, SymbolResolution::Resolved(symbol) if symbol.id == id));
     }
@@ -2366,7 +2384,9 @@ mod tests {
 
         let narrowed = narrow_to_implementable(ambiguous);
 
-        assert!(matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == 1));
+        assert!(
+            matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == SymbolId::from(1))
+        );
     }
 
     #[test]
@@ -2385,7 +2405,9 @@ mod tests {
 
         let narrowed = narrow_to_implementable(ambiguous);
 
-        assert!(matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == 2));
+        assert!(
+            matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == SymbolId::from(2))
+        );
     }
 
     #[test]
@@ -2416,16 +2438,20 @@ mod tests {
 
     #[test]
     fn repository_qualified_ids_are_read_in_every_written_form() {
-        let forms = ["#billing:607", "#billing:#607", "#billing#607"];
+        let forms = [
+            "#billing:9f3c0a12",
+            "#billing:#9f3c0a12",
+            "#billing#9f3c0a12",
+        ];
 
-        let read: Vec<Option<(String, i64)>> =
+        let read: Vec<Option<(String, String)>> =
             forms.iter().map(|form| qualified_id(form)).collect();
 
         assert!(
             read.iter()
-                .all(|id| *id == Some(("#billing".to_owned(), 607)))
+                .all(|id| *id == Some(("#billing".to_owned(), "9f3c0a12".to_owned())))
         );
-        assert_eq!(qualified_id("#607"), None);
+        assert_eq!(qualified_id("#9f3c0a12"), None);
         assert_eq!(qualified_id("#billing:services.api.create"), None);
     }
 

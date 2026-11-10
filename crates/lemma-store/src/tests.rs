@@ -6,7 +6,7 @@ use lemma_model::Language;
 use lemma_syntax::Extractor;
 
 use crate::{
-    Change, Commit, Index, ReadMode, SourceRecord, StoreError, SymbolChangeKind, Writer,
+    Change, Commit, FileStamp, Index, ReadMode, SourceRecord, StoreError, SymbolChangeKind, Writer,
     changed_symbols, changes_on_disk, read_file,
 };
 
@@ -31,6 +31,7 @@ fn put(path: &str, code: &str) -> Change {
     Change::Put {
         path: path.to_owned(),
         record,
+        stamp: FileStamp::default(),
     }
 }
 
@@ -74,7 +75,7 @@ fn reopening_gives_the_files_that_were_committed() {
         assert_eq!(root.source, source());
         assert_eq!(files.len(), 3);
         for change in &changes {
-            let Change::Put { path, record } = change else {
+            let Change::Put { path, record, .. } = change else {
                 panic!("the fixture only puts");
             };
             assert_eq!(&files[path], record);
@@ -276,12 +277,34 @@ fn a_store_interrupted_while_being_created_has_no_commits() {
 }
 
 #[test]
-fn a_damaged_file_node_is_an_error() {
+fn damage_since_the_last_flush_ends_the_store_before_it() {
     let directory = tempfile::tempdir().unwrap();
     let store = store_in(&directory);
     commit(&store, "head", None, &first_files());
+    let complete = std::fs::read(&store).unwrap().len();
+    let edit = [put("api/routes.py", "def create():\n    return 2\n")];
+    commit(&store, "work", Some("head"), &edit);
     let mut bytes = std::fs::read(&store).unwrap();
-    bytes[30] ^= 0xff;
+    bytes[complete + 20] ^= 0xff;
+    std::fs::write(&store, bytes).unwrap();
+
+    for mode in MODES {
+        let index = Index::open(&store, mode).unwrap();
+        assert_eq!(index.root_names().unwrap(), ["head"]);
+    }
+}
+
+#[test]
+fn a_flushed_commit_is_trusted_and_damage_that_breaks_it_is_an_error() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store_in(&directory);
+    commit(&store, "head", None, &first_files());
+    Writer::open(&store).unwrap().checkpoint().unwrap();
+    let mut bytes = std::fs::read(&store).unwrap();
+    // The segment's first section offset, just past its node header and
+    // four counts: pointing it outside the segment breaks its shape.
+    bytes[8 + 5 + 16] = 0xff;
+    bytes[8 + 5 + 19] = 0x7f;
     std::fs::write(&store, bytes).unwrap();
 
     for mode in MODES {
@@ -292,6 +315,111 @@ fn a_damaged_file_node_is_an_error() {
             Err(StoreError::Damaged { .. })
         ));
     }
+}
+
+#[test]
+fn deltas_past_the_limit_merge_without_changing_what_is_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store_in(&directory);
+    let mut changes = first_files();
+    for number in 0..40 {
+        changes.push(put(
+            &format!("jobs/job{number}.py"),
+            "def run():\n    return 1\n",
+        ));
+    }
+    commit(&store, "head", None, &changes);
+    for round in 0..30 {
+        let edit = [put(
+            &format!("jobs/job{round}.py"),
+            &format!("def run():\n    return {round}\n"),
+        )];
+        commit(&store, "head", Some("head"), &edit);
+    }
+
+    let index = Index::open(&store, ReadMode::Mapped).unwrap();
+    let head = index.root("head").unwrap();
+    assert!(head.segments.len() <= 9, "{} segments", head.segments.len());
+    let files = index.files(&head).unwrap();
+    assert_eq!(files.len(), 43);
+    let job = index.file(&head, "jobs/job29.py").unwrap().unwrap();
+    let fresh = put("jobs/job29.py", "def run():\n    return 29\n");
+    let Change::Put { record, .. } = fresh else {
+        panic!("put makes a put");
+    };
+    assert_eq!(job, record);
+}
+
+#[test]
+fn the_same_files_give_the_same_digest_however_committed() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store_in(&directory);
+    let edit = [put("api/routes.py", "def create():\n    return 2\n")];
+    commit(&store, "head", None, &first_files());
+    commit(&store, "work", Some("head"), &edit);
+    let mut fresh = first_files();
+    fresh[0] = edit[0].clone();
+    commit(&store, "fresh", None, &fresh);
+
+    let index = Index::open(&store, ReadMode::Mapped).unwrap();
+
+    assert_eq!(
+        index.root("work").unwrap().digest(),
+        index.root("fresh").unwrap().digest()
+    );
+}
+
+#[test]
+fn compaction_keeps_what_the_roots_and_runs_hold() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store_in(&directory);
+    commit(&store, "head", None, &first_files());
+    commit(&store, "old", None, &first_files());
+    let mut writer = Writer::open(&store).unwrap();
+    writer
+        .put_attributes(&[([1; 32], b"one".to_vec())])
+        .unwrap();
+    writer
+        .put_attributes(&[([1; 32], b"two".to_vec())])
+        .unwrap();
+    writer
+        .write(&crate::Write {
+            commit: None,
+            removed_roots: &["old".to_owned()],
+            attributes: &[],
+        })
+        .unwrap();
+    let before = std::fs::metadata(&store).unwrap().len();
+
+    writer.compact().unwrap();
+    drop(writer);
+
+    let after = std::fs::metadata(&store).unwrap().len();
+    assert!(after < before, "{after} of {before} bytes");
+    let index = Index::open(&store, ReadMode::Mapped).unwrap();
+    assert_eq!(index.root_names().unwrap(), ["head"]);
+    assert_eq!(index.files(&index.root("head").unwrap()).unwrap().len(), 3);
+    let runs = index.runs().unwrap();
+    assert_eq!(
+        index.attribute_in(&runs, &[1; 32]).unwrap(),
+        Some(b"two".to_vec())
+    );
+}
+
+#[test]
+fn a_store_of_another_layout_is_started_again_by_its_writer() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store_in(&directory);
+    std::fs::write(&store, b"LMLS\x01\x00\x00\x00old bytes").unwrap();
+
+    assert!(matches!(
+        Index::open(&store, ReadMode::Mapped),
+        Err(StoreError::UnsupportedVersion { .. })
+    ));
+    commit(&store, "head", None, &first_files());
+
+    let index = Index::open(&store, ReadMode::Mapped).unwrap();
+    assert_eq!(index.root_names().unwrap(), ["head"]);
 }
 
 #[test]

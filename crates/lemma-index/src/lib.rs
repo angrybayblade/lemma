@@ -735,7 +735,7 @@ mod tests {
         }
     }
 
-    fn symbol_ids(store: &Store, snapshot_id: i64, name: &str) -> Vec<i64> {
+    fn symbol_ids(store: &Store, snapshot_id: i64, name: &str) -> Vec<lemma_store::SymbolId> {
         store
             .find_symbols(snapshot_id, &exact(name))
             .unwrap()
@@ -765,7 +765,7 @@ mod tests {
         );
         assert_eq!(
             symbol_ids(&store, second.snapshot_id, "delete_session"),
-            Vec::<i64>::new()
+            Vec::<lemma_store::SymbolId>::new()
         );
         assert_eq!(
             symbol_ids(&store, second.snapshot_id, "close_session").len(),
@@ -796,7 +796,7 @@ mod tests {
         assert_eq!(symbol_ids(&store, second.snapshot_id, "kept"), kept_ids);
         assert_eq!(
             symbol_ids(&store, second.snapshot_id, "dropped"),
-            Vec::<i64>::new()
+            Vec::<lemma_store::SymbolId>::new()
         );
         assert_eq!(symbol_ids(&store, second.snapshot_id, "added").len(), 1);
     }
@@ -813,7 +813,7 @@ mod tests {
         assert!(!summary.files_by_language.contains_key(&Language::Go));
         assert_eq!(
             symbol_ids(&store, summary.snapshot_id, "Delete"),
-            Vec::<i64>::new()
+            Vec::<lemma_store::SymbolId>::new()
         );
     }
 

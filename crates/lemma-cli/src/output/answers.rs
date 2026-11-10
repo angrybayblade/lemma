@@ -505,7 +505,7 @@ mod tests {
             end: position,
         };
         StoredSymbol {
-            id: i64::from(line),
+            id: lemma_store::SymbolId::from(u128::from(line)),
             path: "server.go".to_owned(),
             language: Language::Go,
             symbol: Symbol {

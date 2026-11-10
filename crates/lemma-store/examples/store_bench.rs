@@ -109,6 +109,7 @@ fn main() -> Result<(), Failure> {
     let change = Change::Put {
         path: path.clone(),
         record: edited(record),
+        stamp: lemma_store::FileStamp::default(),
     };
     let work = Commit {
         root: "work",

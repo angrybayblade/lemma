@@ -887,8 +887,9 @@ fn words(line: &str) -> Vec<(usize, &str)> {
 mod tests {
     use super::*;
     use lemma_model::{Language, Span, Symbol};
+    use lemma_store::SymbolId;
 
-    fn symbol(id: i64, qualified: &str, path: &str, lines: (u32, u32)) -> StoredSymbol {
+    fn symbol(id: u128, qualified: &str, path: &str, lines: (u32, u32)) -> StoredSymbol {
         let name = qualified.rsplit('.').next().unwrap_or(qualified);
         let start = Position {
             line: lines.0,
@@ -899,7 +900,7 @@ mod tests {
             column: 0,
         };
         StoredSymbol {
-            id,
+            id: SymbolId::from(id),
             path: path.to_owned(),
             language: Language::Python,
             symbol: Symbol {
@@ -920,25 +921,31 @@ mod tests {
 
     impl Neighbours for Fixed {
         fn callers(&mut self, of: &StoredSymbol) -> Result<Found, QueryError> {
-            let callers: &[i64] = match of.id {
-                1 => &[2],
-                2 => &[3],
-                _ => &[],
+            let callers: &[u128] = if of.id == SymbolId::from(1) {
+                &[2]
+            } else if of.id == SymbolId::from(2) {
+                &[3]
+            } else {
+                &[]
             };
             Ok(self.found(callers))
         }
 
         fn callees(&mut self, of: &StoredSymbol) -> Result<Found, QueryError> {
-            Ok(self.found(if of.id == 1 { &[4] } else { &[] }))
+            Ok(self.found(if of.id == SymbolId::from(1) {
+                &[4]
+            } else {
+                &[]
+            }))
         }
     }
 
     impl Fixed {
-        fn found(&self, ids: &[i64]) -> Found {
+        fn found(&self, ids: &[u128]) -> Found {
             let neighbours = self
                 .symbols
                 .iter()
-                .filter(|symbol| ids.contains(&symbol.id))
+                .filter(|symbol| ids.iter().any(|id| SymbolId::from(*id) == symbol.id))
                 .cloned()
                 .map(Neighbour::Symbol)
                 .collect();
@@ -1014,21 +1021,10 @@ mod tests {
                 .map(|relationship| (relationship.from.clone(), relationship.to.clone()))
                 .collect()
         };
-        assert_eq!(
-            pairs(&shallow),
-            [
-                ("symbol:1".to_owned(), "symbol:4".to_owned()),
-                ("symbol:2".to_owned(), "symbol:1".to_owned()),
-            ]
-        );
-        assert_eq!(
-            pairs(&deep),
-            [
-                ("symbol:2".to_owned(), "symbol:1".to_owned()),
-                ("symbol:3".to_owned(), "symbol:2".to_owned()),
-            ]
-        );
-        assert_eq!(shallow.root.as_deref(), Some("symbol:1"));
+        let node = |id: u128| format!("symbol:{}", SymbolId::from(id));
+        assert_eq!(pairs(&shallow), [(node(1), node(4)), (node(2), node(1))]);
+        assert_eq!(pairs(&deep), [(node(2), node(1)), (node(3), node(2))]);
+        assert_eq!(shallow.root, Some(node(1)));
     }
 
     #[test]

@@ -16,7 +16,7 @@ Lemma indexes only definitions: functions, methods, classes, interfaces, structs
 
 ## `matches N symbols`
 
-Several definitions share the name. Narrow it with the qualified name (`Router.delete`), `--language`, `--kind`, `--path`, or pick one by id. In a workspace, pass the id with its repository, as listed (`#billing:412`).
+Several definitions share the name. Narrow it with the qualified name (`Router.delete`), `--language`, `--kind`, `--path`, or pick one by id. In a workspace, pass the id with its repository, as listed (`#billing:31919f572763121e`).
 
 ## `changed since it was indexed`
 

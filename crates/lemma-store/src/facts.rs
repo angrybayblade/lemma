@@ -5,7 +5,7 @@ use lemma_model::{
     Language, Location, LocationQuery, Position, ProviderAnswer, Snapshot, Symbol, SymbolKind,
 };
 
-use crate::{Digest, FileRecord, StoreError};
+use crate::{Digest, FileRecord, StoreError, SymbolId};
 
 /// A snapshot as stored, with its row id.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,8 +24,8 @@ pub struct StoredSnapshot {
 /// A symbol as stored, with the file it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredSymbol {
-    /// Row id, valid only within this database and snapshot.
-    pub id: i64,
+    /// Its id, the same in any store; see [`SymbolId`].
+    pub id: SymbolId,
     /// Path relative to the snapshot root.
     pub path: String,
     /// Language of the containing file.
@@ -146,9 +146,9 @@ pub struct SnapshotUpdate<'a> {
 /// Just enough of a symbol to search and rank it in memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolKey {
-    /// Row id.
-    pub id: i64,
-    /// Row id of the file the symbol is in.
+    /// Its id.
+    pub id: SymbolId,
+    /// The position of its file in the snapshot's files, sorted by path.
     pub file_id: i64,
     /// The symbol's qualified name; its name is the last part.
     pub qualified_name: String,
@@ -163,7 +163,7 @@ pub struct SymbolKey {
 /// A file as needed for searching its symbols.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileKey {
-    /// Row id.
+    /// Its position in the snapshot's files, sorted by path.
     pub id: i64,
     /// Path relative to the snapshot root.
     pub path: String,
@@ -263,7 +263,11 @@ pub trait FactStore {
     ) -> Result<Vec<StoredSymbol>, StoreError>;
 
     /// One symbol by id, if it belongs to the snapshot.
-    fn symbol(&self, snapshot_id: i64, symbol_id: i64) -> Result<Option<StoredSymbol>, StoreError>;
+    fn symbol(
+        &self,
+        snapshot_id: i64,
+        symbol_id: SymbolId,
+    ) -> Result<Option<StoredSymbol>, StoreError>;
 
     /// Every symbol defined in a file, in source order.
     fn symbols_in_file(

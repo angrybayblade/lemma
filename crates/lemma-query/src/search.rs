@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use lemma_model::{Language, SymbolKind};
-use lemma_store::{Store, StoreError, StoredSnapshot, StoredSymbol, SymbolFilter};
+use lemma_store::{Store, StoreError, StoredSnapshot, StoredSymbol, SymbolFilter, SymbolId};
 use memchr::memmem;
 
 /// Separates names in the search buffer. Names never contain it.
@@ -29,7 +29,7 @@ pub struct SymbolSearch {
 }
 
 struct Entry {
-    id: i64,
+    id: SymbolId,
     qualified_name: String,
     name_length: usize,
     kind: SymbolKind,
@@ -115,7 +115,7 @@ impl SymbolSearch {
             matches.truncate(limit);
         }
         matches.sort_by(by_rank);
-        let ids: Vec<i64> = matches.iter().map(|entry| entry.id).collect();
+        let ids: Vec<SymbolId> = matches.iter().map(|entry| entry.id).collect();
         store.symbols_by_ids(self.snapshot_id, &ids)
     }
 
