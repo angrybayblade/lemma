@@ -71,6 +71,15 @@ pub struct Extraction {
     pub has_syntax_errors: bool,
 }
 
+/// One file parsed, with its definitions. The tree is kept so a caller that
+/// reads more from the file need not parse it again.
+pub struct Parsed {
+    /// The syntax tree.
+    pub tree: tree_sitter::Tree,
+    /// The definitions found in it.
+    pub extraction: Extraction,
+}
+
 /// One file's definitions and what each is made of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outline {
@@ -106,15 +115,21 @@ impl Extractor {
 
     /// Extracts the definitions from one file's source.
     pub fn extract(&mut self, language: Language, source: &str) -> Result<Extraction, SyntaxError> {
+        Ok(self.parse(language, source)?.extraction)
+    }
+
+    /// Parses one file's source and extracts its definitions, keeping the
+    /// tree for whatever else is read from the file.
+    pub fn parse(&mut self, language: Language, source: &str) -> Result<Parsed, SyntaxError> {
         let grammar = self.grammar_mut(language);
         let tree = repair::parse(&mut grammar.parser, language, source)
             .ok_or(SyntaxError::ParseAborted { language })?;
-
         let definitions = grammar.find_definitions(tree.root_node(), source);
-        Ok(Extraction {
+        let extraction = Extraction {
             symbols: nesting::into_symbols(definitions),
             has_syntax_errors: tree.root_node().has_error(),
-        })
+        };
+        Ok(Parsed { tree, extraction })
     }
 
     /// Extracts one file's definitions with what each is made of, from a

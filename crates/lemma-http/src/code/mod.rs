@@ -19,7 +19,7 @@ pub use zod::{SchemaUnion, SchemaUse};
 
 use lemma_model::{Language, SymbolKind};
 use lemma_syntax::Extractor;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use crate::paths::{
     canonical_method, canonical_path, canonical_route, has_marker, method_before_path,
@@ -278,19 +278,9 @@ pub fn extract(
         file: file.to_owned(),
         source,
     };
-    let symbols = extractor
-        .extract(language, source)
-        .map_err(parse_error)?
-        .symbols;
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_language(language))
-        .map_err(|source| parse_error(lemma_syntax::SyntaxError::Grammar { language, source }))?;
-    let Some(tree) = lemma_syntax::parse_source(&mut parser, language, source) else {
-        return Err(parse_error(lemma_syntax::SyntaxError::ParseAborted {
-            language,
-        }));
-    };
+    // One parse gives both the definitions and the tree the walk reads.
+    let parsed = extractor.parse(language, source).map_err(parse_error)?;
+    let (tree, symbols) = (parsed.tree, parsed.extraction.symbols);
     let mut walk = Walk {
         file,
         source,
@@ -397,16 +387,6 @@ fn parse_language(extension: &str) -> Option<Language> {
         return Some(Language::Tsx);
     }
     Language::from_extension(extension)
-}
-
-fn tree_sitter_language(language: Language) -> tree_sitter::Language {
-    match language {
-        Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
-        Language::Python => tree_sitter_python::LANGUAGE.into(),
-        Language::Go => tree_sitter_go::LANGUAGE.into(),
-        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
-        Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-    }
 }
 
 /// Which family of syntax a file is in, for the few node kinds and fields
