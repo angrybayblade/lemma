@@ -80,6 +80,17 @@ pub(crate) struct FileRow {
     pub symbols: Range<usize>,
 }
 
+/// The columns of a symbol's row that ranking reads.
+pub(crate) struct SymbolBrief {
+    /// String ids of its name and qualified name.
+    pub name: usize,
+    pub qualified_name: usize,
+    pub kind: SymbolKind,
+    /// The line its definition starts on.
+    pub line: u32,
+    pub file: usize,
+}
+
 /// A symbol's row, its strings borrowed from the segment.
 pub(crate) struct SymbolRow<'s> {
     pub name: &'s str,
@@ -948,6 +959,38 @@ impl<'a> Segment<'a> {
             file,
             mentions: first..end,
         })
+    }
+
+    /// What ranking a symbol needs, read from its row alone.
+    pub(crate) fn symbol_brief(&self, symbol: usize) -> Result<SymbolBrief, StoreError> {
+        let row = self.symbol_row(symbol)?;
+        let name = u32_at(row, 0)? as usize;
+        let qualified_name = u32_at(row, 4)? as usize;
+        let kind = codec::kind_of(*row.get(8).ok_or(DAMAGED)?)?;
+        let line = u32_at(row, 9)?;
+        let file = u32_at(row, SYMBOL_FILE_AT)? as usize;
+        if name >= self.strings || qualified_name >= self.strings || file >= self.files {
+            return Err(DAMAGED);
+        }
+        Ok(SymbolBrief {
+            name,
+            qualified_name,
+            kind,
+            line,
+            file,
+        })
+    }
+
+    /// The length in bytes of string `sid`.
+    pub(crate) fn string_length(&self, sid: usize) -> Result<usize, StoreError> {
+        let bytes = self.section(STRING_BYTES);
+        Ok(self.range_in(STRING_OFFSETS, sid, bytes.len())?.len())
+    }
+
+    /// A file's language, without decoding the rest of its row.
+    pub(crate) fn file_language(&self, file: usize) -> Result<Language, StoreError> {
+        let at = file.checked_mul(FILE_ROW).ok_or(DAMAGED)? + 32;
+        codec::language_of(*self.section(FILES).get(at).ok_or(DAMAGED)?)
     }
 
     /// The file a symbol belongs to, without decoding the rest of it.

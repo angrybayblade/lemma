@@ -4,6 +4,8 @@
 
 use std::collections::BTreeMap;
 
+use rustc_hash::FxHashSet;
+
 use crate::ids::{IdPrefix, SymbolId};
 use crate::segment::{FileRow, Segment};
 use crate::{FileRecord, StoreError};
@@ -73,6 +75,18 @@ impl<'a> View<'a> {
         Ok(true)
     }
 
+    /// The files of `segment` that a newer segment replaces or removes.
+    fn replaced_files(&self, segment: usize) -> Result<FxHashSet<usize>, StoreError> {
+        let rows = self.segment(segment)?;
+        let mut replaced = FxHashSet::default();
+        for newer in self.segments.get(segment + 1..).unwrap_or_default() {
+            for file in 0..newer.file_count() {
+                replaced.extend(rows.find_path(newer.path(file)?)?);
+            }
+        }
+        Ok(replaced)
+    }
+
     /// Whether a symbol's file is still the root's file at its path.
     fn is_current_symbol(&self, at: SymbolAt) -> Result<bool, StoreError> {
         if at.segment + 1 == self.segments.len() {
@@ -91,11 +105,47 @@ impl<'a> View<'a> {
     ) -> Result<Vec<SymbolAt>, StoreError> {
         symbols.sort_unstable();
         symbols.dedup();
+        let newer_files: usize = self
+            .segments
+            .get(segment + 1..)
+            .unwrap_or_default()
+            .iter()
+            .map(Segment::file_count)
+            .sum();
+        if newer_files == 0 {
+            return Ok(symbols
+                .into_iter()
+                .map(|symbol| SymbolAt { segment, symbol })
+                .collect());
+        }
+        if symbols.len() > newer_files {
+            // Many symbols: find once which of the segment's files newer
+            // segments replace, rather than look each symbol's path up.
+            return self.outside_replaced(segment, symbols);
+        }
         let mut kept = Vec::with_capacity(symbols.len());
         for symbol in symbols {
             let at = SymbolAt { segment, symbol };
             if self.is_current_symbol(at)? {
                 kept.push(at);
+            }
+        }
+        Ok(kept)
+    }
+
+    /// Those of a segment's `symbols` whose files no newer segment
+    /// replaces.
+    fn outside_replaced(
+        &self,
+        segment: usize,
+        symbols: Vec<usize>,
+    ) -> Result<Vec<SymbolAt>, StoreError> {
+        let replaced = self.replaced_files(segment)?;
+        let rows = self.segment(segment)?;
+        let mut kept = Vec::with_capacity(symbols.len());
+        for symbol in symbols {
+            if !replaced.contains(&rows.symbol_file(symbol)?) {
+                kept.push(SymbolAt { segment, symbol });
             }
         }
         Ok(kept)

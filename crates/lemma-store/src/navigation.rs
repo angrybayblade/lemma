@@ -820,29 +820,38 @@ impl Ranked<'_> {
 }
 
 /// The candidate at `at`, if it passes the filter's kind, language and path.
+/// A candidate ranked, or `None` when the filter rules it out. `exact`
+/// holds the filter's text's string id in each segment.
 fn ranked<'v>(
     view: &'v View<'_>,
     filter: &SymbolFilter,
+    exact: &[Option<usize>],
     at: SymbolAt,
 ) -> Result<Option<Ranked<'v>>, StoreError> {
     let segment = view.segment(at.segment)?;
-    let row = segment.symbol(at.symbol)?;
-    let path = segment.path(row.file)?;
-    let language = segment.file(row.file)?.language;
-    let passes = filter.kind.is_none_or(|kind| kind == row.kind)
-        && filter.language.is_none_or(|wanted| wanted == language)
-        && filter
-            .path_contains
-            .as_deref()
-            .is_none_or(|text| path.contains(text));
-    if !passes {
+    let brief = segment.symbol_brief(at.symbol)?;
+    if filter.kind.is_some_and(|kind| kind != brief.kind) {
         return Ok(None);
     }
+    if let Some(wanted) = filter.language
+        && segment.file_language(brief.file)? != wanted
+    {
+        return Ok(None);
+    }
+    let path = segment.path(brief.file)?;
+    if filter
+        .path_contains
+        .as_deref()
+        .is_some_and(|text| !path.contains(text))
+    {
+        return Ok(None);
+    }
+    let text = exact.get(at.segment).copied().flatten();
     Ok(Some(Ranked {
-        is_exact: row.name == filter.text || row.qualified_name == filter.text,
-        qualified_length: row.qualified_name.len(),
+        is_exact: text.is_some_and(|sid| sid == brief.name || sid == brief.qualified_name),
+        qualified_length: segment.string_length(brief.qualified_name)?,
         path,
-        line: row.span.start.line,
+        line: brief.line,
         at,
     }))
 }
@@ -956,10 +965,17 @@ impl FactStore for Store {
             NameMatch::Exact => view.exactly_named(&filter.text)?,
             NameMatch::Contains => view.containing(&filter.text)?,
         };
+        // The text's string id in each segment, so an exact match is one
+        // comparison of ids.
+        let exact: Vec<Option<usize>> = view
+            .segments()
+            .iter()
+            .map(|segment| segment.find_string(&filter.text))
+            .collect::<Result<_, _>>()?;
         let mut found: Vec<Ranked<'_>> = candidates
             .into_par_iter()
             .with_min_len(PARALLEL_CANDIDATES)
-            .filter_map(|at| ranked(&view, filter, at).transpose())
+            .filter_map(|at| ranked(&view, filter, &exact, at).transpose())
             .collect::<Result<_, _>>()?;
         let limit = filter.limit as usize;
         // Only the first `limit` are shown: pick them, then sort just those.
