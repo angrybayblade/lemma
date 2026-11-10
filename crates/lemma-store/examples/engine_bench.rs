@@ -9,7 +9,8 @@
 //! read the records back from there; a store of another layout is parsed
 //! again. Each operation prints its median and fastest time in
 //! milliseconds over the rounds, on one line, so two runs compare with
-//! `diff`.
+//! `diff`. `BENCH_ONLY=<text>[,<text>...]` times only the operations whose
+//! names contain one of the texts.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,8 @@ type Files = Vec<(String, FileRecord)>;
 struct Bench {
     work: PathBuf,
     rounds: usize,
+    /// Texts from `BENCH_ONLY`; when not empty, other operations are skipped.
+    only: Vec<String>,
 }
 
 impl Bench {
@@ -37,6 +40,9 @@ impl Bench {
         name: &str,
         mut operation: impl FnMut() -> Result<(), Failure>,
     ) -> Result<(), Failure> {
+        if !self.wants(name) {
+            return Ok(());
+        }
         operation()?;
         let mut times = Vec::with_capacity(self.rounds);
         for _ in 0..self.rounds {
@@ -51,6 +57,24 @@ impl Bench {
             times[0]
         );
         Ok(())
+    }
+
+    /// Whether `BENCH_ONLY` lets the operation `name` be timed.
+    fn wants(&self, name: &str) -> bool {
+        self.only.is_empty() || self.only.iter().any(|text| name.contains(text.as_str()))
+    }
+
+    /// Times `operation` as `name`, or, when that is filtered out, runs it
+    /// once untimed: later operations read what it makes.
+    fn time_or_run(
+        &self,
+        name: &str,
+        mut operation: impl FnMut() -> Result<(), Failure>,
+    ) -> Result<(), Failure> {
+        if self.wants(name) {
+            return self.time(name, operation);
+        }
+        operation()
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -121,7 +145,7 @@ fn bench_writes(bench: &Bench, files: &Files) -> Result<(), Failure> {
         .map(|(path, record)| put(path, record))
         .collect();
     let store = bench.path("full.ls");
-    bench.time("write full segment", || {
+    bench.time_or_run("write full segment", || {
         let _ = std::fs::remove_file(&store);
         commit(&store, "head", None, &changes)
     })?;
@@ -145,6 +169,19 @@ fn bench_writes(bench: &Bench, files: &Files) -> Result<(), Failure> {
             .map(|(path, record)| put(path, &edited(record, round)))
             .collect();
         commit(&store, "work", Some("head"), &hundred)
+    })?;
+    bench.time("50 one-file commits", || {
+        for _ in 0..50 {
+            round = round.wrapping_add(1);
+            let change = put(&files[middle].0, &edited(&files[middle].1, round));
+            commit(&store, "work", Some("head"), &[change])?;
+        }
+        Ok(())
+    })?;
+    bench.time("open after small commits", || {
+        Index::open(&store, ReadMode::Mapped)
+            .map(drop)
+            .map_err(Into::into)
     })?;
     Ok(())
 }
@@ -309,7 +346,7 @@ fn bench_navigation(bench: &Bench, files: &Files) -> Result<(), Failure> {
         files: &stamped,
         uncommitted_paths: &[],
     };
-    bench.time("index from scratch", || {
+    bench.time_or_run("index from scratch", || {
         let _ = std::fs::remove_file(&store_path);
         Store::open(&store_path)?.replace_snapshot(&fresh)?;
         Ok(())
@@ -333,6 +370,23 @@ fn bench_navigation(bench: &Bench, files: &Files) -> Result<(), Failure> {
             restamped: &[],
         };
         store.update_snapshot(id, &update)?;
+        Ok(())
+    })?;
+    bench.time("50 one-file updates", || {
+        for _ in 0..50 {
+            round = round.wrapping_add(1);
+            let mut changed = stamped[stamped.len() / 3].clone();
+            changed.record = edited(&changed.record, round);
+            let update = SnapshotUpdate {
+                snapshot: &snapshot,
+                indexed_at_ns: 0,
+                uncommitted_paths: &[],
+                changed: std::slice::from_ref(&changed),
+                removed: &[],
+                restamped: &[],
+            };
+            store.update_snapshot(id, &update)?;
+        }
         Ok(())
     })?;
     bench_queries(bench, &store, id, files)
@@ -398,7 +452,7 @@ fn bench_cache(bench: &Bench, count: usize) -> Result<(), Failure> {
     let units: Vec<(String, Vec<u8>)> = (0..count)
         .map(|unit| (format!("unit-{unit}"), value(unit)))
         .collect();
-    bench.time(&format!("put {count} units"), || {
+    bench.time_or_run(&format!("put {count} units"), || {
         let _ = std::fs::remove_file(&path);
         Cache::open(&path)?.put_many(&units)?;
         Ok(())
@@ -427,6 +481,18 @@ fn bench_cache(bench: &Bench, count: usize) -> Result<(), Failure> {
         .iter()
         .map(|(key, _)| (key.clone(), vec![format!("path:/v1/{}", key.len() % 50)]))
         .collect();
+    let mut more = 0usize;
+    bench.time("50 puts of 10 units", || {
+        let mut writer = Cache::open(&path)?;
+        for _ in 0..50 {
+            let batch: Vec<(String, Vec<u8>)> = (0..10)
+                .map(|offset| (format!("more-{}", more + offset), value(more + offset)))
+                .collect();
+            more += 10;
+            writer.put_many(&batch)?;
+        }
+        Ok(())
+    })?;
     let mut writer = Cache::open(&path)?;
     writer.put_terms_later(terms);
     drop(writer);
@@ -446,9 +512,13 @@ fn main() -> Result<(), Failure> {
         .get(3)
         .and_then(|text| text.parse().ok())
         .unwrap_or(5);
+    let only = std::env::var("BENCH_ONLY")
+        .map(|texts| texts.split(',').map(str::to_owned).collect())
+        .unwrap_or_default();
     let bench = Bench {
         work: PathBuf::from(work),
         rounds,
+        only,
     };
     std::fs::create_dir_all(&bench.work)?;
     let files = records(Path::new(directory), &bench)?;
