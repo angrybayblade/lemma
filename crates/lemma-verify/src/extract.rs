@@ -87,7 +87,7 @@ pub fn extract_all(
 ) -> Result<Option<BTreeSet<String>>, VerifyError> {
     let warm = options.warm.as_deref();
     let memo = warm.map(crate::Warm::take).unwrap_or_default();
-    let mut extractor = FactReader::new(options.facts_cache.clone());
+    let mut extractor = FactReader::new(options.facts_cache.clone(), options.also_keep.clone());
     extractor.read = memo.facts;
     extractor.readings = memo.readings;
     let specs = SpecCache {
@@ -107,6 +107,7 @@ pub fn extract_all(
             facts: std::mem::take(&mut extractor.read),
             readings: std::mem::take(&mut extractor.readings),
             facts_cache: options.facts_cache.clone(),
+            also_keep: options.also_keep.clone(),
         });
     }
     extracted
@@ -673,6 +674,7 @@ pub(crate) struct Memo {
     /// that changes can be read the same way before it is asked for.
     readings: Readings,
     facts_cache: Option<crate::FactsCache>,
+    also_keep: Option<crate::AlsoKeep>,
 }
 
 /// The ways a working directory was read, by repository and options as
@@ -742,7 +744,7 @@ impl Memo {
         if readings.is_empty() {
             return 0;
         }
-        let mut reader = FactReader::new(self.facts_cache.clone());
+        let mut reader = FactReader::new(self.facts_cache.clone(), self.also_keep.clone());
         reader.read = std::mem::take(&mut self.facts);
         for (path, options) in &readings {
             let _ = reader.read(path, None, files, options);
@@ -2199,15 +2201,28 @@ fn read_at_snapshot(
 }
 
 /// A file's facts, read with this thread's extractor from `extractors`.
+/// A file's code facts, from one parse, and what `also` keeps from the same
+/// parse.
 fn extracted(
     file: &SourceFile,
+    named: &[u8],
     options: &CodeOptions,
     extractors: &ExtractorPool,
-) -> Result<CodeFacts, VerifyError> {
-    let facts = extractors
-        .with(|extractor| lemma_http::extract(&file.path, &file.contents, options, extractor))
-        .map_err(|source| VerifyError::Syntax { source })??;
-    Ok(facts)
+    also: Option<&crate::AlsoKeep>,
+) -> Result<(CodeFacts, Option<KeptValue>), VerifyError> {
+    let Some(language) = lemma_http::facts_language(&file.path) else {
+        return Ok((lemma_http::CodeFacts::default(), None));
+    };
+    let parsed = extractors
+        .with(|extractor| extractor.parse(language, &file.contents))
+        .map_err(|source| VerifyError::Syntax { source })?
+        .map_err(|source| lemma_http::CodeError::Parse {
+            file: file.path.clone(),
+            source,
+        })?;
+    let facts = lemma_http::facts_of(&file.path, &file.contents, options, &parsed);
+    let more = also.and_then(|also| (also.0)(file, named, &parsed));
+    Ok((facts, more))
 }
 
 /// The key a file's facts are kept under, in memory and between runs: the
@@ -2244,8 +2259,16 @@ fn term_segment(
 /// cannot vouch for.
 type Keyed = (Vec<(ListedFile, String)>, BTreeMap<String, SourceFile>);
 
-/// A parsed file's facts, and their encoding when they should be kept.
-type ReadFacts = (CodeFacts, Option<Vec<u8>>);
+/// A parsed file's facts, their encoding when they should be kept, and
+/// what else to keep from the same parse.
+type ReadFacts = (CodeFacts, Option<Vec<u8>>, Option<KeptValue>);
+
+/// A value to keep in the facts cache, under its key.
+type KeptValue = (String, Vec<u8>);
+
+/// A file to parse: its contents, its unit key, and the text naming its
+/// contents.
+type ToParse<'a> = (&'a SourceFile, &'a String, Vec<u8>);
 
 /// Reads files' code facts, each once per run for the same contents and
 /// options (a file a change leaves alone has one blob at both its
@@ -2275,6 +2298,8 @@ struct FactReader {
     extractors: ExtractorPool,
     /// What is kept between runs, when facts are kept.
     kept: Option<Kept>,
+    /// What else to keep from each file parsed.
+    also_keep: Option<crate::AlsoKeep>,
     /// Facts read in this run, by unit key.
     read: BTreeMap<String, Arc<CodeFacts>>,
     /// How working directories were read.
@@ -2325,7 +2350,7 @@ impl ReadCounts {
 impl FactReader {
     /// A reader keeping facts in `cache`, if given. A cache that cannot be
     /// opened only means every file is parsed.
-    fn new(cache: Option<crate::FactsCache>) -> Self {
+    fn new(cache: Option<crate::FactsCache>, also_keep: Option<crate::AlsoKeep>) -> Self {
         let kept = cache.and_then(|cache| {
             std::fs::create_dir_all(&cache.directory).ok()?;
             let units_path = cache.directory.join("index.ls");
@@ -2340,6 +2365,7 @@ impl FactReader {
         Self {
             extractors: ExtractorPool::new(),
             kept,
+            also_keep,
             read: BTreeMap::new(),
             readings: Readings::new(),
             termed: BTreeSet::new(),
@@ -2378,10 +2404,14 @@ impl FactReader {
         for file in lemma_http::read_listed(repository, commit, &to_read)? {
             contents.insert(file.path.clone(), file);
         }
-        let to_parse: Vec<(&SourceFile, &String)> = unknown
+        let to_parse: Vec<ToParse<'_>> = unknown
             .iter()
             .filter(|(_, key)| !kept.contains_key(*key))
-            .filter_map(|(file, key)| Some((contents.get(&file.path)?, *key)))
+            .filter_map(|(file, key)| {
+                let source = contents.get(&file.path)?;
+                let named = lemma_http::contents_key(file, Some(source))?;
+                Some((source, *key, named))
+            })
             .collect();
         let parsed = self.parse(&to_parse, options)?;
         self.counts.kept += kept.len();
@@ -2625,28 +2655,30 @@ impl FactReader {
     /// is the one reported, whatever thread hit it.
     fn parse(
         &mut self,
-        files: &[(&SourceFile, &String)],
+        files: &[ToParse<'_>],
         options: &CodeOptions,
     ) -> Result<Vec<(String, Arc<CodeFacts>)>, VerifyError> {
         use rayon::prelude::*;
         let is_keeping = self.kept.is_some();
         let extractors = &self.extractors;
+        let also = self.also_keep.as_ref().filter(|_| is_keeping);
         let read: Vec<Result<ReadFacts, VerifyError>> = files
             .par_iter()
             .with_min_len(8)
-            .map(|(file, _)| {
-                let facts = extracted(file, options, extractors)?;
+            .map(|(file, _, named)| {
+                let (facts, more) = extracted(file, named, options, extractors, also)?;
                 let encoded = is_keeping
                     .then(|| serde_json::to_vec(&facts).ok())
                     .flatten();
-                Ok((facts, encoded))
+                Ok((facts, encoded, more))
             })
             .collect();
         let mut parsed = Vec::new();
         let mut new_units = Vec::new();
         let mut new_terms = Vec::new();
-        for ((_, key), result) in files.iter().zip(read) {
-            let (facts, encoded) = result?;
+        for ((_, key, _), result) in files.iter().zip(read) {
+            let (facts, encoded, more) = result?;
+            new_units.extend(more);
             if let Some(encoded) = encoded {
                 new_units.push(((*key).clone(), encoded));
                 new_terms.push(((*key).clone(), crate::terms::code_terms(&facts)));

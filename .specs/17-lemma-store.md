@@ -206,6 +206,8 @@ Decided 2026-11-10 for what remains of stage 2, by where a 100k-file check (20 r
 - **Records live in each repository's `index.ls`, keyed by a profile digest**: the format version, each language's declared extractor version and the segment policy, with a golden test per language that fails when extraction output changes without a version bump. Upgrading Lemma keeps a repository's records unless its profile changed.
 - **Listings stay with Git.** `lemma index` and `check` choose files the same way, and Git remains the source of each file's blob id.
 
+Landed so far, on the same 100k-file system with byte-identical reports: reading code facts parsed each file twice, once for its definitions and again for the walk, and now parses it once (cold 18.6 to 17.1 s); and the parse that reads a file's facts also keeps tracing's record of its functions, under the key tracing looks it up by, so tracing reads and parses nothing (cold 17.1 to 12.8 s, tracing 5.7 to 1.4 s). Those records still live in the per-build facts cache. They move into each repository's `index.ls` with facts that do not depend on the description and one file selection, when `lemma index` can share the parse too.
+
 ## What landed
 
 Stages 1–3 are on the `lemma-store` branch. `index.ls` holds segments as described above; navigation, check's unit records, index terms and segments, and workspace mounts all read it, and SQLite is gone. `Index::reaching` follows the stored mention lists; nothing calls it until stage 5. Commit roots built from Git, and the scan adopting `lemma-index`'s file selection, remain.

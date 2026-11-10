@@ -196,7 +196,36 @@ pub struct Options {
     /// Reads kept from earlier runs over the same repositories, and kept
     /// for later ones; `None` reads everything.
     pub warm: Option<Arc<Warm>>,
+    /// What else to keep in the facts cache from each file parsed for its
+    /// facts, so a later reader of the same file need not parse it again.
+    pub also_keep: Option<AlsoKeep>,
 }
+
+/// Something more to keep from each file the facts pass parses: given the
+/// file, the text naming its contents ([`lemma_http::contents_key`]) and
+/// its parse, the key and bytes to keep in the facts cache, or `None`.
+#[derive(Clone)]
+pub struct AlsoKeep(pub Arc<AlsoKeepFn>);
+
+/// What [`AlsoKeep`] calls.
+pub type AlsoKeepFn = dyn Fn(&lemma_http::SourceFile, &[u8], &lemma_syntax::Parsed) -> Option<(String, Vec<u8>)>
+    + Send
+    + Sync;
+
+impl std::fmt::Debug for AlsoKeep {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AlsoKeep")
+    }
+}
+
+/// Two are equal when they are the same function.
+impl PartialEq for AlsoKeep {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for AlsoKeep {}
 
 /// How much consumer code a verification reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

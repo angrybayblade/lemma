@@ -74,6 +74,8 @@ pub struct Extraction {
 /// One file parsed, with its definitions. The tree is kept so a caller that
 /// reads more from the file need not parse it again.
 pub struct Parsed {
+    /// The language it was parsed as.
+    pub language: Language,
     /// The syntax tree.
     pub tree: tree_sitter::Tree,
     /// The definitions found in it.
@@ -129,7 +131,11 @@ impl Extractor {
             symbols: nesting::into_symbols(definitions),
             has_syntax_errors: tree.root_node().has_error(),
         };
-        Ok(Parsed { tree, extraction })
+        Ok(Parsed {
+            language,
+            tree,
+            extraction,
+        })
     }
 
     /// Extracts one file's definitions with what each is made of, from a

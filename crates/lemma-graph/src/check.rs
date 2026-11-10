@@ -708,6 +708,7 @@ pub(crate) fn fetch_calls<E: Engine>(
         facts_cache: facts.cloned(),
         evaluation: lemma_verify::Evaluation::Demand,
         warm: None,
+        also_keep: None,
     };
     let report = lemma_verify::calls_of(&partial.manifest, engine, &options, listings, operations)
         .map_err(|source| GraphError::Inference { source })?;
@@ -1047,6 +1048,9 @@ fn verify_inferred<E: Engine>(
         // them (see `affects::CallSource`).
         evaluation: run.evaluation,
         warm: run.warm.clone(),
+        also_keep: run
+            .facts_cache
+            .map(|cache| affects::keep_functions_too(cache.build.clone())),
     };
     log::info!(
         "inferring links from code: {} changed {}..{}, {} evaluation",

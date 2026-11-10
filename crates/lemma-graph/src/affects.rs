@@ -886,6 +886,31 @@ fn parse_functions(
 /// The key a file's functions are kept under: the build of Lemma, the
 /// record's layout, the path and what names the contents
 /// ([`lemma_http::contents_key`]).
+/// Keeps tracing's record of each file the facts pass parses, under the key
+/// tracing looks it up by, so tracing reads neither the file nor a parse of
+/// it again. The record is the one tracing would make: none for a test, and
+/// one with no functions for a file in a language tracing does not read,
+/// such as plain JavaScript, which the facts pass reads as TSX.
+pub(crate) fn keep_functions_too(build: String) -> lemma_verify::AlsoKeep {
+    lemma_verify::AlsoKeep(Arc::new(move |file, named, parsed| {
+        let path = &file.path;
+        let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
+        if !CODE_EXTENSIONS.contains(&extension) || lemma_http::is_test_file(path) {
+            return None;
+        }
+        let functions = match Language::from_extension(extension) {
+            Some(language) if language == parsed.language => {
+                file_functions(path, &file.contents, parsed.extraction.symbols.clone())
+            }
+            // Parsed otherwise than tracing would parse it: tracing reads it.
+            Some(_) => return None,
+            None => Vec::new(),
+        };
+        let record = functions::encode_record(&functions);
+        Some((functions_key(&build, path, named), record))
+    }))
+}
+
 fn functions_key(build: &str, path: &str, contents: &[u8]) -> String {
     let mut described = format!("{build}\0functions record 1\0{path}\0").into_bytes();
     described.extend_from_slice(contents);
@@ -1224,6 +1249,52 @@ mod tests {
         assert_eq!(rest.kind, "");
         assert!(!rest.mentions.contains("executeRPC"));
         assert!(rest.mentions.contains("handler"));
+    }
+
+    fn source(path: &str, contents: &str) -> lemma_http::SourceFile {
+        lemma_http::SourceFile {
+            path: path.to_owned(),
+            contents: contents.to_owned(),
+        }
+    }
+
+    /// What the facts pass keeps for `file`, parsed as it parses it.
+    fn kept_by_facts_pass(file: &lemma_http::SourceFile) -> Option<(String, Vec<u8>)> {
+        let language = lemma_http::facts_language(&file.path)?;
+        let parsed = lemma_syntax::Extractor::new()
+            .unwrap()
+            .parse(language, &file.contents)
+            .unwrap();
+        let keep = keep_functions_too("build".to_owned());
+        (keep.0)(file, b"blob:1", &parsed)
+    }
+
+    #[test]
+    fn the_facts_pass_keeps_the_record_tracing_would_make() {
+        let file = source(
+            "src/pay.ts",
+            "export function pay(order) {\n  return charge(order)\n}\n",
+        );
+        let extractors = ExtractorPool::new();
+
+        let kept = kept_by_facts_pass(&file).unwrap();
+
+        let traced = functions::encode_record(&read_functions(&file, &extractors).unwrap());
+        assert_eq!(
+            kept,
+            (functions_key("build", "src/pay.ts", b"blob:1"), traced)
+        );
+    }
+
+    #[test]
+    fn plain_javascript_is_kept_without_functions_and_tests_not_at_all() {
+        let script = source("src/pay.js", "function pay() { return 1 }\n");
+        let test = source("src/pay.test.ts", "function pay() { return 1 }\n");
+
+        let kept = kept_by_facts_pass(&script).unwrap();
+
+        assert_eq!(kept.1, functions::encode_record(&[]));
+        assert_eq!(kept_by_facts_pass(&test), None);
     }
 
     #[test]

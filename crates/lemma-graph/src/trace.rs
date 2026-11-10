@@ -305,6 +305,7 @@ fn current_inference<E: Engine>(
             facts_cache: facts.cloned(),
             evaluation: lemma_verify::Evaluation::Demand,
             warm: None,
+            also_keep: None,
         };
         // The calls of no operation: routes and operations, with calls
         // fetched as the trace reaches their operations.

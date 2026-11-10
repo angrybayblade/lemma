@@ -270,22 +270,39 @@ pub fn extract(
     options: &CodeOptions,
     extractor: &mut Extractor,
 ) -> Result<CodeFacts, CodeError> {
-    let extension = file.rsplit_once('.').map_or("", |(_, extension)| extension);
-    let Some(language) = parse_language(extension) else {
+    let Some(language) = facts_language(file) else {
         return Ok(CodeFacts::default());
     };
-    let parse_error = |source| CodeError::Parse {
-        file: file.to_owned(),
-        source,
-    };
-    // One parse gives both the definitions and the tree the walk reads.
-    let parsed = extractor.parse(language, source).map_err(parse_error)?;
-    let (tree, symbols) = (parsed.tree, parsed.extraction.symbols);
+    let parsed = extractor
+        .parse(language, source)
+        .map_err(|source| CodeError::Parse {
+            file: file.to_owned(),
+            source,
+        })?;
+    Ok(facts_of(file, source, options, &parsed))
+}
+
+/// The language a file's code facts are read in, by its extension: plain
+/// JavaScript is read as TSX. `None` for a file in no language Lemma reads.
+pub fn facts_language(file: &str) -> Option<Language> {
+    let extension = file.rsplit_once('.').map_or("", |(_, extension)| extension);
+    parse_language(extension)
+}
+
+/// One source file's code facts, read from its parse, so a caller wanting
+/// more from the file parses it once.
+pub fn facts_of(
+    file: &str,
+    source: &str,
+    options: &CodeOptions,
+    parsed: &lemma_syntax::Parsed,
+) -> CodeFacts {
+    let (tree, symbols, language) = (&parsed.tree, &parsed.extraction.symbols, parsed.language);
     let mut walk = Walk {
         file,
         source,
-        symbols: nesting::Nesting::new(&symbols, |_| true),
-        functions: nesting::Nesting::new(&symbols, |symbol| {
+        symbols: nesting::Nesting::new(symbols, |_| true),
+        functions: nesting::Nesting::new(symbols, |symbol| {
             matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method)
         }),
         options,
@@ -304,7 +321,7 @@ pub fn extract(
     walk.finish_routers();
     walk.collect_strings(tree.root_node());
     walk.facts.is_generated = says_generated(source);
-    Ok(sorted(walk.facts))
+    sorted(walk.facts)
 }
 
 /// Whether a file's opening comments say a tool wrote it, as generators
