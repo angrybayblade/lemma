@@ -20,7 +20,7 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | MCP server | Agents in Claude Code and other MCP clients | Agent benchmark rounds r0-r6 ([results](agent-benchmark.md)) |
 | `lemma.http` requirements for HTTP contracts | Internal use, errors gating CI after a reporting period | In rc0, 318 historical changes replayed on a production system of ten repositories with no false error; every error matched a real break. |
 | `lemma check` across a system's repositories | Internal use, errors gating CI after a reporting period | On a production system of six repositories, for rc1: 54 past contract changes replayed with every finding, severity and trace as reviewed; synthetic breaks found every known caller (47 of 47 for new required fields, 33 of 33 for removed operations) and no other; change-driven evaluation gave the same findings as reading all code on 34 changes and 30 breaks, in about 60% of the time. On a generated system of 100,000 files, a warm change-driven check took 2.2 s and 192 MB. |
-| `.lm` modules and `lm` | Describing systems, requirements, behaviors and allowances | The tutorials run as written in CI; a production system of six repositories is described and checked in `.lm`. Editor support through `lm lsp`. |
+| `.lm` modules and `lm` | Describing systems, requirements and allowances; behaviors are in [beta](#behaviors-beta) | The tutorials run as written in CI; a production system of six repositories is described and checked in `.lm`. Editor support through `lm lsp`. |
 | Requirements and rules in `.lm` | Teams adding, removing and tuning checks | [Requirements and rules](grammar.md) |
 
 ## Known limitations
@@ -36,7 +36,7 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 | URLs built at run time from values the code does not show are not matched | Those calls are missed, so their breaks are too | Medium for code that builds URLs dynamically | Check coverage with `lemma verify --relation calls` ([Onboarding](onboarding.md#4-describe-the-system)) |
 | Strictness is read from TypeScript zod `.strict()` and specs' `additionalProperties: false` only | In Go and Rust services, sending a removed field is a warning even where the service rejects it | Low | Declare `rejects_unknown_fields: true` on the service |
 | Only HTTP with OpenAPI specs | gRPC, GraphQL, queues, events and other RPC (such as serverless function invocations) are not checked | High outside HTTP | Declare those links in a `.lm` description |
-| Only contract breaks, not behaviour | A change that keeps the contract but changes what it does (rate limits, defaults, ordering) is not caught | High for incidents caused by behaviour changes | Test what matters with a [behavior](tutorials/4-behaviors.md) |
+| Only contract breaks, not behaviour | A change that keeps the contract but changes what it does (rate limits, defaults, ordering) is not caught | High for incidents caused by behaviour changes | Test what matters with a [behavior](tutorials/4-behaviors.md) (beta) |
 | Rust consumers (code calling HTTP from Rust) are tested only by unit tests | Real-world gaps in reqwest call detection may exist | Low | Report missed calls |
 | Calls through a generated client are matched by function names derived from `operationId`s (`call_names`) | A generator that names functions some other way (by resource and verb, say) is not matched | Medium for such generators | Report the generator |
 | Consumers are matched to the operation they were written for (the base snapshot) | A call that only exists after the change is checked by `consumer_calls_unserved_operation`, not the field rules | Low | None needed |
@@ -57,6 +57,18 @@ Links Lemma cannot infer (queues, function runtimes) can be declared, and Lemma 
 | A route Lemma cannot read is given the benefit of the doubt | An operation counts as still served while any route code writes its path, so a removal next to a leftover path string is missed | Review route removals in the pull request |
 | A `{ method, path }` object in a service's route code counts as a route, as `createRoute({ method, path, request })` defines one | A table of another service's endpoints kept in route code reads as routes the spec leaves out (informational, or a warning when added) | Keep such tables outside the service's `routes` directories |
 | Memory on large systems | One internal report saw a check of six repositories peak near 6.7 GB; measured runs of the same system stay under 1 GB, and a 100,000-file system under 1.5 GB reading all code | Report the command and system size if a check uses more |
+
+### Behaviors (beta)
+
+Behaviors run your code through checkers. They work end to end, and the tutorial runs as written in CI, but their `.lm` syntax, the checker protocol and how evidence is kept may change between releases.
+
+| Limitation | Effect | Until fixed |
+| --- | --- | --- |
+| `lm new behavior` writes a complete checker script only for Python | For TypeScript it leaves replacing the outbound call to you; for Go it writes a placeholder; for other languages it writes none | Write the checker by hand: any command that reads `LEMMA_INPUT` and writes `LEMMA_OUTPUT` works |
+| Evidence is keyed on whole repositories | Any commit to a repository a checker reads runs that checker again, even when the code it ran is unchanged | None; keep checkers fast |
+| Checkers run one at a time | A check with many behaviors takes as long as all their checkers together | None |
+| Behaviors read stated graphs only | Facts Lemma reads from code (`calls` and the rest of `lemma.http`) are not available to them | Declare the links a behavior needs |
+| Evidence stays on the machine that ran the checker | CI and each developer run checkers themselves | Copy the cache's `evidence/` directory |
 
 ### Code intelligence
 

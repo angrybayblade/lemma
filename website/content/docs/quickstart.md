@@ -196,6 +196,6 @@ You wrote no requirements: the checks came from `lemma.http`. To set up your own
 1. [Declare a link](tutorials/1-links.md) and check that web's types agree with billing's schemas.
 2. [Write your own requirement](tutorials/2-requirements.md), and choose what runs with `check main`.
 3. [Allow a known finding](tutorials/3-allowances.md), with a reason and an expiry date.
-4. [Test a behavior](tutorials/4-behaviors.md) by running code through a checker.
+4. [Test a behavior](tutorials/4-behaviors.md) by running code through a checker (beta).
 5. [Add a feature](tutorials/5-features.md), and check that what a change adds is served and called.
 6. [Set up your editor](tutorials/6-editors.md) for highlighting, errors as you type and formatting.

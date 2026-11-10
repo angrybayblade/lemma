@@ -80,4 +80,4 @@ warning the allowance for lemma.http::consumer_uses_removed_response_field expir
 
 Lemma also reports an allowance for a behavior that ran and covered none of its cases. Remove those allowances.
 
-Next: [test a behavior](4-behaviors.md).
+Next: [test a behavior](4-behaviors.md) (beta).
