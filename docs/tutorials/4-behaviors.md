@@ -5,6 +5,8 @@ Write a *behavior* for a property that is not in any schema. *When billing decli
 
 Prerequisites: the end state of the [quickstart](../quickstart.md), in `shop`, and `python3`. Result: a behavior that finds a dropped flag in a new Python service, `orders`, passes after the fix, and reuses its evidence.
 
+> **Beta.** Behaviors and checkers may change between releases: their `.lm` syntax, the checker protocol and how evidence is kept. A checker can be any command, but `lm new behavior` writes a complete script only for Python; for TypeScript and Go it writes a starting point to finish by hand. See the [known limitations](../pre-release.md#behaviors-beta).
+
 ## Create a service that calls billing
 
 Create `orders`. It charges the customer through billing. When the charge fails, it answers its caller with a 502, but it drops billing's `retriable` flag:

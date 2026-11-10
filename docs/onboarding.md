@@ -83,7 +83,7 @@ The release includes these skills for agents that support them (Claude Code read
 | `lemma-mode` | `/lemma-mode`: the workflow for a change other code depends on, ending in proof. See [Lemma mode](lemma-mode.md) |
 | `lemma-impact` | Mapping every use and caller before a change |
 | `lemma-verify` | Proving a change with `lemma check`, and an opt-in Stop hook |
-| `lemma-behavior` | Proving a runtime claim by running the real handler |
+| `lemma-behavior` | Proving a runtime claim by running the real handler (beta) |
 | `lemma-usage` | Choosing between Lemma and text search, navigating code, reading `lemma check` findings |
 | `lemma-onboarding` | Setting Lemma up for a set of repositories: install, index, write the descriptions, add CI |
 | `lemma-grammar` | Writing and changing relations, rules and requirements |

@@ -121,6 +121,8 @@ allow lemma.http.consumer_calls_removed_operation {
 
 ## Behaviors and checkers
 
+> **Beta.** Behaviors, checkers and the checker protocol may change between releases. See the [known limitations](pre-release.md#behaviors-beta).
+
 A behavior is a requirement checked by running statements. It may demand evidence from a checker, a command that exercises the code and reports what it observed:
 
 ```lm

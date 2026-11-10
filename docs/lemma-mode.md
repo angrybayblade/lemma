@@ -50,7 +50,7 @@ The report says how far each claim was taken. Lower on this list is stronger:
 | Pointed at it | A `file:line` from a language server: complete for what the server sees |
 | Traced it | Callers followed from the operation into the other repositories |
 | Checked it | `lemma check --change <repository>` reports nothing introduced |
-| Ran it | A behavior that runs the real handler passed. See [Test a behavior](tutorials/4-behaviors.md) |
+| Ran it | A behavior that runs the real handler passed (beta). See [Test a behavior](tutorials/4-behaviors.md) |
 
 A claim the agent could not prove is named in the report. Read that part first.
 
@@ -67,6 +67,6 @@ Lemma mode holds the workflow and leaves the details to the other [agent skills]
 | `lemma-usage` | Finding code and reading findings |
 | `lemma-impact` | Mapping what a change reaches |
 | `lemma-verify` | Checking the change and fixing what it reports |
-| `lemma-behavior` | Proving a runtime claim by running the code |
+| `lemma-behavior` | Proving a runtime claim by running the code (beta) |
 
 `lemma-impact` and `lemma-verify` can also start on their own when a task calls for them. Lemma mode starts only when you ask for it.
