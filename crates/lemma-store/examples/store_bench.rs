@@ -46,8 +46,21 @@ fn report_reads(store: &Path, mode: ReadMode, sample: &[String]) -> Result<(), F
         assert_eq!(changes.len(), 1);
         Ok(())
     })?;
+    let reach = median_ms(|| {
+        let index = Index::open(store, mode)?;
+        let head = index.root("head")?;
+        let files = index.changed_files(&head, &index.root("work")?)?;
+        let edited: Vec<(String, String)> = files
+            .iter()
+            .flat_map(|file| file.after.iter().flat_map(|record| &record.symbols))
+            .take(1)
+            .map(|symbol| (files[0].path.clone(), symbol.qualified_name.clone()))
+            .collect();
+        index.reaching(&head, &edited)?;
+        Ok(())
+    })?;
     println!(
-        "{mode:?}: open {open:.2} ms, decode every file {walk:.1} ms, {} lookups {lookups:.1} ms, compare after one edit {compare:.2} ms",
+        "{mode:?}: open {open:.2} ms, decode every file {walk:.1} ms, {} lookups {lookups:.1} ms, compare after one edit {compare:.2} ms, reach from one symbol {reach:.2} ms",
         sample.len()
     );
     Ok(())
