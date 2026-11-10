@@ -216,6 +216,20 @@ On a private repository whose SQLite index is 14 MB, a fresh `lemma index` took 
 
 Peak memory is 7–19% lower on cold runs, but higher on warm change-driven runs at 100k files: 327 MB against 219 MB. Anonymous memory is the same, 208 MB against 199 MB; the difference is pages of the mapped cache file counted as resident, 197 MB against 43 MB. They are clean pages the kernel can drop, but peak resident memory counts them, so whether to read values positionally is left to tuning.
 
+**Tuning.** `crates/lemma-store/examples/engine_bench.rs` times every engine operation on a system of 102,000 files and 400,000 symbols. Segments are built in parallel in a buffer of their own and written as a part of the commit, rows are written in place, a process does not check again what it wrote or already checked, at most 64 commits wait unflushed, attribute runs merge by size tier, lookups search runs where they lie, and search ranks candidates from their rows' string ids. As medians on a quiet 8-CPU VM, against the first segments: a full segment 958 to 229 ms, a fresh index 1.38 s to 216 ms, and a substring search 53 to 10 ms. Against the first timing of small writes: fifty one-file updates 106 to 6 ms, fifty puts of ten units 327 to 18 ms, and opening after small commits 0.69 to 0.03 ms.
+
+Commands against `main`, as medians of three interleaved rounds, on one 5,100-file repository and on 100,000 files indexed as one root:
+
+| | 5k files | 100k files |
+|---|---|---|
+| `lemma index`, fresh | 421 → 367 ms | 5.22 → 4.69 s |
+| `lemma index`, nothing changed | 45 → 22 ms | 402 → 324 ms |
+| `lemma symbols`, exact | 14 → 5 ms | 85 → 9 ms |
+| `lemma symbols`, containing | 19 → 6 ms | 99 → 36 ms |
+| `lemma graph`, references cached | 103 → 4 ms | 1.80 s → 5 ms |
+
+`graph` gained most because it asks the store about only the files and names it meets, where it used to read every symbol first. Commands that wait on a language server, such as `refs` asked for the first time or `definition`, spend their time starting it and did not change. A fresh index spends most of its time parsing.
+
 ## Open questions
 
 - **File-level extraction on real apps.** Circular imports, imports of an entry point and schemas held only on route objects may send many files back to the whole-service path. This needs measuring per service before stage 6.
