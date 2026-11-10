@@ -3,6 +3,7 @@
 //! indexed by, and segments built from many units. Keys are strings naming
 //! everything a value depends on, so a value is never wrong, only absent.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -46,8 +47,8 @@ struct Background {
     thread: JoinHandle<()>,
 }
 
-fn get(opened: &Opened, key: &Digest) -> Result<Option<Vec<u8>>, StoreError> {
-    opened.index.attribute_in(&opened.runs, key)
+fn get<'o>(opened: &'o Opened, key: &Digest) -> Result<Option<Cow<'o, [u8]>>, StoreError> {
+    opened.index.attribute_bytes(&opened.runs, key)
 }
 
 fn unit_key(key: &str) -> Digest {
@@ -223,7 +224,7 @@ impl Cache {
         let Some(opened) = self.opened()? else {
             return Ok(None);
         };
-        get(&opened, &segment_key(key))
+        Ok(get(&opened, &segment_key(key))?.map(Cow::into_owned))
     }
 
     /// The terms of those of `units` that are indexed, by unit.

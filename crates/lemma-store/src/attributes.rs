@@ -10,6 +10,7 @@
 //! gathered, so runs grow in size tiers: a small write rewrites only small
 //! runs, and the list stays short. Values are never copied.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::codec::{Decoder, Encoder};
@@ -94,6 +95,9 @@ impl Index {
     }
 
     fn find_in(&self, run: &Run, key: &Digest) -> Result<Option<Located>, StoreError> {
+        if self.is_mapped() {
+            return self.find_in_place(run, key);
+        }
         let word = |at: usize| -> Result<u64, StoreError> {
             let bytes = self.read(run.filter + (at * 8) as u64, 8)?;
             let mut decoder = Decoder::new(&bytes);
@@ -115,15 +119,48 @@ impl Index {
         Ok(None)
     }
 
+    /// [`Index::find_in`] over a mapped file: the run's filter and entries
+    /// are read where they lie, and keys are compared in place.
+    fn find_in_place(&self, run: &Run, key: &Digest) -> Result<Option<Located>, StoreError> {
+        let filter = self.read(run.filter, run.words * 8)?;
+        let (words, _) = filter.as_chunks::<8>();
+        let word = |at: usize| -> Result<u64, StoreError> {
+            words
+                .get(at)
+                .map(|word| u64::from_le_bytes(*word))
+                .ok_or(PARTIAL)
+        };
+        if !filter::may_contain(key, run.words, word)? {
+            return Ok(None);
+        }
+        let entries = self.read(run.entries, run.count * ENTRY_BYTES)?;
+        let (rows, _) = entries.as_chunks::<ENTRY_BYTES>();
+        let Ok(at) = rows.binary_search_by(|row| row[..32].cmp(key)) else {
+            return Ok(None);
+        };
+        let row = &rows[at];
+        let mut decoder = Decoder::new(&row[32..]);
+        Ok(Some((decoder.u64()?, decoder.u32()?)))
+    }
+
     /// The value filed under `key` in the newest run that has one.
     pub(crate) fn attribute_in(
         &self,
         runs: &[Run],
         key: &Digest,
     ) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self.attribute_bytes(runs, key)?.map(Cow::into_owned))
+    }
+
+    /// [`Index::attribute_in`], borrowing the value from a mapped file.
+    pub(crate) fn attribute_bytes(
+        &self,
+        runs: &[Run],
+        key: &Digest,
+    ) -> Result<Option<Cow<'_, [u8]>>, StoreError> {
         for run in runs {
             if let Some((offset, length)) = self.find_in(run, key)? {
-                return Ok(Some(self.read(offset, length as usize)?.into_owned()));
+                return Ok(Some(self.read(offset, length as usize)?));
             }
         }
         Ok(None)

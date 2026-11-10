@@ -358,6 +358,11 @@ impl Index {
         self.footer
     }
 
+    /// Whether reads borrow the file's mapped bytes rather than copy them.
+    pub(crate) fn is_mapped(&self) -> bool {
+        matches!(self.bytes, Bytes::Mapped(_))
+    }
+
     /// Where the store ends as this index read it.
     pub(crate) fn tail(&self) -> Option<Tail> {
         self.footer.map(|footer| Tail {
