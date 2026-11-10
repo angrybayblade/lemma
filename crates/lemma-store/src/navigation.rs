@@ -282,7 +282,8 @@ impl Store {
 
     /// The stored snapshot of a directory, if it has been indexed.
     pub fn snapshot_for_root(&self, root: &str) -> Result<Option<StoredSnapshot>, StoreError> {
-        let catalog = self.catalog()?;
+        let opened = self.opened()?;
+        let catalog = &opened.catalog;
         Ok(catalog
             .snapshots
             .iter()
@@ -293,8 +294,9 @@ impl Store {
     /// Source files that differed from the snapshot's revision when it was
     /// taken, sorted.
     pub fn uncommitted_paths(&self, snapshot_id: i64) -> Result<Vec<String>, StoreError> {
-        let catalog = self.catalog()?;
-        Ok(entry(&catalog, snapshot_id).map_or_else(Vec::new, |entry| entry.uncommitted.clone()))
+        let opened = self.opened()?;
+        let catalog = &opened.catalog;
+        Ok(entry(catalog, snapshot_id).map_or_else(Vec::new, |entry| entry.uncommitted.clone()))
     }
 
     /// Replaces a snapshot's exports and links, recording what they were
@@ -337,24 +339,27 @@ impl Store {
 
     /// What a snapshot's exports were last built from, if they were.
     pub fn exports_fingerprint(&self, snapshot_id: i64) -> Result<Option<String>, StoreError> {
-        let catalog = self.catalog()?;
-        Ok(entry(&catalog, snapshot_id)
+        let opened = self.opened()?;
+        let catalog = &opened.catalog;
+        Ok(entry(catalog, snapshot_id)
             .and_then(|entry| entry.exports.as_ref())
             .map(|exports| exports.fingerprint.clone()))
     }
 
     /// A snapshot's exports, by service, name and kind.
     pub fn exports(&self, snapshot_id: i64) -> Result<Vec<Export>, StoreError> {
-        let catalog = self.catalog()?;
-        Ok(entry(&catalog, snapshot_id)
+        let opened = self.opened()?;
+        let catalog = &opened.catalog;
+        Ok(entry(catalog, snapshot_id)
             .and_then(|entry| entry.exports.as_ref())
             .map_or_else(Vec::new, |exports| exports.list.clone()))
     }
 
     /// A snapshot's declared links, sorted.
     pub fn export_links(&self, snapshot_id: i64) -> Result<Vec<ExportLink>, StoreError> {
-        let catalog = self.catalog()?;
-        Ok(entry(&catalog, snapshot_id)
+        let opened = self.opened()?;
+        let catalog = &opened.catalog;
+        Ok(entry(catalog, snapshot_id)
             .and_then(|entry| entry.exports.as_ref())
             .map_or_else(Vec::new, |exports| exports.links.clone()))
     }
@@ -371,7 +376,8 @@ impl Store {
 
     /// The workspace's members, by name; empty for a repository's index.
     pub fn workspace_members(&self) -> Result<Vec<StoredMember>, StoreError> {
-        let catalog = self.catalog()?;
+        let opened = self.opened()?;
+        let catalog = &opened.catalog;
         Ok(catalog.members.iter().map(stored_member).collect())
     }
 
@@ -404,7 +410,8 @@ impl Store {
     /// Each member with its store and the snapshot of its indexed root.
     fn mounted(&self) -> Result<Vec<(Member, Store, i64)>, StoreError> {
         let mut mounted = Vec::new();
-        for member in self.catalog()?.members {
+        let opened = self.opened()?;
+        for member in opened.catalog.members.iter().cloned() {
             let path = Path::new(&member.database);
             if !path.exists() {
                 continue;
@@ -419,7 +426,8 @@ impl Store {
 
     /// Every snapshot, by id.
     pub fn snapshots(&self) -> Result<Vec<StoredSnapshot>, StoreError> {
-        let catalog = self.catalog()?;
+        let opened = self.opened()?;
+        let catalog = &opened.catalog;
         let mut snapshots: Vec<StoredSnapshot> =
             catalog.snapshots.iter().map(stored_snapshot).collect();
         snapshots.sort_by_key(|snapshot| snapshot.id);
@@ -549,8 +557,9 @@ impl Store {
     }
 
     fn generation(&self, snapshot_id: i64) -> Result<u64, StoreError> {
-        let catalog = self.catalog()?;
-        Ok(entry(&catalog, snapshot_id).map_or(0, |entry| entry.generation))
+        let opened = self.opened()?;
+        let catalog = &opened.catalog;
+        Ok(entry(catalog, snapshot_id).map_or(0, |entry| entry.generation))
     }
 
     fn answer(&self, key: &AnswerKey<'_>) -> Result<Option<Vec<u8>>, StoreError> {
