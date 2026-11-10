@@ -58,9 +58,9 @@ struct Catalog {
     next_snapshot: i64,
     next_symbol: i64,
     snapshots: Vec<Entry>,
+    /// The repositories a workspace mounts: each is read from its own
+    /// store when asked, never copied into this one.
     members: Vec<Member>,
-    workspace_exports: Vec<(String, Export)>,
-    workspace_links: Vec<ExportLink>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,8 +166,11 @@ impl Store {
     }
 
     fn open_as(path: &Path, is_temporary: bool) -> Result<Self, StoreError> {
-        // Creating the file needs the writer; it is let go at once.
-        drop(Writer::open_waiting(path)?);
+        // Creating the file needs the writer; it is let go at once. An
+        // existing store is only read, so a busy writer does not hold this up.
+        if !path.exists() {
+            drop(Writer::open_waiting(path)?);
+        }
         let opened = open_current(path)?;
         Ok(Self {
             path: path.to_owned(),
@@ -415,20 +418,13 @@ impl Store {
             .map_or_else(Vec::new, |exports| exports.links.clone()))
     }
 
-    /// Replaces the workspace this store indexes: its members, and their
-    /// exports and links (addresses absolute), each with its member's name.
-    pub fn replace_workspace(
-        &mut self,
-        members: &[StoredMember],
-        exports: &[(String, Export)],
-        links: &[ExportLink],
-    ) -> Result<(), StoreError> {
+    /// Mounts the repositories a workspace composes: records where each
+    /// one's store is, and reads their exports and links from there.
+    pub fn mount_workspace(&mut self, members: &[StoredMember]) -> Result<(), StoreError> {
         let mut catalog = self.catalog()?;
         let mut members: Vec<Member> = members.iter().map(member_of).collect();
         members.sort_by(|left, right| left.name.cmp(&right.name));
         catalog.members = members;
-        catalog.workspace_exports = unique_exports(exports.iter().cloned());
-        catalog.workspace_links = unique_links(links);
         self.write_catalog(&catalog)
     }
 
@@ -438,14 +434,46 @@ impl Store {
         Ok(catalog.members.iter().map(stored_member).collect())
     }
 
-    /// Every member's exports, each with its member's name.
+    /// Every member's exports, each with its member's name, read from the
+    /// members' stores. A member not indexed yet has none.
     pub fn workspace_exports(&self) -> Result<Vec<(String, Export)>, StoreError> {
-        Ok(self.catalog()?.workspace_exports)
+        let mut exports = Vec::new();
+        for (member, store, snapshot_id) in self.mounted()? {
+            for export in store.exports(snapshot_id)? {
+                exports.push((member.name.clone(), export));
+            }
+        }
+        Ok(unique_exports(exports.into_iter()))
     }
 
     /// Every member's links, with absolute addresses, sorted.
     pub fn workspace_links(&self) -> Result<Vec<ExportLink>, StoreError> {
-        Ok(self.catalog()?.workspace_links)
+        let mut links = Vec::new();
+        for (member, store, snapshot_id) in self.mounted()? {
+            for link in store.export_links(snapshot_id)? {
+                links.push(ExportLink {
+                    caller: absolute_address(&member.name, &link.caller),
+                    provider: absolute_address(&member.name, &link.provider),
+                });
+            }
+        }
+        Ok(unique_links(&links))
+    }
+
+    /// Each member with its store and the snapshot of its indexed root.
+    fn mounted(&self) -> Result<Vec<(Member, Store, i64)>, StoreError> {
+        let mut mounted = Vec::new();
+        for member in self.catalog()?.members {
+            let path = Path::new(&member.database);
+            if !path.exists() {
+                continue;
+            }
+            let store = Store::open(path)?;
+            if let Some(snapshot) = store.snapshot_for_root(&member.indexed_root)? {
+                mounted.push((member, store, snapshot.id));
+            }
+        }
+        Ok(mounted)
     }
 
     /// Every snapshot, by id.
@@ -776,6 +804,15 @@ fn unique_exports(exports: impl Iterator<Item = (String, Export)>) -> Vec<(Strin
         unique.insert(key, (owner, export));
     }
     unique.into_values().collect()
+}
+
+/// An address as a workspace names it: one written inside `member`'s
+/// description (`services.a.op`) gets the member's name.
+fn absolute_address(member: &str, address: &str) -> String {
+    if address.starts_with('#') {
+        return address.to_owned();
+    }
+    format!("{member}:{address}")
 }
 
 fn unique_links(links: &[ExportLink]) -> Vec<ExportLink> {
@@ -1688,5 +1725,62 @@ mod tests {
 
         let cached = store.cached_locations(&key).unwrap().unwrap();
         assert_eq!(cached.answer, ProviderAnswer::Empty);
+    }
+
+    fn member(directory: &std::path::Path, name: &str) -> StoredMember {
+        StoredMember {
+            name: format!("#{name}"),
+            root: format!("/{name}"),
+            revision: None,
+            indexed_root: format!("/{name}"),
+            database: directory.join(format!("{name}.ls")).display().to_string(),
+        }
+    }
+
+    fn export(service: &str, name: &str) -> Export {
+        Export {
+            service: service.to_owned(),
+            name: name.to_owned(),
+            kind: ExportKind::Operation,
+            path: None,
+            symbol: None,
+            detail: None,
+            found_by: None,
+        }
+    }
+
+    #[test]
+    fn a_workspace_reads_its_members_exports_from_their_stores() {
+        let directory = std::env::temp_dir().join(format!("lemma-mount-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let billing = member(&directory, "billing");
+        let mut store = Store::open(Path::new(&billing.database)).unwrap();
+        let id = save(&mut store, &snapshot("/billing", "fp"), &sample_files());
+        let links = [ExportLink {
+            caller: "services.api.charge".to_owned(),
+            provider: "#ledger:services.api.post".to_owned(),
+        }];
+        store
+            .replace_exports(id, "fp", &[export("api", "charge")], &links)
+            .unwrap();
+        let mut workspace = Store::open(&directory.join("workspace.ls")).unwrap();
+
+        workspace
+            .mount_workspace(&[billing.clone(), member(&directory, "absent")])
+            .unwrap();
+        let exports = workspace.workspace_exports().unwrap();
+        store
+            .replace_exports(id, "fp2", &[export("api", "refund")], &links)
+            .unwrap();
+        let after = workspace.workspace_exports().unwrap();
+        let mounted_links = workspace.workspace_links().unwrap();
+
+        assert_eq!(exports, [("#billing".to_owned(), export("api", "charge"))]);
+        assert_eq!(after, [("#billing".to_owned(), export("api", "refund"))]);
+        assert_eq!(mounted_links[0].caller, "#billing:services.api.charge");
+        assert_eq!(mounted_links[0].provider, "#ledger:services.api.post");
+        assert_eq!(workspace.workspace_members().unwrap().len(), 2);
+        drop((store, workspace));
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }

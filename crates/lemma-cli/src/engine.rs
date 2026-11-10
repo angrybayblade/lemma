@@ -410,7 +410,7 @@ impl Engine {
             if let (Ok(_), Indexing::Command(retention, _)) = (&result, indexing) {
                 self.apply_retention(&default_index_path(&member.root)?, &member.root, retention)?;
             }
-            workspace.record(member, result)?;
+            workspace.record(member, result);
         }
         for missing in &composition.unavailable {
             workspace.lines.push(output::MemberLine::skipped(
@@ -423,7 +423,7 @@ impl Engine {
             None => default_index_path(root)?,
         };
         let store = store_for_writing(&mut self.stores, &db_path)?;
-        store.replace_workspace(&workspace.members, &workspace.exports, &workspace.links)?;
+        store.mount_workspace(&workspace.members)?;
         // A workspace's index holds its members, not code of its own: drop
         // any snapshot left from indexing the directory before it composed
         // repositories.
@@ -1331,8 +1331,6 @@ struct Indexed {
 #[derive(Default)]
 struct WorkspaceIndex {
     members: Vec<StoredMember>,
-    exports: Vec<(String, lemma_model::Export)>,
-    links: Vec<lemma_model::ExportLink>,
     lines: Vec<output::MemberLine>,
 }
 
@@ -1342,7 +1340,7 @@ impl WorkspaceIndex {
         &mut self,
         member: &lemma_graph::compose::Member,
         result: anyhow::Result<(StoredMember, Indexed)>,
-    ) -> anyhow::Result<()> {
+    ) {
         let (stored, indexed) = match result {
             Ok(found) => found,
             Err(error) => {
@@ -1350,37 +1348,16 @@ impl WorkspaceIndex {
                     &member.name,
                     format!("{error:#}"),
                 ));
-                return Ok(());
+                return;
             }
         };
-        let store = Store::open(Path::new(&stored.database))?;
-        let snapshot_id = indexed.summary.snapshot_id;
-        for export in store.exports(snapshot_id)? {
-            self.exports.push((member.name.clone(), export));
-        }
-        for link in store.export_links(snapshot_id)? {
-            self.links.push(lemma_model::ExportLink {
-                caller: absolute_address(&member.name, &link.caller),
-                provider: absolute_address(&member.name, &link.provider),
-            });
-        }
         self.lines.push(output::MemberLine::indexed(
             &stored,
             &indexed.summary,
             &indexed.exports,
         ));
         self.members.push(stored);
-        Ok(())
     }
-}
-
-/// An address as a workspace names it: one written inside `member`'s
-/// the description (`services.a.op`) gets the member's name.
-fn absolute_address(member: &str, address: &str) -> String {
-    if address.starts_with('#') {
-        return address.to_owned();
-    }
-    format!("{member}:{address}")
 }
 
 /// Clears exports and links a description since removed left behind.
