@@ -28,7 +28,7 @@ impl Writer {
         if self.live_bytes()?.saturating_mul(2) < length {
             return self.compact();
         }
-        self.publish(Vec::new(), None, None, Some(length))
+        self.publish(&[], None, None, Some(length))
     }
 
     /// Bytes that the roots and the newest attribute values still use.

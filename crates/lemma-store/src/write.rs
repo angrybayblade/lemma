@@ -10,6 +10,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use crate::commit::Edits;
 use crate::read::{self, Footer, Index, ReadMode};
 use crate::{Change, Digest, SourceRecord, StoreError};
 
@@ -75,6 +76,25 @@ impl Pending {
         self.bytes.push(kind);
         self.bytes.extend_from_slice(&length.to_le_bytes());
         self.bytes.extend_from_slice(payload);
+        Ok(offset)
+    }
+
+    /// Appends a segment node holding `files`, built in place, and returns
+    /// its offset.
+    pub(crate) fn append_segment(
+        &mut self,
+        files: &[(&str, crate::segment::Entry<'_>)],
+    ) -> Result<u64, StoreError> {
+        let offset = self.position();
+        let header = self.bytes.len();
+        self.bytes.push(read::SEGMENT_NODE);
+        self.bytes.extend_from_slice(&[0; 4]);
+        crate::segment::build_into(files, &mut self.bytes)?;
+        let length =
+            u32::try_from(self.bytes.len() - header - 5).map_err(|_| StoreError::Damaged {
+                what: "a node would be larger than 4 GiB",
+            })?;
+        self.bytes[header + 1..header + 5].copy_from_slice(&length.to_le_bytes());
         Ok(offset)
     }
 
@@ -148,32 +168,42 @@ impl Writer {
     /// Applies everything in `write` as one commit, and returns the digest
     /// of the committed source's files, if it commits one.
     pub fn write(&mut self, write: &Write<'_>) -> Result<Option<Digest>, StoreError> {
+        let commit = write
+            .commit
+            .map(|(commit, changes)| (commit, crate::commit::edits_of(changes)));
+        let commit = commit.as_ref().map(|(commit, edits)| (commit, edits));
+        self.write_edits(commit, write.removed_roots, write.attributes)
+    }
+
+    /// [`Writer::write`], with the commit's changes as sorted edits.
+    pub(crate) fn write_edits<V: AsRef<[u8]>>(
+        &mut self,
+        commit: Option<(&Commit<'_>, &Edits<'_>)>,
+        removed_roots: &[String],
+        attributes: &[(Digest, V)],
+    ) -> Result<Option<Digest>, StoreError> {
         let mut roots = self.index.roots()?;
         let mut pending = Pending::new(self.index.length());
         let mut digest = None;
-        if let Some((commit, changes)) = &write.commit {
-            let root = pending.commit_root(&self.index, &roots, commit, changes)?;
+        let roots_changed = commit.is_some() || !removed_roots.is_empty();
+        if let Some((commit, edits)) = commit {
+            let root = pending.commit_root(&self.index, &roots, commit, edits)?;
             digest = Some(root.digest);
             roots.insert(commit.root.to_owned(), root);
         }
-        for name in write.removed_roots {
+        for name in removed_roots {
             roots.remove(name);
         }
-        let runs = match write.attributes {
+        let runs = match attributes {
             [] => None,
             entries => Some(pending.append_attributes(&self.index, entries)?),
         };
-        let roots_changed = write.commit.is_some() || !write.removed_roots.is_empty();
         let roots = if roots_changed {
             Some(pending.append_node(read::ROOTS_NODE, &read::encode_roots(&roots))?)
         } else {
             None
         };
-        let is_large = pending.bytes.len() >= FLUSH_BYTES;
-        self.publish(pending.bytes, roots, runs, None)?;
-        if is_large {
-            self.checkpoint()?;
-        }
+        self.publish(&pending.bytes, roots, runs, None)?;
         self.compact_if_due()?;
         Ok(digest)
     }
@@ -182,32 +212,51 @@ impl Writer {
     /// keeps what the last footer named.
     pub(crate) fn publish(
         &mut self,
-        mut bytes: Vec<u8>,
+        bytes: &[u8],
         roots: Option<u64>,
         runs: Option<u64>,
         checked: Option<u64>,
     ) -> Result<(), StoreError> {
         let last = self.index.footer();
         let start = self.index.length();
+        let offset = start + bytes.len() as u64;
+        self.append(bytes)?;
+        // A large commit is flushed before its footer is written, so the
+        // footer can say it is on disk and no reader need hash it.
+        let (synced, commit) = if bytes.len() >= FLUSH_BYTES {
+            self.sync()?;
+            (offset, [0; 32])
+        } else {
+            let synced = last.map_or(read::HEADER_BYTES, |footer| footer.synced);
+            (synced, *blake3::hash(bytes).as_bytes())
+        };
         let footer = Footer {
-            offset: start + bytes.len() as u64,
+            offset,
             roots: roots.or(last.map(|footer| footer.roots)).unwrap_or(0),
             runs: runs.or(last.map(|footer| footer.runs)).unwrap_or(0),
             previous: last.map_or(0, |footer| footer.offset),
             start,
-            synced: last.map_or(read::HEADER_BYTES, |footer| footer.synced),
+            synced,
             checked: checked.or(last.map(|footer| footer.checked)).unwrap_or(0),
-            commit: *blake3::hash(&bytes).as_bytes(),
+            commit,
         };
-        bytes.extend_from_slice(&read::encode_footer(&footer));
-        self.file
-            .write_all(&bytes)
-            .map_err(|source| StoreError::Io {
-                path: self.path.clone(),
-                source,
-            })?;
+        self.append(&read::encode_footer(&footer))?;
         self.index = Index::open(&self.path, ReadMode::Mapped)?;
         Ok(())
+    }
+
+    fn append(&mut self, bytes: &[u8]) -> Result<(), StoreError> {
+        self.file.write_all(bytes).map_err(|source| StoreError::Io {
+            path: self.path.clone(),
+            source,
+        })
+    }
+
+    fn sync(&self) -> Result<(), StoreError> {
+        self.file.sync_data().map_err(|source| StoreError::Io {
+            path: self.path.clone(),
+            source,
+        })
     }
 
     /// Flushes the file, then appends a footer saying everything before it

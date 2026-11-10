@@ -139,26 +139,31 @@ impl Writer {
     /// Files each value under its key, replacing earlier values, and makes
     /// them visible to the next reader. For a key given twice, the later
     /// value wins.
-    pub fn put_attributes(&mut self, entries: &[(Digest, Vec<u8>)]) -> Result<(), StoreError> {
-        self.write(&crate::Write {
-            commit: None,
-            removed_roots: &[],
-            attributes: entries,
-        })
-        .map(drop)
+    pub fn put_attributes<V: AsRef<[u8]>>(
+        &mut self,
+        entries: &[(Digest, V)],
+    ) -> Result<(), StoreError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut pending = Pending::new(self.index.length());
+        let runs = pending.append_attributes(&self.index, entries)?;
+        self.publish(&pending.bytes, None, Some(runs), None)?;
+        self.compact_if_due()
     }
 }
 
 impl Pending {
     /// Appends `entries` and a new list of runs, merging the runs when
     /// there are too many; returns the list's offset.
-    pub(crate) fn append_attributes(
+    pub(crate) fn append_attributes<V: AsRef<[u8]>>(
         &mut self,
         index: &Index,
-        entries: &[(Digest, Vec<u8>)],
+        entries: &[(Digest, V)],
     ) -> Result<u64, StoreError> {
         let mut fresh: BTreeMap<Digest, Located> = BTreeMap::new();
         for (key, value) in entries {
+            let value = value.as_ref();
             let length = u32::try_from(value.len()).map_err(|_| StoreError::Damaged {
                 what: "an attribute would be larger than 4 GiB",
             })?;

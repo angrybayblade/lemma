@@ -12,10 +12,11 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use lemma_model::{Language, Span, SymbolKind};
+use rayon::prelude::*;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::codec::{self, Decoder, Encoder};
 use crate::ids::SymbolId;
@@ -98,11 +99,13 @@ fn small(value: usize) -> Result<u32, StoreError> {
     u32::try_from(value).map_err(|_| TOO_LARGE)
 }
 
-/// Columns gathered while files are written, for the tables built after.
+/// One file's rows and the columns its symbols add, built on their own so
+/// that files can be built in parallel and joined in path order.
 #[derive(Default)]
-struct Tables {
-    sections: [Vec<u8>; SECTIONS],
-    symbols: usize,
+struct FileRows {
+    file_row: Vec<u8>,
+    symbol_rows: Vec<u8>,
+    mention_rows: Vec<u8>,
     names: Vec<u32>,
     qualified: Vec<u32>,
     mentions: Vec<u32>,
@@ -110,66 +113,133 @@ struct Tables {
     ids: Vec<(SymbolId, u32)>,
 }
 
+/// Where a file's symbols and mentions start in the segment.
+#[derive(Clone, Copy)]
+struct Bases {
+    file: u32,
+    symbol: u32,
+    mention: u32,
+}
+
+type Sids<'a> = FxHashMap<&'a str, u32>;
+
 /// A segment holding `files`, which are sorted by path with no path twice.
 pub(crate) fn build(files: &[(&str, Entry<'_>)]) -> Result<Vec<u8>, StoreError> {
+    let mut bytes = Vec::new();
+    build_into(files, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// Appends a segment holding `files` to `out`.
+pub(crate) fn build_into(files: &[(&str, Entry<'_>)], out: &mut Vec<u8>) -> Result<(), StoreError> {
     let strings = string_table(files);
-    let sids: HashMap<&str, u32> = strings
+    let sids: Sids<'_> = strings
         .iter()
         .enumerate()
         .map(|(sid, text)| Ok((*text, small(sid)?)))
         .collect::<Result<_, StoreError>>()?;
-    let mut tables = Tables::default();
-    write_paths(files, &mut tables.sections)?;
-    for (file, (path, entry)) in files.iter().enumerate() {
-        write_file((small(file)?, path), entry, &sids, &mut tables)?;
+    let bases = bases(files)?;
+    let rows: Vec<FileRows> = files
+        .par_iter()
+        .zip(bases.par_iter())
+        .map(|((path, entry), bases)| file_rows(path, entry, *bases, &sids))
+        .collect::<Result<_, _>>()?;
+    let mut sections: [Vec<u8>; SECTIONS] = Default::default();
+    write_paths(files, &mut sections)?;
+    write_strings(&strings, &mut sections)?;
+    let symbols: usize = rows.iter().map(|file| file.names.len()).sum();
+    let mut joined = FileRows::default();
+    for file in rows {
+        sections[FILES].extend_from_slice(&file.file_row);
+        sections[SYMBOLS].extend_from_slice(&file.symbol_rows);
+        sections[MENTIONS].extend_from_slice(&file.mention_rows);
+        joined.names.extend(file.names);
+        joined.qualified.extend(file.qualified);
+        joined.mentions.extend(file.mentions);
+        joined.mention_owners.extend(file.mention_owners);
+        joined.ids.extend(file.ids);
     }
-    write_strings(&strings, &mut tables.sections)?;
-    tables.ids.sort_unstable();
-    for (id, symbol) in &tables.ids {
-        tables.sections[IDS].extend_from_slice(&id.to_bytes());
-        tables.sections[IDS].extend_from_slice(&symbol.to_le_bytes());
+    joined.ids.par_sort_unstable();
+    for (id, symbol) in &joined.ids {
+        sections[IDS].extend_from_slice(&id.to_bytes());
+        sections[IDS].extend_from_slice(&symbol.to_le_bytes());
     }
-    let owners: Vec<u32> = (0..small(tables.symbols)?).collect();
+    let owners: Vec<u32> = (0..small(symbols)?).collect();
     let lists = [
-        (BY_NAME, BY_NAME_ROWS, &tables.names, &owners),
-        (BY_QUALIFIED, BY_QUALIFIED_ROWS, &tables.qualified, &owners),
+        (BY_NAME, BY_NAME_ROWS, &joined.names, &owners),
+        (BY_QUALIFIED, BY_QUALIFIED_ROWS, &joined.qualified, &owners),
         (
             MENTIONED_BY,
             MENTIONED_BY_ROWS,
-            &tables.mentions,
-            &tables.mention_owners,
+            &joined.mentions,
+            &joined.mention_owners,
         ),
     ];
     for (offsets, rows, keys, owners) in lists {
         let (starts, owned) = reverse(strings.len(), keys, owners);
-        tables.sections[offsets] = starts;
-        tables.sections[rows] = owned;
+        sections[offsets] = starts;
+        sections[rows] = owned;
     }
-    let counts = [
-        files.len(),
-        tables.symbols,
-        strings.len(),
-        tables.mentions.len(),
-    ];
-    assemble(counts, &tables.sections)
+    let counts = [files.len(), symbols, strings.len(), joined.mentions.len()];
+    assemble(counts, &sections, out)
+}
+
+/// Where each file's symbols and mentions start, from the counts before it.
+fn bases(files: &[(&str, Entry<'_>)]) -> Result<Vec<Bases>, StoreError> {
+    let mut bases = Vec::with_capacity(files.len());
+    let (mut symbol, mut mention) = (0usize, 0usize);
+    for (file, (_, entry)) in files.iter().enumerate() {
+        bases.push(Bases {
+            file: small(file)?,
+            symbol: small(symbol)?,
+            mention: small(mention)?,
+        });
+        if let Entry::Put { record, .. } = entry {
+            symbol += record.symbols.len();
+            mention += record
+                .symbols
+                .iter()
+                .map(|symbol| symbol.mentions.len())
+                .sum::<usize>();
+        }
+    }
+    small(symbol)?;
+    small(mention)?;
+    Ok(bases)
 }
 
 /// Every name, qualified name and mention in `files`, sorted, once each.
 fn string_table<'a>(files: &'a [(&str, Entry<'_>)]) -> Vec<&'a str> {
-    let mut seen: HashSet<&str> = HashSet::new();
-    for (_, entry) in files {
-        let Entry::Put { record, .. } = entry else {
-            continue;
-        };
-        for symbol in &record.symbols {
-            seen.insert(&symbol.name);
-            seen.insert(&symbol.qualified_name);
-            seen.extend(symbol.mentions.iter().map(String::as_str));
-        }
-    }
+    let seen = files
+        .par_iter()
+        .fold(
+            FxHashSet::default,
+            |mut seen: FxHashSet<&'a str>, (_, entry)| {
+                if let Entry::Put { record, .. } = entry {
+                    for symbol in &record.symbols {
+                        seen.insert(&symbol.name);
+                        seen.insert(&symbol.qualified_name);
+                        seen.extend(symbol.mentions.iter().map(String::as_str));
+                    }
+                }
+                seen
+            },
+        )
+        .reduce(FxHashSet::default, |mut left, right| {
+            if left.len() < right.len() {
+                return merge(right, left);
+            }
+            left.extend(right);
+            left
+        });
     let mut strings: Vec<&str> = seen.into_iter().collect();
-    strings.sort_unstable();
+    strings.par_sort_unstable();
     strings
+}
+
+fn merge<'a>(mut into: FxHashSet<&'a str>, from: FxHashSet<&'a str>) -> FxHashSet<&'a str> {
+    into.extend(from);
+    into
 }
 
 fn write_paths(files: &[(&str, Entry<'_>)], sections: &mut [Vec<u8>]) -> Result<(), StoreError> {
@@ -194,24 +264,24 @@ fn write_strings(strings: &[&str], sections: &mut [Vec<u8>]) -> Result<(), Store
     Ok(())
 }
 
-/// Writes one file's row, and its symbols' rows; `file` is its position
-/// and path.
-fn write_file(
-    (file, path): (u32, &str),
+/// One file's row, and its symbols' rows and columns.
+fn file_rows(
+    path: &str,
     entry: &Entry<'_>,
-    sids: &HashMap<&str, u32>,
-    tables: &mut Tables,
-) -> Result<(), StoreError> {
+    bases: Bases,
+    sids: &Sids<'_>,
+) -> Result<FileRows, StoreError> {
+    let mut rows = FileRows::default();
     let mut row = Encoder::default();
     let Entry::Put { record, stamp } = entry else {
         row.digest(&[0; 32]);
         row.u8(0);
         row.u8(REMOVED);
         write_stamp(&mut row, FileStamp::default());
-        row.u32(small(tables.symbols)?);
+        row.u32(bases.symbol);
         row.u32(0);
-        tables.sections[FILES].extend_from_slice(&row.bytes);
-        return Ok(());
+        rows.file_row = row.bytes;
+        return Ok(rows);
     };
     row.digest(&record.blob);
     row.u8(codec::language_code(record.language));
@@ -221,13 +291,17 @@ fn write_file(
         0
     });
     write_stamp(&mut row, *stamp);
-    row.u32(small(tables.symbols)?);
+    row.u32(bases.symbol);
     row.u32(small(record.symbols.len())?);
-    tables.sections[FILES].extend_from_slice(&row.bytes);
+    rows.file_row = row.bytes;
+    rows.symbol_rows.reserve(record.symbols.len() * SYMBOL_ROW);
+    let mut bases = bases;
     for symbol in &record.symbols {
-        write_symbol(path, file, symbol, sids, tables)?;
+        write_symbol(path, symbol, bases, sids, &mut rows)?;
+        bases.symbol += 1;
+        bases.mention += small(symbol.mentions.len())?;
     }
-    Ok(())
+    Ok(rows)
 }
 
 fn write_stamp(row: &mut Encoder, stamp: FileStamp) {
@@ -239,41 +313,43 @@ fn write_stamp(row: &mut Encoder, stamp: FileStamp) {
 
 fn write_symbol(
     path: &str,
-    file: u32,
     symbol: &SymbolRecord,
-    sids: &HashMap<&str, u32>,
-    tables: &mut Tables,
+    bases: Bases,
+    sids: &Sids<'_>,
+    rows: &mut FileRows,
 ) -> Result<(), StoreError> {
     let sid = |text: &str| sids.get(text).copied().ok_or(DAMAGED);
-    let ordinal = small(tables.symbols)?;
     let id = SymbolId::of(
         path,
         &symbol.qualified_name,
         symbol.kind,
         symbol.discriminator,
     );
-    let mut row = Encoder::default();
-    row.u32(sid(&symbol.name)?);
-    row.u32(sid(&symbol.qualified_name)?);
+    let name = sid(&symbol.name)?;
+    let qualified = sid(&symbol.qualified_name)?;
+    let mut row = Encoder {
+        bytes: std::mem::take(&mut rows.symbol_rows),
+    };
+    row.u32(name);
+    row.u32(qualified);
     row.u8(codec::kind_code(symbol.kind));
     row.span(symbol.span);
     row.span(symbol.name_span);
     row.u32(symbol.discriminator);
     row.digest(&symbol.digest);
     row.bytes.extend_from_slice(&id.to_bytes());
-    row.u32(file);
-    row.u32(small(tables.mentions.len())?);
-    tables.sections[SYMBOLS].extend_from_slice(&row.bytes);
-    tables.names.push(sid(&symbol.name)?);
-    tables.qualified.push(sid(&symbol.qualified_name)?);
+    row.u32(bases.file);
+    row.u32(bases.mention);
+    rows.symbol_rows = row.bytes;
+    rows.names.push(name);
+    rows.qualified.push(qualified);
     for mention in &symbol.mentions {
         let mention = sid(mention)?;
-        tables.sections[MENTIONS].extend_from_slice(&mention.to_le_bytes());
-        tables.mentions.push(mention);
-        tables.mention_owners.push(ordinal);
+        rows.mention_rows.extend_from_slice(&mention.to_le_bytes());
+        rows.mentions.push(mention);
+        rows.mention_owners.push(bases.symbol);
     }
-    tables.ids.push((id, ordinal));
-    tables.symbols += 1;
+    rows.ids.push((id, bases.symbol));
     Ok(())
 }
 
@@ -303,11 +379,16 @@ fn reverse(strings: usize, keys: &[u32], owners: &[u32]) -> (Vec<u8>, Vec<u8>) {
     (encode(&starts), encode(&rows))
 }
 
-fn assemble(counts: [usize; 4], sections: &[Vec<u8>; SECTIONS]) -> Result<Vec<u8>, StoreError> {
+fn assemble(
+    counts: [usize; 4],
+    sections: &[Vec<u8>; SECTIONS],
+    out: &mut Vec<u8>,
+) -> Result<(), StoreError> {
     let total = HEADER_BYTES + sections.iter().map(Vec::len).sum::<usize>();
     small(total)?;
+    out.reserve(total);
     let mut encoder = Encoder {
-        bytes: Vec::with_capacity(total),
+        bytes: std::mem::take(out),
     };
     for count in counts {
         encoder.u32(small(count)?);
@@ -321,7 +402,8 @@ fn assemble(counts: [usize; 4], sections: &[Vec<u8>; SECTIONS]) -> Result<Vec<u8
     for section in sections {
         encoder.bytes.extend_from_slice(section);
     }
-    Ok(encoder.bytes)
+    *out = encoder.bytes;
+    Ok(())
 }
 
 /// A segment read in place.
@@ -346,6 +428,29 @@ fn utf8(bytes: &[u8]) -> Result<&str, StoreError> {
     std::str::from_utf8(bytes).map_err(|_| StoreError::Damaged {
         what: "segment text is not UTF-8",
     })
+}
+
+/// Whether `text` holds `needle`, ignoring ASCII case: candidates are
+/// found by the needle's first byte in either case, then compared.
+fn holds_ignoring_case(text: &[u8], needle: &[u8]) -> bool {
+    let Some((first, rest)) = needle.split_first() else {
+        return true;
+    };
+    if text.len() < needle.len() {
+        return false;
+    }
+    let last_start = text.len() - needle.len();
+    let candidates = memchr::memchr2_iter(
+        first.to_ascii_lowercase(),
+        first.to_ascii_uppercase(),
+        &text[..=last_start],
+    );
+    for at in candidates {
+        if text[at + 1..at + needle.len()].eq_ignore_ascii_case(rest) {
+            return true;
+        }
+    }
+    false
 }
 
 /// The position `compare` finds equal among `count` sorted rows.
@@ -516,21 +621,17 @@ impl<'a> Segment<'a> {
         })
     }
 
-    /// The ids of strings holding `needle`, ignoring ASCII case.
+    /// The ids of strings holding `needle`, ignoring ASCII case, sorted.
     pub(crate) fn strings_containing(&self, needle: &str) -> Result<Vec<usize>, StoreError> {
         let needle = needle.as_bytes();
-        let mut found = Vec::new();
-        for sid in 0..self.strings {
-            let text = self.string_bytes(sid)?;
-            let holds = needle.is_empty()
-                || text
-                    .windows(needle.len())
-                    .any(|window| window.eq_ignore_ascii_case(needle));
-            if holds {
-                found.push(sid);
-            }
-        }
-        Ok(found)
+        (0..self.strings)
+            .into_par_iter()
+            .with_min_len(4096)
+            .filter_map(|sid| match self.string_bytes(sid) {
+                Ok(text) => holds_ignoring_case(text, needle).then_some(Ok(sid)),
+                Err(error) => Some(Err(error)),
+            })
+            .collect()
     }
 
     fn symbol_row(&self, symbol: usize) -> Result<&[u8], StoreError> {

@@ -138,6 +138,14 @@ impl Lanes {
         }
     }
 
+    /// Both digests' files counted together.
+    pub(crate) fn plus(mut self, other: Self) -> Self {
+        for (lane, term) in self.0.iter_mut().zip(other.0) {
+            *lane = lane.wrapping_add(term);
+        }
+        self
+    }
+
     /// Counts a file out.
     pub(crate) fn subtract(&mut self, path: &str, blob: &Digest) {
         for (lane, term) in self.0.iter_mut().zip(file_term(path, blob)) {

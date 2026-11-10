@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use lemma_mapped::Mapped;
 use lemma_model::SymbolKind;
+use rayon::prelude::*;
 
 use crate::codec::{self, Decoder, Encoder};
 use crate::segment::Segment;
@@ -368,7 +369,7 @@ impl Index {
     pub fn files(&self, root: &Root) -> Result<Vec<(String, FileRecord)>, StoreError> {
         let view = self.view(root)?;
         view.files()?
-            .into_iter()
+            .into_par_iter()
             .map(|at| Ok((view.path(at)?.to_owned(), view.record(at)?)))
             .collect()
     }

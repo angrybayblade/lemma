@@ -16,10 +16,12 @@ use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
 use lemma_model::{Export, ExportLink, Location, Position, ProviderAnswer, Snapshot};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::attributes::Run;
 use crate::codec::{Decoder, Encoder};
+use crate::commit::{Edit, Edits, latest_by_path};
 use crate::facts::{
     AnswerKey, FactStore, FileKey, NameMatch, NewSnapshot, SnapshotUpdate, StampedFile,
     StoredAnswer, StoredFile, StoredMember, StoredSnapshot, StoredSymbol, SymbolFilter, SymbolKey,
@@ -27,8 +29,8 @@ use crate::facts::{
 };
 use crate::ids::IdPrefix;
 use crate::read::{Index, ReadMode, Root};
-use crate::view::{SymbolAt, View};
-use crate::{Change, Commit, Digest, SourceRecord, StoreError, SymbolId, Write, Writer};
+use crate::view::{At, SymbolAt, View};
+use crate::{Commit, Digest, SourceRecord, StoreError, SymbolId, Write, Writer};
 
 /// How many answers wait in memory before they are written.
 const PENDING_ANSWERS: usize = 256;
@@ -179,6 +181,20 @@ impl Store {
 
     fn write(&mut self, write: &Write<'_>) -> Result<(), StoreError> {
         Writer::open_waiting(&self.path)?.write(write)?;
+        self.reopen()
+    }
+
+    fn write_edits(
+        &mut self,
+        commit: Option<(&Commit<'_>, &Edits<'_>)>,
+        removed_roots: &[String],
+        attributes: &[(Digest, Vec<u8>)],
+    ) -> Result<(), StoreError> {
+        Writer::open_waiting(&self.path)?.write_edits(commit, removed_roots, attributes)?;
+        self.reopen()
+    }
+
+    fn reopen(&mut self) -> Result<(), StoreError> {
         let opened = open_current(&self.path)?;
         if let Ok(mut current) = self.current.write() {
             *current = Arc::new(opened);
@@ -211,7 +227,7 @@ impl Store {
             generation: 0,
             exports: None,
         });
-        let changes: Vec<Change> = new.files.iter().map(put).collect();
+        let edits = latest_by_path(new.files.iter().map(put).collect());
         let name = root_name(id);
         let source = source_of(new.snapshot, new.extractor_version);
         let commit = Commit {
@@ -219,11 +235,8 @@ impl Store {
             parent: None,
             source: &source,
         };
-        self.write(&Write {
-            commit: Some((commit, &changes)),
-            removed_roots: &replaced,
-            attributes: &[(catalog_key(), encode_catalog(&catalog)?)],
-        })?;
+        let attributes = [(catalog_key(), encode_catalog(&catalog)?)];
+        self.write_edits(Some((&commit, &edits)), &replaced, &attributes)?;
         Ok(id)
     }
 
@@ -251,21 +264,18 @@ impl Store {
             entry.generation += 1;
         }
         let source = source_of(update.snapshot, &entry.extractor_version);
-        let mut changes: Vec<Change> = update.changed.iter().map(put).collect();
-        changes.extend(
+        let mut edits: Edits<'_> = update.changed.iter().map(put).collect();
+        edits.extend(
             update
                 .removed
                 .iter()
-                .map(|path| Change::Remove { path: path.clone() }),
+                .map(|path| (path.as_str(), Edit::Remove)),
         );
-        changes.extend(
+        edits.extend(
             update
                 .restamped
                 .iter()
-                .map(|(path, stamp)| Change::Restamp {
-                    path: path.clone(),
-                    stamp: *stamp,
-                }),
+                .map(|(path, stamp)| (path.as_str(), Edit::Restamp { stamp: *stamp })),
         );
         let name = root_name(snapshot_id);
         let commit = Commit {
@@ -273,11 +283,9 @@ impl Store {
             parent: Some(&name),
             source: &source,
         };
-        self.write(&Write {
-            commit: Some((commit, &changes)),
-            removed_roots: &[],
-            attributes: &[(catalog_key(), encode_catalog(&catalog)?)],
-        })
+        let attributes = [(catalog_key(), encode_catalog(&catalog)?)];
+        let edits = latest_by_path(edits);
+        self.write_edits(Some((&commit, &edits)), &[], &attributes)
     }
 
     /// The stored snapshot of a directory, if it has been indexed.
@@ -464,22 +472,13 @@ impl Store {
         let Some(view) = view_of(&opened, snapshot_id)? else {
             return Ok(Vec::new());
         };
-        let mut keys = Vec::new();
-        for (file_id, at) in view.files()?.into_iter().enumerate() {
-            let segment = view.segment(at.segment)?;
-            for symbol in view.row(at)?.symbols {
-                let row = segment.symbol(symbol)?;
-                keys.push(SymbolKey {
-                    id: row.id,
-                    file_id: i64::try_from(file_id).unwrap_or(i64::MAX),
-                    qualified_name: row.qualified_name.to_owned(),
-                    name_length: row.name.len(),
-                    kind: row.kind,
-                    start_line: row.span.start.line,
-                });
-            }
-        }
-        Ok(keys)
+        let per_file: Vec<Vec<SymbolKey>> = view
+            .files()?
+            .into_par_iter()
+            .enumerate()
+            .map(|(file_id, at)| file_symbol_keys(&view, file_id, at))
+            .collect::<Result<_, _>>()?;
+        Ok(per_file.into_iter().flatten().collect())
     }
 
     /// Every file in a snapshot, as needed for searching its symbols.
@@ -594,12 +593,33 @@ impl Drop for Store {
     }
 }
 
-fn put(file: &StampedFile) -> Change {
-    Change::Put {
-        path: file.path.clone(),
-        record: file.record.clone(),
+fn put(file: &StampedFile) -> (&str, Edit<'_>) {
+    let edit = Edit::Put {
+        record: &file.record,
         stamp: file.stamp,
-    }
+    };
+    (file.path.as_str(), edit)
+}
+
+/// The search keys of one file's symbols; `file_id` is its position among
+/// the snapshot's files.
+fn file_symbol_keys(view: &View<'_>, file_id: usize, at: At) -> Result<Vec<SymbolKey>, StoreError> {
+    let segment = view.segment(at.segment)?;
+    let file_id = i64::try_from(file_id).unwrap_or(i64::MAX);
+    view.row(at)?
+        .symbols
+        .map(|symbol| {
+            let row = segment.symbol(symbol)?;
+            Ok(SymbolKey {
+                id: row.id,
+                file_id,
+                qualified_name: row.qualified_name.to_owned(),
+                name_length: row.name.len(),
+                kind: row.kind,
+                start_line: row.span.start.line,
+            })
+        })
+        .collect()
 }
 
 fn identity_of(path: &Path) -> Result<FileIdentity, StoreError> {
@@ -878,7 +898,7 @@ impl FactStore for Store {
             return Ok(Vec::new());
         };
         view.files()?
-            .into_iter()
+            .into_par_iter()
             .map(|at| {
                 let row = view.row(at)?;
                 Ok(StoredFile {

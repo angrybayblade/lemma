@@ -145,9 +145,9 @@ impl Cache {
 
     /// Keeps `entries` now.
     pub fn put_many(&mut self, entries: &[(String, Vec<u8>)]) -> Result<(), StoreError> {
-        let entries: Vec<(Digest, Vec<u8>)> = entries
+        let entries: Vec<(Digest, &[u8])> = entries
             .iter()
-            .map(|(key, value)| (unit_key(key), value.clone()))
+            .map(|(key, value)| (unit_key(key), value.as_slice()))
             .collect();
         Writer::open_waiting(&self.path)?.put_attributes(&entries)
     }

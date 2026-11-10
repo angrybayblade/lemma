@@ -86,10 +86,11 @@ impl StampedFile {
 
 /// A digest written as lowercase hexadecimal.
 pub(crate) fn hex(digest: &Digest) -> String {
-    use std::fmt::Write;
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut text = String::with_capacity(64);
     for byte in digest {
-        let _ = write!(text, "{byte:02x}");
+        text.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        text.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     text
 }
