@@ -28,3 +28,4 @@ html{scroll-padding-top:104px;scroll-behavior:smooth}body.docs{margin:0;overflow
 .syntax-operator{color:var(--lm-color-copper-ink)}
 .syntax-comment{color:var(--lm-color-muted);font-style:italic}
 .code-blank{display:block;height:.75em;overflow:hidden}
+.nav-badge{display:inline-block;margin-left:6px;padding:0 6px;border-radius:4px;font-size:11px;line-height:18px;font-weight:500;vertical-align:1px;color:var(--lm-color-muted);background:var(--lm-color-silver)}

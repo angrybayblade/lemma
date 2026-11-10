@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" class="diagram-svg" viewBox="0 0 640 594" fill="none" role="img" aria-labelledby="task-loop-title task-loop-desc"><title id="task-loop-title">The verification loop on one task</title><desc id="task-loop-desc">Clockwise, for the task "implement support for payment failure retries": 1. Your agent adds a retriable field to billing's charge response. 2. Lemma traces the callers: orders and web. 3. Lemma simulates a declined charge and finds orders drops the retry flag before it reaches the caller. 4. Your agent fixes orders and reruns the check, which passes for both cases. Illustrative.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" class="diagram-svg" viewBox="0 0 640 594" fill="none" role="img" aria-labelledby="task-loop-title task-loop-desc"><title id="task-loop-title">The verification loop on one task</title><desc id="task-loop-desc">Clockwise, for the task "implement support for payment failure retries": 1. Your agent adds a retriable field to billing's charge response. 2. Lemma traces the callers: orders and web. 3. Lemma simulates a declined charge and finds orders drops the retry flag before it reaches the caller. 4. Your agent fixes orders and reruns the check, which passes for both cases. Behavior simulations are in beta. Illustrative.</desc>
 <g class="loop-stage" data-loop-stage="change" style="--stage:0">
 <path class="loop-rule" d="M0 8h40"/><path class="loop-stage-accent" d="M0 8h40"/>
 <text x="0" y="32" class="loop-eyebrow">01 / Your agent</text><text x="0" y="66" class="loop-title">Add the retry flag.</text>
@@ -11,7 +11,7 @@
 </g>
 <g class="loop-stage" data-loop-stage="simulate" style="--stage:2">
 <path class="loop-rule" d="M360 526h40"/><path class="loop-stage-accent" d="M360 526h40"/>
-<text x="360" y="550" class="loop-eyebrow">03 / Lemma</text><text x="360" y="584" class="loop-title">Simulate a decline.</text>
+<text x="360" y="550" class="loop-eyebrow">03 / Lemma · Beta</text><text x="360" y="584" class="loop-title">Simulate a decline.</text>
 <text x="360" y="474" class="loop-code">replay_declined_charge</text><text x="360" y="500" class="loop-code">retriable: <tspan class="loop-code-fail">missing</tspan></text>
 </g>
 <g class="loop-stage" data-loop-stage="recheck" style="--stage:3">

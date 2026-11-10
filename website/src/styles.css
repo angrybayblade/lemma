@@ -321,3 +321,5 @@ html{scroll-padding-top:32px}
 .syntax-operator{color:var(--lm-color-copper-ink)}
 .syntax-comment{color:var(--lm-color-muted);font-style:italic}
 .code-blank{display:block;height:.75em;overflow:hidden}
+.beta-badge{display:inline-block;padding:2px 8px;border-radius:var(--control-radius);font-family:var(--lm-font-sans);font-size:12px;line-height:18px;font-weight:500;letter-spacing:0;white-space:nowrap;vertical-align:middle;color:var(--lm-color-muted);background:var(--lm-color-silver)}
+h2 .beta-badge{position:relative;top:-.12em;margin-left:4px}

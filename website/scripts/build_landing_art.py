@@ -37,7 +37,7 @@ def build() -> None:
 </g>
 <g class="loop-stage" data-loop-stage="simulate" style="--stage:3">
 <path class="loop-rule" d="M34 481h40"/><path class="loop-stage-accent" d="M34 481h40"/>
-<text x="34" y="505" class="loop-eyebrow">04 / Lemma</text><text x="34" y="539" class="loop-title">Simulate behavior.</text>
+<text x="34" y="505" class="loop-eyebrow">04 / Lemma · Beta</text><text x="34" y="539" class="loop-title">Simulate behavior.</text>
 <g class="loop-pictogram" transform="translate(150 386) scale(-.88 .88) translate(-460 -470)"><path class="loop-glyph" d="M370 470h32l30-30h66M402 470h96M402 470l30 30h66"/>
 <path class="loop-glyph" d="m486 430 12 10-12 10m0 10 12 10-12 10m0 10 12 10-12 10"/>
 <rect x="510" y="432" width="16" height="16" class="module"/><rect x="510" y="462" width="16" height="16" class="module"/><rect x="510" y="492" width="16" height="16" class="module"/></g>

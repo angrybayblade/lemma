@@ -9,7 +9,7 @@ export const sections = [
     {slug:'tutorials/1-links', title:'1. Declare a link', source:'docs/tutorials/1-links.md'},
     {slug:'tutorials/2-requirements', title:'2. Write a requirement', source:'docs/tutorials/2-requirements.md'},
     {slug:'tutorials/3-allowances', title:'3. Allow a finding', source:'docs/tutorials/3-allowances.md'},
-    {slug:'tutorials/4-behaviors', title:'4. Test a behavior', source:'docs/tutorials/4-behaviors.md'},
+    {slug:'tutorials/4-behaviors', title:'4. Test a behavior', source:'docs/tutorials/4-behaviors.md', badge:'Beta'},
     {slug:'tutorials/5-features', title:'5. Add a feature', source:'docs/tutorials/5-features.md'},
     {slug:'tutorials/6-editors', title:'6. Set up your editor', source:'docs/tutorials/6-editors.md'},
   ]},

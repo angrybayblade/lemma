@@ -86,7 +86,7 @@ function renderDocument(markdown,page,sourceInfo) {
 }
 
 function navigation(page) {
-  return sections.map(section=>`<section class="nav-group"><h2>${escape(section.title)}</h2><ul>${section.pages.filter(item=>!item.isUnlisted).map(item=>{const entry=pages.find(candidate=>candidate.slug===item.slug);return `<li><a href="${entry.href}"${entry.slug===page.slug?' aria-current="page"':''}>${escape(entry.title)}</a></li>`;}).join('')}</ul></section>`).join('');
+  return sections.map(section=>`<section class="nav-group"><h2>${escape(section.title)}</h2><ul>${section.pages.filter(item=>!item.isUnlisted).map(item=>{const entry=pages.find(candidate=>candidate.slug===item.slug);return `<li><a href="${entry.href}"${entry.slug===page.slug?' aria-current="page"':''}>${escape(entry.title)}${entry.badge?` <span class="nav-badge">${escape(entry.badge)}</span>`:''}</a></li>`;}).join('')}</ul></section>`).join('');
 }
 function outline(headings) {
   return `<ul>${headings.filter(item=>item.depth<=3).map(item=>`<li class="toc-depth-${item.depth}"><a href="#${escape(item.id)}">${escape(item.title)}</a></li>`).join('')}</ul>`;
