@@ -86,6 +86,9 @@ pub(crate) struct ExportCounts {
     pub endpoints: usize,
     /// Those whose route handler was found.
     pub endpoints_at_handlers: usize,
+    /// How those handlers were found (`adapter`, `code`, `declared`,
+    /// `directive`), with how many each.
+    pub handlers_found_by: std::collections::BTreeMap<String, usize>,
     /// Definitions in public modules.
     pub symbols: usize,
     /// Declared links.
@@ -223,7 +226,16 @@ fn export_counts(out: &mut dyn Write, exports: &ExportCounts) -> io::Result<()> 
         exports.endpoints_at_handlers,
         exports.symbols,
         exports.links
-    )
+    )?;
+    if exports.handlers_found_by.is_empty() {
+        return Ok(());
+    }
+    let found_by: Vec<String> = exports
+        .handlers_found_by
+        .iter()
+        .map(|(how, count)| format!("{how} {count}"))
+        .collect();
+    writeln!(out, "handlers found by: {}", found_by.join(", "))
 }
 
 #[derive(Serialize)]

@@ -1458,10 +1458,27 @@ fn update_exports(
                 export.kind == lemma_model::ExportKind::Endpoint && export.symbol.is_some()
             })
             .count(),
+        handlers_found_by: handlers_found_by(&exports),
         symbols: count(lemma_model::ExportKind::Symbol),
         links: store.export_links(snapshot_id)?.len(),
         warnings,
     })
+}
+
+/// How the handlers of documented operations were found, with how many
+/// each: an endpoint found by `code` was guessed from how routes look.
+fn handlers_found_by(exports: &[lemma_model::Export]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    let found = exports.iter().filter(|export| {
+        export.kind == lemma_model::ExportKind::Endpoint && export.symbol.is_some()
+    });
+    for export in found {
+        let how = export
+            .found_by
+            .map_or("unknown", lemma_model::FoundBy::as_str);
+        *counts.entry(how.to_owned()).or_insert(0) += 1;
+    }
+    counts
 }
 
 /// The documents each local service's adapter generates from the code at
