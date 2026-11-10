@@ -5,8 +5,10 @@
 //! each with its value's offset and length, then a Bloom filter over the
 //! keys. The footer names the list of runs, newest first, and a lookup
 //! searches them in that order, skipping a run whose filter rules the key
-//! out, so a newer value for a key hides an older one. When the list grows
-//! past a few runs, the writer merges them into one; values are not copied.
+//! out, so a newer value for a key hides an older one. A write merges the
+//! newest runs into its own while they are no larger than what it has
+//! gathered, so runs grow in size tiers: a small write rewrites only small
+//! runs, and the list stays short. Values are never copied.
 
 use std::collections::BTreeMap;
 
@@ -18,8 +20,13 @@ use crate::{Digest, StoreError, filter};
 /// Bytes of one run entry: a key, its value's offset and length.
 const ENTRY_BYTES: usize = 32 + 8 + 4;
 
-/// How many runs a lookup may search before a write merges them.
+/// How many runs a lookup may search; a write merges more of the newest
+/// runs than their sizes ask for to keep within it.
 const MAX_RUNS: usize = 8;
+
+/// A write takes in the next older run while it holds at most this many
+/// times the entries gathered so far.
+const TIER_RATIO: usize = 2;
 
 /// A key's value: where it is, and how long.
 pub(crate) type Located = (u64, u32);
@@ -216,26 +223,44 @@ impl Pending {
         self.append_runs(index, fresh)
     }
 
-    /// Appends a run of `fresh` and a new list of runs, merging the runs
-    /// when there are too many; returns the list's offset.
+    /// Appends a run of `fresh`, merged with as many of the newest runs as
+    /// their sizes ask for, and a new list of runs; returns the list's
+    /// offset.
     pub(crate) fn append_runs(
         &mut self,
         index: &Index,
         mut fresh: BTreeMap<Digest, Located>,
     ) -> Result<u64, StoreError> {
         let runs = index.runs()?;
-        let list = if runs.len() < MAX_RUNS {
-            let mut list = vec![self.append_node(read::RUN_NODE, &encode_run(&fresh))?];
-            list.extend(runs.iter().map(|run| run.node));
-            list
-        } else {
-            for (key, located) in index.attribute_entries()? {
+        let merged = runs_to_merge(&runs, fresh.len());
+        for run in &runs[..merged] {
+            for position in 0..run.count {
+                let (key, located) = index.run_entry(run, position)?;
                 fresh.entry(key).or_insert(located);
             }
-            vec![self.append_node(read::RUN_NODE, &encode_run(&fresh))?]
-        };
+        }
+        let mut list = vec![self.append_node(read::RUN_NODE, &encode_run(&fresh))?];
+        list.extend(runs[merged..].iter().map(|run| run.node));
         self.append_node(read::RUNS_NODE, &encode_list(&list))
     }
+}
+
+/// How many of the newest `runs` a write of `fresh` entries merges: each
+/// next run while it is small beside what has been gathered, and more while
+/// the list would be too long.
+fn runs_to_merge(runs: &[Run], fresh: usize) -> usize {
+    let mut gathered = fresh.max(1);
+    let mut merged = 0;
+    while let Some(run) = runs.get(merged) {
+        let is_small = run.count <= gathered.saturating_mul(TIER_RATIO);
+        let is_too_long = runs.len() - merged >= MAX_RUNS;
+        if !is_small && !is_too_long {
+            break;
+        }
+        gathered = gathered.saturating_add(run.count);
+        merged += 1;
+    }
+    merged
 }
 
 /// A run's payload: its entries, sorted by key, then its filter.
@@ -262,4 +287,51 @@ pub(crate) fn encode_list(offsets: &[u64]) -> Vec<u8> {
         encoder.u64(*offset);
     }
     encoder.bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runs_of(counts: &[usize]) -> Vec<Run> {
+        counts
+            .iter()
+            .map(|count| Run {
+                node: 0,
+                entries: 0,
+                count: *count,
+                filter: 0,
+                words: 0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_small_write_leaves_a_large_run_alone() {
+        let runs = runs_of(&[100_000]);
+
+        let merged = runs_to_merge(&runs, 10);
+
+        assert_eq!(merged, 0);
+    }
+
+    #[test]
+    fn a_write_takes_in_newer_runs_of_its_size() {
+        let runs = runs_of(&[10, 10, 100]);
+
+        let merged = runs_to_merge(&runs, 10);
+
+        assert_eq!(merged, 2);
+    }
+
+    #[test]
+    fn too_many_runs_are_merged_from_the_newest() {
+        let counts: Vec<usize> = (0..9).map(|power| 10usize.pow(power)).collect();
+        let runs = runs_of(&counts);
+
+        let merged = runs_to_merge(&runs, 1);
+
+        assert_eq!(merged, 2);
+        assert_eq!(1 + runs.len() - merged, MAX_RUNS);
+    }
 }

@@ -28,7 +28,7 @@ use crate::facts::{
     hex,
 };
 use crate::ids::IdPrefix;
-use crate::read::{Index, ReadMode, Root};
+use crate::read::{Index, ReadMode, Root, Tail};
 use crate::view::{At, SymbolAt, View};
 use crate::{Commit, Digest, SourceRecord, StoreError, SymbolId, Write, Writer};
 
@@ -183,8 +183,9 @@ impl Store {
     }
 
     fn write(&mut self, write: &Write<'_>) -> Result<(), StoreError> {
-        Writer::open_waiting(&self.path)?.write(write)?;
-        self.reopen()
+        let mut writer = Writer::open_waiting_after(&self.path, self.known_tail())?;
+        writer.write(write)?;
+        self.adopt(writer)
     }
 
     fn write_edits(
@@ -193,12 +194,25 @@ impl Store {
         removed_roots: &[String],
         attributes: &[(Digest, Vec<u8>)],
     ) -> Result<(), StoreError> {
-        Writer::open_waiting(&self.path)?.write_edits(commit, removed_roots, attributes)?;
-        self.reopen()
+        let mut writer = Writer::open_waiting_after(&self.path, self.known_tail())?;
+        writer.write_edits(commit, removed_roots, attributes)?;
+        self.adopt(writer)
     }
 
-    fn reopen(&mut self) -> Result<(), StoreError> {
-        let opened = open_current(&self.path)?;
+    /// Where the store ended when this process last read it.
+    fn known_tail(&self) -> Option<Tail> {
+        self.current
+            .read()
+            .ok()
+            .and_then(|current| current.index.tail())
+    }
+
+    /// Reads from now on from the store as `writer` left it. Its identity
+    /// is taken while the writer still holds the lock, so no other writer
+    /// can come between the two.
+    fn adopt(&mut self, writer: Writer) -> Result<(), StoreError> {
+        let identity = identity_of(&self.path)?;
+        let opened = opened_with(identity, writer.into_index())?;
         if let Ok(mut current) = self.current.write() {
             *current = Arc::new(opened);
         }
@@ -636,6 +650,10 @@ fn identity_of(path: &Path) -> Result<FileIdentity, StoreError> {
 fn open_current(path: &Path) -> Result<Opened, StoreError> {
     let identity = identity_of(path)?;
     let index = Index::open(path, ReadMode::Mapped)?;
+    opened_with(identity, index)
+}
+
+fn opened_with(identity: FileIdentity, index: Index) -> Result<Opened, StoreError> {
     let runs = index.runs()?;
     let catalog = match index.attribute_in(&runs, &catalog_key())? {
         Some(bytes) => serde_json::from_slice(&bytes).map_err(|_| StoreError::Damaged {

@@ -11,7 +11,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::commit::Edits;
-use crate::read::{self, Footer, Index, ReadMode};
+use crate::read::{self, Footer, Index, ReadMode, Tail};
 use crate::{Change, Digest, SourceRecord, StoreError};
 
 /// A commit this large is flushed at once: it is costly to compute again.
@@ -20,6 +20,12 @@ pub(crate) const FLUSH_BYTES: usize = 1 << 20;
 /// How many bytes of commits may wait unflushed before the next commit
 /// flushes them all: a reader opening the store hashes at most this much.
 const UNSYNCED_BYTES: u64 = 4 << 20;
+
+/// How many commits may wait unflushed before the next one flushes them:
+/// a reader opening the store checks each on its own, and a flush costs
+/// about as much as checking a few thousand small ones, so the two are
+/// balanced for stores that take many small commits.
+const UNSYNCED_COMMITS: usize = 64;
 
 /// The one writer of a store. Holding it holds the store's lock.
 pub struct Writer {
@@ -122,16 +128,23 @@ impl Writer {
     /// Opens the store at `path` for writing, creating it if need be.
     /// Fails with [`StoreError::Busy`] while another writer holds it.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        Self::open_with(path, false)
+        Self::open_with(path, false, None)
     }
 
     /// Opens the store at `path` for writing, waiting while another writer
     /// holds it.
     pub fn open_waiting(path: &Path) -> Result<Self, StoreError> {
-        Self::open_with(path, true)
+        Self::open_with(path, true, None)
     }
 
-    fn open_with(path: &Path, waits: bool) -> Result<Self, StoreError> {
+    /// [`Writer::open_waiting`] for a process that has already read the
+    /// store as far as `known`: while the file still ends there, what was
+    /// checked is not hashed again.
+    pub(crate) fn open_waiting_after(path: &Path, known: Option<Tail>) -> Result<Self, StoreError> {
+        Self::open_with(path, true, known)
+    }
+
+    fn open_with(path: &Path, waits: bool, known: Option<Tail>) -> Result<Self, StoreError> {
         let io = |source| StoreError::Io {
             path: path.to_owned(),
             source,
@@ -144,7 +157,11 @@ impl Writer {
         if is_new {
             replace_with_empty(path)?;
         }
-        let index = match Index::open(path, ReadMode::Mapped) {
+        let opened = match known {
+            Some(tail) => Index::open_written(path, tail),
+            None => Index::open(path, ReadMode::Mapped),
+        };
+        let index = match opened {
             // Another layout's store is a cache like any other: start again.
             Err(StoreError::UnsupportedVersion { .. }) => {
                 replace_with_empty(path)?;
@@ -244,6 +261,7 @@ impl Writer {
         named: Named,
     ) -> Result<(), StoreError> {
         let last = self.index.footer();
+        let unsynced = self.index.tail().map_or(0, |tail| tail.unsynced);
         let start = self.index.length();
         let offset = start + streamed + bytes.len() as u64;
         self.append(bytes)?;
@@ -251,15 +269,15 @@ impl Writer {
         let is_large = offset - start >= FLUSH_BYTES as u64;
         // Readers check every commit since the last flush when they open
         // the store, so that stretch is kept short.
-        let is_overdue = offset - last_synced >= UNSYNCED_BYTES;
-        let (synced, commit) = if is_large || is_overdue {
+        let is_overdue = offset - last_synced >= UNSYNCED_BYTES || unsynced + 1 >= UNSYNCED_COMMITS;
+        let (synced, commit, unsynced) = if is_large || is_overdue {
             self.sync()?;
-            (offset, [0; 32])
+            (offset, [0; 32], 0)
         } else {
             let synced = last_synced;
             // Streaming is only for commits large enough to be flushed, so a
             // hashed commit is all in `bytes`.
-            (synced, *blake3::hash(bytes).as_bytes())
+            (synced, *blake3::hash(bytes).as_bytes(), unsynced + 1)
         };
         let footer = Footer {
             offset,
@@ -275,7 +293,7 @@ impl Writer {
             commit,
         };
         self.append(&read::encode_footer(&footer))?;
-        self.index = Index::open(&self.path, ReadMode::Mapped)?;
+        self.index = Index::open_written(&self.path, Tail { footer, unsynced })?;
         Ok(())
     }
 
@@ -318,8 +336,20 @@ impl Writer {
                 path: self.path.clone(),
                 source,
             })?;
-        self.index = Index::open(&self.path, ReadMode::Mapped)?;
+        self.index = Index::open_written(
+            &self.path,
+            Tail {
+                footer,
+                unsynced: 0,
+            },
+        )?;
         Ok(())
+    }
+
+    /// The store as this writer left it, read without hashing again what
+    /// the writer wrote; the lock is let go.
+    pub(crate) fn into_index(self) -> Index {
+        self.index
     }
 
     pub(crate) fn path(&self) -> &Path {

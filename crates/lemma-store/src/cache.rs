@@ -149,7 +149,36 @@ impl Cache {
             .iter()
             .map(|(key, value)| (unit_key(key), value.as_slice()))
             .collect();
-        Writer::open_waiting(&self.path)?.put_attributes(&entries)
+        let known = self
+            .current
+            .read()
+            .ok()
+            .and_then(|current| current.as_ref().and_then(|opened| opened.index.tail()));
+        let mut writer = Writer::open_waiting_after(&self.path, known)?;
+        writer.put_attributes(&entries)?;
+        self.adopt(writer)
+    }
+
+    /// Reads from now on from the store as `writer` left it, without
+    /// hashing again what it wrote. The identity is taken while the writer
+    /// still holds the lock, so no other writer can come between the two.
+    fn adopt(&self, writer: Writer) -> Result<(), StoreError> {
+        let metadata = std::fs::metadata(&self.path).map_err(|source| StoreError::Io {
+            path: self.path.clone(),
+            source,
+        })?;
+        let identity = (metadata.len(), metadata.modified().ok());
+        let index = writer.into_index();
+        let runs = index.runs()?;
+        let opened = Arc::new(Opened {
+            index,
+            runs,
+            identity,
+        });
+        if let Ok(mut current) = self.current.write() {
+            *current = Some(opened);
+        }
+        Ok(())
     }
 
     /// Keeps `entries` in the background while the caller carries on;

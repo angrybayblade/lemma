@@ -487,3 +487,58 @@ fn small_commits_are_flushed_before_their_unchecked_stretch_grows_long() {
         footer.offset - footer.synced
     );
 }
+
+#[test]
+fn many_tiny_commits_are_flushed_after_a_bounded_number() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store_in(&directory);
+    commit(&store, "head", None, &first_files());
+    for round in 0..200u8 {
+        let mut writer = Writer::open(&store).unwrap();
+        writer
+            .put_attributes(&[([round; 32], vec![round])])
+            .unwrap();
+    }
+
+    let index = Index::open(&store, ReadMode::Mapped).unwrap();
+    let tail = index.tail().unwrap();
+    assert!(tail.unsynced < 64, "{} unflushed commits", tail.unsynced);
+}
+
+#[test]
+fn a_writer_that_knew_an_older_end_reads_what_another_wrote_since() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store_in(&directory);
+    commit(&store, "head", None, &first_files());
+    let known = Index::open(&store, ReadMode::Mapped).unwrap().tail();
+    let edit = [put("api/routes.py", "def create():\n    return 2\n")];
+    commit(&store, "work", Some("head"), &edit);
+
+    let writer = Writer::open_waiting_after(&store, known).unwrap();
+
+    assert_eq!(writer.into_index().root_names().unwrap(), ["head", "work"]);
+}
+
+#[test]
+fn the_newest_value_of_each_key_survives_many_merges() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store_in(&directory);
+    for round in 0..60u8 {
+        let entries: Vec<([u8; 32], Vec<u8>)> = (0..=round % 7)
+            .map(|key| ([key; 32], vec![round, key]))
+            .collect();
+        Writer::open(&store)
+            .unwrap()
+            .put_attributes(&entries)
+            .unwrap();
+    }
+
+    let index = Index::open(&store, ReadMode::Mapped).unwrap();
+    let runs = index.runs().unwrap();
+    assert!(runs.len() <= 8, "{} runs", runs.len());
+    for key in 0..7u8 {
+        let newest = (0..60u8).rev().find(|round| key <= round % 7).unwrap();
+        let value = index.attribute_in(&runs, &[key; 32]).unwrap();
+        assert_eq!(value, Some(vec![newest, key]));
+    }
+}

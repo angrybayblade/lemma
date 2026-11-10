@@ -26,6 +26,10 @@ pub(crate) const NODE_HEADER_BYTES: u64 = 5;
 /// How much of the file's end is examined at a time for a footer.
 const SCAN_BYTES: u64 = 1 << 20;
 
+/// Below this many bytes of commits since the last flush, opening hashes
+/// them on one thread.
+const PARALLEL_HASH_BYTES: u64 = 1 << 20;
+
 pub(crate) const ROOTS_NODE: u8 = 1;
 pub(crate) const SEGMENT_NODE: u8 = 2;
 pub(crate) const RUN_NODE: u8 = 3;
@@ -72,6 +76,16 @@ pub struct Index {
     bytes: Bytes,
     length: u64,
     footer: Option<Footer>,
+    /// How many commits since the last flush end with the footer.
+    unsynced: usize,
+}
+
+/// Where a process last left a store: its last footer, and how many
+/// commits since the last flush end with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Tail {
+    pub footer: Footer,
+    pub unsynced: usize,
 }
 
 /// A named source.
@@ -130,6 +144,40 @@ pub struct SymbolChange {
 impl Index {
     /// Opens the store at `path` as of its last complete commit.
     pub fn open(path: &Path, mode: ReadMode) -> Result<Self, StoreError> {
+        let mut index = Self::map(path, mode)?;
+        index.check_header()?;
+        index.settle()?;
+        Ok(index)
+    }
+
+    /// Finds the commit a reader should see.
+    fn settle(&mut self) -> Result<(), StoreError> {
+        let (footer, unsynced) = self.current_footer()?;
+        self.footer = footer;
+        self.unsynced = unsynced;
+        Ok(())
+    }
+
+    /// Opens the store at `path` as it was when this process last left it
+    /// at `tail`, written or checked by the process itself. While the file
+    /// still ends with that footer, nothing after the last flush is hashed
+    /// again; otherwise the store is opened as usual.
+    pub(crate) fn open_written(path: &Path, tail: Tail) -> Result<Self, StoreError> {
+        let mut index = Self::map(path, ReadMode::Mapped)?;
+        let footer = tail.footer;
+        let ends_with_footer = index.length == footer.offset + FOOTER_BYTES
+            && index.footer_at(footer.offset) == Some(footer);
+        if !ends_with_footer {
+            index.check_header()?;
+            index.settle()?;
+            return Ok(index);
+        }
+        index.footer = Some(footer);
+        index.unsynced = tail.unsynced;
+        Ok(index)
+    }
+
+    fn map(path: &Path, mode: ReadMode) -> Result<Self, StoreError> {
         let io = |source| StoreError::Io {
             path: path.to_owned(),
             source,
@@ -142,15 +190,13 @@ impl Index {
             ReadMode::Mapped if length > 0 => Bytes::Mapped(Mapped::open(&file).map_err(io)?),
             _ => Bytes::Positional(file),
         };
-        let mut index = Self {
+        Ok(Self {
             path: path.to_owned(),
             bytes,
             length,
             footer: None,
-        };
-        index.check_header()?;
-        index.footer = index.current_footer()?;
-        Ok(index)
+            unsynced: 0,
+        })
     }
 
     fn check_header(&self) -> Result<(), StoreError> {
@@ -206,10 +252,11 @@ impl Index {
 
     /// The commit a reader should see: the last footer whose digest checks,
     /// stepped back past any commit written since the last flush whose
-    /// bytes do not match its footer, as after a crash.
-    fn current_footer(&self) -> Result<Option<Footer>, StoreError> {
+    /// bytes do not match its footer, as after a crash. With it, how many
+    /// commits since the flush end with it.
+    fn current_footer(&self) -> Result<(Option<Footer>, usize), StoreError> {
         let Some(last) = self.last_footer_before(self.length)? else {
-            return Ok(None);
+            return Ok((None, 0));
         };
         // The commits since the last flush, newest first, then the newest
         // commit before them, which is trusted without reading it again.
@@ -231,14 +278,27 @@ impl Index {
                 },
             };
         }
-        let mut current = trusted;
-        for footer in unsynced.into_iter().rev() {
-            if !self.commit_matches(&footer)? {
-                break;
-            }
-            current = Some(footer);
-        }
-        Ok(current)
+        // Each commit is hashed on its own, so a long stretch is checked
+        // on every thread; the reader still stops at the first that does
+        // not match. Waking the threads costs more than hashing a short one.
+        unsynced.reverse();
+        let bytes: u64 = unsynced
+            .iter()
+            .map(|footer| footer.offset.saturating_sub(footer.start))
+            .sum();
+        let matches: Vec<bool> = if bytes < PARALLEL_HASH_BYTES {
+            unsynced
+                .iter()
+                .map(|footer| self.commit_matches(footer))
+                .collect::<Result<_, _>>()?
+        } else {
+            unsynced
+                .par_iter()
+                .map(|footer| self.commit_matches(footer))
+                .collect::<Result<_, _>>()?
+        };
+        let matching = matches.iter().take_while(|matches| **matches).count();
+        Ok((unsynced[..matching].last().copied().or(trusted), matching))
     }
 
     fn commit_matches(&self, footer: &Footer) -> Result<bool, StoreError> {
@@ -296,6 +356,14 @@ impl Index {
 
     pub(crate) fn footer(&self) -> Option<Footer> {
         self.footer
+    }
+
+    /// Where the store ends as this index read it.
+    pub(crate) fn tail(&self) -> Option<Tail> {
+        self.footer.map(|footer| Tail {
+            footer,
+            unsynced: self.unsynced,
+        })
     }
 
     pub(crate) fn length(&self) -> u64 {
