@@ -10,8 +10,8 @@ use crate::output::Linked;
 
 /// The source of relationships a description declares.
 const DECLARED: &str = "declared";
-use lemma_legacy_store::{FactStore, Store, StoredSnapshot, StoredSymbol};
 use lemma_query::{Direction, SymbolResolution};
+use lemma_store::{FactStore, Store, StoredSnapshot, StoredSymbol};
 
 /// The address `text` names, if it is one rather than a symbol name or id:
 /// `services.<service>.<name>` or `#<repository>:services.<service>.<name>`.

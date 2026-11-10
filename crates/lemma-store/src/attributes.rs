@@ -99,35 +99,48 @@ impl Writer {
     /// them visible to the next reader. For a key given twice, the later
     /// value wins.
     pub fn put_attributes(&mut self, entries: &[(Digest, Vec<u8>)]) -> Result<(), StoreError> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-        let runs = self.index.runs()?;
-        let mut pending = Pending::new(&self.index);
+        self.write(&crate::Write {
+            commit: None,
+            removed_roots: &[],
+            attributes: entries,
+        })
+        .map(drop)
+    }
+}
+
+impl Pending<'_> {
+    /// Appends `entries` and a new list of runs, merging the runs when
+    /// there are too many; returns the list's offset.
+    pub(crate) fn append_attributes(
+        &mut self,
+        entries: &[(Digest, Vec<u8>)],
+    ) -> Result<u64, StoreError> {
+        let index = self.index();
+        let runs = index.runs()?;
+        let offsets = run_offsets(index)?;
         let mut fresh: BTreeMap<Digest, u64> = BTreeMap::new();
         for (key, value) in entries {
-            fresh.insert(*key, pending.append(read::VALUE_NODE, value));
+            fresh.insert(*key, self.append(read::VALUE_NODE, value));
         }
-        let mut list = vec![pending.append(read::RUN_NODE, &encode_run(&fresh))];
-        if runs.len() + 1 > MAX_RUNS {
-            list = vec![pending.append(read::RUN_NODE, &encode_run(&merged(fresh, &runs)))];
+        let list = if runs.len() + 1 > MAX_RUNS {
+            vec![self.append(read::RUN_NODE, &encode_run(&merged(fresh, &runs)))]
         } else {
-            list.extend(self.run_offsets()?);
-        }
-        let list = pending.append(read::RUNS_NODE, &encode_list(&list));
-        let nodes = pending.into_bytes();
-        self.publish(&nodes, None, Some(list))
-    }
-
-    fn run_offsets(&self) -> Result<Vec<u64>, StoreError> {
-        let Some(footer) = self.index.footer().filter(|footer| footer.attributes != 0) else {
-            return Ok(Vec::new());
+            let mut list = vec![self.append(read::RUN_NODE, &encode_run(&fresh))];
+            list.extend(offsets);
+            list
         };
-        let list = self.index.node(footer.attributes, read::RUNS_NODE)?;
-        let mut decoder = Decoder::new(list.bytes());
-        let count = decoder.count(8)?;
-        (0..count).map(|_| decoder.u64()).collect()
+        Ok(self.append(read::RUNS_NODE, &encode_list(&list)))
     }
+}
+
+fn run_offsets(index: &Index) -> Result<Vec<u64>, StoreError> {
+    let Some(footer) = index.footer().filter(|footer| footer.attributes != 0) else {
+        return Ok(Vec::new());
+    };
+    let list = index.node(footer.attributes, read::RUNS_NODE)?;
+    let mut decoder = Decoder::new(list.bytes());
+    let count = decoder.count(8)?;
+    (0..count).map(|_| decoder.u64()).collect()
 }
 
 /// Every key of `runs` and `fresh`, each with its newest value.

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use lemma_legacy_store::StoredFile;
+use lemma_store::StoredFile;
 
 /// Which part of the tree an index has to look at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,8 +140,8 @@ fn relative(root: &Path, path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lemma_legacy_store::FileStamp;
     use lemma_model::Language;
+    use lemma_store::FileStamp;
 
     fn known(paths: &[&str]) -> BTreeMap<String, StoredFile> {
         paths
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn git_changes_are_noted_and_lemma_files_ignored() {
-        let WalkScope::Partial(dirty) = scope(&[".git/HEAD", ".lemma/index.db"], &[]) else {
+        let WalkScope::Partial(dirty) = scope(&[".git/HEAD", ".lemma/index.ls"], &[]) else {
             panic!("expected a partial walk");
         };
 

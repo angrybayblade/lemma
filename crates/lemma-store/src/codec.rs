@@ -72,6 +72,10 @@ impl Encoder {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
+    pub fn i64(&mut self, value: i64) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
     pub fn digest(&mut self, value: &Digest) {
         self.bytes.extend_from_slice(value);
     }
@@ -87,7 +91,7 @@ impl Encoder {
         self.bytes.extend_from_slice(value.as_bytes());
     }
 
-    fn span(&mut self, span: Span) {
+    pub fn span(&mut self, span: Span) {
         self.u32(span.start.line);
         self.u32(span.start.column);
         self.u32(span.end.line);
@@ -127,6 +131,10 @@ impl<'a> Decoder<'a> {
         Ok(low | (high << 32))
     }
 
+    pub fn i64(&mut self) -> Result<i64, StoreError> {
+        Ok(i64::from_le_bytes(self.u64()?.to_le_bytes()))
+    }
+
     pub fn digest(&mut self) -> Result<Digest, StoreError> {
         let mut digest = [0; 32];
         digest.copy_from_slice(self.take(32)?);
@@ -151,7 +159,7 @@ impl<'a> Decoder<'a> {
         })
     }
 
-    fn span(&mut self) -> Result<Span, StoreError> {
+    pub fn span(&mut self) -> Result<Span, StoreError> {
         let start = Position {
             line: self.u32()?,
             column: self.u32()?,
@@ -171,6 +179,11 @@ const TRUNCATED: StoreError = StoreError::Damaged {
 const SID_RANGE: StoreError = StoreError::Damaged {
     what: "string id is out of range",
 };
+
+/// The digest a file node is filed under.
+pub(crate) fn file_digest(record: &FileRecord) -> Digest {
+    *blake3::hash(&encode_file(record)).as_bytes()
+}
 
 /// A file node's payload. It holds no offsets, so its digest is the same
 /// in any store.

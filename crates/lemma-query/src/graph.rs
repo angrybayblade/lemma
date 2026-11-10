@@ -11,8 +11,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use lemma_legacy_store::{FactStore, StoredSymbol};
 use lemma_model::{GraphNode, Language, Outcome, Position, SymbolKind, Use, UseGraph};
+use lemma_store::{FactStore, StoredSymbol};
 
 use crate::QueryError;
 use crate::lookup::LookupContext;

@@ -1,8 +1,8 @@
 //! Following code to where things are defined and implemented.
 
-use lemma_legacy_store::{FactStore, StoredSymbol};
 use lemma_model::{Language, Location, LocationQuery, Outcome, Position};
 use lemma_providers::SourcePoint;
+use lemma_store::{FactStore, StoredSymbol};
 
 use crate::QueryError;
 use crate::lookup::{Answered, LookupContext, ask_providers};

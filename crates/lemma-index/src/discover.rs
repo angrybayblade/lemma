@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 
 use ignore::{DirEntry, WalkBuilder, WalkState};
-use lemma_legacy_store::FileStamp;
 use lemma_model::Language;
+use lemma_store::FileStamp;
 
 use crate::scope::DirtyScope;
 use crate::selection::Selection;

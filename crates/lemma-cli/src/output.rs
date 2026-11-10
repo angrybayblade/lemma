@@ -8,9 +8,9 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use lemma_index::IndexSummary;
-use lemma_legacy_store::StoredSymbol;
 use lemma_model::{Language, Position, Span, SymbolKind};
 use lemma_providers::ProviderRegistry;
+use lemma_store::StoredSymbol;
 use serde::Serialize;
 
 mod answers;
@@ -127,7 +127,7 @@ pub(crate) struct MemberLine {
 
 impl MemberLine {
     pub(crate) fn indexed(
-        member: &lemma_legacy_store::StoredMember,
+        member: &lemma_store::StoredMember,
         summary: &IndexSummary,
         exports: &ExportCounts,
     ) -> Self {

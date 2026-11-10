@@ -18,10 +18,8 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use lemma_legacy_store::{
-    FactStore, NewSnapshot, SnapshotUpdate, Store, StoreError, StoredSnapshot,
-};
 use lemma_model::{Language, Snapshot};
+use lemma_store::{FactStore, NewSnapshot, SnapshotUpdate, Store, StoreError, StoredSnapshot};
 use lemma_syntax::{EXTRACTOR_VERSION, ExtractorPool, SyntaxError};
 
 pub use crate::selection::{InvalidPattern, RuleSpec, Selection};
@@ -618,7 +616,7 @@ fn now_ns() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lemma_legacy_store::{NameMatch, SymbolFilter};
+    use lemma_store::{NameMatch, SymbolFilter};
     use std::fs;
 
     fn write(root: &Path, relative_path: &str, contents: &str) {
@@ -681,7 +679,7 @@ mod tests {
         };
         assert_eq!(
             store.find_symbols(summary.snapshot_id, &ignored).unwrap(),
-            [] as [lemma_legacy_store::StoredSymbol; 0]
+            [] as [lemma_store::StoredSymbol; 0]
         );
     }
 
@@ -765,7 +763,10 @@ mod tests {
             symbol_ids(&store, second.snapshot_id, "Router.delete"),
             router_ids
         );
-        assert_eq!(symbol_ids(&store, second.snapshot_id, "delete_session"), []);
+        assert_eq!(
+            symbol_ids(&store, second.snapshot_id, "delete_session"),
+            Vec::<i64>::new()
+        );
         assert_eq!(
             symbol_ids(&store, second.snapshot_id, "close_session").len(),
             1
@@ -793,7 +794,10 @@ mod tests {
         let second = index_directory(repository.path(), &mut store).unwrap();
 
         assert_eq!(symbol_ids(&store, second.snapshot_id, "kept"), kept_ids);
-        assert_eq!(symbol_ids(&store, second.snapshot_id, "dropped"), []);
+        assert_eq!(
+            symbol_ids(&store, second.snapshot_id, "dropped"),
+            Vec::<i64>::new()
+        );
         assert_eq!(symbol_ids(&store, second.snapshot_id, "added").len(), 1);
     }
 
@@ -807,7 +811,10 @@ mod tests {
         let summary = index_directory(repository.path(), &mut store).unwrap();
 
         assert!(!summary.files_by_language.contains_key(&Language::Go));
-        assert_eq!(symbol_ids(&store, summary.snapshot_id, "Delete"), []);
+        assert_eq!(
+            symbol_ids(&store, summary.snapshot_id, "Delete"),
+            Vec::<i64>::new()
+        );
     }
 
     #[cfg(target_os = "linux")]

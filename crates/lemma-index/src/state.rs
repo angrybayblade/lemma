@@ -3,8 +3,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use lemma_legacy_store::{FileStamp, StampedFile, StoredFile};
 use lemma_model::Language;
+use lemma_store::{FileStamp, StampedFile, StoredFile};
 use lemma_syntax::EXTRACTOR_VERSION;
 
 use crate::scan::Scan;
@@ -53,10 +53,7 @@ pub(crate) struct ChangeSet {
 impl ChangeSet {
     /// Paths whose contents changed, for asking Git about them.
     pub fn touched_paths(&self) -> impl Iterator<Item = &str> {
-        let changed = self
-            .changed
-            .iter()
-            .map(|changed| changed.file.path.as_str());
+        let changed = self.changed.iter().map(|changed| changed.path.as_str());
         changed.chain(self.removed.iter().map(String::as_str))
     }
 }
@@ -92,10 +89,10 @@ impl FileSet {
             }
         }
         for changed in &changes.changed {
-            if let Some(file) = self.files.get(&changed.file.path) {
+            if let Some(file) = self.files.get(&changed.path) {
                 sum.subtract(&file.path, &file.content_hash);
             }
-            sum.add(&changed.file.path, &changed.file.content_hash);
+            sum.add(&changed.path, &changed.content_hash());
         }
         fingerprint_of(sum)
     }
@@ -131,7 +128,7 @@ impl FileSet {
                     readable.insert(stored.path);
                 }
                 Scan::Parsed(parsed) => {
-                    readable.insert(parsed.file.path.clone());
+                    readable.insert(parsed.path.clone());
                     changes.changed.push(parsed);
                 }
                 Scan::Unreadable(path) => changes.unreadable.push(path),
@@ -155,15 +152,15 @@ impl FileSet {
                 file.stamp = stamp;
             }
         }
-        for StampedFile { file, stamp } in changes.changed {
-            self.remove(&file.path);
+        for changed in changes.changed {
+            self.remove(&changed.path);
             self.insert(StoredFile {
-                symbol_count: file.symbols.len(),
-                path: file.path,
-                language: file.language,
-                content_hash: file.content_hash,
-                has_syntax_errors: file.has_syntax_errors,
-                stamp,
+                symbol_count: changed.record.symbols.len(),
+                content_hash: changed.content_hash(),
+                language: changed.record.language,
+                has_syntax_errors: changed.record.has_syntax_errors,
+                stamp: changed.stamp,
+                path: changed.path,
             });
         }
         self.unreadable_files.retain(|path| !coverage.covers(path));

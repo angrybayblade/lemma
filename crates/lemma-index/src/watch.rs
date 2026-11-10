@@ -369,11 +369,11 @@ mod tests {
         let mut watch = Watch::start(&root, &Selection::everything_git_lists()).unwrap();
 
         fs::write(root.join(".github/spec.json"), "{}").unwrap();
-        fs::write(root.join(".lemma/index.db"), "x").unwrap();
+        fs::write(root.join(".lemma/index.ls"), "x").unwrap();
         let observed = watch.changes();
 
         assert!(observed.paths.contains(&root.join(".github/spec.json")));
-        assert!(!observed.paths.contains(&root.join(".lemma/index.db")));
+        assert!(!observed.paths.contains(&root.join(".lemma/index.ls")));
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]

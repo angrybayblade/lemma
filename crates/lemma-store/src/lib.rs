@@ -10,6 +10,8 @@
 mod attributes;
 mod cache;
 mod codec;
+mod facts;
+mod navigation;
 mod read;
 mod records;
 mod scan;
@@ -23,12 +25,18 @@ use std::path::PathBuf;
 use lemma_model::{Language, Span, SymbolKind};
 
 pub use cache::{Cache, SegmentKey};
+pub use facts::{
+    AnswerKey, FactStore, FileKey, FileStamp, NameMatch, NewSnapshot, Question, SnapshotUpdate,
+    StampedFile, StoredAnswer, StoredFile, StoredMember, StoredSnapshot, StoredSymbol,
+    SymbolFilter, SymbolKey,
+};
+pub use navigation::Store;
 pub use read::{
     FileChange, Index, ReadMode, Root, SymbolChange, SymbolChangeKind, changed_symbols,
 };
 pub use records::{RecordError, RecordReader, RecordWriter, StringTable};
 pub use scan::{ScanError, changes_on_disk, read_file};
-pub use write::{Commit, Writer};
+pub use write::{Commit, Write, Writer};
 
 /// A BLAKE3 digest.
 pub type Digest = [u8; 32];
@@ -123,6 +131,47 @@ pub struct FileRecord {
     pub has_syntax_errors: bool,
     /// Its definitions in source order.
     pub symbols: Vec<SymbolRecord>,
+}
+
+impl FileRecord {
+    /// A record for symbols found without their syntax, as in tests and
+    /// imports: each symbol's digest stands in for its syntax by naming it,
+    /// and nothing it mentions is known.
+    pub fn from_symbols(
+        contents: &str,
+        language: Language,
+        has_syntax_errors: bool,
+        symbols: Vec<lemma_model::Symbol>,
+    ) -> Self {
+        let mut seen: std::collections::BTreeMap<(String, SymbolKind), u32> =
+            std::collections::BTreeMap::new();
+        let symbols = symbols
+            .into_iter()
+            .map(|symbol| {
+                let count = seen
+                    .entry((symbol.qualified_name.clone(), symbol.kind))
+                    .or_insert(0);
+                let discriminator = *count;
+                *count += 1;
+                SymbolRecord {
+                    digest: *blake3::hash(symbol.qualified_name.as_bytes()).as_bytes(),
+                    name: symbol.name,
+                    qualified_name: symbol.qualified_name,
+                    kind: symbol.kind,
+                    span: symbol.span,
+                    name_span: symbol.name_span,
+                    discriminator,
+                    mentions: Vec::new(),
+                }
+            })
+            .collect();
+        Self {
+            blob: *blake3::hash(contents.as_bytes()).as_bytes(),
+            language,
+            has_syntax_errors,
+            symbols,
+        }
+    }
 }
 
 /// A difference to apply to a source's files.

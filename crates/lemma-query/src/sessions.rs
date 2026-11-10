@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use lemma_model::Language;
 
-use lemma_legacy_store::{FactStore, Store, StoreError, StoredSnapshot};
 use lemma_providers::{FileChange, InstalledProvider, ProviderError, ProviderSession};
+use lemma_store::{FactStore, Store, StoreError, StoredSnapshot};
 
 /// Why a session could not be provided.
 pub(crate) enum PoolError {

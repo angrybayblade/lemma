@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::Write;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::codec::{self, Encoder, Entry, EntryKind};
@@ -27,6 +27,17 @@ pub struct Commit<'a> {
     pub parent: Option<&'a str>,
     /// What the new source is.
     pub source: &'a SourceRecord,
+}
+
+/// Everything one commit does.
+#[derive(Debug, Clone, Copy)]
+pub struct Write<'a> {
+    /// A source to commit, with the changes from its parent.
+    pub commit: Option<(Commit<'a>, &'a [Change])>,
+    /// Sources to forget.
+    pub removed_roots: &'a [String],
+    /// Values to file in the attribute table.
+    pub attributes: &'a [(Digest, Vec<u8>)],
 }
 
 /// One path's change, as it descends the tree.
@@ -95,27 +106,37 @@ impl Writer {
         commit: &Commit<'_>,
         changes: &[Change],
     ) -> Result<Digest, StoreError> {
-        let old_tree = match commit.parent {
-            Some(name) => Some(self.index.root(name)?.tree),
-            None => None,
-        };
-        let mut sorted: Vec<&Change> = changes.iter().collect();
-        sorted.sort_by(|left, right| left.path().cmp(right.path()));
-        let steps: Vec<Step<'_>> = sorted.iter().map(|change| step_of(change)).collect();
+        let digest = self.write(&Write {
+            commit: Some((*commit, changes)),
+            removed_roots: &[],
+            attributes: &[],
+        })?;
+        Ok(digest.unwrap_or_default())
+    }
 
-        let mut pending = Pending::new(&self.index);
-        let tree = match pending.rewrite(old_tree.as_ref(), &steps)? {
-            Some(tree) => tree,
-            None => pending.empty_directory(),
-        };
-        let source = codec::encode_source(commit.source, &tree);
-        let source = pending.append(read::SOURCE_NODE, &source);
+    /// Applies everything in `write` as one commit, and returns the digest
+    /// of the committed tree, if it commits one.
+    pub fn write(&mut self, write: &Write<'_>) -> Result<Option<Digest>, StoreError> {
         let mut roots = self.index.root_offsets()?;
-        roots.insert(commit.root.to_owned(), source);
-        let roots = pending.append(read::ROOTS_NODE, &encode_roots(&roots));
+        let mut pending = Pending::new(&self.index);
+        let mut digest = None;
+        if let Some((commit, changes)) = &write.commit {
+            let (source, tree) = pending.commit_tree(commit, changes)?;
+            roots.insert(commit.root.to_owned(), source);
+            digest = Some(tree);
+        }
+        for name in write.removed_roots {
+            roots.remove(name);
+        }
+        let attributes = match write.attributes {
+            [] => None,
+            entries => Some(pending.append_attributes(entries)?),
+        };
+        let roots_changed = write.commit.is_some() || !write.removed_roots.is_empty();
+        let roots = roots_changed.then(|| pending.append(read::ROOTS_NODE, &encode_roots(&roots)));
         let nodes = pending.into_bytes();
-        self.publish(&nodes, Some(roots), None)?;
-        Ok(tree.digest)
+        self.publish(&nodes, roots, attributes)?;
+        Ok(digest)
     }
 
     /// Writes nodes and then the footer, each durable before the next, so
@@ -206,8 +227,34 @@ impl<'a> Pending<'a> {
         }
     }
 
+    pub(crate) fn index(&self) -> &'a Index {
+        self.index
+    }
+
     pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.bytes
+    }
+
+    /// Appends a source's new tree and its source node, returning the
+    /// source node's offset and the tree's digest.
+    fn commit_tree(
+        &mut self,
+        commit: &Commit<'_>,
+        changes: &[Change],
+    ) -> Result<(u64, Digest), StoreError> {
+        let old_tree = match commit.parent {
+            Some(name) => Some(self.index.root(name)?.tree),
+            None => None,
+        };
+        let mut sorted: Vec<&Change> = changes.iter().collect();
+        sorted.sort_by(|left, right| left.path().cmp(right.path()));
+        let steps: Vec<Step<'_>> = sorted.iter().map(|change| step_of(change)).collect();
+        let tree = match self.rewrite(old_tree.as_ref(), &steps)? {
+            Some(tree) => tree,
+            None => self.empty_directory(),
+        };
+        let source = codec::encode_source(commit.source, &tree);
+        Ok((self.append(read::SOURCE_NODE, &source), tree.digest))
     }
 
     pub(crate) fn append(&mut self, kind: u8, payload: &[u8]) -> u64 {

@@ -13,10 +13,10 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use lemma_legacy_store::StoredSnapshot;
 use lemma_model::Language;
 use lemma_providers::{InstalledProvider, ProviderRegistry};
 use lemma_query::{ServerState, SessionStatus, WarmUp};
+use lemma_store::StoredSnapshot;
 use serde::Serialize;
 
 use super::{Engine, Indexing, Request, WARM_UP_TIMEOUT, default_index_path, format_duration};

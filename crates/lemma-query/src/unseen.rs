@@ -12,8 +12,8 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
-use lemma_legacy_store::{FactStore, StoredSymbol};
 use lemma_model::{Language, Reference};
+use lemma_store::{FactStore, StoredSymbol};
 
 use crate::QueryError;
 

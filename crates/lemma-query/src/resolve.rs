@@ -1,7 +1,7 @@
 //! Turning a name typed by a person or agent into exactly one symbol.
 
-use lemma_legacy_store::{FactStore, NameMatch, StoredSymbol, SymbolFilter};
 use lemma_model::{Language, SymbolKind};
+use lemma_store::{FactStore, NameMatch, StoredSymbol, SymbolFilter};
 
 use crate::QueryError;
 
@@ -70,8 +70,8 @@ fn classify(mut candidates: Vec<StoredSymbol>) -> SymbolResolution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lemma_legacy_store::{FileStamp, NewSnapshot, StampedFile, Store};
-    use lemma_model::{IndexedFile, Position, Snapshot, Span, Symbol};
+    use lemma_model::{Position, Snapshot, Span, Symbol};
+    use lemma_store::{FileStamp, NewSnapshot, StampedFile, Store};
 
     fn symbol(name: &str, qualified_name: &str, line: u32) -> Symbol {
         let span = Span {
@@ -99,13 +99,8 @@ mod tests {
             fingerprint: "fp".to_owned(),
         };
         let file = |path: &str, symbols| StampedFile {
-            file: IndexedFile {
-                path: path.to_owned(),
-                language: Language::Python,
-                content_hash: "hash".to_owned(),
-                has_syntax_errors: false,
-                symbols,
-            },
+            path: path.to_owned(),
+            record: lemma_store::FileRecord::from_symbols("hash", Language::Python, false, symbols),
             stamp: FileStamp::default(),
         };
         let files = [

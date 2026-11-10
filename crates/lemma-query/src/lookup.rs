@@ -10,14 +10,14 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use lemma_legacy_store::{
-    AnswerKey, FactStore, Question, StoreError, StoredAnswer, StoredFile, StoredSnapshot,
-};
 use lemma_model::{
     Language, Location, LocationQuery, Outcome, Provenance, ProviderAnswer, content_hash,
 };
 use lemma_providers::{
     ProviderDefinition, ProviderError, ProviderRegistry, SemanticProvider, SourcePoint,
+};
+use lemma_store::{
+    AnswerKey, FactStore, Question, StoreError, StoredAnswer, StoredFile, StoredSnapshot,
 };
 
 use crate::QueryError;

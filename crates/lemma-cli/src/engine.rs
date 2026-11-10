@@ -19,15 +19,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, bail};
 use lemma_index::LiveIndex;
 use lemma_index::retention::Retention;
-use lemma_legacy_store::{
-    FactStore, NameMatch, Store, StoreError, StoredMember, StoredSnapshot, StoredSymbol,
-    SymbolFilter,
-};
 use lemma_model::{Language, Outcome, Position, SymbolKind};
 use lemma_providers::ProviderRegistry;
 use lemma_query::{
     IdlePolicy, LookupContext, LookupOptions, ServerState, SessionPool, SymbolResolution,
     SymbolSearch, SymbolSelector, UsesAnswer, WarmUp,
+};
+use lemma_store::{
+    FactStore, NameMatch, Store, StoreError, StoredMember, StoredSnapshot, StoredSymbol,
+    SymbolFilter,
 };
 
 mod lsp;
@@ -44,7 +44,7 @@ use crate::selection;
 
 /// Directory, relative to an indexed root, where Lemma keeps its files.
 const LEMMA_DIRECTORY: &str = ".lemma";
-const INDEX_FILE: &str = "index.db";
+const INDEX_FILE: &str = "index.ls";
 const PROVIDERS_FILE: &str = "providers.toml";
 
 /// Exit code when a name matches several symbols.
@@ -1231,7 +1231,7 @@ enum InWorkspace {
 }
 
 /// The description a workspace's index at `db_path`
-/// (`<root>/.lemma/index.db`) was built from, if it is there.
+/// (`<root>/.lemma/index.ls`) was built from, if it is there.
 fn workspace_file(db_path: &Path) -> Option<PathBuf> {
     selection::description_in(db_path.parent()?.parent()?)
 }
@@ -1583,7 +1583,7 @@ fn store_for_writing<'a>(
     db_path: &Path,
 ) -> anyhow::Result<&'a mut Store> {
     match Store::open(db_path) {
-        Err(StoreError::SchemaMismatch { .. }) => {
+        Err(StoreError::UnsupportedVersion { .. } | StoreError::NotAStore { .. }) => {
             stores.remove(db_path);
             remove_database(db_path)?;
         }
@@ -1714,7 +1714,7 @@ impl<'a> Request<'a> {
         }
     }
 
-    /// The given database, or the nearest `.lemma/index.db` from the working
+    /// The given database, or the nearest `.lemma/index.ls` from the working
     /// directory upwards.
     fn find_index(&self) -> anyhow::Result<PathBuf> {
         if let Some(db_path) = &self.db {
@@ -2215,7 +2215,7 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
-/// `.lemma/index.db` under the indexed directory, creating the directory.
+/// `.lemma/index.ls` under the indexed directory, creating the directory.
 fn default_index_path(root: &Path) -> anyhow::Result<PathBuf> {
     let directory = root.join(LEMMA_DIRECTORY);
     fs::create_dir_all(&directory)
@@ -2310,18 +2310,18 @@ mod tests {
             fingerprint: "fp".to_owned(),
         };
         let execute = candidate(0, "Tools.execute", SymbolKind::Method).symbol;
-        let files = [lemma_legacy_store::StampedFile {
-            file: lemma_model::IndexedFile {
-                path: "src/models/tools.py".to_owned(),
-                language: Language::Python,
-                content_hash: "hash".to_owned(),
-                has_syntax_errors: false,
-                symbols: vec![execute],
-            },
-            stamp: lemma_legacy_store::FileStamp::default(),
+        let files = [lemma_store::StampedFile {
+            path: "src/models/tools.py".to_owned(),
+            record: lemma_store::FileRecord::from_symbols(
+                "hash",
+                Language::Python,
+                false,
+                vec![execute],
+            ),
+            stamp: lemma_store::FileStamp::default(),
         }];
         store
-            .replace_snapshot(&lemma_legacy_store::NewSnapshot {
+            .replace_snapshot(&lemma_store::NewSnapshot {
                 snapshot: &snapshot,
                 extractor_version: "1",
                 indexed_at_ns: 0,
@@ -2347,8 +2347,8 @@ mod tests {
     fn a_long_lived_engine_lets_go_of_an_index_whose_directory_is_gone() {
         let kept = tempfile::tempdir().unwrap();
         let gone = tempfile::tempdir().unwrap();
-        let kept_db = kept.path().join(".lemma/index.db");
-        let gone_db = gone.path().join(".lemma/index.db");
+        let kept_db = kept.path().join(".lemma/index.ls");
+        let gone_db = gone.path().join(".lemma/index.ls");
         let mut engine = Engine::long_lived();
         for db_path in [&kept_db, &gone_db] {
             std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
@@ -2479,7 +2479,7 @@ mod tests {
         };
         let filter = |path: &str| SymbolFilter {
             text: "Session".to_owned(),
-            name_match: lemma_legacy_store::NameMatch::Contains,
+            name_match: lemma_store::NameMatch::Contains,
             kind: None,
             language: None,
             path_contains: Some(path.to_owned()),
@@ -2500,7 +2500,7 @@ mod tests {
     #[test]
     fn a_path_from_inside_one_member_is_found_from_the_workspace() {
         let workspace = tempfile::tempdir().unwrap();
-        let db_path = workspace.path().join(".lemma/index.db");
+        let db_path = workspace.path().join(".lemma/index.ls");
         let member = |name: &str| {
             let root = workspace.path().join(name);
             std::fs::create_dir_all(root.join("src")).unwrap();

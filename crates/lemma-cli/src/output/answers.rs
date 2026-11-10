@@ -8,11 +8,11 @@
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-use lemma_legacy_store::StoredSymbol;
 use lemma_model::{Outcome, Position, Provenance, Reference, Span};
 use lemma_query::{
     Answered, DefinitionReport, ImplementationReport, ReferenceReport, SignatureReport, Target,
 };
+use lemma_store::StoredSymbol;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
