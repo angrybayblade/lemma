@@ -2255,10 +2255,9 @@ type ReadFacts = (CodeFacts, Option<Vec<u8>>);
 /// segment.
 struct Kept {
     build: String,
-    units: lemma_legacy_store::UnitCache,
-    /// Where `units` is, for a thread reading it on its own connection.
+    units: lemma_store::Cache,
+    /// Where `units` is, for a thread reading it on its own.
     units_path: PathBuf,
-    segments: Arc<lemma_legacy_store::SegmentStore>,
     /// Segments being built and written, waited for when this is dropped.
     writing: Vec<std::thread::JoinHandle<()>>,
 }
@@ -2329,14 +2328,12 @@ impl FactReader {
     fn new(cache: Option<crate::FactsCache>) -> Self {
         let kept = cache.and_then(|cache| {
             std::fs::create_dir_all(&cache.directory).ok()?;
-            let units_path = cache.directory.join("units.db");
-            let units = lemma_legacy_store::UnitCache::open(&units_path).ok()?;
-            let segments = lemma_legacy_store::SegmentStore::new(&cache.directory.join("segments"));
+            let units_path = cache.directory.join("index.ls");
+            let units = lemma_store::Cache::open(&units_path).ok()?;
             Some(Kept {
                 build: cache.build,
                 units,
                 units_path,
-                segments: Arc::new(segments),
                 writing: Vec::new(),
             })
         });
@@ -2509,7 +2506,7 @@ impl FactReader {
     /// segment under `key`; `None` when it is missing or does not check.
     fn chosen_from_segment(
         &mut self,
-        key: Option<&lemma_legacy_store::SegmentKey>,
+        key: Option<&lemma_store::SegmentKey>,
         wanted: &BTreeSet<String>,
         keyed: &[(ListedFile, String)],
         (repository, commit): (&Path, Option<&str>),
@@ -2566,11 +2563,11 @@ impl FactReader {
     /// which only means looking each file up.
     fn kept_term_files(
         &self,
-        key: Option<&lemma_legacy_store::SegmentKey>,
+        key: Option<&lemma_store::SegmentKey>,
         wanted: &BTreeSet<String>,
         file_count: usize,
     ) -> Option<BTreeSet<usize>> {
-        let bytes = self.kept.as_ref()?.segments.get(key?).ok()??;
+        let bytes = self.kept.as_ref()?.units.segment(key?).ok()??;
         crate::term_segments::files_with(&bytes, wanted, file_count).ok()
     }
 
@@ -2582,7 +2579,7 @@ impl FactReader {
     /// built or written only means looking files up again next run.
     fn put_term_segment(
         &mut self,
-        segment: lemma_legacy_store::SegmentKey,
+        segment: lemma_store::SegmentKey,
         keys: Vec<String>,
         indexed: BTreeSet<String>,
         fresh: BTreeMap<String, Vec<String>>,
@@ -2591,9 +2588,8 @@ impl FactReader {
             return;
         };
         let units_path = kept.units_path.clone();
-        let segments = Arc::clone(&kept.segments);
         let writer = std::thread::Builder::new().spawn(move || {
-            let Ok(units) = lemma_legacy_store::UnitCache::open(&units_path) else {
+            let Ok(mut units) = lemma_store::Cache::open(&units_path) else {
                 return;
             };
             let indexed: Vec<String> = indexed.into_iter().collect();
@@ -2601,7 +2597,7 @@ impl FactReader {
                 return;
             };
             let bytes = term_segment(&keys, &stored, &fresh);
-            let _ = segments.put(&segment, &bytes);
+            units.put_segment_later(&segment, bytes);
         });
         kept.writing.extend(writer.ok());
     }

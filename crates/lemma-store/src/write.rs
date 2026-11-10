@@ -13,7 +13,7 @@ use crate::{Change, Digest, FileRecord, SourceRecord, StoreError};
 pub struct Writer {
     path: PathBuf,
     file: File,
-    index: Index,
+    pub(crate) index: Index,
     /// Released when the writer is dropped.
     _lock: File,
 }
@@ -36,7 +36,7 @@ struct Step<'a> {
 }
 
 /// Nodes appended by a commit, in memory until it is written whole.
-struct Pending<'a> {
+pub(crate) struct Pending<'a> {
     index: &'a Index,
     start: u64,
     bytes: Vec<u8>,
@@ -46,6 +46,16 @@ impl Writer {
     /// Opens the store at `path` for writing, creating it if need be.
     /// Fails with [`StoreError::Busy`] while another writer holds it.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        Self::open_with(path, false)
+    }
+
+    /// Opens the store at `path` for writing, waiting while another writer
+    /// holds it.
+    pub fn open_waiting(path: &Path) -> Result<Self, StoreError> {
+        Self::open_with(path, true)
+    }
+
+    fn open_with(path: &Path, waits: bool) -> Result<Self, StoreError> {
         let io = |source| StoreError::Io {
             path: path.to_owned(),
             source,
@@ -53,7 +63,7 @@ impl Writer {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(io)?;
         }
-        let lock = hold_lock(path)?;
+        let lock = hold_lock(path, waits)?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -93,11 +103,7 @@ impl Writer {
         sorted.sort_by(|left, right| left.path().cmp(right.path()));
         let steps: Vec<Step<'_>> = sorted.iter().map(|change| step_of(change)).collect();
 
-        let mut pending = Pending {
-            index: &self.index,
-            start: self.index.length(),
-            bytes: Vec::new(),
-        };
+        let mut pending = Pending::new(&self.index);
         let tree = match pending.rewrite(old_tree.as_ref(), &steps)? {
             Some(tree) => tree,
             None => pending.empty_directory(),
@@ -107,23 +113,34 @@ impl Writer {
         let mut roots = self.index.root_offsets()?;
         roots.insert(commit.root.to_owned(), source);
         let roots = pending.append(read::ROOTS_NODE, &encode_roots(&roots));
-        let nodes = pending.bytes;
-        self.publish(&nodes, roots)?;
+        let nodes = pending.into_bytes();
+        self.publish(&nodes, Some(roots), None)?;
         Ok(tree.digest)
     }
 
     /// Writes nodes and then the footer, each durable before the next, so
     /// a footer on disk always means its nodes are too.
-    fn publish(&mut self, nodes: &[u8], roots: u64) -> Result<(), StoreError> {
+    /// `None` keeps what the last footer named.
+    pub(crate) fn publish(
+        &mut self,
+        nodes: &[u8],
+        roots: Option<u64>,
+        attributes: Option<u64>,
+    ) -> Result<(), StoreError> {
         let io = |source| StoreError::Io {
             path: self.path.clone(),
             source,
         };
-        let previous = self.index.footer().map_or(0, |footer| footer.offset);
+        let footer = self.index.footer();
+        let previous = footer.map_or(0, |footer| footer.offset);
+        let roots = roots.or(footer.map(|footer| footer.roots)).unwrap_or(0);
+        let attributes = attributes
+            .or(footer.map(|footer| footer.attributes))
+            .unwrap_or(0);
         self.file.write_all(nodes).map_err(io)?;
         self.file.sync_data().map_err(io)?;
         self.file
-            .write_all(&read::encode_footer(roots, previous))
+            .write_all(&read::encode_footer(roots, attributes, previous))
             .map_err(io)?;
         self.file.sync_data().map_err(io)?;
         self.index = Index::open(&self.path, ReadMode::Positional)?;
@@ -131,7 +148,7 @@ impl Writer {
     }
 }
 
-fn hold_lock(path: &Path) -> Result<File, StoreError> {
+fn hold_lock(path: &Path, waits: bool) -> Result<File, StoreError> {
     let mut name = path.as_os_str().to_owned();
     name.push(".lock");
     let io = |source| StoreError::Io {
@@ -144,6 +161,10 @@ fn hold_lock(path: &Path) -> Result<File, StoreError> {
         .write(true)
         .open(PathBuf::from(name))
         .map_err(io)?;
+    if waits {
+        lock.lock().map_err(io)?;
+        return Ok(lock);
+    }
     match lock.try_lock() {
         Ok(()) => Ok(lock),
         Err(TryLockError::WouldBlock) => Err(StoreError::Busy {
@@ -176,8 +197,20 @@ fn encode_roots(roots: &BTreeMap<String, u64>) -> Vec<u8> {
     encoder.bytes
 }
 
-impl Pending<'_> {
-    fn append(&mut self, kind: u8, payload: &[u8]) -> u64 {
+impl<'a> Pending<'a> {
+    pub(crate) fn new(index: &'a Index) -> Self {
+        Self {
+            index,
+            start: index.length(),
+            bytes: Vec::new(),
+        }
+    }
+
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    pub(crate) fn append(&mut self, kind: u8, payload: &[u8]) -> u64 {
         let offset = self.start + self.bytes.len() as u64;
         let begin = self.bytes.len();
         self.bytes.push(kind);

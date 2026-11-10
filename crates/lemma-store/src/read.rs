@@ -26,6 +26,9 @@ pub(crate) const FILE_NODE: u8 = 1;
 pub(crate) const DIRECTORY_NODE: u8 = 2;
 pub(crate) const SOURCE_NODE: u8 = 3;
 pub(crate) const ROOTS_NODE: u8 = 4;
+pub(crate) const VALUE_NODE: u8 = 5;
+pub(crate) const RUN_NODE: u8 = 6;
+pub(crate) const RUNS_NODE: u8 = 7;
 
 /// How a store's bytes reach memory. Both read the same bytes and give the
 /// same answers.
@@ -46,7 +49,10 @@ enum Bytes {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Footer {
     pub offset: u64,
+    /// The roots node, or 0 when no source has been committed.
     pub roots: u64,
+    /// The attribute runs node, or 0 when none have been written.
+    pub attributes: u64,
 }
 
 /// A store as of its last complete commit.
@@ -224,7 +230,12 @@ impl Index {
         }
         let mut decoder = Decoder::new(&body[4..]);
         let roots = decoder.u64().ok()?;
-        Some(Footer { offset, roots })
+        let attributes = decoder.u64().ok()?;
+        Some(Footer {
+            offset,
+            roots,
+            attributes,
+        })
     }
 
     pub(crate) fn footer(&self) -> Option<Footer> {
@@ -237,7 +248,7 @@ impl Index {
 
     /// A node's payload, after checking its kind and, on first use, its
     /// digest.
-    fn node(&self, offset: u64, kind: u8) -> Result<Payload<'_>, StoreError> {
+    pub(crate) fn node(&self, offset: u64, kind: u8) -> Result<Payload<'_>, StoreError> {
         let header = self.read(offset, NODE_HEADER_BYTES)?;
         if header[0] != kind {
             return Err(StoreError::Damaged {
@@ -275,7 +286,7 @@ impl Index {
     }
 
     pub(crate) fn root_offsets(&self) -> Result<BTreeMap<String, u64>, StoreError> {
-        let Some(footer) = self.footer else {
+        let Some(footer) = self.footer.filter(|footer| footer.roots != 0) else {
             return Ok(BTreeMap::new());
         };
         let payload = self.node(footer.roots, ROOTS_NODE)?;
@@ -433,13 +444,13 @@ impl Index {
 }
 
 /// A node's bytes, kept whole so a mapped read need not copy them.
-struct Payload<'a> {
+pub(crate) struct Payload<'a> {
     bytes: Cow<'a, [u8]>,
     end: usize,
 }
 
 impl Payload<'_> {
-    fn bytes(&self) -> &[u8] {
+    pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes[NODE_HEADER_BYTES..self.end]
     }
 }
@@ -518,13 +529,12 @@ fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result
     file.read_exact(buffer)
 }
 
-/// Encodes a footer naming the roots node at `roots`.
-pub(crate) fn encode_footer(roots: u64, previous: u64) -> Vec<u8> {
+/// Encodes a footer naming the roots node and the attribute runs node.
+pub(crate) fn encode_footer(roots: u64, attributes: u64, previous: u64) -> Vec<u8> {
     let mut encoder = Encoder::default();
     encoder.bytes.extend_from_slice(&FOOTER_MAGIC);
     encoder.u64(roots);
-    // Attributes arrive in stage 4 of spec 17.
-    encoder.u64(0);
+    encoder.u64(attributes);
     encoder.u64(previous);
     let digest = blake3::hash(&encoder.bytes);
     encoder.digest(digest.as_bytes());

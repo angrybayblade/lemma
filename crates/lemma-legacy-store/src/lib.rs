@@ -16,14 +16,6 @@ use lemma_model::{
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
-mod records;
-mod segments;
-mod units;
-
-pub use records::{RecordError, RecordReader, RecordWriter, StringTable};
-pub use segments::{SegmentKey, SegmentStore};
-pub use units::UnitCache;
-
 /// Version of `schema.sql`. Databases written with another version are
 /// rejected rather than migrated, since an index can always be rebuilt.
 pub const SCHEMA_VERSION: &str = "5";

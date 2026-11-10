@@ -7,8 +7,11 @@
 //! the nodes for them, and comparing two sources descends only where their
 //! digests differ.
 
+mod attributes;
+mod cache;
 mod codec;
 mod read;
+mod records;
 mod scan;
 mod write;
 
@@ -19,9 +22,11 @@ use std::path::PathBuf;
 
 use lemma_model::{Language, Span, SymbolKind};
 
+pub use cache::{Cache, SegmentKey};
 pub use read::{
     FileChange, Index, ReadMode, Root, SymbolChange, SymbolChangeKind, changed_symbols,
 };
+pub use records::{RecordError, RecordReader, RecordWriter, StringTable};
 pub use scan::{ScanError, changes_on_disk, read_file};
 pub use write::{Commit, Writer};
 

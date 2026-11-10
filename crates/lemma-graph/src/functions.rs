@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use lemma_legacy_store::{RecordError, RecordReader, RecordWriter, StringTable};
+use lemma_store::{RecordError, RecordReader, RecordWriter, StringTable};
 
 use crate::impact::Function;
 

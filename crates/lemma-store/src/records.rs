@@ -216,10 +216,8 @@ impl<'a> RecordReader<'a> {
         let count = self.count()?;
         let byte_count = count.checked_mul(4).ok_or(RecordError::Truncated)?;
         let taken = self.take(byte_count)?;
-        Ok(taken
-            .chunks_exact(4)
-            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
-            .collect())
+        let (words, _) = taken.as_chunks::<4>();
+        Ok(words.iter().map(|word| u32::from_le_bytes(*word)).collect())
     }
 
     /// Reads a table written by [`RecordWriter::strings`], checking it is

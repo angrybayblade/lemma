@@ -403,13 +403,12 @@ impl<'a> Code<'a> {
         // A cache that cannot be opened only means every file is parsed.
         let kept = reading.facts.and_then(|cache| {
             std::fs::create_dir_all(&cache.directory).ok()?;
-            let units =
-                lemma_legacy_store::UnitCache::open(&cache.directory.join("units.db")).ok()?;
-            let segments = lemma_legacy_store::SegmentStore::new(&cache.directory.join("segments"));
+            let path = cache.directory.join("index.ls");
+            let units = lemma_store::Cache::open(&path).ok()?;
             Some(Kept {
                 build: cache.build.clone(),
                 units,
-                segments: Arc::new(segments),
+                path,
                 writing: Vec::new(),
             })
         });
@@ -733,7 +732,7 @@ pub(crate) fn functions_of(
 /// leave that file out of every later run's table.
 fn keep_segment(
     kept: &mut Option<Kept>,
-    key: lemma_legacy_store::SegmentKey,
+    key: lemma_store::SegmentKey,
     keyed: &[(&ListedFile, String)],
     records: &BTreeMap<String, FileRecord>,
     functions: &Functions,
@@ -772,8 +771,9 @@ fn merge_records(
 /// functions as a record, and each repository's merged as a segment.
 pub(crate) struct Kept {
     build: String,
-    units: lemma_legacy_store::UnitCache,
-    segments: Arc<lemma_legacy_store::SegmentStore>,
+    units: lemma_store::Cache,
+    /// Where `units` is, for a thread writing a segment on its own.
+    path: std::path::PathBuf,
     /// Segments being written, waited for when this is dropped.
     writing: Vec<std::thread::JoinHandle<()>>,
 }
@@ -782,13 +782,15 @@ impl Kept {
     /// Keeps `bytes` as the segment under `key` in the background: a
     /// large repository's segment takes a while to write, and nothing in
     /// this run reads it.
-    fn put_segment(&mut self, key: lemma_legacy_store::SegmentKey, bytes: Vec<u8>) {
-        let segments = Arc::clone(&self.segments);
+    fn put_segment(&mut self, key: lemma_store::SegmentKey, bytes: Vec<u8>) {
+        let path = self.path.clone();
         // Keeping is best effort: a segment that cannot be written, or
         // whose writer cannot be started, is built again from records by
         // the next run.
         let writer = std::thread::Builder::new().spawn(move || {
-            let _ = segments.put(&key, &bytes);
+            if let Ok(mut cache) = lemma_store::Cache::open(&path) {
+                cache.put_segment_later(&key, bytes);
+            }
         });
         self.writing.extend(writer.ok());
     }
@@ -811,14 +813,14 @@ fn segment_key(
     build: &str,
     root: &std::path::Path,
     keyed: &[(&ListedFile, String)],
-) -> lemma_legacy_store::SegmentKey {
+) -> lemma_store::SegmentKey {
     let group = format!("{build}\0functions\0{}", root.display());
     let mut inputs = String::from(SEGMENT_INPUTS);
     for (_, key) in keyed {
         inputs.push('\0');
         inputs.push_str(key);
     }
-    lemma_legacy_store::SegmentKey {
+    lemma_store::SegmentKey {
         group: lemma_model::content_hash(group.as_bytes())[..16].to_owned(),
         inputs: lemma_model::content_hash(inputs.as_bytes()),
     }
@@ -830,8 +832,8 @@ const SEGMENT_INPUTS: &str = "functions segment 1";
 
 /// The segment `kept` holds under `key`, decoded. One that is missing or
 /// does not decode only means building it again.
-fn kept_segment(kept: Option<&Kept>, key: &lemma_legacy_store::SegmentKey) -> Option<Functions> {
-    let bytes = kept?.segments.get(key).ok()??;
+fn kept_segment(kept: Option<&Kept>, key: &lemma_store::SegmentKey) -> Option<Functions> {
+    let bytes = kept?.units.segment(key).ok()??;
     Functions::decode_segment(&bytes).ok()
 }
 
