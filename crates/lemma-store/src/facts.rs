@@ -270,6 +270,14 @@ pub trait FactStore {
         symbol_id: SymbolId,
     ) -> Result<Option<StoredSymbol>, StoreError>;
 
+    /// Every file in a snapshot with its symbols, in source order, files
+    /// sorted by path: one read of the whole snapshot, for callers that
+    /// would otherwise ask file by file.
+    fn symbols_by_file(
+        &self,
+        snapshot_id: i64,
+    ) -> Result<Vec<(String, Vec<StoredSymbol>)>, StoreError>;
+
     /// Every symbol defined in a file, in source order.
     fn symbols_in_file(
         &self,

@@ -771,6 +771,15 @@ fn encode_catalog(catalog: &Catalog) -> Result<Vec<u8>, StoreError> {
     })
 }
 
+fn in_source_order(symbols: &mut [StoredSymbol]) {
+    symbols.sort_by_key(|symbol| {
+        (
+            symbol.symbol.span.start.line,
+            symbol.symbol.span.start.column,
+        )
+    });
+}
+
 fn stored_symbol(view: &View<'_>, at: SymbolAt) -> Result<StoredSymbol, StoreError> {
     let segment = view.segment(at.segment)?;
     let row = segment.symbol(at.symbol)?;
@@ -994,13 +1003,36 @@ impl FactStore for Store {
             .into_iter()
             .map(|at| stored_symbol(&view, at))
             .collect::<Result<Vec<_>, _>>()?;
-        symbols.sort_by_key(|symbol| {
-            (
-                symbol.symbol.span.start.line,
-                symbol.symbol.span.start.column,
-            )
-        });
+        in_source_order(&mut symbols);
         Ok(symbols)
+    }
+
+    fn symbols_by_file(
+        &self,
+        snapshot_id: i64,
+    ) -> Result<Vec<(String, Vec<StoredSymbol>)>, StoreError> {
+        let opened = self.opened()?;
+        let Some(view) = view_of(&opened, snapshot_id)? else {
+            return Ok(Vec::new());
+        };
+        view.files()?
+            .into_par_iter()
+            .map(|at| {
+                let mut symbols = view
+                    .row(at)?
+                    .symbols
+                    .map(|symbol| {
+                        let at = SymbolAt {
+                            segment: at.segment,
+                            symbol,
+                        };
+                        stored_symbol(&view, at)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                in_source_order(&mut symbols);
+                Ok((view.path(at)?.to_owned(), symbols))
+            })
+            .collect()
     }
 
     fn symbol_named_at(
