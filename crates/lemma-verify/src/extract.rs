@@ -289,8 +289,7 @@ fn operation_terms(
             continue;
         };
         terms.insert(crate::terms::path_term(path));
-        let names = clients.names_calling(method, path);
-        terms.extend(names.iter().map(|name| crate::terms::name_term(name)));
+        terms.extend(clients.terms_calling(method, path));
     }
     let chains = table_chains(grammar, operations);
     terms.extend(chains.iter().map(|chain| crate::terms::chain_term(chain)));
