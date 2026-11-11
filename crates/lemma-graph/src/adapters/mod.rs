@@ -16,6 +16,7 @@ pub mod overlay;
 mod registry;
 
 pub(crate) use cache::{commit_state, working_state};
+mod lazy;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -57,6 +58,9 @@ pub struct Generated {
     pub unread: Vec<String>,
     /// What laying it over committed documents needs to know.
     pub reading: Reading,
+    /// When it is a base document patched for a change, how: a contract
+    /// laid over the base's document can then be patched the same way.
+    pub patch: Option<lazy::Patch>,
 }
 
 /// The names of Lemma's built-in adapters.
@@ -149,6 +153,9 @@ impl<'a> Adapter<'a> {
             );
             return read_generated(&output);
         }
+        if let Some(generated) = self.patched_from_base(root, &output)? {
+            return Ok(generated);
+        }
         let context = failure_context(root, std::env::vars_os());
         remembering_failure(&output, &context, || {
             log::info!(
@@ -158,6 +165,61 @@ impl<'a> Adapter<'a> {
             self.run(root, root, &output)
         })?;
         read_generated(&output)
+    }
+
+    /// The working directory's document as the base commit's kept one,
+    /// patched for the change, when the change is one syntax can patch
+    /// (see [`lazy`]); kept at `output` like one the adapter wrote.
+    fn patched_from_base(
+        &self,
+        root: &Path,
+        output: &Path,
+    ) -> Result<Option<Generated>, GraphError> {
+        let started = std::time::Instant::now();
+        let Some(commit) = lazy::head_commit(root) else {
+            return Ok(None);
+        };
+        let base_output = self.output(&cache::commit_state(root, &commit)?);
+        if !base_output.exists() {
+            return Ok(None);
+        }
+        let base = read_generated(&base_output)?;
+        let Some((document, changes)) = lazy::patched(root, &commit, &base.document) else {
+            log::info!("adapter: the change is more than syntax can patch; reading the code");
+            return Ok(None);
+        };
+        let patch = lazy::Patch {
+            base_digest: base.digest.clone(),
+            changes,
+        };
+        // Kept beside the document, so a later read of it knows the patch.
+        if let Ok(text) = serde_json::to_string(&patch) {
+            let _ = std::fs::write(patch_path(output), text);
+        }
+        let text =
+            serde_json::to_string(&document).map_err(|source| GraphError::ResolverOutput {
+                command: "writing a patched document".to_owned(),
+                source,
+            })?;
+        std::fs::write(output, &text).map_err(|source| GraphError::Io {
+            path: output.to_owned(),
+            source,
+        })?;
+        log::info!(
+            "adapter: {} working directory: patched the base commit's document for the change in {:.2}s",
+            root.display(),
+            started.elapsed().as_secs_f64()
+        );
+        // The document is in hand: reading back what was just written
+        // would only parse it again.
+        let (unread, reading) = reading_of(&document);
+        Ok(Some(Generated {
+            digest: lemma_model::content_hash(text.as_bytes()),
+            document,
+            unread,
+            reading,
+            patch: Some(patch),
+        }))
     }
 
     /// The document of the code at `commit` of the clone at `root`.
@@ -367,11 +429,71 @@ fn read_generated(path: &Path) -> Result<Generated, GraphError> {
             source,
         })?;
     let (unread, reading) = reading_of(&document);
+    let kept_patch = std::fs::read_to_string(patch_path(path))
+        .ok()
+        .and_then(|patch_text| serde_json::from_str(&patch_text).ok());
     Ok(Generated {
         document,
         digest: lemma_model::content_hash(text.as_bytes()),
         unread,
         reading,
+        patch: kept_patch,
+    })
+}
+
+/// Where the patch a kept document was made with is kept.
+fn patch_path(document: &Path) -> PathBuf {
+    let mut name = document.as_os_str().to_owned();
+    name.push(".patch");
+    PathBuf::from(name)
+}
+
+/// The contract of a patched document, as the base document's kept contract
+/// patched the same way, without laying the documents over each other
+/// again; `None` when the base's contract is not kept or a change finds no
+/// schema to patch in it.
+pub fn patched_contract(
+    service: &str,
+    generated: &Generated,
+    committed: &[(String, String)],
+    cache: &Path,
+) -> Option<Contract> {
+    let patch = generated.patch.as_ref()?;
+    let base = kept_contract(cache, &contract_key(service, &patch.base_digest, committed))?;
+    let store = cache.join("contracts");
+    let mut documents = Vec::new();
+    let mut patched = BTreeSet::new();
+    for document in &base.documents {
+        let text = std::fs::read_to_string(&document.path).ok()?;
+        let mut value: Value = serde_json::from_str(&text).ok()?;
+        patched.extend(lazy::apply_changes(&mut value, &patch.changes));
+        let text = serde_json::to_string(&value).ok()?;
+        let written = store.join(format!(
+            "{}.json",
+            lemma_model::content_hash(text.as_bytes())
+        ));
+        if !written.exists() {
+            let partial = written.with_extension(format!("{}.partial", std::process::id()));
+            std::fs::write(&partial, &text)
+                .and_then(|()| std::fs::rename(&partial, &written))
+                .ok()?;
+        }
+        documents.push(GeneratedDocument {
+            name: document.name.clone(),
+            path: written,
+        });
+    }
+    if patched.is_empty() && !patch.changes.is_empty() {
+        return None;
+    }
+    let mut coverage = base.coverage;
+    coverage.changed.extend(patched);
+    coverage.changed.sort();
+    coverage.changed.dedup();
+    Some(Contract {
+        documents,
+        unread: base.unread,
+        coverage,
     })
 }
 
@@ -464,6 +586,101 @@ pub fn committed_documents(
         documents.push((name.clone(), parse_document(name, &text)?));
     }
     Ok(documents)
+}
+
+/// The texts of a checkout's committed documents named `names`, unparsed:
+/// enough to tell whether a contract laid over them is already kept.
+pub fn committed_texts(
+    checkout: &Checkout,
+    names: &[String],
+) -> Result<Vec<(String, String)>, GraphError> {
+    let mut texts = Vec::new();
+    for name in names {
+        if let Some(text) = checkout.read(name)? {
+            texts.push((name.clone(), text));
+        }
+    }
+    Ok(texts)
+}
+
+/// Parses texts [`committed_texts`] read.
+pub fn parse_committed(texts: &[(String, String)]) -> Result<Vec<(String, Value)>, GraphError> {
+    texts
+        .iter()
+        .map(|(name, text)| Ok((name.clone(), parse_document(name, text)?)))
+        .collect()
+}
+
+/// Names a contract by everything it is made from: the service, the
+/// adapter's document and each committed document's contents, and the
+/// Lemma build that laid them, whose overlay may change.
+pub fn contract_key(
+    service: &str,
+    generated_digest: &str,
+    committed: &[(String, String)],
+) -> String {
+    let mut input = format!(
+        "{}\n{service}\n{generated_digest}\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    for (name, text) in committed {
+        input.push_str(name);
+        input.push('\n');
+        input.push_str(&lemma_model::content_hash(text.as_bytes()));
+        input.push('\n');
+    }
+    lemma_model::content_hash(input.as_bytes())
+}
+
+/// The contract kept under `key`, when it and every document it names are
+/// still in `cache`.
+pub fn kept_contract(cache: &Path, key: &str) -> Option<Contract> {
+    let text =
+        std::fs::read_to_string(cache.join("contracts").join(format!("{key}.contract.json")))
+            .ok()?;
+    let kept: KeptContract = serde_json::from_str(&text).ok()?;
+    let documents: Vec<GeneratedDocument> = kept
+        .documents
+        .into_iter()
+        .map(|(name, path)| GeneratedDocument {
+            name,
+            path: PathBuf::from(path),
+        })
+        .collect();
+    if !documents.iter().all(|document| document.path.exists()) {
+        return None;
+    }
+    Some(Contract {
+        documents,
+        unread: kept.unread,
+        coverage: kept.coverage,
+    })
+}
+
+/// Keeps `contract` under `key`; a failure only means laying it again.
+pub fn keep_contract(cache: &Path, key: &str, contract: &Contract) {
+    let kept = KeptContract {
+        documents: contract
+            .documents
+            .iter()
+            .map(|document| (document.name.clone(), document.path.display().to_string()))
+            .collect(),
+        unread: contract.unread.clone(),
+        coverage: contract.coverage.clone(),
+    };
+    let Ok(text) = serde_json::to_string(&kept) else {
+        return;
+    };
+    let path = cache.join("contracts").join(format!("{key}.contract.json"));
+    let partial = path.with_extension(format!("{}.partial", std::process::id()));
+    let _ = std::fs::write(&partial, text).and_then(|()| std::fs::rename(&partial, &path));
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct KeptContract {
+    documents: Vec<(String, String)>,
+    unread: Vec<String>,
+    coverage: Coverage,
 }
 
 /// An `OpenAPI` document's text, as JSON, or YAML for a `.yaml` or `.yml`

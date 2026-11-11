@@ -20,7 +20,7 @@ const METHODS: [&str; 8] = [
 ];
 
 /// What laying the code's operations over the committed documents found.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Coverage {
     /// Operations the code describes.
     pub described: usize,
