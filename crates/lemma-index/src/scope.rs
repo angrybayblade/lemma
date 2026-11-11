@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn git_changes_are_noted_and_lemma_files_ignored() {
-        let WalkScope::Partial(dirty) = scope(&[".git/HEAD", ".lemma/index.db"], &[]) else {
+        let WalkScope::Partial(dirty) = scope(&[".git/HEAD", ".lemma/index.ls"], &[]) else {
             panic!("expected a partial walk");
         };
 

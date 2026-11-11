@@ -184,7 +184,7 @@ mod tests {
 
     fn symbol() -> StoredSymbol {
         StoredSymbol {
-            id: 1,
+            id: 1.into(),
             path: "src/router.py".to_owned(),
             language: Language::Python,
             symbol: Symbol {

@@ -11,7 +11,7 @@ Lemma answers questions about code: where a symbol is defined, used and implemen
       ▼
  storage  ◄──► symbol generation
  FactStore      SemanticProvider (language servers) and the syntax index
- (SQLite)       (Tree-sitter)
+ (index.ls)     (Tree-sitter)
 ```
 
 ## Operations
@@ -48,9 +48,9 @@ Each kind of question implements a small `Ask` trait: how to ask a provider, and
 
 ### Storage
 
-`lemma-store` defines `FactStore`: the facts the query layer reads and records. These are symbols and files from the syntax index, and provider answers keyed by question, position, provider and configuration. SQLite is the implementation today. Provider answers are stored as rows of locations, not opaque blobs, so another implementation, such as memory-mapped sorted tables or a graph of symbol occurrences shared across lookups, can replace or sit in front of SQLite without changing the query layer.
+`lemma-store` defines `FactStore`: the facts the query layer reads and records. These are symbols and files from the syntax index, and provider answers keyed by question, position, provider and configuration. `Store` implements it over `.lemma/index.ls`: each source's files and symbols in immutable segments, a full one with every file and small deltas with the files later commits changed, beside an attribute table for what is not about files (exports, answers, and what checks keep). Symbol ids are digests of each symbol's identity, so nothing is stored to keep them. The design is in `.specs/17-lemma-store.md`.
 
-Writing snapshots (`replace_snapshot`, `update_snapshot`) stays on `Store` itself. Only the indexer writes snapshots, and it is tied to SQLite's transactions.
+Writing snapshots (`replace_snapshot`, `update_snapshot`) stays on `Store` itself. Only the indexer writes snapshots, and each write is one commit of the store: a reader sees all of it or none of it.
 
 ### Symbol generation
 

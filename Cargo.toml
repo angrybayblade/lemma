@@ -16,12 +16,13 @@ lemma-lang = { path = "crates/lemma-lang" }
 lemma-lang-server = { path = "crates/lemma-lang-server" }
 lemma-lm = { path = "crates/lemma-lm" }
 lemma-logic = { path = "crates/lemma-logic" }
+lemma-store = { path = "crates/lemma-store" }
 lemma-lsp = { path = "crates/lemma-lsp" }
+lemma-mapped = { path = "crates/lemma-mapped" }
 lemma-model = { path = "crates/lemma-model" }
 lemma-providers = { path = "crates/lemma-providers" }
 lemma-query = { path = "crates/lemma-query" }
 lemma-souffle = { path = "crates/lemma-souffle" }
-lemma-store = { path = "crates/lemma-store" }
 lemma-syntax = { path = "crates/lemma-syntax" }
 lemma-verify = { path = "crates/lemma-verify" }
 lemma-graph = { path = "crates/lemma-graph" }
@@ -37,8 +38,8 @@ lsp-types = "0.95"
 memchr = "2"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 rayon = "1"
+rustc-hash = "2"
 regex = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"

@@ -49,7 +49,7 @@ fn code(root: &Path) {
 
 /// What the index in `root` holds: its files, exports and links.
 fn indexed(root: &Path) -> (Vec<String>, Vec<Export>, Vec<ExportLink>) {
-    let store = Store::open(&root.join(".lemma/index.db")).unwrap();
+    let store = Store::open(&root.join(".lemma/index.ls")).unwrap();
     let snapshots = store.snapshots().unwrap();
     let id = snapshots[0].id;
     let mut files: Vec<String> = store
@@ -173,7 +173,7 @@ fn a_workspace_module_indexes_each_repository_it_composes() {
     let (files, exports, _) = indexed(&billing);
     assert_eq!(files, ["src/charges.ts"]);
     assert_ne!(exports, []);
-    let store = Store::open(&scratch.path().join(".lemma/index.db")).unwrap();
+    let store = Store::open(&scratch.path().join(".lemma/index.ls")).unwrap();
     assert_eq!(store.workspace_members().unwrap().len(), 1);
 }
 

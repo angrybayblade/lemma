@@ -1,5 +1,7 @@
 # Native index and evidence store
 
+**Superseded in its physical design by [spec 17](17-lemma-store.md), 2026-11-10.** The logical rules here still stand.
+
 **Status — proposal, 2026-11-04.** The intended product interface is a reusable `.lm` module defining configuration, domain relations, behaviours and verification entry points. This document proposes a **native primary datastore** for that product. The on-disk layout, rollout and performance gates below are design choices to evaluate. No native implementation or native performance measurements exist in this review.
 
 ## Decision and first workload

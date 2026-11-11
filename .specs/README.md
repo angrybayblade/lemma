@@ -2,7 +2,9 @@
 
 Captured: 2026-10-28
 
-Updated 2026-11-10: [document 17](17-behavior-harnesses.md) proposes running behaviors in any language. Lemma core would define one interface for running a case, and harnesses would come in language packs that users install as they need them. It is parked with its open questions.
+Updated 2026-11-10: [document 18](18-behavior-harnesses.md) proposes running behaviors in any language. Lemma core would define one interface for running a case, and harnesses would come in language packs that users install as they need them. It is parked with its open questions.
+
+Updated 2026-11-10: [document 17](17-lemma-store.md) proposes one store for everything read from code: a per-repository `index.ls` holding source, file and symbol, with attributes filled in lazily, which a workspace mounts instead of copying.
 
 Updated 2026-11-08: [document 14](14-sentry.md) proposes sentry. The daemon, attached to one workspace, listens to file changes and keeps that workspace's check inputs prepared, so a check costs what the change costs. It records the decisions taken so far, the prior art reviewed, and a rollout gated on matching fresh checks.
 
@@ -38,7 +40,8 @@ These notes consolidate the design discussion leading to Lemma. They include acc
 14. [Sentry: warm paths for checks](14-sentry.md)
 15. [One description format: removing YAML](15-one-description-format.md)
 16. [`lemma verify`: does the description match the code?](16-verifying-descriptions.md)
-17. [Behavior harnesses and language packs](17-behavior-harnesses.md)
+17. [The Lemma store](17-lemma-store.md)
+18. [Behavior harnesses and language packs](18-behavior-harnesses.md)
 
 ## Status conventions
 

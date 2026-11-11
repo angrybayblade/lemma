@@ -28,12 +28,12 @@ export service api {
 ```
 
 ```sh
-lemma index ~/code/project              # writes ~/code/project/.lemma/index.db
+lemma index ~/code/project              # writes ~/code/project/.lemma/index.ls
 cd ~/code/project
 lemma symbols Router                    # search by name or qualified name
 lemma refs Router.delete                # references via the language's server
 lemma refs delete --language python     # narrow an ambiguous name
-lemma refs '#415'                       # or pick by id from `lemma symbols`
+lemma refs '#f256e26e'                  # or pick by id from `lemma symbols`
 lemma outline src/router.py             # symbols in a file
 lemma definition src/app.py:12:5        # where the symbol used there is defined
 lemma implementations Shape.area        # what implements or overrides it
@@ -93,7 +93,8 @@ The [landing page](website/README.md) leads with agent speed and system precisio
 | `lemma-syntax` | Tree-sitter extraction of definitions and declarations |
 | `lemma-lsp` | Generic LSP client: framing, lifecycle, readiness, encodings |
 | `lemma-providers` | The `SemanticProvider` trait, provider registry, and the LSP adapter |
-| `lemma-store` | The `FactStore` trait and its SQLite storage format |
+| `lemma-store` | `index.ls`: snapshots, files, symbols, attributes and cached answers in one append-only file of segments (spec 17) |
+| `lemma-mapped` | A read-only memory map: the one crate allowed `unsafe` |
 | `lemma-index` | Walking, hashing, and snapshotting a directory |
 | `lemma-query` | The operations: symbols, outline, references, definitions, implementations, signatures |
 | `lemma-logic` | Lemma's Datalog: programs, facts, the `Engine` trait and a reference engine |

@@ -137,7 +137,7 @@ mod tests {
         let before = working_state(root).expect("state");
 
         std::fs::create_dir(root.join(".lemma")).expect("creates");
-        std::fs::write(root.join(".lemma/index.db"), "changed").expect("writes");
+        std::fs::write(root.join(".lemma/index.ls"), "changed").expect("writes");
         let after = working_state(root).expect("state");
 
         assert_eq!(before, after);

@@ -52,7 +52,7 @@ Give each repository a `mod.lm` at its root naming its services and the code eac
 
 ```sh
 cd ~/code/billing
-lemma index .                  # writes .lemma/index.db
+lemma index .                  # writes .lemma/index.ls
 lemma symbols Router           # find symbols by name
 lemma refs Router.delete       # every reference, from the language server
 lemma definition src/app.ts:12:5

@@ -1,18 +1,27 @@
 [package]
 name = "lemma-store"
-description = "Storage for snapshots, symbols, provider results, units and segments."
+description = "The index.ls store: a repository's files and symbols in segments, with values computed from them."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# File locks in the standard library arrived in 1.89.
+rust-version = "1.89"
 publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-log.workspace = true
 blake3.workspace = true
+ignore.workspace = true
+lemma-mapped.workspace = true
 lemma-model.workspace = true
+lemma-syntax.workspace = true
 rayon.workspace = true
-rusqlite.workspace = true
+rustc-hash.workspace = true
+memchr.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use lemma_model::{IndexedFile, content_hash};
+use lemma_model::content_hash;
 use lemma_store::{FileStamp, StampedFile, StoredFile};
 use lemma_syntax::ExtractorPool;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -91,15 +91,11 @@ fn scan_file(
         return Ok(Scan::Restamped(restamped));
     }
 
-    let extraction = extractors.with(|extractor| extractor.extract(file.language, &contents))??;
+    let record = extractors
+        .with(|extractor| lemma_store::read_file(extractor, file.language, &contents))??;
     Ok(Scan::Parsed(StampedFile {
-        file: IndexedFile {
-            path: file.relative_path,
-            language: file.language,
-            content_hash,
-            has_syntax_errors: extraction.has_syntax_errors,
-            symbols: extraction.symbols,
-        },
+        path: file.relative_path,
+        record,
         stamp: file.stamp,
     }))
 }

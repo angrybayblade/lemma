@@ -30,6 +30,8 @@ const CODE_EXTENSIONS: [&str; 11] = [
 enum Arg<'a> {
     Text(&'a str),
     Number(i64),
+    /// Text already interned.
+    Symbol(Value),
 }
 
 /// Writes facts into the grammar's relations, interning text as it goes.
@@ -37,6 +39,9 @@ pub struct FactWriter<'g> {
     grammar: &'g mut CompiledGrammar,
     /// Facts written, by relation, for the summary.
     pub counts: BTreeMap<String, usize>,
+    /// The grammar's input relation for each relation and snapshot asked
+    /// about, `None` when it reads none: asked once per fact otherwise.
+    inputs: BTreeMap<String, BTreeMap<String, Option<String>>>,
 }
 
 impl<'g> FactWriter<'g> {
@@ -44,6 +49,7 @@ impl<'g> FactWriter<'g> {
         Self {
             grammar,
             counts: BTreeMap::new(),
+            inputs: BTreeMap::new(),
         }
     }
 
@@ -59,22 +65,58 @@ impl<'g> FactWriter<'g> {
     }
 
     fn add(&mut self, relation: &str, snapshots: &[&str], args: &[Arg<'_>]) {
+        let Self {
+            grammar,
+            counts,
+            inputs,
+        } = self;
         for snapshot in snapshots {
-            let Some(name) = self.grammar.input_relation(relation, snapshot) else {
+            let Some(name) = input_relation(inputs, grammar, relation, snapshot) else {
                 continue;
             };
             let row: Vec<Value> = args
                 .iter()
                 .map(|arg| match arg {
-                    Arg::Text(text) => self.grammar.symbols.intern(text),
+                    Arg::Text(text) => grammar.symbols.intern(text),
                     Arg::Number(number) => Value::Number(*number),
+                    Arg::Symbol(value) => *value,
                 })
                 .collect();
-            if self.grammar.facts.insert(&name, row) {
-                *self.counts.entry(relation.to_owned()).or_default() += 1;
+            if grammar.facts.insert(name, row) {
+                count(counts, relation);
             }
         }
     }
+}
+
+/// The grammar's input relation for `relation` in `snapshot`, if it reads
+/// one, remembered in `inputs` after the first time it is asked.
+fn input_relation<'i>(
+    inputs: &'i mut BTreeMap<String, BTreeMap<String, Option<String>>>,
+    grammar: &CompiledGrammar,
+    relation: &str,
+    snapshot: &str,
+) -> Option<&'i str> {
+    let is_known = inputs
+        .get(relation)
+        .is_some_and(|by_snapshot| by_snapshot.contains_key(snapshot));
+    if !is_known {
+        let name = grammar.input_relation(relation, snapshot);
+        inputs
+            .entry(relation.to_owned())
+            .or_default()
+            .insert(snapshot.to_owned(), name);
+    }
+    inputs.get(relation)?.get(snapshot)?.as_deref()
+}
+
+/// Counts one more fact of `relation`.
+fn count(counts: &mut BTreeMap<String, usize>, relation: &str) {
+    if let Some(count) = counts.get_mut(relation) {
+        *count += 1;
+        return;
+    }
+    counts.insert(relation.to_owned(), 1);
 }
 
 /// Extracts every repository's facts.
@@ -87,7 +129,7 @@ pub fn extract_all(
 ) -> Result<Option<BTreeSet<String>>, VerifyError> {
     let warm = options.warm.as_deref();
     let memo = warm.map(crate::Warm::take).unwrap_or_default();
-    let mut extractor = FactReader::new(options.facts_cache.clone());
+    let mut extractor = FactReader::new(options.facts_cache.clone(), options.also_keep.clone());
     extractor.read = memo.facts;
     extractor.readings = memo.readings;
     let specs = SpecCache {
@@ -107,6 +149,7 @@ pub fn extract_all(
             facts: std::mem::take(&mut extractor.read),
             readings: std::mem::take(&mut extractor.readings),
             facts_cache: options.facts_cache.clone(),
+            also_keep: options.also_keep.clone(),
         });
     }
     extracted
@@ -673,6 +716,7 @@ pub(crate) struct Memo {
     /// that changes can be read the same way before it is asked for.
     readings: Readings,
     facts_cache: Option<crate::FactsCache>,
+    also_keep: Option<crate::AlsoKeep>,
 }
 
 /// The ways a working directory was read, by repository and options as
@@ -742,7 +786,7 @@ impl Memo {
         if readings.is_empty() {
             return 0;
         }
-        let mut reader = FactReader::new(self.facts_cache.clone());
+        let mut reader = FactReader::new(self.facts_cache.clone(), self.also_keep.clone());
         reader.read = std::mem::take(&mut self.facts);
         for (path, options) in &readings {
             let _ = reader.read(path, None, files, options);
@@ -1778,24 +1822,26 @@ fn consumer_file(
     let file_id = format!("{}:{path}", scope.name);
     let mut scopes = BTreeSet::from([file_id.clone()]);
     write_calls(scope, &file_id, facts, writer, &mut scopes);
+    // A file mentions many names from few functions: each function's id is
+    // made and interned once, not once per mention.
+    let mut functions = FunctionIds::new(&file_id);
     for mention in &facts.mentions {
-        let mention_scope = consumer_id(&file_id, mention.function.as_ref());
+        let mention_scope = functions.symbol(mention.function.as_ref(), writer);
         writer.add(
             "mentions",
             scope.snapshots,
-            &[Arg::Text(&mention_scope), Arg::Text(&mention.name)],
+            &[Arg::Symbol(mention_scope), Arg::Text(&mention.name)],
         );
-        scopes.insert(mention_scope);
     }
     for called in &facts.called {
-        let caller = consumer_id(&file_id, called.function.as_ref());
+        let caller = functions.symbol(called.function.as_ref(), writer);
         writer.add(
             "calls_function",
             scope.snapshots,
-            &[Arg::Text(&caller), Arg::Text(&called.name)],
+            &[Arg::Symbol(caller), Arg::Text(&called.name)],
         );
-        scopes.insert(caller);
     }
+    scopes.extend(functions.into_ids());
     for function_scope in &scopes {
         writer.add(
             "in_file",
@@ -1821,6 +1867,39 @@ fn consumer_file(
             scope.snapshots,
             &[Arg::Text(&file_id), Arg::Text(service)],
         );
+    }
+}
+
+/// The consumer ids of one file's functions, each made and interned once.
+struct FunctionIds<'a> {
+    file_id: &'a str,
+    ids: BTreeMap<Option<&'a str>, (String, Value)>,
+}
+
+impl<'a> FunctionIds<'a> {
+    fn new(file_id: &'a str) -> Self {
+        Self {
+            file_id,
+            ids: BTreeMap::new(),
+        }
+    }
+
+    /// The interned consumer id of `function`, or of the file outside
+    /// functions.
+    fn symbol(&mut self, function: Option<&'a String>, writer: &mut FactWriter<'_>) -> Value {
+        let key = function.map(String::as_str);
+        if let Some((_, value)) = self.ids.get(&key) {
+            return *value;
+        }
+        let id = consumer_id(self.file_id, function);
+        let value = writer.grammar.symbols.intern(&id);
+        self.ids.insert(key, (id, value));
+        value
+    }
+
+    /// The ids made.
+    fn into_ids(self) -> impl Iterator<Item = String> {
+        self.ids.into_values().map(|(id, _)| id)
     }
 }
 
@@ -2199,15 +2278,28 @@ fn read_at_snapshot(
 }
 
 /// A file's facts, read with this thread's extractor from `extractors`.
+/// A file's code facts, from one parse, and what `also` keeps from the same
+/// parse.
 fn extracted(
     file: &SourceFile,
+    named: &[u8],
     options: &CodeOptions,
     extractors: &ExtractorPool,
-) -> Result<CodeFacts, VerifyError> {
-    let facts = extractors
-        .with(|extractor| lemma_http::extract(&file.path, &file.contents, options, extractor))
-        .map_err(|source| VerifyError::Syntax { source })??;
-    Ok(facts)
+    also: Option<&crate::AlsoKeep>,
+) -> Result<(CodeFacts, Option<KeptValue>), VerifyError> {
+    let Some(language) = lemma_http::facts_language(&file.path) else {
+        return Ok((lemma_http::CodeFacts::default(), None));
+    };
+    let parsed = extractors
+        .with(|extractor| extractor.parse(language, &file.contents))
+        .map_err(|source| VerifyError::Syntax { source })?
+        .map_err(|source| lemma_http::CodeError::Parse {
+            file: file.path.clone(),
+            source,
+        })?;
+    let facts = lemma_http::facts_of(&file.path, &file.contents, options, &parsed);
+    let more = also.and_then(|also| (also.0)(file, named, &parsed));
+    Ok((facts, more))
 }
 
 /// The key a file's facts are kept under, in memory and between runs: the
@@ -2244,8 +2336,16 @@ fn term_segment(
 /// cannot vouch for.
 type Keyed = (Vec<(ListedFile, String)>, BTreeMap<String, SourceFile>);
 
-/// A parsed file's facts, and their encoding when they should be kept.
-type ReadFacts = (CodeFacts, Option<Vec<u8>>);
+/// A parsed file's facts, their encoding when they should be kept, and
+/// what else to keep from the same parse.
+type ReadFacts = (CodeFacts, Option<Vec<u8>>, Option<KeptValue>);
+
+/// A value to keep in the facts cache, under its key.
+type KeptValue = (String, Vec<u8>);
+
+/// A file to parse: its contents, its unit key, and the text naming its
+/// contents.
+type ToParse<'a> = (&'a SourceFile, &'a String, Vec<u8>);
 
 /// Reads files' code facts, each once per run for the same contents and
 /// options (a file a change leaves alone has one blob at both its
@@ -2255,10 +2355,9 @@ type ReadFacts = (CodeFacts, Option<Vec<u8>>);
 /// segment.
 struct Kept {
     build: String,
-    units: lemma_store::UnitCache,
-    /// Where `units` is, for a thread reading it on its own connection.
+    units: lemma_store::Cache,
+    /// Where `units` is, for a thread reading it on its own.
     units_path: PathBuf,
-    segments: Arc<lemma_store::SegmentStore>,
     /// Segments being built and written, waited for when this is dropped.
     writing: Vec<std::thread::JoinHandle<()>>,
 }
@@ -2276,6 +2375,8 @@ struct FactReader {
     extractors: ExtractorPool,
     /// What is kept between runs, when facts are kept.
     kept: Option<Kept>,
+    /// What else to keep from each file parsed.
+    also_keep: Option<crate::AlsoKeep>,
     /// Facts read in this run, by unit key.
     read: BTreeMap<String, Arc<CodeFacts>>,
     /// How working directories were read.
@@ -2326,23 +2427,22 @@ impl ReadCounts {
 impl FactReader {
     /// A reader keeping facts in `cache`, if given. A cache that cannot be
     /// opened only means every file is parsed.
-    fn new(cache: Option<crate::FactsCache>) -> Self {
+    fn new(cache: Option<crate::FactsCache>, also_keep: Option<crate::AlsoKeep>) -> Self {
         let kept = cache.and_then(|cache| {
             std::fs::create_dir_all(&cache.directory).ok()?;
-            let units_path = cache.directory.join("units.db");
-            let units = lemma_store::UnitCache::open(&units_path).ok()?;
-            let segments = lemma_store::SegmentStore::new(&cache.directory.join("segments"));
+            let units_path = cache.directory.join("index.ls");
+            let units = lemma_store::Cache::open(&units_path).ok()?;
             Some(Kept {
                 build: cache.build,
                 units,
                 units_path,
-                segments: Arc::new(segments),
                 writing: Vec::new(),
             })
         });
         Self {
             extractors: ExtractorPool::new(),
             kept,
+            also_keep,
             read: BTreeMap::new(),
             readings: Readings::new(),
             termed: BTreeSet::new(),
@@ -2381,10 +2481,14 @@ impl FactReader {
         for file in lemma_http::read_listed(repository, commit, &to_read)? {
             contents.insert(file.path.clone(), file);
         }
-        let to_parse: Vec<(&SourceFile, &String)> = unknown
+        let to_parse: Vec<ToParse<'_>> = unknown
             .iter()
             .filter(|(_, key)| !kept.contains_key(*key))
-            .filter_map(|(file, key)| Some((contents.get(&file.path)?, *key)))
+            .filter_map(|(file, key)| {
+                let source = contents.get(&file.path)?;
+                let named = lemma_http::contents_key(file, Some(source))?;
+                Some((source, *key, named))
+            })
             .collect();
         let parsed = self.parse(&to_parse, options)?;
         self.counts.kept += kept.len();
@@ -2570,7 +2674,7 @@ impl FactReader {
         wanted: &BTreeSet<String>,
         file_count: usize,
     ) -> Option<BTreeSet<usize>> {
-        let bytes = self.kept.as_ref()?.segments.get(key?).ok()??;
+        let bytes = self.kept.as_ref()?.units.segment(key?).ok()??;
         crate::term_segments::files_with(&bytes, wanted, file_count).ok()
     }
 
@@ -2591,9 +2695,8 @@ impl FactReader {
             return;
         };
         let units_path = kept.units_path.clone();
-        let segments = Arc::clone(&kept.segments);
         let writer = std::thread::Builder::new().spawn(move || {
-            let Ok(units) = lemma_store::UnitCache::open(&units_path) else {
+            let Ok(mut units) = lemma_store::Cache::open(&units_path) else {
                 return;
             };
             let indexed: Vec<String> = indexed.into_iter().collect();
@@ -2601,7 +2704,7 @@ impl FactReader {
                 return;
             };
             let bytes = term_segment(&keys, &stored, &fresh);
-            let _ = segments.put(&segment, &bytes);
+            units.put_segment_later(&segment, bytes);
         });
         kept.writing.extend(writer.ok());
     }
@@ -2629,28 +2732,30 @@ impl FactReader {
     /// is the one reported, whatever thread hit it.
     fn parse(
         &mut self,
-        files: &[(&SourceFile, &String)],
+        files: &[ToParse<'_>],
         options: &CodeOptions,
     ) -> Result<Vec<(String, Arc<CodeFacts>)>, VerifyError> {
         use rayon::prelude::*;
         let is_keeping = self.kept.is_some();
         let extractors = &self.extractors;
+        let also = self.also_keep.as_ref().filter(|_| is_keeping);
         let read: Vec<Result<ReadFacts, VerifyError>> = files
             .par_iter()
             .with_min_len(8)
-            .map(|(file, _)| {
-                let facts = extracted(file, options, extractors)?;
+            .map(|(file, _, named)| {
+                let (facts, more) = extracted(file, named, options, extractors, also)?;
                 let encoded = is_keeping
                     .then(|| serde_json::to_vec(&facts).ok())
                     .flatten();
-                Ok((facts, encoded))
+                Ok((facts, encoded, more))
             })
             .collect();
         let mut parsed = Vec::new();
         let mut new_units = Vec::new();
         let mut new_terms = Vec::new();
-        for ((_, key), result) in files.iter().zip(read) {
-            let (facts, encoded) = result?;
+        for ((_, key, _), result) in files.iter().zip(read) {
+            let (facts, encoded, more) = result?;
+            new_units.extend(more);
             if let Some(encoded) = encoded {
                 new_units.push(((*key).clone(), encoded));
                 new_terms.push(((*key).clone(), crate::terms::code_terms(&facts)));

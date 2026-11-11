@@ -82,7 +82,8 @@ impl SouffleEngine {
         }
     }
 
-    /// Lets Soufflé use this many threads. Results do not depend on it.
+    /// Lets Soufflé use this many threads, rather than one per core.
+    /// Results do not depend on it.
     #[must_use]
     pub fn with_jobs(mut self, jobs: usize) -> Self {
         self.jobs = Some(jobs);
@@ -96,9 +97,12 @@ impl SouffleEngine {
             .args(["-F", "facts", "-D", "out"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(jobs) = self.jobs {
-            command.arg(format!("--jobs={jobs}"));
-        }
+        // Soufflé runs on one thread unless told otherwise; its results do
+        // not depend on how many it uses.
+        let jobs = self.jobs.unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        });
+        command.arg(format!("--jobs={jobs}"));
         log::debug!("running souffle in {}", directory.display());
         if explain {
             command.args(["-t", "explain"]).stdin(Stdio::piped());
@@ -180,18 +184,11 @@ fn write_facts(directory: &Path, prepared: &Prepared, facts: &FactSet) -> Result
         .relations()
         .filter(|relation| relation.role == RelationRole::Input);
     for relation in inputs {
+        // Rows are written straight into one buffer: a check writes tens of
+        // thousands, and building strings per field took most of the time.
         let mut text = String::new();
         for row in facts.rows(&relation.name) {
-            let values = row
-                .iter()
-                .map(|value| {
-                    number(*value).ok_or_else(|| SouffleError::OutOfRange {
-                        relation: relation.name.clone(),
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let fields: Vec<String> = values.iter().map(ToString::to_string).collect();
-            let _ = writeln!(text, "{}", fields.join("\t"));
+            push_row(&mut text, row, &relation.name)?;
         }
         let file = prepared
             .translation
@@ -200,6 +197,41 @@ fn write_facts(directory: &Path, prepared: &Prepared, facts: &FactSet) -> Result
         fs::write(facts_directory.join(file), text)?;
     }
     Ok(())
+}
+
+/// Appends one row of `relation` to `text`, its values separated by tabs.
+fn push_row(text: &mut String, row: &[Value], relation: &str) -> Result<(), SouffleError> {
+    for (column, value) in row.iter().enumerate() {
+        let number = number(*value).ok_or_else(|| SouffleError::OutOfRange {
+            relation: relation.to_owned(),
+        })?;
+        if column > 0 {
+            text.push('\t');
+        }
+        push_number(text, number);
+    }
+    text.push('\n');
+    Ok(())
+}
+
+/// Appends `number` in decimal to `text`.
+fn push_number(text: &mut String, number: i32) {
+    if number < 0 {
+        text.push('-');
+    }
+    let mut digits = [0u8; 10];
+    let mut left = number.unsigned_abs();
+    let mut at = digits.len();
+    loop {
+        at -= 1;
+        // A remainder by ten is one digit, so the cast cannot truncate.
+        digits[at] = b'0' + u8::try_from(left % 10).unwrap_or(0);
+        left /= 10;
+        if left == 0 {
+            break;
+        }
+    }
+    text.extend(digits[at..].iter().map(|digit| char::from(*digit)));
 }
 
 /// A value as a Soufflé number, if it fits in 32 bits.
@@ -282,4 +314,20 @@ pub(crate) fn parse_row<'a>(
         })
         .collect::<Option<_>>()?;
     (values.len() == kinds.len()).then(|| values.into_boxed_slice())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbers_are_written_in_decimal() {
+        let mut text = String::new();
+        for number in [0, 7, -7, 1_234_567_890, i32::MIN, i32::MAX] {
+            push_number(&mut text, number);
+            text.push(' ');
+        }
+
+        assert_eq!(text, "0 7 -7 1234567890 -2147483648 2147483647 ");
+    }
 }

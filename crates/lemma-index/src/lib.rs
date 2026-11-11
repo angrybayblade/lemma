@@ -735,7 +735,7 @@ mod tests {
         }
     }
 
-    fn symbol_ids(store: &Store, snapshot_id: i64, name: &str) -> Vec<i64> {
+    fn symbol_ids(store: &Store, snapshot_id: i64, name: &str) -> Vec<lemma_store::SymbolId> {
         store
             .find_symbols(snapshot_id, &exact(name))
             .unwrap()
@@ -763,7 +763,10 @@ mod tests {
             symbol_ids(&store, second.snapshot_id, "Router.delete"),
             router_ids
         );
-        assert_eq!(symbol_ids(&store, second.snapshot_id, "delete_session"), []);
+        assert_eq!(
+            symbol_ids(&store, second.snapshot_id, "delete_session"),
+            Vec::<lemma_store::SymbolId>::new()
+        );
         assert_eq!(
             symbol_ids(&store, second.snapshot_id, "close_session").len(),
             1
@@ -791,7 +794,10 @@ mod tests {
         let second = index_directory(repository.path(), &mut store).unwrap();
 
         assert_eq!(symbol_ids(&store, second.snapshot_id, "kept"), kept_ids);
-        assert_eq!(symbol_ids(&store, second.snapshot_id, "dropped"), []);
+        assert_eq!(
+            symbol_ids(&store, second.snapshot_id, "dropped"),
+            Vec::<lemma_store::SymbolId>::new()
+        );
         assert_eq!(symbol_ids(&store, second.snapshot_id, "added").len(), 1);
     }
 
@@ -805,7 +811,10 @@ mod tests {
         let summary = index_directory(repository.path(), &mut store).unwrap();
 
         assert!(!summary.files_by_language.contains_key(&Language::Go));
-        assert_eq!(symbol_ids(&store, summary.snapshot_id, "Delete"), []);
+        assert_eq!(
+            symbol_ids(&store, summary.snapshot_id, "Delete"),
+            Vec::<lemma_store::SymbolId>::new()
+        );
     }
 
     #[cfg(target_os = "linux")]

@@ -11,7 +11,7 @@ use lemma_model::{Language, SymbolKind};
     about = "Index code and ask about its symbols"
 )]
 pub(crate) struct Cli {
-    /// Index database to use. Defaults to `.lemma/index.db` in the nearest
+    /// Index database to use. Defaults to `.lemma/index.ls` in the nearest
     /// directory that has one.
     #[arg(long, global = true)]
     pub db: Option<PathBuf>,

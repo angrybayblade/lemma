@@ -7,6 +7,7 @@
 mod classify;
 mod declaration;
 mod nesting;
+mod outline;
 mod pool;
 mod repair;
 
@@ -15,6 +16,7 @@ use tree_sitter::{Node, Parser, Query, QueryCursor, QueryMatch, StreamingIterato
 
 pub use crate::declaration::declaration_text;
 use crate::nesting::Definition;
+pub use crate::outline::OutlinedSymbol;
 pub use crate::pool::ExtractorPool;
 pub use crate::repair::parse as parse_source;
 
@@ -69,6 +71,26 @@ pub struct Extraction {
     pub has_syntax_errors: bool,
 }
 
+/// One file parsed, with its definitions. The tree is kept so a caller that
+/// reads more from the file need not parse it again.
+pub struct Parsed {
+    /// The language it was parsed as.
+    pub language: Language,
+    /// The syntax tree.
+    pub tree: tree_sitter::Tree,
+    /// The definitions found in it.
+    pub extraction: Extraction,
+}
+
+/// One file's definitions and what each is made of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outline {
+    /// Definitions in source order.
+    pub symbols: Vec<OutlinedSymbol>,
+    /// Whether the parser recovered from syntax errors.
+    pub has_syntax_errors: bool,
+}
+
 /// Parses source files and pulls out their definitions.
 ///
 /// Holds one parser and compiled query per language, so reuse a single
@@ -95,14 +117,41 @@ impl Extractor {
 
     /// Extracts the definitions from one file's source.
     pub fn extract(&mut self, language: Language, source: &str) -> Result<Extraction, SyntaxError> {
+        Ok(self.parse(language, source)?.extraction)
+    }
+
+    /// Parses one file's source and extracts its definitions, keeping the
+    /// tree for whatever else is read from the file.
+    pub fn parse(&mut self, language: Language, source: &str) -> Result<Parsed, SyntaxError> {
         let grammar = self.grammar_mut(language);
         let tree = repair::parse(&mut grammar.parser, language, source)
             .ok_or(SyntaxError::ParseAborted { language })?;
-
         let definitions = grammar.find_definitions(tree.root_node(), source);
-        Ok(Extraction {
+        let extraction = Extraction {
             symbols: nesting::into_symbols(definitions),
             has_syntax_errors: tree.root_node().has_error(),
+        };
+        Ok(Parsed {
+            language,
+            tree,
+            extraction,
+        })
+    }
+
+    /// Extracts one file's definitions with what each is made of, from a
+    /// single parse: the eager layer of the store (spec 17).
+    pub fn outline(&mut self, language: Language, source: &str) -> Result<Outline, SyntaxError> {
+        let grammar = self.grammar_mut(language);
+        let tree = repair::parse(&mut grammar.parser, language, source)
+            .ok_or(SyntaxError::ParseAborted { language })?;
+        let root = tree.root_node();
+        let symbols = nesting::into_symbols(grammar.find_definitions(root, source))
+            .into_iter()
+            .map(|symbol| outline::read_symbol(root, source, symbol))
+            .collect();
+        Ok(Outline {
+            symbols,
+            has_syntax_errors: root.has_error(),
         })
     }
 

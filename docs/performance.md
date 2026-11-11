@@ -84,6 +84,9 @@ Each change was measured against the previous best and kept only if it helped wi
 | Start `git status` for the changed paths before parsing, in parallel | Part of the above. |
 | Start language servers in the background after indexing, opening a file from the densest directory | First lookup after a short pause: seconds → 72-136 ms. |
 | Use the name indexes for exact search; search substrings in memory with a vectorised scan | Exact 97 ms → 16 ms, substring 120 ms → 19 ms. |
+| Keep files and symbols in one append-only store of immutable segments, `.lemma/index.ls`, in place of SQLite | On a generated system of 100,000 files: `lemma symbols` 74 ms → 3 ms, `lemma graph` with cached references 1.8 s → 5 ms, a fresh index 5.1 s → 4.7 s. |
+| Parse each file once per check, for its code facts and for tracing's functions together | A cold change-driven check of 100,000 files 18.6 s → 12.8 s. |
+| Run Soufflé on every core, write its inputs without per-row allocation, and read tracing's segments in parallel | A warm change-driven check of 100,000 files 1.73 s → 1.29 s. |
 
 ## Idle language servers
 
@@ -139,5 +142,5 @@ Providers can declare the message they send once a project is loaded (`ready_mes
 - **Edits** still pay for one `git status` process (about 50 ms here). Comparing file contents with the commit in-process would remove it.
 - **Lookups with thousands of results** spend most of their time naming the enclosing function of each reference, one query each.
 - **The first lookup of each symbol** costs the language server's own search (about 100-250 ms here, seconds for very common names). Lemma cannot make the server faster, but it could store answers as symbol occurrences shared across lookups and fill them in while idle, so most lookups never reach a server.
-- **The first index** of monorepo A takes 5-6 s. Writing to SQLite while parsing, and a hand-written tree walk instead of Tree-sitter queries, could shorten it.
+- **The first index** of monorepo A takes 5-6 s. Writing the store while parsing, and a hand-written tree walk instead of Tree-sitter queries, could shorten it.
 - **The daemon** runs one command at a time.

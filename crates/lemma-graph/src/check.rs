@@ -14,6 +14,7 @@ use std::sync::Arc;
 use lemma_logic::Engine;
 use lemma_model::Language;
 use lemma_syntax::Extractor;
+use rayon::prelude::*;
 
 use crate::GraphError;
 use crate::adapters;
@@ -482,11 +483,17 @@ fn evaluate_behaviors(
     };
     // The newest commit read dates the check: a change's head, or, without
     // a change, the newest of the repositories' commits, whether or not the
-    // workspace's own directory is a Git repository.
-    let date = repos
-        .values()
-        .filter_map(|repo| crate::allowances::committer_date(&repo.checkouts[HEAD]))
-        .max();
+    // workspace's own directory is a Git repository. Only allowances read
+    // the date, and finding it asks Git once per repository, so it is found
+    // only when there are allowances, asking for every repository at once.
+    let date = if evaluated.head.model.allowances.is_empty() {
+        None
+    } else {
+        repos
+            .par_iter()
+            .filter_map(|(_, repo)| crate::allowances::committer_date(&repo.checkouts[HEAD]))
+            .max()
+    };
     let mut allowances = crate::allowances::Allowed::new(&evaluated.head.model, date);
     allowances.cover_cases(&evaluated.results, &mut evaluated.reports);
     findings.extend(crate::behaviors::findings(&evaluated.reports, level));
@@ -708,6 +715,7 @@ pub(crate) fn fetch_calls<E: Engine>(
         facts_cache: facts.cloned(),
         evaluation: lemma_verify::Evaluation::Demand,
         warm: None,
+        also_keep: None,
     };
     let report = lemma_verify::calls_of(&partial.manifest, engine, &options, listings, operations)
         .map_err(|source| GraphError::Inference { source })?;
@@ -1047,6 +1055,9 @@ fn verify_inferred<E: Engine>(
         // them (see `affects::CallSource`).
         evaluation: run.evaluation,
         warm: run.warm.clone(),
+        also_keep: run
+            .facts_cache
+            .map(|cache| affects::keep_functions_too(cache.build.clone())),
     };
     log::info!(
         "inferring links from code: {} changed {}..{}, {} evaluation",

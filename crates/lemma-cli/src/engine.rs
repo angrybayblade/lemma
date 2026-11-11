@@ -26,7 +26,7 @@ use lemma_query::{
     SymbolSearch, SymbolSelector, UsesAnswer, WarmUp,
 };
 use lemma_store::{
-    FactStore, NameMatch, Store, StoreError, StoredMember, StoredSnapshot, StoredSymbol,
+    FactStore, IdPrefix, NameMatch, Store, StoreError, StoredMember, StoredSnapshot, StoredSymbol,
     SymbolFilter,
 };
 
@@ -44,7 +44,7 @@ use crate::selection;
 
 /// Directory, relative to an indexed root, where Lemma keeps its files.
 const LEMMA_DIRECTORY: &str = ".lemma";
-const INDEX_FILE: &str = "index.db";
+const INDEX_FILE: &str = "index.ls";
 const PROVIDERS_FILE: &str = "providers.toml";
 
 /// Exit code when a name matches several symbols.
@@ -410,7 +410,7 @@ impl Engine {
             if let (Ok(_), Indexing::Command(retention, _)) = (&result, indexing) {
                 self.apply_retention(&default_index_path(&member.root)?, &member.root, retention)?;
             }
-            workspace.record(member, result)?;
+            workspace.record(member, result);
         }
         for missing in &composition.unavailable {
             workspace.lines.push(output::MemberLine::skipped(
@@ -423,7 +423,7 @@ impl Engine {
             None => default_index_path(root)?,
         };
         let store = store_for_writing(&mut self.stores, &db_path)?;
-        store.replace_workspace(&workspace.members, &workspace.exports, &workspace.links)?;
+        store.mount_workspace(&workspace.members)?;
         // A workspace's index holds its members, not code of its own: drop
         // any snapshot left from indexing the directory before it composed
         // repositories.
@@ -1231,7 +1231,7 @@ enum InWorkspace {
 }
 
 /// The description a workspace's index at `db_path`
-/// (`<root>/.lemma/index.db`) was built from, if it is there.
+/// (`<root>/.lemma/index.ls`) was built from, if it is there.
 fn workspace_file(db_path: &Path) -> Option<PathBuf> {
     selection::description_in(db_path.parent()?.parent()?)
 }
@@ -1331,8 +1331,6 @@ struct Indexed {
 #[derive(Default)]
 struct WorkspaceIndex {
     members: Vec<StoredMember>,
-    exports: Vec<(String, lemma_model::Export)>,
-    links: Vec<lemma_model::ExportLink>,
     lines: Vec<output::MemberLine>,
 }
 
@@ -1342,7 +1340,7 @@ impl WorkspaceIndex {
         &mut self,
         member: &lemma_graph::compose::Member,
         result: anyhow::Result<(StoredMember, Indexed)>,
-    ) -> anyhow::Result<()> {
+    ) {
         let (stored, indexed) = match result {
             Ok(found) => found,
             Err(error) => {
@@ -1350,37 +1348,16 @@ impl WorkspaceIndex {
                     &member.name,
                     format!("{error:#}"),
                 ));
-                return Ok(());
+                return;
             }
         };
-        let store = Store::open(Path::new(&stored.database))?;
-        let snapshot_id = indexed.summary.snapshot_id;
-        for export in store.exports(snapshot_id)? {
-            self.exports.push((member.name.clone(), export));
-        }
-        for link in store.export_links(snapshot_id)? {
-            self.links.push(lemma_model::ExportLink {
-                caller: absolute_address(&member.name, &link.caller),
-                provider: absolute_address(&member.name, &link.provider),
-            });
-        }
         self.lines.push(output::MemberLine::indexed(
             &stored,
             &indexed.summary,
             &indexed.exports,
         ));
         self.members.push(stored);
-        Ok(())
     }
-}
-
-/// An address as a workspace names it: one written inside `member`'s
-/// the description (`services.a.op`) gets the member's name.
-fn absolute_address(member: &str, address: &str) -> String {
-    if address.starts_with('#') {
-        return address.to_owned();
-    }
-    format!("{member}:{address}")
 }
 
 /// Clears exports and links a description since removed left behind.
@@ -1458,10 +1435,27 @@ fn update_exports(
                 export.kind == lemma_model::ExportKind::Endpoint && export.symbol.is_some()
             })
             .count(),
+        handlers_found_by: handlers_found_by(&exports),
         symbols: count(lemma_model::ExportKind::Symbol),
         links: store.export_links(snapshot_id)?.len(),
         warnings,
     })
+}
+
+/// How the handlers of documented operations were found, with how many
+/// each: an endpoint found by `code` was guessed from how routes look.
+fn handlers_found_by(exports: &[lemma_model::Export]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    let found = exports.iter().filter(|export| {
+        export.kind == lemma_model::ExportKind::Endpoint && export.symbol.is_some()
+    });
+    for export in found {
+        let how = export
+            .found_by
+            .map_or("unknown", lemma_model::FoundBy::as_str);
+        *counts.entry(how.to_owned()).or_insert(0) += 1;
+    }
+    counts
 }
 
 /// The documents each local service's adapter generates from the code at
@@ -1583,7 +1577,7 @@ fn store_for_writing<'a>(
     db_path: &Path,
 ) -> anyhow::Result<&'a mut Store> {
     match Store::open(db_path) {
-        Err(StoreError::SchemaMismatch { .. }) => {
+        Err(StoreError::UnsupportedVersion { .. } | StoreError::NotAStore { .. }) => {
             stores.remove(db_path);
             remove_database(db_path)?;
         }
@@ -1714,7 +1708,7 @@ impl<'a> Request<'a> {
         }
     }
 
-    /// The given database, or the nearest `.lemma/index.db` from the working
+    /// The given database, or the nearest `.lemma/index.ls` from the working
     /// directory upwards.
     fn find_index(&self) -> anyhow::Result<PathBuf> {
         if let Some(db_path) = &self.db {
@@ -1774,9 +1768,9 @@ fn select_symbol(
     if let Some(address) = addresses::as_address(symbol) {
         return addresses::resolve_export(store, snapshot, &address);
     }
-    // A member's ids are its own index's, so `#billing:607` copied from
-    // the workspace names the same symbol inside billing, and nothing in
-    // another repository, where 607 is some other symbol.
+    // A member's ids are its own index's, so `#billing:9f3c0a12` copied
+    // from the workspace names the same symbol inside billing, and nothing
+    // in another repository.
     if let Some((repository, id)) = qualified_id(symbol) {
         let root = Path::new(&snapshot.snapshot.root);
         let here = root
@@ -1785,25 +1779,17 @@ fn select_symbol(
             .unwrap_or_default();
         if !is_same_repository(&repository, &here) && !is_composed_as(root, &repository) {
             bail!(
-                "`{symbol}` is an id in {repository}, but this index is of `{here}`: ids are \
-                 numbered per repository, so ask from the workspace or inside {repository}, or \
-                 use an id this repository's `lemma symbols` shows"
+                "`{symbol}` is an id in {repository}, but this index is of `{here}`: ask from \
+                 the workspace or inside {repository}, or use an id this repository's \
+                 `lemma symbols` shows"
             );
         }
         // An id names one symbol already: a filter given with it is about
         // something else, such as where its uses are, and must not hide it.
-        let found = store.symbol(snapshot.id, id)?;
-        return Ok(found.map_or(SymbolResolution::Unresolved, SymbolResolution::Resolved));
+        return symbols_with_id(store, snapshot, symbol, &id);
     }
     if let Some(id) = symbol.strip_prefix('#') {
-        let id: i64 = id.parse().with_context(|| {
-            format!(
-                "`{symbol}` is not a symbol id: ids are written `#607`, or `#billing:607` for a \
-                 workspace member"
-            )
-        })?;
-        let found = store.symbol(snapshot.id, id)?;
-        return Ok(found.map_or(SymbolResolution::Unresolved, SymbolResolution::Resolved));
+        return symbols_with_id(store, snapshot, symbol, id);
     }
     let prefers_implementable = filters.prefers_implementable;
     let selector = SymbolSelector {
@@ -1966,12 +1952,35 @@ fn member_qualified_name(members: &[StoredMember], text: &str) -> Option<(String
 
 /// A repository-qualified symbol id: `#billing:607`, also written
 /// `#billing:#607` or `#billing#607`. The repository keeps its `#`.
-fn qualified_id(text: &str) -> Option<(String, i64)> {
+fn qualified_id(text: &str) -> Option<(String, String)> {
     let rest = text.strip_prefix('#')?;
     let split = rest.find([':', '#'])?;
     let (name, id) = (&rest[..split], &rest[split + 1..]);
-    let id = id.strip_prefix('#').unwrap_or(id).parse().ok()?;
-    (!name.is_empty()).then(|| (format!("#{name}"), id))
+    let id = id.strip_prefix('#').unwrap_or(id);
+    IdPrefix::parse(id)?;
+    (!name.is_empty()).then(|| (format!("#{name}"), id.to_owned()))
+}
+
+/// The symbols whose ids begin with the digits `id`, as `symbol` wrote them.
+fn symbols_with_id(
+    store: &Store,
+    snapshot: &StoredSnapshot,
+    symbol: &str,
+    id: &str,
+) -> anyhow::Result<SymbolResolution> {
+    let Some(prefix) = IdPrefix::parse(id) else {
+        bail!(
+            "`{symbol}` is not a symbol id: ids are written as `lemma symbols` shows them, \
+             such as `#9f3c0a12d4e5b6a7`, or at least their first six digits, and \
+             `#billing:9f3c0a12` for a workspace member"
+        );
+    };
+    let mut found = store.symbols_with_id_prefix(snapshot.id, prefix)?;
+    Ok(match found.len() {
+        0 => SymbolResolution::Unresolved,
+        1 => SymbolResolution::Resolved(found.remove(0)),
+        _ => SymbolResolution::Ambiguous(found),
+    })
 }
 
 fn drawing_for(format: GraphDrawing) -> output::Drawing {
@@ -2215,7 +2224,7 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
-/// `.lemma/index.db` under the indexed directory, creating the directory.
+/// `.lemma/index.ls` under the indexed directory, creating the directory.
 fn default_index_path(root: &Path) -> anyhow::Result<PathBuf> {
     let directory = root.join(LEMMA_DIRECTORY);
     fs::create_dir_all(&directory)
@@ -2249,6 +2258,8 @@ fn inode_of(_path: &Path) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use lemma_store::SymbolId;
+
     use super::*;
 
     #[test]
@@ -2280,14 +2291,14 @@ mod tests {
         assert_eq!(shortened("one\ntwo"), "one\ntwo");
     }
 
-    fn candidate(id: i64, name: &str, kind: SymbolKind) -> StoredSymbol {
+    fn candidate(id: u128, name: &str, kind: SymbolKind) -> StoredSymbol {
         let position = Position { line: 0, column: 0 };
         let span = lemma_model::Span {
             start: position,
             end: position,
         };
         StoredSymbol {
-            id,
+            id: SymbolId::from(id),
             path: "store.go".to_owned(),
             language: Language::Go,
             symbol: lemma_model::Symbol {
@@ -2311,13 +2322,13 @@ mod tests {
         };
         let execute = candidate(0, "Tools.execute", SymbolKind::Method).symbol;
         let files = [lemma_store::StampedFile {
-            file: lemma_model::IndexedFile {
-                path: "src/models/tools.py".to_owned(),
-                language: Language::Python,
-                content_hash: "hash".to_owned(),
-                has_syntax_errors: false,
-                symbols: vec![execute],
-            },
+            path: "src/models/tools.py".to_owned(),
+            record: lemma_store::FileRecord::from_symbols(
+                "hash",
+                Language::Python,
+                false,
+                vec![execute],
+            ),
             stamp: lemma_store::FileStamp::default(),
         }];
         store
@@ -2338,7 +2349,8 @@ mod tests {
             prefers_implementable: false,
         };
 
-        let found = select_symbol(&store, &stored, &format!("#{id}"), filters).unwrap();
+        let short = &id.short()[..8];
+        let found = select_symbol(&store, &stored, &format!("#{short}"), filters).unwrap();
 
         assert!(matches!(found, SymbolResolution::Resolved(symbol) if symbol.id == id));
     }
@@ -2347,8 +2359,8 @@ mod tests {
     fn a_long_lived_engine_lets_go_of_an_index_whose_directory_is_gone() {
         let kept = tempfile::tempdir().unwrap();
         let gone = tempfile::tempdir().unwrap();
-        let kept_db = kept.path().join(".lemma/index.db");
-        let gone_db = gone.path().join(".lemma/index.db");
+        let kept_db = kept.path().join(".lemma/index.ls");
+        let gone_db = gone.path().join(".lemma/index.ls");
         let mut engine = Engine::long_lived();
         for db_path in [&kept_db, &gone_db] {
             std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
@@ -2372,7 +2384,9 @@ mod tests {
 
         let narrowed = narrow_to_implementable(ambiguous);
 
-        assert!(matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == 1));
+        assert!(
+            matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == SymbolId::from(1))
+        );
     }
 
     #[test]
@@ -2391,7 +2405,9 @@ mod tests {
 
         let narrowed = narrow_to_implementable(ambiguous);
 
-        assert!(matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == 2));
+        assert!(
+            matches!(narrowed, SymbolResolution::Resolved(symbol) if symbol.id == SymbolId::from(2))
+        );
     }
 
     #[test]
@@ -2422,16 +2438,20 @@ mod tests {
 
     #[test]
     fn repository_qualified_ids_are_read_in_every_written_form() {
-        let forms = ["#billing:607", "#billing:#607", "#billing#607"];
+        let forms = [
+            "#billing:9f3c0a12",
+            "#billing:#9f3c0a12",
+            "#billing#9f3c0a12",
+        ];
 
-        let read: Vec<Option<(String, i64)>> =
+        let read: Vec<Option<(String, String)>> =
             forms.iter().map(|form| qualified_id(form)).collect();
 
         assert!(
             read.iter()
-                .all(|id| *id == Some(("#billing".to_owned(), 607)))
+                .all(|id| *id == Some(("#billing".to_owned(), "9f3c0a12".to_owned())))
         );
-        assert_eq!(qualified_id("#607"), None);
+        assert_eq!(qualified_id("#9f3c0a12"), None);
         assert_eq!(qualified_id("#billing:services.api.create"), None);
     }
 
@@ -2500,7 +2520,7 @@ mod tests {
     #[test]
     fn a_path_from_inside_one_member_is_found_from_the_workspace() {
         let workspace = tempfile::tempdir().unwrap();
-        let db_path = workspace.path().join(".lemma/index.db");
+        let db_path = workspace.path().join(".lemma/index.ls");
         let member = |name: &str| {
             let root = workspace.path().join(name);
             std::fs::create_dir_all(root.join("src")).unwrap();

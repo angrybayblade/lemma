@@ -30,9 +30,11 @@ pub(crate) enum Format {
 
 #[derive(Serialize)]
 struct SymbolView<'a> {
-    id: i64,
-    /// The id to pass back: `#607`, or `#billing:607` in a workspace,
-    /// where ids are numbered per repository.
+    /// The id's first 16 hexadecimal digits; any unique prefix of six or
+    /// more names the symbol too.
+    id: String,
+    /// The id to pass back: `#9f3c0a12d4e5b6a7`, or `#billing:9f3c0a12d4e5b6a7`
+    /// in a workspace, where each repository's ids are its own.
     qualified_id: String,
     name: &'a str,
     qualified_name: &'a str,
@@ -46,7 +48,7 @@ struct SymbolView<'a> {
 impl<'a> SymbolView<'a> {
     fn new(stored: &'a StoredSymbol) -> Self {
         Self {
-            id: stored.id,
+            id: stored.id.short(),
             qualified_id: qualified_id(stored),
             name: &stored.symbol.name,
             qualified_name: &stored.symbol.qualified_name,
@@ -86,6 +88,9 @@ pub(crate) struct ExportCounts {
     pub endpoints: usize,
     /// Those whose route handler was found.
     pub endpoints_at_handlers: usize,
+    /// How those handlers were found (`adapter`, `code`, `declared`,
+    /// `directive`), with how many each.
+    pub handlers_found_by: std::collections::BTreeMap<String, usize>,
     /// Definitions in public modules.
     pub symbols: usize,
     /// Declared links.
@@ -223,7 +228,16 @@ fn export_counts(out: &mut dyn Write, exports: &ExportCounts) -> io::Result<()> 
         exports.endpoints_at_handlers,
         exports.symbols,
         exports.links
-    )
+    )?;
+    if exports.handlers_found_by.is_empty() {
+        return Ok(());
+    }
+    let found_by: Vec<String> = exports
+        .handlers_found_by
+        .iter()
+        .map(|(how, count)| format!("{how} {count}"))
+        .collect();
+    writeln!(out, "handlers found by: {}", found_by.join(", "))
 }
 
 #[derive(Serialize)]
@@ -506,15 +520,15 @@ fn missing_status(definition: &lemma_providers::ProviderDefinition) -> String {
 pub(crate) fn qualified_id(stored: &StoredSymbol) -> String {
     match stored.path.split_once(':') {
         Some((repository, _)) if repository.starts_with('#') => {
-            format!("{repository}:{}", stored.id)
+            format!("{repository}:{}", stored.id.short())
         }
-        _ => format!("#{}", stored.id),
+        _ => format!("#{}", stored.id.short()),
     }
 }
 
 fn symbol_line(stored: &StoredSymbol) -> String {
     format!(
-        "{:<8} {:<10} {}  {}:{}",
+        "{:<17} {:<10} {}  {}:{}",
         qualified_id(stored),
         stored.symbol.kind.as_str(),
         stored.symbol.qualified_name,

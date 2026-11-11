@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use lemma_model::{GraphNode, Language, Outcome, Position, SymbolKind, Use, UseGraph};
-use lemma_store::{FactStore, StoredSymbol};
+use lemma_store::{FactStore, NameMatch, StoredSymbol, SymbolFilter};
 
 use crate::QueryError;
 use crate::lookup::LookupContext;
@@ -79,13 +79,10 @@ pub fn symbol_graph(
     options: &GraphOptions,
     pool: &mut SessionPool,
 ) -> Result<UseGraph, QueryError> {
-    let catalog = Catalog::load(
-        &*store,
-        context.snapshot.id,
-        &context.snapshot.snapshot.root,
-    )?;
+    let snapshot = &context.snapshot;
     match options.source {
         GraphSource::Lsp => {
+            let catalog = Catalog::lazy(snapshot.id, &snapshot.snapshot.root);
             let mut neighbours = ServerNeighbours {
                 store,
                 context,
@@ -95,6 +92,7 @@ pub fn symbol_graph(
             walk(root, options, &mut neighbours)
         }
         GraphSource::Names => {
+            let catalog = Catalog::whole(&*store, snapshot.id, &snapshot.snapshot.root)?;
             let mut graph = walk(root, options, &mut NameNeighbours::new(catalog))?;
             if graph.relationships.is_empty() {
                 graph
@@ -338,35 +336,94 @@ fn graph_node(neighbour: &Neighbour) -> GraphNode {
     }
 }
 
-/// Every symbol in a snapshot, by file and by name, and the source text
-/// of files as they are read.
+/// A snapshot's symbols by file and by name, and the source text of files
+/// as they are read. A name graph reads every symbol at once; a language
+/// server graph asks the store about only the files and names it meets,
+/// and keeps what it was told.
 struct Catalog {
     root: PathBuf,
-    by_file: BTreeMap<String, Vec<StoredSymbol>>,
+    snapshot_id: i64,
+    /// Whether every file and name is already here.
+    is_whole: bool,
+    /// Each file's symbols in source order; `None` for a path not indexed.
+    by_file: BTreeMap<String, Option<Vec<StoredSymbol>>>,
+    /// The usable symbols bearing each name.
     by_name: BTreeMap<String, Vec<StoredSymbol>>,
     sources: BTreeMap<String, Option<String>>,
 }
 
+/// The most symbols of one name read to learn whether any is usable.
+const NAMED_READ: u32 = 1_000;
+
 impl Catalog {
-    fn load(store: &dyn FactStore, snapshot_id: i64, root: &str) -> Result<Self, QueryError> {
-        let mut by_file = BTreeMap::new();
-        let mut by_name: BTreeMap<String, Vec<StoredSymbol>> = BTreeMap::new();
-        for file in store.files(snapshot_id)? {
-            let symbols = store.symbols_in_file(snapshot_id, &file.path)?;
+    /// Every symbol of the snapshot.
+    fn whole(store: &dyn FactStore, snapshot_id: i64, root: &str) -> Result<Self, QueryError> {
+        let mut catalog = Self::lazy(snapshot_id, root);
+        catalog.is_whole = true;
+        for (path, symbols) in store.symbols_by_file(snapshot_id)? {
             for symbol in symbols.iter().filter(|symbol| is_usable(symbol)) {
-                by_name
+                catalog
+                    .by_name
                     .entry(symbol.symbol.name.clone())
                     .or_default()
                     .push(symbol.clone());
             }
-            by_file.insert(file.path, symbols);
+            catalog.by_file.insert(path, Some(symbols));
         }
-        Ok(Self {
+        Ok(catalog)
+    }
+
+    /// Nothing yet: files and names are read from the store when asked.
+    fn lazy(snapshot_id: i64, root: &str) -> Self {
+        Self {
             root: PathBuf::from(root),
-            by_file,
-            by_name,
+            snapshot_id,
+            is_whole: false,
+            by_file: BTreeMap::new(),
+            by_name: BTreeMap::new(),
             sources: BTreeMap::new(),
-        })
+        }
+    }
+
+    /// The symbols of the file at `path` in source order, or `None` when it
+    /// is not indexed.
+    fn file(
+        &mut self,
+        store: &dyn FactStore,
+        path: &str,
+    ) -> Result<Option<&[StoredSymbol]>, QueryError> {
+        if !self.is_whole && !self.by_file.contains_key(path) {
+            let symbols = match store.file_hash(self.snapshot_id, path)? {
+                Some(_) => Some(store.symbols_in_file(self.snapshot_id, path)?),
+                None => None,
+            };
+            self.by_file.insert(path.to_owned(), symbols);
+        }
+        Ok(self.by_file.get(path).and_then(Option::as_deref))
+    }
+
+    /// Whether some usable symbol bears `name`.
+    fn names_a_symbol(&mut self, store: &dyn FactStore, name: &str) -> Result<bool, QueryError> {
+        if !self.is_whole && !self.by_name.contains_key(name) {
+            let filter = SymbolFilter {
+                text: name.to_owned(),
+                name_match: NameMatch::Exact,
+                kind: None,
+                language: None,
+                path_contains: None,
+                limit: NAMED_READ,
+            };
+            let named: Vec<StoredSymbol> = store
+                .find_symbols(self.snapshot_id, &filter)?
+                .into_iter()
+                .filter(|symbol| symbol.symbol.name == name && is_usable(symbol))
+                .collect();
+            self.by_name.insert(name.to_owned(), named);
+        }
+        Ok(self
+            .by_name
+            .get(name)
+            .is_some_and(|named| !named.is_empty()))
     }
 
     /// A symbol's body: the lines it spans, with the first line's number
@@ -419,14 +476,22 @@ impl Catalog {
     }
 
     /// The innermost symbol in `path` whose definition contains `position`.
-    fn enclosing(&self, path: &str, position: Position) -> Option<&StoredSymbol> {
-        self.by_file
-            .get(path)?
+    fn enclosing(
+        &mut self,
+        store: &dyn FactStore,
+        path: &str,
+        position: Position,
+    ) -> Result<Option<StoredSymbol>, QueryError> {
+        let Some(symbols) = self.file(store, path)? else {
+            return Ok(None);
+        };
+        Ok(symbols
             .iter()
             .filter(|symbol| {
                 symbol.symbol.span.start <= position && position < symbol.symbol.span.end
             })
             .max_by_key(|symbol| symbol.symbol.span.start)
+            .cloned())
     }
 
     /// The symbols a name may mean, if few enough share it.
@@ -471,10 +536,9 @@ impl Neighbours for ServerNeighbours<'_, '_> {
         };
         let mut neighbours = Vec::new();
         for reference in references.iter().filter(|reference| !reference.is_external) {
-            let enclosing = self
-                .catalog
-                .enclosing(&reference.path, reference.span.start)
-                .cloned();
+            let enclosing =
+                self.catalog
+                    .enclosing(&*self.store, &reference.path, reference.span.start)?;
             let neighbour = match enclosing {
                 Some(symbol) if symbol.id == of.id => continue,
                 Some(symbol) => Neighbour::Symbol(symbol),
@@ -485,7 +549,7 @@ impl Neighbours for ServerNeighbours<'_, '_> {
                 {
                     continue;
                 }
-                None if !self.catalog.by_file.contains_key(&reference.path) => {
+                None if self.catalog.file(&*self.store, &reference.path)?.is_none() => {
                     Neighbour::Unindexed(reference.path.clone())
                 }
                 None => Neighbour::File(reference.path.clone()),
@@ -504,7 +568,7 @@ impl Neighbours for ServerNeighbours<'_, '_> {
         let Some((body, first_line)) = self.catalog.body(of) else {
             return Ok(unreadable(of));
         };
-        let candidates = self.candidates(of, &body, first_line);
+        let candidates = self.candidates(of, &body, first_line)?;
         let mut neighbours = Vec::new();
         let mut unanswered = BTreeSet::new();
         for position in candidates {
@@ -524,19 +588,28 @@ impl Neighbours for ServerNeighbours<'_, '_> {
 impl ServerNeighbours<'_, '_> {
     /// Where to ask: the first use of each name in the body that names an
     /// indexed symbol, after the symbol's own name.
-    fn candidates(&self, of: &StoredSymbol, body: &str, first_line: u32) -> Vec<Position> {
+    fn candidates(
+        &mut self,
+        of: &StoredSymbol,
+        body: &str,
+        first_line: u32,
+    ) -> Result<Vec<Position>, QueryError> {
         let mut asked = BTreeSet::new();
-        code_words(body, first_line, of.language)
-            .into_iter()
-            .filter(|word| {
-                word.name != of.symbol.name
-                    && self.catalog.by_name.contains_key(&word.name)
-                    && word.position > of.symbol.name_span.start
-            })
-            .filter(|word| asked.insert(word.name.clone()))
-            .take(MAX_ASKED)
-            .map(|word| word.position)
-            .collect()
+        let mut positions = Vec::new();
+        for word in code_words(body, first_line, of.language) {
+            if positions.len() == MAX_ASKED {
+                break;
+            }
+            let is_candidate = word.name != of.symbol.name
+                && word.position > of.symbol.name_span.start
+                && !asked.contains(&word.name)
+                && self.catalog.names_a_symbol(&*self.store, &word.name)?;
+            if is_candidate {
+                asked.insert(word.name.clone());
+                positions.push(word.position);
+            }
+        }
+        Ok(positions)
     }
 
     /// The indexed symbols the name at `position` is defined as, or why the
@@ -608,6 +681,7 @@ impl NameNeighbours {
                 .catalog
                 .by_file
                 .values()
+                .flatten()
                 .flatten()
                 .filter(|symbol| {
                     matches!(
@@ -887,8 +961,9 @@ fn words(line: &str) -> Vec<(usize, &str)> {
 mod tests {
     use super::*;
     use lemma_model::{Language, Span, Symbol};
+    use lemma_store::SymbolId;
 
-    fn symbol(id: i64, qualified: &str, path: &str, lines: (u32, u32)) -> StoredSymbol {
+    fn symbol(id: u128, qualified: &str, path: &str, lines: (u32, u32)) -> StoredSymbol {
         let name = qualified.rsplit('.').next().unwrap_or(qualified);
         let start = Position {
             line: lines.0,
@@ -899,7 +974,7 @@ mod tests {
             column: 0,
         };
         StoredSymbol {
-            id,
+            id: SymbolId::from(id),
             path: path.to_owned(),
             language: Language::Python,
             symbol: Symbol {
@@ -920,25 +995,31 @@ mod tests {
 
     impl Neighbours for Fixed {
         fn callers(&mut self, of: &StoredSymbol) -> Result<Found, QueryError> {
-            let callers: &[i64] = match of.id {
-                1 => &[2],
-                2 => &[3],
-                _ => &[],
+            let callers: &[u128] = if of.id == SymbolId::from(1) {
+                &[2]
+            } else if of.id == SymbolId::from(2) {
+                &[3]
+            } else {
+                &[]
             };
             Ok(self.found(callers))
         }
 
         fn callees(&mut self, of: &StoredSymbol) -> Result<Found, QueryError> {
-            Ok(self.found(if of.id == 1 { &[4] } else { &[] }))
+            Ok(self.found(if of.id == SymbolId::from(1) {
+                &[4]
+            } else {
+                &[]
+            }))
         }
     }
 
     impl Fixed {
-        fn found(&self, ids: &[i64]) -> Found {
+        fn found(&self, ids: &[u128]) -> Found {
             let neighbours = self
                 .symbols
                 .iter()
-                .filter(|symbol| ids.contains(&symbol.id))
+                .filter(|symbol| ids.iter().any(|id| SymbolId::from(*id) == symbol.id))
                 .cloned()
                 .map(Neighbour::Symbol)
                 .collect();
@@ -1014,21 +1095,10 @@ mod tests {
                 .map(|relationship| (relationship.from.clone(), relationship.to.clone()))
                 .collect()
         };
-        assert_eq!(
-            pairs(&shallow),
-            [
-                ("symbol:1".to_owned(), "symbol:4".to_owned()),
-                ("symbol:2".to_owned(), "symbol:1".to_owned()),
-            ]
-        );
-        assert_eq!(
-            pairs(&deep),
-            [
-                ("symbol:2".to_owned(), "symbol:1".to_owned()),
-                ("symbol:3".to_owned(), "symbol:2".to_owned()),
-            ]
-        );
-        assert_eq!(shallow.root.as_deref(), Some("symbol:1"));
+        let node = |id: u128| format!("symbol:{}", SymbolId::from(id));
+        assert_eq!(pairs(&shallow), [(node(1), node(4)), (node(2), node(1))]);
+        assert_eq!(pairs(&deep), [(node(2), node(1)), (node(3), node(2))]);
+        assert_eq!(shallow.root, Some(node(1)));
     }
 
     #[test]

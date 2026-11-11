@@ -298,6 +298,7 @@ pub fn attach(
     let started = std::time::Instant::now();
     let routes = read_routes(&walkable.routes, repos)?;
     let mut code = Code::new(repos, reading);
+    code.read_ahead();
     let mut traces: BTreeMap<&Seed, Vec<Impact>> = BTreeMap::new();
     let mut tracing = impact::Tracing::default();
     let mut known = KnownCalls::default();
@@ -396,6 +397,8 @@ pub(crate) struct Code<'a> {
     listings: &'a lemma_http::Listings,
     extractors: ExtractorPool,
     failure: Option<GraphError>,
+    /// Repositories' functions read ahead, until a trace asks for them.
+    ready: BTreeMap<String, Functions>,
 }
 
 impl<'a> Code<'a> {
@@ -403,12 +406,12 @@ impl<'a> Code<'a> {
         // A cache that cannot be opened only means every file is parsed.
         let kept = reading.facts.and_then(|cache| {
             std::fs::create_dir_all(&cache.directory).ok()?;
-            let units = lemma_store::UnitCache::open(&cache.directory.join("units.db")).ok()?;
-            let segments = lemma_store::SegmentStore::new(&cache.directory.join("segments"));
+            let path = cache.directory.join("index.ls");
+            let units = lemma_store::Cache::open(&path).ok()?;
             Some(Kept {
                 build: cache.build.clone(),
                 units,
-                segments: Arc::new(segments),
+                path,
                 writing: Vec::new(),
             })
         });
@@ -418,7 +421,22 @@ impl<'a> Code<'a> {
             listings: reading.listings,
             extractors: ExtractorPool::new(),
             failure: None,
+            ready: BTreeMap::new(),
         }
+    }
+
+    /// Reads ahead, on every thread, the functions of each repository whose
+    /// kept segment holds them all, as a trace usually reaches most of
+    /// them. The rest are read, and any failure reported, when asked for.
+    pub(crate) fn read_ahead(&mut self) {
+        let kept = self.kept.as_ref();
+        let listings = self.listings;
+        let ready: Vec<(String, Functions)> = self
+            .repos
+            .par_iter()
+            .filter_map(|(name, repo)| Some((name.clone(), kept_functions(repo, kept, listings)?)))
+            .collect();
+        self.ready.extend(ready);
     }
 
     /// The first repository that could not be read, if one could not.
@@ -429,6 +447,9 @@ impl<'a> Code<'a> {
     /// A repository's functions. Not kept: a trace's [`impact::Tracing`]
     /// keeps each repository it reads, indexed.
     pub(crate) fn functions(&mut self, repository: &str) -> Functions {
+        if let Some(functions) = self.ready.remove(repository) {
+            return functions;
+        }
         let read = match self.repos.get(repository) {
             Some(repo) => functions_of(repo, &mut self.kept, self.listings, &self.extractors),
             None => Ok(Functions::default()),
@@ -667,31 +688,12 @@ pub(crate) fn functions_of(
     };
     let checkout = &repo.checkouts[HEAD];
     let (root, commit) = (checkout.root.as_path(), checkout.commit.as_deref());
-    let source_error = |source| GraphError::Source { source };
-    let listed = listings.get(root, commit).map_err(source_error)?;
-    let code: Vec<&ListedFile> = listed
-        .iter()
-        .filter(|file| is_traced_code(&file.path, &prefixes))
-        .collect();
-    // A file Git has no blob for is named by its contents, so those are
-    // read first.
-    let unvouched: Vec<String> = code
-        .iter()
-        .filter(|file| file.blob.is_none())
-        .map(|file| file.path.clone())
-        .collect();
-    let mut contents = read_by_path(root, commit, &unvouched)?;
     let build = kept.as_ref().map_or("", |kept| kept.build.as_str());
-    // Keying is a digest per file, worth spreading over threads in a large
-    // repository; the order is kept.
-    let keyed: Vec<(&ListedFile, String)> = code
-        .into_par_iter()
-        .filter_map(|file| {
-            let named = lemma_http::contents_key(file, contents.get(&file.path))?;
-            Some((file, functions_key(build, &file.path, &named)))
-        })
-        .collect();
-    let segment = segment_key(build, root, &keyed);
+    let Traced {
+        keyed,
+        mut contents,
+        segment,
+    } = traced(repo, &prefixes, build, listings)?;
     if let Some(found) = kept_segment(kept.as_ref(), &segment) {
         log::debug!(
             "functions of {}: kept segment, {} functions",
@@ -725,6 +727,70 @@ pub(crate) fn functions_of(
     Ok(functions)
 }
 
+/// A repository's traced files, each with its record's key; the contents
+/// read to key the files Git cannot vouch for; and the key of the segment
+/// of them all.
+struct Traced {
+    keyed: Vec<(ListedFile, String)>,
+    contents: BTreeMap<String, lemma_http::SourceFile>,
+    segment: lemma_store::SegmentKey,
+}
+
+/// The traced files of `repo` at head, under `prefixes`, keyed.
+fn traced(
+    repo: &Repo,
+    prefixes: &[String],
+    build: &str,
+    listings: &lemma_http::Listings,
+) -> Result<Traced, GraphError> {
+    let checkout = &repo.checkouts[HEAD];
+    let (root, commit) = (checkout.root.as_path(), checkout.commit.as_deref());
+    let source_error = |source| GraphError::Source { source };
+    let listed = listings.get(root, commit).map_err(source_error)?;
+    let code: Vec<&ListedFile> = listed
+        .iter()
+        .filter(|file| is_traced_code(&file.path, prefixes))
+        .collect();
+    // A file Git has no blob for is named by its contents, so those are
+    // read first.
+    let unvouched: Vec<String> = code
+        .iter()
+        .filter(|file| file.blob.is_none())
+        .map(|file| file.path.clone())
+        .collect();
+    let contents = read_by_path(root, commit, &unvouched)?;
+    // Keying is a digest per file, worth spreading over threads in a large
+    // repository; the order is kept.
+    let keyed: Vec<(ListedFile, String)> = code
+        .into_par_iter()
+        .filter_map(|file| {
+            let named = lemma_http::contents_key(file, contents.get(&file.path))?;
+            Some((file.clone(), functions_key(build, &file.path, &named)))
+        })
+        .collect();
+    let segment = segment_key(build, root, &keyed);
+    Ok(Traced {
+        keyed,
+        contents,
+        segment,
+    })
+}
+
+/// A repository's functions when a kept segment holds them all, read
+/// without parsing or writing anything; `None` when one must be built.
+fn kept_functions(
+    repo: &Repo,
+    kept: Option<&Kept>,
+    listings: &lemma_http::Listings,
+) -> Option<Functions> {
+    let Some(prefixes) = code_directories(repo) else {
+        return Some(Functions::default());
+    };
+    let build = kept.map_or("", |kept| kept.build.as_str());
+    let traced = traced(repo, &prefixes, build, listings).ok()?;
+    kept_segment(kept, &traced.segment)
+}
+
 /// Keeps `functions` as the segment under `key` when every keyed file had
 /// a record. A file Git vouched for but that could not be read (a blob
 /// missing from a partial clone, a file deleted since listing) has none,
@@ -733,7 +799,7 @@ pub(crate) fn functions_of(
 fn keep_segment(
     kept: &mut Option<Kept>,
     key: lemma_store::SegmentKey,
-    keyed: &[(&ListedFile, String)],
+    keyed: &[(ListedFile, String)],
     records: &BTreeMap<String, FileRecord>,
     functions: &Functions,
 ) {
@@ -755,7 +821,7 @@ fn keep_segment(
 /// order. A file without a record has no functions: its language is one
 /// Lemma does not read, or it could not be read.
 fn merge_records(
-    keyed: &[(&ListedFile, String)],
+    keyed: &[(ListedFile, String)],
     records: &BTreeMap<String, FileRecord>,
 ) -> Functions {
     let mut builder = functions::Builder::default();
@@ -771,8 +837,9 @@ fn merge_records(
 /// functions as a record, and each repository's merged as a segment.
 pub(crate) struct Kept {
     build: String,
-    units: lemma_store::UnitCache,
-    segments: Arc<lemma_store::SegmentStore>,
+    units: lemma_store::Cache,
+    /// Where `units` is, for a thread writing a segment on its own.
+    path: std::path::PathBuf,
     /// Segments being written, waited for when this is dropped.
     writing: Vec<std::thread::JoinHandle<()>>,
 }
@@ -782,12 +849,14 @@ impl Kept {
     /// large repository's segment takes a while to write, and nothing in
     /// this run reads it.
     fn put_segment(&mut self, key: lemma_store::SegmentKey, bytes: Vec<u8>) {
-        let segments = Arc::clone(&self.segments);
+        let path = self.path.clone();
         // Keeping is best effort: a segment that cannot be written, or
         // whose writer cannot be started, is built again from records by
         // the next run.
         let writer = std::thread::Builder::new().spawn(move || {
-            let _ = segments.put(&key, &bytes);
+            if let Ok(mut cache) = lemma_store::Cache::open(&path) {
+                cache.put_segment_later(&key, bytes);
+            }
         });
         self.writing.extend(writer.ok());
     }
@@ -809,7 +878,7 @@ impl Drop for Kept {
 fn segment_key(
     build: &str,
     root: &std::path::Path,
-    keyed: &[(&ListedFile, String)],
+    keyed: &[(ListedFile, String)],
 ) -> lemma_store::SegmentKey {
     let group = format!("{build}\0functions\0{}", root.display());
     let mut inputs = String::from(SEGMENT_INPUTS);
@@ -830,7 +899,7 @@ const SEGMENT_INPUTS: &str = "functions segment 1";
 /// The segment `kept` holds under `key`, decoded. One that is missing or
 /// does not decode only means building it again.
 fn kept_segment(kept: Option<&Kept>, key: &lemma_store::SegmentKey) -> Option<Functions> {
-    let bytes = kept?.segments.get(key).ok()??;
+    let bytes = kept?.units.segment(key).ok()??;
     Functions::decode_segment(&bytes).ok()
 }
 
@@ -883,6 +952,31 @@ fn parse_functions(
 /// The key a file's functions are kept under: the build of Lemma, the
 /// record's layout, the path and what names the contents
 /// ([`lemma_http::contents_key`]).
+/// Keeps tracing's record of each file the facts pass parses, under the key
+/// tracing looks it up by, so tracing reads neither the file nor a parse of
+/// it again. The record is the one tracing would make: none for a test, and
+/// one with no functions for a file in a language tracing does not read,
+/// such as plain JavaScript, which the facts pass reads as TSX.
+pub(crate) fn keep_functions_too(build: String) -> lemma_verify::AlsoKeep {
+    lemma_verify::AlsoKeep(Arc::new(move |file, named, parsed| {
+        let path = &file.path;
+        let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
+        if !CODE_EXTENSIONS.contains(&extension) || lemma_http::is_test_file(path) {
+            return None;
+        }
+        let functions = match Language::from_extension(extension) {
+            Some(language) if language == parsed.language => {
+                file_functions(path, &file.contents, parsed.extraction.symbols.clone())
+            }
+            // Parsed otherwise than tracing would parse it: tracing reads it.
+            Some(_) => return None,
+            None => Vec::new(),
+        };
+        let record = functions::encode_record(&functions);
+        Some((functions_key(&build, path, named), record))
+    }))
+}
+
 fn functions_key(build: &str, path: &str, contents: &[u8]) -> String {
     let mut described = format!("{build}\0functions record 1\0{path}\0").into_bytes();
     described.extend_from_slice(contents);
@@ -1221,6 +1315,52 @@ mod tests {
         assert_eq!(rest.kind, "");
         assert!(!rest.mentions.contains("executeRPC"));
         assert!(rest.mentions.contains("handler"));
+    }
+
+    fn source(path: &str, contents: &str) -> lemma_http::SourceFile {
+        lemma_http::SourceFile {
+            path: path.to_owned(),
+            contents: contents.to_owned(),
+        }
+    }
+
+    /// What the facts pass keeps for `file`, parsed as it parses it.
+    fn kept_by_facts_pass(file: &lemma_http::SourceFile) -> Option<(String, Vec<u8>)> {
+        let language = lemma_http::facts_language(&file.path)?;
+        let parsed = lemma_syntax::Extractor::new()
+            .unwrap()
+            .parse(language, &file.contents)
+            .unwrap();
+        let keep = keep_functions_too("build".to_owned());
+        (keep.0)(file, b"blob:1", &parsed)
+    }
+
+    #[test]
+    fn the_facts_pass_keeps_the_record_tracing_would_make() {
+        let file = source(
+            "src/pay.ts",
+            "export function pay(order) {\n  return charge(order)\n}\n",
+        );
+        let extractors = ExtractorPool::new();
+
+        let kept = kept_by_facts_pass(&file).unwrap();
+
+        let traced = functions::encode_record(&read_functions(&file, &extractors).unwrap());
+        assert_eq!(
+            kept,
+            (functions_key("build", "src/pay.ts", b"blob:1"), traced)
+        );
+    }
+
+    #[test]
+    fn plain_javascript_is_kept_without_functions_and_tests_not_at_all() {
+        let script = source("src/pay.js", "function pay() { return 1 }\n");
+        let test = source("src/pay.test.ts", "function pay() { return 1 }\n");
+
+        let kept = kept_by_facts_pass(&script).unwrap();
+
+        assert_eq!(kept.1, functions::encode_record(&[]));
+        assert_eq!(kept_by_facts_pass(&test), None);
     }
 
     #[test]

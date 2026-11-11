@@ -10,7 +10,7 @@ These work with every command.
 
 | Option | Meaning |
 | --- | --- |
-| `--db <file>` | Index database to use. By default, `lemma index` writes `<path>/.lemma/index.db`, and the other commands use the nearest `.lemma/index.db` in the current directory or a parent. |
+| `--db <file>` | Index file to use. By default, `lemma index` writes `<path>/.lemma/index.ls`, and the other commands use the nearest `.lemma/index.ls` in the current directory or a parent. |
 | `--providers <file>` | Language server configuration to use instead of the project's `.lemma/providers.toml`. Built-in servers stay available. See [Language servers](providers.md). |
 | `--json` | Print JSON instead of text. See [JSON output](json-output.md). |
 | `--no-daemon` | Run in this process instead of the background daemon. Slower, but nothing stays running. Setting `LEMMA_NO_DAEMON=1` does the same. |
@@ -24,7 +24,7 @@ Every command runs in a background daemon that keeps the index open, watches ind
 
 - Without a `mod.lm`, the command indexes every supported file and warns; exports, links and workspaces need one. With one, each service's `index` selects files: under `include`, not matching `exclude`, in `languages` if given. A file any service selects is indexed. A description where no service names its code, or with no services at all, has every supported file indexed, keeps its exports, and warns; a workspace reports that warning under the member. Changing the selection (adding, editing or removing `mod.lm`) re-indexes from scratch on the next run, dropping files no longer selected, and a removed `mod.lm` takes its exports and links with it.
 - The command stores each service's exports with the snapshot: declared operations at their code anchors, operations its OpenAPI documents describe at their route handlers (the function a route's line names, or the function around the route), and the top-level definitions of its public modules (`symbols`). It stores links in a graph of `Link` too, and rebuilds them when the description or the code changes, including an edit to a module the root module imports. The summary counts them, including how many documented operations a handler was found for; routes whose paths are built at run time are not found.
-- A `mod.lm` with a `workspace` block composes repositories. Each repository is indexed into its own `.lemma/index.db`: at its pinned `rev` through a Git worktree in `~/.cache/lemma/worktrees` (the cache keeps the 8 most recently used worktrees, and checks at past commits use the same ones; kept beside its working-directory snapshot, so language servers read the pinned code), or as its working directory. The workspace's own `.lemma/index.db` then records the members and every member's exports and links, with addresses made absolute (`#platform:services.worker.submit_task`). Symbols stay in the members' indexes; `lemma symbols` run from the workspace's directory searches them all, each path prefixed with its repository.
+- A `mod.lm` with a `workspace` block composes repositories. Each repository is indexed into its own `.lemma/index.ls`: at its pinned `rev` through a Git worktree in `~/.cache/lemma/worktrees` (the cache keeps the 8 most recently used worktrees, and checks at past commits use the same ones; kept beside its working-directory snapshot, so language servers read the pinned code), or as its working directory. The workspace's own `.lemma/index.ls` then records the members and every member's exports and links, with addresses made absolute (`#platform:services.worker.submit_task`). Symbols stay in the members' indexes; `lemma symbols` run from the workspace's directory searches them all, each path prefixed with its repository.
 - A repository's index keeps its working directory's snapshot always, and snapshots of pinned commits while they are among the `--keep` most recently indexed (default 5) and were indexed within `--ttl` (default `14d`; `never` to keep them until `--keep` pushes them out). A dropped snapshot's worktree is removed too.
 - Supported files: `.ts`, `.mts`, `.cts`, `.tsx`, `.py`, `.pyi`, `.go`, `.rs`.
 - Skipped even when selected: anything matched by `.gitignore`, hidden files and directories (including `.lemma/`), and `node_modules`.
@@ -54,7 +54,7 @@ Searches indexed symbols by name or qualified name.
 
 Qualified names join enclosing definitions with dots: a method `delete` in class `Router` is `Router.delete`. For Go methods the receiver type is used: `func (s *Server) Start()` is `Server.Start`.
 
-Ids (`#412`) name a definition for as long as it keeps its name and kind: editing its file, even moving it, keeps the id. In a workspace each repository numbers its own symbols, so ids are written with the repository, `#billing:412`; pass them as shown.
+Ids (`#31919f572763121e`) name a definition for as long as it keeps its file, name and kind: editing its file, even moving it within the file, keeps the id. Any unique prefix of six or more digits names it too (`#31919f57`). In a workspace each repository's ids are its own, so ids are written with the repository, `#billing:31919f572763121e`; pass them as shown.
 
 ## `lemma outline <file>`
 
@@ -68,7 +68,7 @@ Finds references to one symbol by asking a language server for its language.
 
 - a name, such as `delete`;
 - a qualified name, such as `Router.delete`;
-- an id from `lemma symbols`, such as `'#415'`. Quote it, because `#` starts a comment in most shells;
+- an id from `lemma symbols`, such as `'#f256e26e20067a8c'`, or a unique prefix of it, such as `'#f256e26e'`. Quote it, because `#` starts a comment in most shells;
 - an export's address from a description, such as `services.worker.submit_task` (a declared operation) or `services.gateway.listProducts` (an `operationId`): the symbol implementing it. An address in another repository (`'#functions:services.serverless.submit_task'`) is resolved from inside a workspace's directory, through its index, in the member's index at its pin. From a workspace's directory, a plain name is looked up in every member: one match is used, and a name several members define is listed with each one's repository (`#platform:apps/...`); narrow it with `--path`.
 
 When the symbol implements an export that a graph of `Link` links to or from, `refs` lists those links after the server's references (`linked by the description`, and `linked` in JSON), resolved to the code on the other end when a workspace index knows it.
@@ -104,7 +104,7 @@ Lines starting with `skipped` name servers that could not start before one did.
 
 Finds where the symbol used at a position is defined, such as the function a call goes to. Lines and columns count from 1, as editors show them: `lemma definition src/app.py:12:5`. From a workspace's directory, a file inside a member (`repos/platform/apps/api/handler.go:229:43`) is looked up in that member's index, at its pin when it has one.
 
-Each definition shows its location and, when it is an indexed symbol, its qualified name and id, so you can ask about it next (`lemma refs '#415'`). It takes `--refresh` and `--timeout-secs` like `refs`, and exits with 3 when no server could answer.
+Each definition shows its location and, when it is an indexed symbol, its qualified name and id, so you can ask about it next (`lemma refs '#f256e26e'`). It takes `--refresh` and `--timeout-secs` like `refs`, and exits with 3 when no server could answer.
 
 ## `lemma implementations <symbol>`
 
