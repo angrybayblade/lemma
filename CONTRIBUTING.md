@@ -146,6 +146,9 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | token | An opaque position in sentry's journal; a delta or an event list covers what came after it | cursor, clock, timestamp |
 | description | A system's `.lm` modules, read as what its repositories are made of, what they offer and how they link | inventory, topology |
 | candidate | A suspected gap in a description, found by a pattern rather than shown from the code; reported, and never fails a command | guess, hint |
+| harness | The program in a language pack that runs one operation's handler for a case, answers chosen calls in their place, and reports what happened | runner, simulator, driver |
+| replay case | The language-neutral interface a harness speaks: the handler, its input, the links to answer and their answers, and what was observed | scenario, fixture |
+| language pack | An installable directory holding a manifest and a harness for one language; always written in full, never "pack", which names no Lemma concept | plugin, extension, package |
 
 Extend this table when a new domain concept appears, in the same change that introduces it.
 
