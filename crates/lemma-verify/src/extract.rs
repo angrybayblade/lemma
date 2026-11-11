@@ -30,6 +30,8 @@ const CODE_EXTENSIONS: [&str; 11] = [
 enum Arg<'a> {
     Text(&'a str),
     Number(i64),
+    /// Text already interned.
+    Symbol(Value),
 }
 
 /// Writes facts into the grammar's relations, interning text as it goes.
@@ -77,6 +79,7 @@ impl<'g> FactWriter<'g> {
                 .map(|arg| match arg {
                     Arg::Text(text) => grammar.symbols.intern(text),
                     Arg::Number(number) => Value::Number(*number),
+                    Arg::Symbol(value) => *value,
                 })
                 .collect();
             if grammar.facts.insert(name, row) {
@@ -1819,24 +1822,26 @@ fn consumer_file(
     let file_id = format!("{}:{path}", scope.name);
     let mut scopes = BTreeSet::from([file_id.clone()]);
     write_calls(scope, &file_id, facts, writer, &mut scopes);
+    // A file mentions many names from few functions: each function's id is
+    // made and interned once, not once per mention.
+    let mut functions = FunctionIds::new(&file_id);
     for mention in &facts.mentions {
-        let mention_scope = consumer_id(&file_id, mention.function.as_ref());
+        let mention_scope = functions.symbol(mention.function.as_ref(), writer);
         writer.add(
             "mentions",
             scope.snapshots,
-            &[Arg::Text(&mention_scope), Arg::Text(&mention.name)],
+            &[Arg::Symbol(mention_scope), Arg::Text(&mention.name)],
         );
-        scopes.insert(mention_scope);
     }
     for called in &facts.called {
-        let caller = consumer_id(&file_id, called.function.as_ref());
+        let caller = functions.symbol(called.function.as_ref(), writer);
         writer.add(
             "calls_function",
             scope.snapshots,
-            &[Arg::Text(&caller), Arg::Text(&called.name)],
+            &[Arg::Symbol(caller), Arg::Text(&called.name)],
         );
-        scopes.insert(caller);
     }
+    scopes.extend(functions.into_ids());
     for function_scope in &scopes {
         writer.add(
             "in_file",
@@ -1862,6 +1867,39 @@ fn consumer_file(
             scope.snapshots,
             &[Arg::Text(&file_id), Arg::Text(service)],
         );
+    }
+}
+
+/// The consumer ids of one file's functions, each made and interned once.
+struct FunctionIds<'a> {
+    file_id: &'a str,
+    ids: BTreeMap<Option<&'a str>, (String, Value)>,
+}
+
+impl<'a> FunctionIds<'a> {
+    fn new(file_id: &'a str) -> Self {
+        Self {
+            file_id,
+            ids: BTreeMap::new(),
+        }
+    }
+
+    /// The interned consumer id of `function`, or of the file outside
+    /// functions.
+    fn symbol(&mut self, function: Option<&'a String>, writer: &mut FactWriter<'_>) -> Value {
+        let key = function.map(String::as_str);
+        if let Some((_, value)) = self.ids.get(&key) {
+            return *value;
+        }
+        let id = consumer_id(self.file_id, function);
+        let value = writer.grammar.symbols.intern(&id);
+        self.ids.insert(key, (id, value));
+        value
+    }
+
+    /// The ids made.
+    fn into_ids(self) -> impl Iterator<Item = String> {
+        self.ids.into_values().map(|(id, _)| id)
     }
 }
 
