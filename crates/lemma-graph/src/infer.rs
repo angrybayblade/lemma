@@ -162,7 +162,7 @@ fn served(mut repository: Repository, service: &Service) -> Repository {
 
 /// `service` in the parent's own repository, `#repo:service` elsewhere, as
 /// in addresses.
-fn entry_name(repository: &str, service: &str) -> String {
+pub(crate) fn entry_name(repository: &str, service: &str) -> String {
     if repository == crate::check::SELF {
         return service.to_owned();
     }

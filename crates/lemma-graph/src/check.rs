@@ -351,7 +351,7 @@ pub fn check<E: Engine>(
     log_repositories(&repos);
     let level = check_level(&repos, options);
     let (links, not_checked) = split_unchecked_links(collect_links(&repos)?, &repos);
-    let mut findings = check_declared(&repos, &links, level, options)?;
+    let mut findings = check_declared_beside_adapters(&repos, &links, level, options)?;
     if options.change.is_some() {
         findings.extend(crate::description::introduced_by_change(&repos, level));
     }
@@ -824,6 +824,21 @@ pub(crate) fn fetch_calls<E: Engine>(
 }
 
 /// The findings of the declared links, and of documents Lemma cannot read.
+/// [`check_declared`], with the adapters inference will ask for run beside
+/// it: their commands are the slowest part of a cold check and read nothing
+/// declared links decide.
+fn check_declared_beside_adapters(
+    repos: &BTreeMap<String, Repo>,
+    links: &BTreeSet<Link>,
+    level: Level,
+    options: &CheckOptions,
+) -> Result<Vec<Finding>, GraphError> {
+    std::thread::scope(|scope| {
+        scope.spawn(|| prefetch_adapters(repos, options));
+        check_declared(repos, links, level, options)
+    })
+}
+
 fn check_declared(
     repos: &BTreeMap<String, Repo>,
     links: &BTreeSet<Link>,
@@ -1302,7 +1317,8 @@ fn adapter_jobs<'r>(
         let Some(from) = &service.exports.operations_from else {
             continue;
         };
-        for (role, checkout, build) in adapter_snapshots(repo, repo_name, run) {
+        for (role, checkout, build) in adapter_snapshots(repo, repo_name, run.changed, run.is_drift)
+        {
             jobs.push(AdapterJob {
                 entry: entry.clone(),
                 service: service_name.to_owned(),
@@ -1314,6 +1330,70 @@ fn adapter_jobs<'r>(
                 runtime: runtime_for(&service.runtime, run.environment.as_deref()),
                 documents: repository.specs.clone(),
             });
+        }
+    }
+    jobs
+}
+
+/// Runs ahead of inference the adapters it will ask for, so that their
+/// commands overlap other work and inference finds their documents and
+/// contracts kept. Their outcomes are dropped on purpose: inference asks
+/// again, reads what was kept, and reports a failure itself.
+fn prefetch_adapters(repos: &BTreeMap<String, Repo>, options: &CheckOptions) {
+    let jobs = prefetch_jobs(repos, options);
+    if jobs.is_empty() {
+        return;
+    }
+    let started = std::time::Instant::now();
+    let ran = run_adapter_jobs(&jobs, &options.cache);
+    log::debug!(
+        "adapter: {} runs prefetched in {:.0?}",
+        ran.len(),
+        started.elapsed()
+    );
+}
+
+/// The adapter runs inference will ask for, found from the descriptions
+/// alone: what [`adapter_jobs`] lists once inference names the services.
+/// None for a list of links, which reads every repository at head anyway,
+/// or for a change whose repository has no base commit to compare.
+fn prefetch_jobs<'r>(
+    repos: &'r BTreeMap<String, Repo>,
+    options: &'r CheckOptions,
+) -> Vec<AdapterJob<'r>> {
+    let (changed, is_drift) = match &options.change {
+        Some(change) => {
+            let has_base = repos
+                .get(&change.repository)
+                .is_some_and(|repo| repo.checkouts[BASE].commit.is_some());
+            if !has_base {
+                return Vec::new();
+            }
+            (change.repository.as_str(), false)
+        }
+        None if options.list_links => return Vec::new(),
+        // Without a change every adapter reads its repository at head.
+        None => ("", true),
+    };
+    let mut jobs = Vec::new();
+    for (repo_name, repo) in repos {
+        for (service_name, service) in &repo.files[HEAD].services {
+            let Some(from) = &service.exports.operations_from else {
+                continue;
+            };
+            for (role, checkout, build) in adapter_snapshots(repo, repo_name, changed, is_drift) {
+                jobs.push(AdapterJob {
+                    entry: crate::infer::entry_name(repo_name, service_name),
+                    service: service_name.clone(),
+                    role,
+                    is_changed: repo_name == changed,
+                    checkout,
+                    build,
+                    from,
+                    runtime: runtime_for(&service.runtime, options.environment.as_deref()),
+                    documents: service.exports.openapi.clone(),
+                });
+            }
         }
     }
     jobs
@@ -1464,12 +1544,13 @@ fn contract_warnings(job: &AdapterJob<'_>, contract: &adapters::Contract) -> Vec
 fn adapter_snapshots<'r>(
     repo: &'r Repo,
     repo_name: &str,
-    run: &Inference<'_>,
+    changed: &str,
+    is_drift: bool,
 ) -> Vec<(&'static str, &'r Checkout, adapters::Build)> {
-    if repo_name != run.changed {
+    if repo_name != changed {
         return vec![("both", &repo.checkouts[HEAD], adapters::Build::KeptOnly)];
     }
-    if run.is_drift {
+    if is_drift {
         return vec![("head", &repo.checkouts[HEAD], adapters::Build::KeptOnly)];
     }
     vec![
