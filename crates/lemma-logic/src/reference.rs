@@ -45,13 +45,25 @@ impl Engine for ReferenceEngine {
         facts: &FactSet,
         request: &Request,
     ) -> Result<Derived, Infallible> {
-        let mut state = State::new(facts);
+        // Asked for some relations and no explanations, only the rules
+        // those relations depend on run, over the facts they read, and no
+        // derivation is recorded: the asked-for rows are the same.
+        let needed = (request.explain.is_empty() && !request.outputs.is_empty())
+            .then(|| needed_relations(program, &request.outputs));
+        let mut state = State::new(facts, needed.as_ref());
         for stratum in program.strata() {
             let rules: Vec<(usize, &Rule)> = stratum
                 .iter()
                 .map(|&index| (index, &program.rules()[index]))
+                .filter(|(_, rule)| {
+                    needed
+                        .as_ref()
+                        .is_none_or(|needed| needed.contains(rule.head.relation.as_str()))
+                })
                 .collect();
-            state.run_stratum(&rules);
+            if !rules.is_empty() {
+                state.run_stratum(&rules);
+            }
         }
         Ok(state.into_derived(program, request))
     }
@@ -74,6 +86,33 @@ struct Reason {
 struct State {
     known: BTreeMap<String, BTreeSet<Tuple>>,
     reasons: HashMap<Fact, Reason>,
+    /// Whether derivations are recorded, for explaining facts.
+    keeps_reasons: bool,
+}
+
+/// The relations a rule's body reads, positively or negated.
+fn read_relations(rule: &Rule) -> impl Iterator<Item = &str> {
+    rule.body.iter().filter_map(|literal| match literal {
+        Literal::Positive(atom) | Literal::Negative(atom) => Some(atom.relation.as_str()),
+        Literal::Compare { .. } => None,
+    })
+}
+
+/// The relations `outputs` depend on, themselves included: every relation a
+/// rule deriving a needed relation reads, positively or negated.
+fn needed_relations(program: &Program, outputs: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut needed: BTreeSet<String> = outputs.clone();
+    loop {
+        let before = needed.len();
+        for rule in program.rules() {
+            if needed.contains(&rule.head.relation) {
+                needed.extend(read_relations(rule).map(str::to_owned));
+            }
+        }
+        if needed.len() == before {
+            return needed;
+        }
+    }
 }
 
 type Bindings<'a> = HashMap<&'a str, Value>;
@@ -89,14 +128,18 @@ struct Job<'r> {
 }
 
 impl State {
-    fn new(facts: &FactSet) -> Self {
+    fn new(facts: &FactSet, needed: Option<&BTreeSet<String>>) -> Self {
         let mut known: BTreeMap<String, BTreeSet<Tuple>> = BTreeMap::new();
         for name in facts.relation_names() {
+            if needed.is_some_and(|needed| !needed.contains(name)) {
+                continue;
+            }
             known.insert(name.to_owned(), facts.rows(name).cloned().collect());
         }
         Self {
             known,
             reasons: HashMap::new(),
+            keeps_reasons: needed.is_none(),
         }
     }
 
@@ -148,11 +191,14 @@ impl State {
         let mut fresh = Delta::new();
         for (fact, reason) in found {
             let rows = self.known.entry(fact.relation.clone()).or_default();
-            if rows.insert(fact.row.clone()) {
-                fresh
-                    .entry(fact.relation.clone())
-                    .or_default()
-                    .insert(fact.row.clone());
+            if !rows.insert(fact.row.clone()) {
+                continue;
+            }
+            fresh
+                .entry(fact.relation.clone())
+                .or_default()
+                .insert(fact.row.clone());
+            if self.keeps_reasons {
                 self.reasons.insert(fact, reason);
             }
         }
@@ -458,6 +504,34 @@ mod tests {
 
         assert_eq!(derived.rows("path").count(), 6);
         assert!(derived.rows("path").any(|r| r == &row(&[1, 4])));
+    }
+
+    #[test]
+    fn asking_for_one_relation_gives_the_rows_a_full_evaluation_gives() {
+        let (program, facts) = reachability();
+        let request = Request {
+            outputs: std::iter::once("unreached".to_owned()).collect(),
+            ..Request::default()
+        };
+
+        let pruned = evaluate(&ReferenceEngine, &program, &facts, &request).unwrap();
+        let full = evaluate(&ReferenceEngine, &program, &facts, &Request::default()).unwrap();
+
+        let rows = |derived: &Derived| derived.rows("unreached").cloned().collect::<Vec<_>>();
+        assert_eq!(rows(&pruned), rows(&full));
+    }
+
+    #[test]
+    fn the_relations_an_output_needs_follow_negations_and_recursion() {
+        let (program, _) = reachability();
+
+        let needed = needed_relations(&program, &std::iter::once("from_one".to_owned()).collect());
+
+        let expected: BTreeSet<String> = ["from_one", "path", "edge"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(needed, expected);
     }
 
     #[test]
