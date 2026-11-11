@@ -773,8 +773,7 @@ impl Engine {
                 found.push(symbol);
             }
         }
-        found.truncate(usize::try_from(filter.limit).unwrap_or(usize::MAX));
-        Ok(found)
+        Ok(best_across_members(found, &filter.text, filter.limit))
     }
 
     /// A member's index and its snapshot of the member, if it has been
@@ -1942,6 +1941,27 @@ fn member_filter(member: &StoredMember, filter: &SymbolFilter) -> Option<SymbolF
         })
 }
 
+/// The best `limit` of symbols found across a workspace's members, ranked as
+/// one member's search ranks them: those named `text` exactly first, then
+/// shorter qualified names, then by path and line. Each member returns its
+/// own best; without ranking them together, the members listed first would
+/// fill the limit with weaker matches and hide exact ones in the rest.
+fn best_across_members(mut found: Vec<StoredSymbol>, text: &str, limit: u32) -> Vec<StoredSymbol> {
+    found.sort_by_cached_key(|stored| {
+        let symbol = &stored.symbol;
+        let is_exact = symbol.name == text || symbol.qualified_name == text;
+        (
+            !is_exact,
+            symbol.qualified_name.len(),
+            stored.path.clone(),
+            symbol.span.start.line,
+            symbol.span.start.column,
+        )
+    });
+    found.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    found
+}
+
 /// A name inside one member, written `#billing:Charges.create` as a member's
 /// ids are: the member, with its `#`, and the name.
 fn member_qualified_name(members: &[StoredMember], text: &str) -> Option<(String, String)> {
@@ -2309,6 +2329,43 @@ mod tests {
                 name_span: span,
             },
         }
+    }
+
+    fn in_member(member: &str, id: u128, name: &str) -> StoredSymbol {
+        let mut symbol = candidate(id, name, SymbolKind::Class);
+        symbol.path = format!("{member}:store.go");
+        symbol
+    }
+
+    #[test]
+    fn exact_matches_in_later_members_outrank_partial_matches_in_earlier_ones() {
+        let found = vec![
+            in_member("#alpha", 1, "tool"),
+            in_member("#alpha", 2, "Tools"),
+            in_member("#beta", 3, "Tool"),
+            in_member("#gamma", 4, "Tool"),
+        ];
+
+        let best = best_across_members(found, "Tool", 2);
+
+        let paths: Vec<&str> = best.iter().map(|symbol| symbol.path.as_str()).collect();
+        assert_eq!(paths, ["#beta:store.go", "#gamma:store.go"]);
+    }
+
+    #[test]
+    fn partial_matches_across_members_rank_shorter_qualified_names_first() {
+        let found = vec![
+            in_member("#alpha", 1, "Registry.ToolSchema"),
+            in_member("#beta", 2, "ToolSet"),
+        ];
+
+        let best = best_across_members(found, "Tool", 50);
+
+        let names: Vec<&str> = best
+            .iter()
+            .map(|symbol| symbol.symbol.qualified_name.as_str())
+            .collect();
+        assert_eq!(names, ["ToolSet", "Registry.ToolSchema"]);
     }
 
     #[test]
