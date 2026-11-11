@@ -1,7 +1,9 @@
 //! Facts: rows of values for each input relation, and the interner that
 //! turns strings into compact symbols.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+
+use rustc_hash::FxHashMap;
 
 use crate::LogicError;
 use crate::program::{ColumnType, Program, Relation, RelationRole, Value};
@@ -13,7 +15,8 @@ pub type Tuple = Box<[Value]>;
 /// compare integers. Ids are assigned in first-seen order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Symbols {
-    ids: HashMap<String, u32>,
+    /// Interning runs once per text a fact holds, so the faster hash.
+    ids: FxHashMap<String, u32>,
     names: Vec<String>,
 }
 
@@ -80,6 +83,10 @@ impl FactSet {
 
     /// Adds a row. Returns whether it was new.
     pub fn insert(&mut self, relation: &str, row: impl Into<Tuple>) -> bool {
+        // The relation's name is copied only the first time it is seen.
+        if let Some(rows) = self.relations.get_mut(relation) {
+            return rows.insert(row.into());
+        }
         self.relations
             .entry(relation.to_owned())
             .or_default()

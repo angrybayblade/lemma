@@ -673,6 +673,7 @@ dependencies = [
 name = "lemma-logic"
 version = "0.1.0-rc1"
 dependencies = [
+ "rustc-hash",
  "thiserror 2.0.21",
 ]
 

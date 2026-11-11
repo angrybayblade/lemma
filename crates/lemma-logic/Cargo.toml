@@ -10,4 +10,5 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+rustc-hash.workspace = true
 thiserror.workspace = true

@@ -37,6 +37,9 @@ pub struct FactWriter<'g> {
     grammar: &'g mut CompiledGrammar,
     /// Facts written, by relation, for the summary.
     pub counts: BTreeMap<String, usize>,
+    /// The grammar's input relation for each relation and snapshot asked
+    /// about, `None` when it reads none: asked once per fact otherwise.
+    inputs: BTreeMap<String, BTreeMap<String, Option<String>>>,
 }
 
 impl<'g> FactWriter<'g> {
@@ -44,6 +47,7 @@ impl<'g> FactWriter<'g> {
         Self {
             grammar,
             counts: BTreeMap::new(),
+            inputs: BTreeMap::new(),
         }
     }
 
@@ -59,22 +63,57 @@ impl<'g> FactWriter<'g> {
     }
 
     fn add(&mut self, relation: &str, snapshots: &[&str], args: &[Arg<'_>]) {
+        let Self {
+            grammar,
+            counts,
+            inputs,
+        } = self;
         for snapshot in snapshots {
-            let Some(name) = self.grammar.input_relation(relation, snapshot) else {
+            let Some(name) = input_relation(inputs, grammar, relation, snapshot) else {
                 continue;
             };
             let row: Vec<Value> = args
                 .iter()
                 .map(|arg| match arg {
-                    Arg::Text(text) => self.grammar.symbols.intern(text),
+                    Arg::Text(text) => grammar.symbols.intern(text),
                     Arg::Number(number) => Value::Number(*number),
                 })
                 .collect();
-            if self.grammar.facts.insert(&name, row) {
-                *self.counts.entry(relation.to_owned()).or_default() += 1;
+            if grammar.facts.insert(name, row) {
+                count(counts, relation);
             }
         }
     }
+}
+
+/// The grammar's input relation for `relation` in `snapshot`, if it reads
+/// one, remembered in `inputs` after the first time it is asked.
+fn input_relation<'i>(
+    inputs: &'i mut BTreeMap<String, BTreeMap<String, Option<String>>>,
+    grammar: &CompiledGrammar,
+    relation: &str,
+    snapshot: &str,
+) -> Option<&'i str> {
+    let is_known = inputs
+        .get(relation)
+        .is_some_and(|by_snapshot| by_snapshot.contains_key(snapshot));
+    if !is_known {
+        let name = grammar.input_relation(relation, snapshot);
+        inputs
+            .entry(relation.to_owned())
+            .or_default()
+            .insert(snapshot.to_owned(), name);
+    }
+    inputs.get(relation)?.get(snapshot)?.as_deref()
+}
+
+/// Counts one more fact of `relation`.
+fn count(counts: &mut BTreeMap<String, usize>, relation: &str) {
+    if let Some(count) = counts.get_mut(relation) {
+        *count += 1;
+        return;
+    }
+    counts.insert(relation.to_owned(), 1);
 }
 
 /// Extracts every repository's facts.
