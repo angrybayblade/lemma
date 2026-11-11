@@ -30,7 +30,10 @@ pub(crate) fn run(args: &CheckArgs, asks_daemon: bool, json: bool) -> ExitCode {
         }
     }
     let mut stdout = std::io::stdout().lock();
-    let mut stderr = std::io::stderr().lock();
+    // Not locked for the whole check, as stdout is: log lines go to stderr
+    // from any thread, and one waiting on a lock the check holds while the
+    // check waits on that thread would never finish.
+    let mut stderr = std::io::stderr();
     let mut streams = Streams {
         out: &mut stdout,
         err: &mut stderr,
