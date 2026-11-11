@@ -386,13 +386,13 @@ pub fn check<E: Engine>(
     tracing.attach(&mut findings, &seeds, engine)?;
     // After tracing, whose seeds point into the findings by index.
     shared.keep_selected(&mut findings);
-    let (behaviors, requirement_changes) = evaluate_behaviors(
-        (root_file, head_program),
-        &repos,
-        options,
-        level,
-        &mut findings,
-    )?;
+    let program = ParentProgram {
+        root_file,
+        head: head_program,
+        reach: tracing.change_reach(),
+    };
+    let (behaviors, requirement_changes) =
+        evaluate_behaviors(program, &repos, options, level, &mut findings)?;
     sort_findings(&mut findings);
     log_outcome(&findings, started);
     Ok(Report {
@@ -459,25 +459,126 @@ impl Tracing<'_> {
         };
         affects::attach(findings, seeds, &mut source, self.repos, &reading)
     }
+
+    /// What a change to a repository's working directory reaches, with its
+    /// documented operations' route files, when the change is one.
+    fn change_reach(&self) -> Option<crate::reach::ChangeReach> {
+        let reach = change_reach_of(self.repos, self.listings, self.facts)?;
+        Some(with_route_files(reach, self.repos, self.walkable))
+    }
+}
+
+/// What a change to a repository's working directory reaches, by name,
+/// when the change is one: read from the repository's functions as tracing
+/// reads them.
+fn change_reach_of(
+    repos: &BTreeMap<String, Repo>,
+    listings: &lemma_http::Listings,
+    facts: Option<&lemma_verify::FactsCache>,
+) -> Option<crate::reach::ChangeReach> {
+    let started = std::time::Instant::now();
+    let (name, repo) = repos.iter().find(|(_, repo)| {
+        repo.checkouts[HEAD].commit.is_none() && repo.checkouts[BASE].commit.is_some()
+    })?;
+    let base = repo.checkouts[BASE].commit.clone()?;
+    let reading = affects::CodeReading { facts, listings };
+    let functions = affects::Code::new(repos, &reading).functions(name);
+    let reach = crate::reach::change_reach(name, &repo.checkouts[HEAD].root, &base, &functions);
+    log::info!(
+        "reach: the change to {name} reaches {} of {} functions' names{} in {:.1}s",
+        reach.len(),
+        functions.len(),
+        if reach.everything {
+            " (and anything: it changed more than functions)"
+        } else {
+            ""
+        },
+        started.elapsed().as_secs_f64()
+    );
+    Some(reach)
+}
+
+/// `reach` with the route files of the changed repository's documented
+/// operations, by `service.operationId`, read from its documents at head
+/// and the routes inference found.
+fn with_route_files(
+    mut reach: crate::reach::ChangeReach,
+    repos: &BTreeMap<String, Repo>,
+    walkable: &Walkable,
+) -> crate::reach::ChangeReach {
+    let Some(repo) = repos.get(&reach.repository) else {
+        return reach;
+    };
+    let checkout = &repo.checkouts[HEAD];
+    for (service, declared) in &repo.files[HEAD].services {
+        for document_file in &declared.exports.openapi {
+            let Ok(Some(text)) = checkout.read(document_file) else {
+                continue;
+            };
+            let Ok(document) = crate::adapters::parse_document(document_file, &text) else {
+                continue;
+            };
+            let found = route_files_of(&document, &reach.repository, walkable);
+            reach.route_files.extend(
+                found
+                    .into_iter()
+                    .map(|(id, files)| (format!("{service}.{id}"), files)),
+            );
+        }
+    }
+    reach
+}
+
+/// For each operation of `document` with an `operationId`, the files
+/// `repository`'s routes for it are declared in, when inference found any.
+fn route_files_of(
+    document: &serde_json::Value,
+    repository: &str,
+    walkable: &Walkable,
+) -> Vec<(String, Vec<String>)> {
+    let mut found = Vec::new();
+    for operation in lemma_http::operations(document) {
+        let Some(id) = operation.operation_id else {
+            continue;
+        };
+        let key = format!("{} {}", operation.method, operation.path);
+        let files: Vec<String> = walkable
+            .routes
+            .iter()
+            .filter(|site| site.repository == repository && site.operation == key)
+            .map(|site| site.file.clone())
+            .collect();
+        if !files.is_empty() {
+            found.push((id, files));
+        }
+    }
+    found
+}
+
+/// The parent's `.lm` program as behaviors run it: where its manifest is,
+/// the head's program if inference already checked it, and what the change
+/// reaches, which decides what kept evidence still holds.
+struct ParentProgram<'a> {
+    root_file: &'a Path,
+    head: Option<crate::behaviors::HeadProgram>,
+    reach: Option<crate::reach::ChangeReach>,
 }
 
 /// Runs the behaviors of the parent's `.lm` program and adds what they
 /// found; their reports and what the change did to requirements.
-/// `program` is the parent's: where its manifest is, and the head's
-/// program if inference already checked it.
 fn evaluate_behaviors(
-    program: (&Path, Option<crate::behaviors::HeadProgram>),
+    program: ParentProgram<'_>,
     repos: &BTreeMap<String, Repo>,
     options: &CheckOptions,
     level: Level,
     findings: &mut Vec<Finding>,
 ) -> Result<(Vec<BehaviorReport>, Vec<RequirementChange>), GraphError> {
-    let (root_file, head_program) = program;
-    let manifest = root_file.file_name().map_or_else(
+    let manifest = program.root_file.file_name().map_or_else(
         || MODULE_FILE.to_owned(),
         |name| name.to_string_lossy().into_owned(),
     );
-    let evaluated = crate::behaviors::run(&manifest, repos, options, head_program)?;
+    let reach = program.reach.as_ref();
+    let evaluated = crate::behaviors::run(&manifest, repos, options, program.head, reach)?;
     let Some(mut evaluated) = evaluated else {
         return Ok((Vec::new(), Vec::new()));
     };
