@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used, reason = "test setup should fail loudly")]
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -175,6 +176,42 @@ fn a_workspace_module_indexes_each_repository_it_composes() {
     assert_ne!(exports, []);
     let store = Store::open(&scratch.path().join(".lemma/index.ls")).unwrap();
     assert_eq!(store.workspace_members().unwrap().len(), 1);
+}
+
+#[test]
+fn a_workspace_search_lists_exact_names_from_every_member_first() {
+    let scratch = tempfile::tempdir().unwrap();
+    let mut many = String::new();
+    for n in 1..=60 {
+        writeln!(many, "export class Tool{n} {{}}").unwrap();
+    }
+    let members = [
+        ("billing", many.as_str()),
+        ("web", "export class Tool {}\n"),
+    ];
+    for (name, source) in members {
+        let member = scratch.path().join(name);
+        write(&member.join("src/tools.ts"), source);
+        write(
+            &member.join("mod.lm"),
+            &format!(
+                "module {name}\n\nexport service s {{\n    index: {{ include: [\"src\"] }}\n}}\n"
+            ),
+        );
+        git_init(&member);
+    }
+    write(
+        &scratch.path().join("mod.lm"),
+        "module shop\n\nworkspace {\n    repo billing = local(\"billing\")\n    repo web = local(\"web\")\n}\n",
+    );
+    git_init(scratch.path());
+    let indexed = lemma(scratch.path(), &["index"]);
+    assert!(indexed.status.success(), "{}", text(&indexed));
+
+    let output = lemma(scratch.path(), &["symbols", "Tool"]);
+
+    let first = text(&output).lines().next().unwrap_or_default().to_owned();
+    assert!(first.contains("#web:src/tools.ts"), "{}", text(&output));
 }
 
 fn git_init(directory: &Path) {
