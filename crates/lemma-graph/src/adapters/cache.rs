@@ -53,6 +53,10 @@ pub(crate) fn working_state(root: &Path) -> Result<Option<String>, GraphError> {
             "--porcelain=v1",
             "-z",
             "--untracked-files=all",
+            // A submodule is a repository of its own, keyed by itself: its
+            // commit counts here, but not what its working tree holds,
+            // which would scan every submodule (a workspace of clones).
+            "--ignore-submodules=dirty",
             "--",
             LEMMA_FILES,
         ],
