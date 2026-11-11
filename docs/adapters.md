@@ -51,6 +51,10 @@ Importing code runs it, so Lemma reads code where it already runs: the working d
 2. **Read in place.** A commit that is the working directory unchanged is read there.
 3. **Built.** Any other commit of the changed repository is checked out in one worktree Lemma keeps per repository, `setup` runs, and the adapter reads it. What earlier builds installed stays, so installing again is mostly a check. The document is then kept.
 
+When the working directory changes only TypeScript files, and a changed file's zod object schemas differ from its base commit's only in which top-level keys they have or which keys are optional, Lemma patches the base commit's kept document where those schemas are used instead of running the adapter, and patches the contract laid over the committed documents the same way. A changed nested schema, a spread, a moved route, or a schema no operation uses runs the adapter as above. Changes in other languages leave the document as it was.
+
+A contract laid over committed documents is kept by its inputs (the service, the adapter's document and the committed documents' contents), so a check whose documents are unchanged lays nothing again.
+
 Lemma reads other repositories in a check where they are checked out. A pinned repository (`local(..., rev: ...)` or `git(...)`) uses a kept document if there is one and its committed documents otherwise; Lemma never runs another repository's `setup`.
 
 In Python, a build imports the worktree's code before any installed copy of it. An adapter that imports a module from outside the code it is reading (an editable install of the main checkout) fails rather than describe today's code as a past commit's.

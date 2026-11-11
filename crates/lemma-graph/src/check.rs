@@ -1298,8 +1298,32 @@ fn adapter_contract(
     else {
         return Ok(None);
     };
-    let committed = adapters::committed_documents(job.checkout, &job.documents)?;
-    adapters::contract(&job.service, &generated, &committed, cache).map(Some)
+    // A contract is laid from the adapter's document and the committed
+    // ones, so the same inputs give the contract already kept; a document
+    // patched for a change gives the base's contract patched the same way.
+    let texts = adapters::committed_texts(job.checkout, &job.documents)?;
+    let key = adapters::contract_key(&job.service, &generated.digest, &texts);
+    if let Some(kept) = adapters::kept_contract(cache, &key) {
+        log::info!(
+            "adapter: {} ({}): contract kept for these documents",
+            job.entry,
+            job.role
+        );
+        return Ok(Some(kept));
+    }
+    if let Some(patched) = adapters::patched_contract(&job.service, &generated, &texts, cache) {
+        adapters::keep_contract(cache, &key, &patched);
+        log::info!(
+            "adapter: {} ({}): contract patched from the base's",
+            job.entry,
+            job.role
+        );
+        return Ok(Some(patched));
+    }
+    let committed = adapters::parse_committed(&texts)?;
+    let contract = adapters::contract(&job.service, &generated, &committed, cache)?;
+    adapters::keep_contract(cache, &key, &contract);
+    Ok(Some(contract))
 }
 
 /// What a contract's reading leaves for a person to know: code it could
