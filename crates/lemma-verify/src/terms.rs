@@ -40,6 +40,25 @@ pub(crate) fn name_term(name: &str) -> String {
     format!("name:{}", normalized(name))
 }
 
+/// The term for calls through a chain whose method is named `name` under a
+/// resource named `resource` (`billing.invoices.create` has the pair
+/// `invoices`, `create`): a client method resolves only for a chain naming one
+/// of its resources immediately before its name (see `Clients::resolve`).
+pub(crate) fn pair_term(resource: &str, name: &str) -> String {
+    format!("pair:{}.{}", normalized(resource), normalized(name))
+}
+
+/// The resource a chain names immediately before its last name, as
+/// `Clients::resolve` reads it: the last name between the root and the
+/// method that is more than one letter long.
+pub(crate) fn immediate_resource(parts: &[String]) -> Option<&String> {
+    let (_, before) = parts.split_last()?;
+    before
+        .iter()
+        .skip(1)
+        .rfind(|part| normalized(part).len() > 1)
+}
+
 /// The terms `facts` are indexed by, sorted and without repeats.
 pub(crate) fn code_terms(facts: &CodeFacts) -> Vec<String> {
     let mut terms = Vec::new();
@@ -63,20 +82,26 @@ pub(crate) fn code_terms(facts: &CodeFacts) -> Vec<String> {
         .iter()
         .map(|binding| binding.local.as_str())
         .collect();
-    let called = facts
-        .member_calls
-        .iter()
-        .filter(|call| {
-            let is_chain = call.parts.len() >= 3;
-            let is_imported = call.parts.len() <= 2
-                && call
-                    .parts
-                    .first()
-                    .is_some_and(|root| imported_roots.contains(&root.as_str()));
-            is_chain || is_imported
-        })
-        .filter_map(|call| call.parts.last());
-    terms.extend(called.map(|name| name_term(name)));
+    for call in &facts.member_calls {
+        let Some(last) = call.parts.last() else {
+            continue;
+        };
+        if call.parts.len() >= 3 {
+            // A client method: found by its resource and its name.
+            if let Some(resource) = immediate_resource(&call.parts) {
+                terms.push(pair_term(resource, last));
+            }
+            continue;
+        }
+        let is_imported = call
+            .parts
+            .first()
+            .is_some_and(|root| imported_roots.contains(&root.as_str()));
+        if is_imported {
+            // A generated function: found by its name.
+            terms.push(name_term(last));
+        }
+    }
     let imported = facts
         .import_bindings
         .iter()
@@ -115,7 +140,7 @@ mod tests {
 
         for expected in [
             "path:/v1/users",
-            "name:updatestatus",
+            "pair:apikeys.updatestatus",
             "name:listtools",
             "name:lt",
             REEXPORTS,
@@ -125,5 +150,40 @@ mod tests {
                 "{expected} in {terms:?}"
             );
         }
+        assert!(
+            !terms.iter().any(|term| term == "name:updatestatus"),
+            "{terms:?}"
+        );
+    }
+
+    fn parts(text: &str) -> Vec<String> {
+        text.split('.').map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn a_chains_resource_is_the_name_before_its_method() {
+        let chain = parts("client.billing.invoices.create");
+
+        assert_eq!(
+            immediate_resource(&chain).map(String::as_str),
+            Some("invoices")
+        );
+    }
+
+    #[test]
+    fn a_chains_resource_skips_one_letter_names_as_resolving_does() {
+        let chain = parts("client.tools.x.list");
+
+        assert_eq!(
+            immediate_resource(&chain).map(String::as_str),
+            Some("tools")
+        );
+    }
+
+    #[test]
+    fn a_chain_of_its_root_and_method_has_no_resource() {
+        let chain = parts("client.x.list");
+
+        assert_eq!(immediate_resource(&chain), None);
     }
 }

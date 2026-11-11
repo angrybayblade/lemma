@@ -60,7 +60,7 @@ impl ClientMethod {
 
     /// The names its resource goes by, normalized: the directories and
     /// stem of its file, and its enclosing names.
-    fn resource_names(&self) -> BTreeSet<String> {
+    pub(crate) fn resource_names(&self) -> BTreeSet<String> {
         let file = self
             .file
             .rsplit_once('.')
@@ -134,29 +134,30 @@ impl Clients {
     /// The names a call of the operation `method path` may go by: the
     /// names of client methods requesting it and of generated functions
     /// named after it.
-    pub fn names_calling(&self, method: &str, path: &str) -> Vec<String> {
-        let methods = self
+    /// The terms a call of the request `method` `path` is indexed by: for
+    /// each client method making it, its name under each of its resources
+    /// (`pair:`), and for each generated function, its name (`name:`).
+    pub(crate) fn terms_calling(&self, method: &str, path: &str) -> Vec<String> {
+        let mut terms = Vec::new();
+        for client in self
             .methods
             .iter()
             .filter(|client| client.method == method && client.path == path)
-            .map(|client| {
-                client
-                    .symbol
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(&client.symbol)
-                    .to_owned()
-            });
-        let generated = self
-            .generated
-            .iter()
-            .filter(|(_, operations)| {
-                operations
-                    .iter()
-                    .any(|operation| operation.method == method && operation.path == path)
-            })
-            .map(|(function, _)| function.clone());
-        methods.chain(generated).collect()
+        {
+            let name = client.symbol.rsplit('.').next().unwrap_or(&client.symbol);
+            for resource in client.resource_names() {
+                terms.push(crate::terms::pair_term(&resource, name));
+            }
+        }
+        for (function, operations) in &self.generated {
+            let calls = operations
+                .iter()
+                .any(|operation| operation.method == method && operation.path == path);
+            if calls {
+                terms.push(crate::terms::name_term(function));
+            }
+        }
+        terms
     }
 
     /// One client's methods.
@@ -193,8 +194,9 @@ impl Clients {
     /// matching most of the names before it.
     ///
     /// Change-driven evaluation finds the files that may make such a call by
-    /// the call's last name (`terms.rs`): a call this resolves must keep a
-    /// last name equal to the method's, in a chain of three names or more.
+    /// the call's resource and last name (`terms.rs`): a call this resolves
+    /// must keep a last name equal to the method's, in a chain of three
+    /// names or more, after the resource `immediate_resource` reads.
     pub fn resolve(&self, call: &MemberCall) -> Option<&ClientMethod> {
         let (last, before) = call.parts.split_last()?;
         let name = normalized(last);
@@ -346,6 +348,32 @@ mod tests {
             BTreeSet::from(["@acme/client".to_owned(), "acme_client".to_owned()]),
             BTreeMap::new(),
         )
+    }
+
+    #[test]
+    fn every_chain_that_resolves_carries_a_term_its_operation_is_looked_up_by() {
+        let clients = clients();
+        let chains = [
+            "this.client.apiKeys.list",
+            "self._client.api_keys.update_status",
+            "client.task_router.session.create",
+            "sdk.v1.auth.session.create",
+        ];
+
+        for chain in chains {
+            let called = call(chain);
+            let Some(method) = clients.resolve(&called) else {
+                continue;
+            };
+            let resource = crate::terms::immediate_resource(&called.parts).unwrap();
+            let file_term = crate::terms::pair_term(resource, called.parts.last().unwrap());
+            let looked_up = clients.terms_calling(&method.method, &method.path);
+
+            assert!(
+                looked_up.contains(&file_term),
+                "{chain}: {file_term} not in {looked_up:?}"
+            );
+        }
     }
 
     #[test]

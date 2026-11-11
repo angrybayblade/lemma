@@ -100,7 +100,8 @@ The terms are a superset of everything fact writing can turn into a call. They a
 |---|---|---|
 | `path:<p>` | `path_references[].path`, `method_paths[].path` | `calls_path` is written with exactly these paths, and the rules match them to an operation's path by equality. A `*` method matches by path alone, which the term also covers. |
 | `chain:<c>` | `client_calls[].chain` | `calls_client` is written with these chains, and `client_operation` maps a chain to a method and path. |
-| `name:<n>` | normalized last part of each `member_calls[].parts` | Client method resolution (`Clients::resolve`) and generated-function resolution (`Clients::named_operation`) both require the call's last name to equal the method or function name. Re-export and alias resolution only change the module, never that name. |
+| `pair:<r>.<n>` | normalized resource and last part of each `member_calls[].parts` with three parts or more | Client method resolution (`Clients::resolve`) requires the call's last name to equal the method's name and the resource before it (the last part between the root and the method longer than one letter) to be one of the method's resource names. An operation is looked up by `pair:` for each resource name of each client method making it. |
+| `name:<n>` | normalized last part of each `member_calls[].parts` with at most two parts rooted at an import, and each imported name | Generated-function resolution (`Clients::named_operation`) requires the call's last name, or the imported name, to equal the function's name. Re-export and alias resolution only change the module, never that name. |
 | `reexports` | `reexports` is non-empty | `generated_reexports` needs every re-exporting file of a consumer, whatever the change. Those files are always loaded. |
 
 **Looking up Δ.** For each operation in Δ:
