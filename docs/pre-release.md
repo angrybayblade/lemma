@@ -10,7 +10,7 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | --- | --- | --- |
 | 0.1.0-rc0 | Internal launch: code intelligence in four languages, contract checks across repositories, install script, agent skills | Released |
 | 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up (see [New in rc1](#new-in-rc1)) | Released |
-| 0.1.0-rc2 and later | Fixes from internal use; CI green for two weeks; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
+| 0.1.0-rc2 and later | One store file in place of SQLite and faster checks (see [New in rc2](#new-in-rc2)); fixes from internal use; CI green for two weeks; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
 
 ## Ready
 
@@ -75,6 +75,12 @@ Links Lemma cannot infer (queues, function runtimes) can be declared, and Lemma 
 | No Windows build | Does not run natively on Windows | Use WSL |
 | CI's macOS jobs moved to `macos-15` runners in rc1, after GitHub stopped running `macos-14` ones | Until a run passes on them, macOS builds and tests are unproven in CI | Run `cargo fmt`, `cargo clippy` and `cargo test` locally ([CONTRIBUTING](../CONTRIBUTING.md)) |
 | Soufflé is optional and not bundled | `lemma check` is about six times slower without it, same results | `brew install souffle` |
+
+## New in rc2
+
+- **One store file.** `.lemma/index.ls` replaces the SQLite index and `lemma check`'s separate cache: files, symbols, cached answers and what checks keep between runs, in one append-only file. An index from an earlier release is replaced the first time it is opened, and indexing again rebuilds it; nothing needs migrating.
+- **Symbol ids** are 128-bit hashes of a symbol's identity, shown as 16 hexadecimal digits (`#8bce55e22bc817fe`), and stay the same while a symbol keeps its path, name, kind and position among same-named symbols.
+- **Faster**, on a generated system of 100,000 files: a cold change-driven `lemma check` 26 s to 12 s, warm 2.0 s to 1.3 s; `lemma symbols` 74 ms to 3 ms; `lemma graph` with references cached 1.8 s to 5 ms; a fresh `lemma index` 5.1 s to 4.7 s. Each file is parsed once per check rather than three times.
 
 ## New in rc1
 

@@ -242,6 +242,8 @@ Commands against `main`, as medians of three interleaved rounds, on one 5,100-fi
 
 `graph` gained most because it asks the store about only the files and names it meets, where it used to read every symbol first. Commands that wait on a language server, such as `refs` asked for the first time or `definition`, spend their time starting it and did not change. A fresh index spends most of its time parsing.
 
+**A warm check**, change-driven on the same 100k-file system, as medians of eleven interleaved runs on a quiet VM: 1.73 to 1.29 s, with the same report. Soufflé runs on every core and its input files are written row by row into one buffer (Soufflé's step 369 to 281 ms); facts are written into the grammar's relations without copying a relation's name per row, and each function's consumer id is made and interned once per file (reading code 697 to 555 ms); tracing reads its kept function segments in parallel (241 to 144 ms); a check is dated for its allowances only when it has some (79 to 7 ms after tracing); and the executable's digest is remembered under its file identity rather than hashed on every run. Soufflé compiled to a binary ran no faster than its interpreter on these inputs, after a 33 s compile.
+
 ## Open questions
 
 - **File-level extraction on real apps.** Circular imports, imports of an entry point and schemas held only on route objects may send many files back to the whole-service path. This needs measuring per service before stage 6.
@@ -259,3 +261,10 @@ Alternatives to the decisions in [One parse per file](#one-parse-per-file), to b
 - **A serde binary format** such as postcard for facts, if reading only some columns turns out not to matter.
 - **Keeping facts as JSON**, which costs about 0.2 s cold and under 0.1 s warm at 100k files.
 - **Records in the per-build user cache** rather than each repository's `index.ls`.
+
+What else a warm check could shed, estimated on the same 100k-file system, about 0.2–0.3 s:
+
+- **Relations kept as ids between verification and tracing.** Verification renders some 250,000 strings of the relations tracing walks, which tracing parses back: about 70 ms.
+- **Facts appended and sorted once per relation** rather than each inserted into a sorted set, flushed before anything reads them mid-extraction: about 30–50 ms.
+- **The listing stat cache** above: about 100 ms of the 136 ms spent listing 21 repositories through Git.
+- **Code facts as typed-column records** rather than JSON: about 40–60 ms of decoding.

@@ -84,6 +84,9 @@ Each change was measured against the previous best and kept only if it helped wi
 | Start `git status` for the changed paths before parsing, in parallel | Part of the above. |
 | Start language servers in the background after indexing, opening a file from the densest directory | First lookup after a short pause: seconds → 72-136 ms. |
 | Use the name indexes for exact search; search substrings in memory with a vectorised scan | Exact 97 ms → 16 ms, substring 120 ms → 19 ms. |
+| Keep files and symbols in one append-only store of immutable segments, `.lemma/index.ls`, in place of SQLite | On a generated system of 100,000 files: `lemma symbols` 74 ms → 3 ms, `lemma graph` with cached references 1.8 s → 5 ms, a fresh index 5.1 s → 4.7 s. |
+| Parse each file once per check, for its code facts and for tracing's functions together | A cold change-driven check of 100,000 files 18.6 s → 12.8 s. |
+| Run Soufflé on every core, write its inputs without per-row allocation, and read tracing's segments in parallel | A warm change-driven check of 100,000 files 1.73 s → 1.29 s. |
 
 ## Idle language servers
 
