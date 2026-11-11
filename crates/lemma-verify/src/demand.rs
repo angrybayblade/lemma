@@ -76,6 +76,11 @@ pub(crate) struct Plan {
     /// Relations, computed without consumer facts, whose rows hold the
     /// operations findings can be about.
     pub anchors: BTreeSet<String>,
+    /// The same relations grouped by the call they bound: an operation a
+    /// call's findings can be about is in every relation of its group (a
+    /// removed field and an operation rejecting unknown fields), so each
+    /// group's operations are the intersection of its relations'.
+    pub groups: BTreeSet<BTreeSet<String>>,
     /// Whether a requirement can hold for code a change edits, so files
     /// that differ between the base and the head are read.
     pub reads_changed_files: bool,
@@ -115,6 +120,7 @@ fn change_driven_plan(grammar: &CompiledGrammar) -> Result<Plan, String> {
         .collect();
     let mut plan = Plan {
         anchors: BTreeSet::new(),
+        groups: BTreeSet::new(),
         reads_changed_files: false,
         import_depth: 0,
     };
@@ -125,8 +131,11 @@ fn change_driven_plan(grammar: &CompiledGrammar) -> Result<Plan, String> {
     {
         match kinds.shape(&rule.body) {
             Shape::Complete => {}
-            Shape::Anchored(anchors, depth) => {
-                plan.anchors.extend(anchors);
+            Shape::Anchored(groups, depth) => {
+                for group in groups {
+                    plan.anchors.extend(group.iter().cloned());
+                    plan.groups.insert(group.into_iter().collect());
+                }
                 plan.import_depth = plan.import_depth.max(depth);
             }
             Shape::ChangeLocal => plan.reads_changed_files = true,
@@ -160,12 +169,32 @@ pub(crate) fn operations(
     };
     log::debug!("finding the operations the change touches, with the reference engine");
     let derived = crate::evaluate(grammar, &ReferenceEngine, &request)?;
+    let named_in = |anchor: &str| -> BTreeSet<String> {
+        derived
+            .rows(anchor)
+            .flat_map(|row| {
+                row.iter()
+                    .filter(|value| known.contains(value))
+                    .copied()
+                    .collect::<Vec<_>>()
+            })
+            .map(|value| grammar.symbols.display(value))
+            .collect()
+    };
+    let by_anchor: BTreeMap<&str, BTreeSet<String>> = plan
+        .anchors
+        .iter()
+        .map(|anchor| (anchor.as_str(), named_in(anchor)))
+        .collect();
     let mut operations = BTreeSet::new();
-    for anchor in &plan.anchors {
-        for row in derived.rows(anchor) {
-            let named = row.iter().filter(|value| known.contains(value));
-            operations.extend(named.map(|value| grammar.symbols.display(*value)));
-        }
+    for group in &plan.groups {
+        let mut sets = group
+            .iter()
+            .filter_map(|anchor| by_anchor.get(anchor.as_str()));
+        let Some(first) = sets.next() else { continue };
+        let shared = sets.fold(first.clone(), |shared, set| &shared & set);
+
+        operations.extend(shared);
     }
     Ok(operations)
 }
@@ -175,7 +204,7 @@ enum Shape {
     Complete,
     /// The relations holding the operations its calls are of, and how many
     /// levels of imports its other consumer facts reach.
-    Anchored(Vec<String>, usize),
+    Anchored(Vec<Vec<String>>, usize),
     ChangeLocal,
     Other,
 }
@@ -369,7 +398,7 @@ impl<'a> Kinds<'a> {
     /// The relations holding the operations of every call the body rests
     /// on, and how far into imports its other consumer facts reach, when
     /// those are all about the calling code.
-    fn anchors(&self, body: &[Literal]) -> Option<(Vec<String>, usize)> {
+    fn anchors(&self, body: &[Literal]) -> Option<(Vec<Vec<String>>, usize)> {
         let positive: Vec<&Atom> = body.iter().filter_map(positive).collect();
         let calls: Vec<&Atom> = positive
             .iter()
@@ -413,7 +442,7 @@ impl<'a> Kinds<'a> {
             if holding.is_empty() {
                 return None;
             }
-            anchors.extend(holding);
+            anchors.push(holding);
         }
         let depth = self.calling_code_depth(body, &calls, &absences)?;
         Some((anchors, depth))
@@ -422,7 +451,7 @@ impl<'a> Kinds<'a> {
     /// The relations holding the operation of each absent call: derived
     /// without consumer facts and sharing its variable. `None` when one is
     /// held by none, since its callers would not all be read.
-    fn absence_anchors(&self, absences: &[&Atom], positive: &[&Atom]) -> Option<Vec<String>> {
+    fn absence_anchors(&self, absences: &[&Atom], positive: &[&Atom]) -> Option<Vec<Vec<String>>> {
         let mut anchors = Vec::new();
         for absence in absences {
             let operation = variable_at(absence, 0)?;
@@ -438,7 +467,7 @@ impl<'a> Kinds<'a> {
             if holding.is_empty() {
                 return None;
             }
-            anchors.extend(holding);
+            anchors.push(holding);
         }
         Some(anchors)
     }
@@ -999,6 +1028,21 @@ mod tests {
         }
         assert!(plan.reads_changed_files);
         assert_eq!(plan.import_depth, 1);
+    }
+
+    #[test]
+    fn the_anchors_of_one_call_form_one_group() {
+        let grammar = crate::built_in_grammar().unwrap();
+
+        let plan = change_driven_plan(&grammar).unwrap();
+
+        let rejected: BTreeSet<String> = ["rejects_unknown", "removed_request_field"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert!(plan.groups.contains(&rejected), "{:?}", plan.groups);
+        let alone: BTreeSet<String> = std::iter::once("rejects_unknown".to_owned()).collect();
+        assert!(!plan.groups.contains(&alone), "{:?}", plan.groups);
     }
 
     #[test]
