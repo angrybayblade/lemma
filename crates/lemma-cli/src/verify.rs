@@ -140,15 +140,68 @@ fn print_text(
 /// read, which only means nothing is kept.
 pub(crate) fn facts_cache() -> Option<lemma_verify::FactsCache> {
     let executable = std::env::current_exe().ok()?;
-    let bytes = std::fs::read(executable).ok()?;
-    let build = lemma_model::content_hash(&bytes);
-    let facts = lemma_graph::repos::cache_directory().join("facts");
+    let cache = lemma_graph::repos::cache_directory();
+    let build = build_digest(&executable, &cache.join("build-digests"))?;
+    let facts = cache.join("facts");
     let directory = facts.join(&build[..16]);
     // Marks this build as the latest used, for `remove_older_builds`.
     let _ = std::fs::create_dir_all(&directory);
     let _ = std::fs::File::create(directory.join(".used"));
     remove_older_builds(&facts, KEPT_BUILDS);
     Some(lemma_verify::FactsCache { directory, build })
+}
+
+/// The digest of the executable at `executable`, remembered in `digests`
+/// under the file's identity (size, change times, device and inode), so
+/// it is read and hashed only after it changes: reading tens of megabytes
+/// is most of a quick command's start. A digest that cannot be remembered
+/// is only computed again next time.
+fn build_digest(executable: &std::path::Path, digests: &std::path::Path) -> Option<String> {
+    let metadata = std::fs::metadata(executable).ok()?;
+    let identity = format!("{}\0{}", executable.display(), file_identity(&metadata));
+    let remembered = digests.join(&lemma_model::content_hash(identity.as_bytes())[..32]);
+    if let Ok(digest) = std::fs::read_to_string(&remembered)
+        && digest.len() == 64
+    {
+        return Some(digest);
+    }
+    let digest = lemma_model::content_hash(&std::fs::read(executable).ok()?);
+    // Written aside and renamed, so a reader never sees half a digest.
+    let aside = remembered.with_extension(format!("{}.new", std::process::id()));
+    let written = std::fs::create_dir_all(digests)
+        .and_then(|()| std::fs::write(&aside, &digest))
+        .and_then(|()| std::fs::rename(&aside, &remembered));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&aside);
+    }
+    Some(digest)
+}
+
+/// What changes whenever a file's contents could have: its size and
+/// modification time, and on Unix its change time, device and inode,
+/// which writing it always moves.
+fn file_identity(metadata: &std::fs::Metadata) -> String {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| since.as_nanos());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        format!(
+            "{} {modified} {}.{} {} {}",
+            metadata.len(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+            metadata.dev(),
+            metadata.ino()
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        format!("{} {modified}", metadata.len())
+    }
 }
 
 /// How many builds' facts are kept: an installed Lemma and a development
