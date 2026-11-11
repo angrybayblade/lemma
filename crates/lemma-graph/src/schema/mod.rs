@@ -209,12 +209,29 @@ impl Reads {
         &mut self,
         python: &str,
         environment: Option<&BTreeMap<String, String>>,
+        cache: &Path,
     ) -> String {
         let stamp = interpreter_stamp(Path::new(python));
         if let Some((found, seen)) = self.interpreters.get(python) {
             if *seen == stamp {
                 return found.clone();
             }
+        }
+        // The same rule across runs: an answer kept with the stamp it was
+        // asked at holds until the interpreter or its packages change.
+        let kept = cache.join("interpreters").join(format!(
+            "{}.json",
+            lemma_model::content_hash(python.as_bytes())
+        ));
+        if let Some(found) = std::fs::read_to_string(&kept)
+            .ok()
+            .and_then(|text| serde_json::from_str::<(String, String)>(&text).ok())
+            .filter(|(seen, _)| *seen == stamp)
+            .map(|(_, found)| found)
+        {
+            self.interpreters
+                .insert(python.to_owned(), (found.clone(), stamp));
+            return found;
         }
         let mut probe = std::process::Command::new(python);
         probe.args(["-c", INTERPRETER_SCRIPT]);
@@ -232,6 +249,10 @@ impl Reads {
                 || format!("{python} (did not report)"),
                 |output| lemma_model::content_hash(&output.stdout),
             );
+        if let Ok(text) = serde_json::to_string(&(&stamp, &found)) {
+            let _ = std::fs::create_dir_all(kept.parent().unwrap_or(cache))
+                .and_then(|()| std::fs::write(&kept, text));
+        }
         self.interpreters
             .insert(python.to_owned(), (found.clone(), stamp));
         found
@@ -427,7 +448,9 @@ fn python_schema(
 ) -> Result<Resolved, GraphError> {
     let python = context.runtime.python.as_deref().unwrap_or("python3");
     let python = absolute_interpreter(python, &context.checkout.root);
-    let interpreter = context.reads.interpreter(&python, context.environment);
+    let interpreter = context
+        .reads
+        .interpreter(&python, context.environment, context.cache);
     let described = format!(
         "pydantic\n{}\n{python}\n{interpreter}\n{file}\n{symbol}\n{:?}",
         python::SCRIPT,
@@ -519,7 +542,9 @@ fn run_resolver(resolver: &Resolver, context: &mut Context<'_>) -> Result<Arc<Va
         &context.checkout.root,
     );
     let interpreter = if resolver.command.contains("{python}") {
-        context.reads.interpreter(&python, context.environment)
+        context
+            .reads
+            .interpreter(&python, context.environment, context.cache)
     } else {
         String::new()
     };
