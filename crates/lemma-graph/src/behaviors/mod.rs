@@ -148,6 +148,7 @@ pub(crate) fn run(
     repos: &BTreeMap<String, Repo>,
     options: &CheckOptions,
     loaded: Option<HeadProgram>,
+    reach: Option<&crate::reach::ChangeReach>,
 ) -> Result<Option<Evaluated>, GraphError> {
     let (cache, has_change) = (options.cache.as_path(), options.change.is_some());
     let head = match loaded {
@@ -183,6 +184,7 @@ pub(crate) fn run(
         &Store::new(cache, options.run_checkers).with_environment(options.environment.clone()),
         base_model,
         selected,
+        reach,
     )?;
     // The base may lack what the head selects. A check the head defines
     // may have been renamed, so the base then runs them all; a behavior or
@@ -193,10 +195,10 @@ pub(crate) fn run(
         .with_environment(options.environment.clone());
     let selects_a_check = selected.is_none_or(|name| names_a_check(&head.checked, name));
     let base_results = base.as_ref().map(|base| {
-        base.run(&base_store, None, selected)
+        base.run(&base_store, None, selected, None)
             .or_else(|error| {
                 if selects_a_check {
-                    return base.run(&base_store, None, None);
+                    return base.run(&base_store, None, None, None);
                 }
                 Err(error)
             })
@@ -312,6 +314,7 @@ impl Program {
         store: &Store,
         other: Option<&Model>,
         selected: Option<&str>,
+        reach: Option<&crate::reach::ChangeReach>,
     ) -> Result<Vec<BehaviorResult>, GraphError> {
         let model = &self.checked.model;
         let repositories = self
@@ -327,6 +330,7 @@ impl Program {
             store,
             checkouts: &self.checkouts,
             places: BTreeMap::new(),
+            reach,
         };
         let main = selected_check(&self.checked, selected)?;
         Ok(eval::run_check(model, main.as_ref(), &mut world))
@@ -343,9 +347,62 @@ struct CheckWorld<'w> {
     /// needs it: a working directory's costs a `git status` and a digest
     /// of each changed file, which a check without checkers never pays.
     places: BTreeMap<String, Place>,
+    /// What the change reaches, by name, in the repository it changed.
+    reach: Option<&'w crate::reach::ChangeReach>,
 }
 
 impl CheckWorld<'_> {
+    /// The state a checker's evidence is keyed by for repository `name`:
+    /// its code's state, or the base commit's when the change reaches none
+    /// of the code `arguments` give the checker in that repository.
+    fn read_state(&mut self, name: &str, arguments: &serde_json::Value) -> Option<String> {
+        // The working state costs a `git status` of the whole repository;
+        // it is found only when the walk does not settle the key.
+        let Some(reach) = self.reach else {
+            return self.place(name).and_then(|place| place.state);
+        };
+        if reach.everything
+            || reach.repository.trim_start_matches('#') != name.trim_start_matches('#')
+        {
+            return self.place(name).and_then(|place| place.state);
+        }
+        let mut collected = Vec::new();
+        collect_anchors(arguments, name, &mut collected);
+
+        // Documented operations stand for their routes' files; one whose
+        // route was not found stays unknown, so may be reached.
+        let mut anchors = Vec::new();
+        for (file, symbol) in collected {
+            if !file.is_empty() {
+                anchors.push((file, symbol));
+                continue;
+            }
+            match reach.route_files.get(&symbol) {
+                Some(files) => {
+                    anchors.extend(files.iter().map(|file| (file.clone(), String::new())));
+                }
+                None => anchors.push((String::new(), symbol)),
+            }
+        }
+        if anchors.is_empty()
+            || anchors.iter().any(|(file, _)| file.is_empty())
+            || anchors
+                .iter()
+                .any(|(file, symbol)| reach.reaches(file, symbol))
+        {
+            return self.place(name).and_then(|place| place.state);
+        }
+        let root = self.checkouts.get(name)?.root.clone();
+        let unchanged = crate::adapters::commit_state(&root, &reach.base).ok();
+        log::info!(
+            "evidence: the change to {name} reaches none of {} anchors; keyed at its base",
+            anchors.len()
+        );
+        match unchanged {
+            Some(state) => Some(state),
+            None => self.place(name).and_then(|place| place.state),
+        }
+    }
     /// Where each repository a checker reads, and its own, has its files at
     /// the snapshot checked: a worktree for one read at a commit, so the
     /// checker sees the code it is checking, not the clone's working tree.
@@ -402,17 +459,30 @@ impl World for CheckWorld<'_> {
         } else {
             checker.reads.clone()
         };
-        let reads = read
+        let encoded = serde_json::Value::Object(arguments.clone());
+        let reads: BTreeMap<String, Option<String>> = read
             .iter()
-            .map(|name| {
-                let state = self.place(name).and_then(|place| place.state);
-                (name.clone(), state)
-            })
+            .map(|name| (name.clone(), self.read_state(name, &encoded)))
             .collect();
+        // Kept evidence needs no checkout of what the checker reads; only a
+        // run does, and for a commit that means a worktree.
+        let none = BTreeMap::new();
+        let probe = Request {
+            checker,
+            case: demand.case,
+            arguments: serde_json::Value::Object(arguments.clone()),
+            reads: reads.clone(),
+            place: &place,
+            roots: &none,
+        };
+        if let Some(kept) = self.store.reusable(&probe) {
+            return kept;
+        }
         let roots = match self.roots(&read, &checker.repository) {
             Ok(roots) => roots,
             Err(why) => return eval::Evidence::Unavailable(why),
         };
+
         self.store.demand(&Request {
             checker,
             case: demand.case,
@@ -755,5 +825,93 @@ fn severity_at(severity: &str, outcome: &str, level: Level, counts: bool) -> Sev
         | ("error", "unknown" | "stale", Level::Strict) => Severity::Error,
         ("error" | "warning", _, _) => Severity::Warning,
         _ => Severity::Info,
+    }
+}
+
+/// The implementations, as (file, symbol), of the operations in encoded
+/// checker arguments that live in repository `name`, wherever they nest.
+fn collect_anchors(value: &serde_json::Value, name: &str, anchors: &mut Vec<(String, String)>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let in_repository = map
+                .get("repository")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|repository| {
+                    repository.trim_start_matches('#') == name.trim_start_matches('#')
+                });
+            if in_repository && map.contains_key("operation") {
+                let implementation = map.get("implementation");
+                let file = implementation
+                    .and_then(|found| found.get("file"))
+                    .and_then(serde_json::Value::as_str);
+                let symbol = implementation
+                    .and_then(|found| found.get("symbol"))
+                    .and_then(serde_json::Value::as_str);
+                // An operation whose code is not known (one a document
+                // declares, found by its route) is named, with an empty
+                // file, for its route's files to stand in.
+                // A discovered operation is named by its service and its
+                // operation id: `payments.CreateCharge`.
+                let named = map
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        let service = map.get("service")?.as_str()?;
+                        let operation = map.get("operation")?.as_str()?;
+                        let local = service.rsplit("::").next().unwrap_or(service);
+                        Some(format!("{local}.{operation}"))
+                    });
+                match file {
+                    Some(file) => anchors.push((file.to_owned(), symbol.unwrap_or("").to_owned())),
+                    None => anchors.push((String::new(), named.unwrap_or_default())),
+                }
+            }
+            for nested in map.values() {
+                collect_anchors(nested, name, anchors);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for nested in items {
+                collect_anchors(nested, name, anchors);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::collect_anchors;
+    use serde_json::json;
+
+    #[test]
+    fn a_checkers_anchors_are_its_operations_in_the_repository_wherever_they_nest() {
+        let arguments = json!({
+            "handler": { "discovered": true, "operation": "CreateCharge",
+                         "repository": "billing", "service": "billing::payments" },
+            "through": { "values": {
+                "caller": { "operation": "billing::payments.notify", "repository": "billing",
+                            "name": "payments.notify",
+                            "implementation": { "file": "generated/notify.go",
+                                                "symbol": "Notify.Invoke" } },
+                "provider": { "operation": "ledger::events.notify", "repository": "ledger",
+                              "implementation": { "file": "events/handlers.py",
+                                                  "symbol": "notify" } },
+            } },
+            "retriable": true,
+        });
+        let mut anchors = Vec::new();
+
+        collect_anchors(&arguments, "billing", &mut anchors);
+        anchors.sort();
+
+        assert_eq!(
+            anchors,
+            [
+                (String::new(), "payments.CreateCharge".to_owned()),
+                ("generated/notify.go".to_owned(), "Notify.Invoke".to_owned()),
+            ]
+        );
     }
 }

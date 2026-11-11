@@ -27,6 +27,7 @@ mod impact;
 mod infer;
 pub mod lm;
 pub mod openapi;
+mod reach;
 pub mod repos;
 pub mod schema;
 mod trace;

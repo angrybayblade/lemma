@@ -111,20 +111,30 @@ impl Store {
 
     /// The evidence for `request`: stored evidence with an equal key, or
     /// the checker's answer after running it.
+    /// Stored evidence for `request`, if its key holds some; asks nothing
+    /// of the request's roots, which only running needs.
+    pub(crate) fn reusable(&self, request: &Request<'_>) -> Option<Evidence> {
+        let key = evidence_key(request);
+        let is_reusable = request.checker.is_cached && request.reads.values().all(Option::is_some);
+        if !is_reusable {
+            return None;
+        }
+        let stored = self.stored(&key)?;
+        log::info!(
+            "evidence: {} reused for {}",
+            request.checker.address,
+            request.case
+        );
+        Some(stored.into_evidence(&key, true))
+    }
+
     pub(crate) fn demand(&self, request: &Request<'_>) -> Evidence {
         let key = evidence_key(request);
         let case = case_key(request);
-        let is_reusable = request.checker.is_cached && request.reads.values().all(Option::is_some);
-        if is_reusable {
-            if let Some(stored) = self.stored(&key) {
-                log::info!(
-                    "evidence: {} reused for {}",
-                    request.checker.address,
-                    request.case
-                );
-                return stored.into_evidence(&key, true);
-            }
+        if let Some(stored) = self.reusable(request) {
+            return stored;
         }
+        let is_reusable = request.checker.is_cached && request.reads.values().all(Option::is_some);
         if !self.may_run {
             return self.not_run(&case, &key);
         }
