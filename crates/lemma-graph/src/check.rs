@@ -345,7 +345,10 @@ pub fn check<E: Engine>(
     references: Option<&mut dyn crate::anchors::References>,
 ) -> Result<Report, GraphError> {
     let started = std::time::Instant::now();
-    let (repos, options) = load_with_change_named(root_file, options)?;
+    let (repos, mut options) = load_with_change_named(root_file, options)?;
+    // Tracing verifies the same repositories again; without a long-lived
+    // process's reads, this check keeps its own for those later runs.
+    options.warm.get_or_insert_with(Arc::default);
     let options = &options;
     check_change_names_a_repository(&repos, options)?;
     log_repositories(&repos);
@@ -453,6 +456,7 @@ fn check_links<E: Engine>(
         walkable: &walkable,
         listings: shared.listings,
         facts: options.facts_cache.as_ref(),
+        warm: options.warm.as_ref().map(|warm| warm.verify()),
     };
     tracing.attach(&mut findings, &seeds, engine)?;
     // After tracing, whose seeds point into the findings by index.
@@ -486,6 +490,7 @@ struct Tracing<'a> {
     walkable: &'a Walkable,
     listings: &'a Arc<lemma_http::Listings>,
     facts: Option<&'a lemma_verify::FactsCache>,
+    warm: Option<Arc<lemma_verify::Warm>>,
 }
 
 impl Tracing<'_> {
@@ -501,14 +506,13 @@ impl Tracing<'_> {
             facts: self.facts,
             listings: self.listings,
         };
+        let reads = VerificationReads {
+            facts: self.facts,
+            listings: self.listings,
+            warm: self.warm.as_ref(),
+        };
         let mut fetch = |operations: &BTreeSet<String>| {
-            fetch_calls(
-                self.walkable.partial.as_ref(),
-                operations,
-                engine,
-                self.facts,
-                self.listings,
-            )
+            fetch_calls(self.walkable.partial.as_ref(), operations, engine, &reads)
         };
         let mut source = affects::CallSource {
             walkable: self.walkable,
@@ -870,14 +874,22 @@ fn sort_findings(findings: &mut [Finding]) {
     });
 }
 
+/// What a verification run reads with besides its manifest: facts kept
+/// between runs, the repositories' listings, and the reads of earlier runs
+/// of the same process.
+pub(crate) struct VerificationReads<'a> {
+    pub(crate) facts: Option<&'a lemma_verify::FactsCache>,
+    pub(crate) listings: &'a Arc<lemma_http::Listings>,
+    pub(crate) warm: Option<&'a Arc<lemma_verify::Warm>>,
+}
+
 /// The calls of `operations` the inference behind `partial` did not read:
 /// verified again, reading only the code that may make them.
 pub(crate) fn fetch_calls<E: Engine>(
     partial: Option<&affects::PartialCalls>,
     operations: &BTreeSet<String>,
     engine: &E,
-    facts: Option<&lemma_verify::FactsCache>,
-    listings: &Arc<lemma_http::Listings>,
+    reads: &VerificationReads<'_>,
 ) -> Result<Vec<crate::impact::Call>, GraphError> {
     let Some(partial) = partial else {
         return Ok(Vec::new());
@@ -885,13 +897,19 @@ pub(crate) fn fetch_calls<E: Engine>(
     let options = lemma_verify::Options {
         explain: false,
         relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
-        facts_cache: facts.cloned(),
+        facts_cache: reads.facts.cloned(),
         evaluation: lemma_verify::Evaluation::Demand,
-        warm: None,
+        warm: reads.warm.cloned(),
         also_keep: None,
     };
-    let report = lemma_verify::calls_of(&partial.manifest, engine, &options, listings, operations)
-        .map_err(|source| GraphError::Inference { source })?;
+    let report = lemma_verify::calls_of(
+        &partial.manifest,
+        engine,
+        &options,
+        reads.listings,
+        operations,
+    )
+    .map_err(|source| GraphError::Inference { source })?;
     Ok(affects::walkable(&report.relations, &partial.owners).calls)
 }
 
