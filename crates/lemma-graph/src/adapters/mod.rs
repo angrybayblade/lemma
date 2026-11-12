@@ -70,14 +70,48 @@ struct Document {
     text: String,
     /// Where it was read from, for a parse error to name.
     path: PathBuf,
+    /// Applied to the text when it is parsed: a document patched for a
+    /// change is held as the base's text and the change, and built only
+    /// when something reads it.
+    changes: Vec<lazy::SchemaChange>,
     parsed: std::sync::OnceLock<Value>,
 }
 
-// Two documents are the same when their texts are: what is parsed comes
-// from the text.
+// Two documents are the same when their texts and changes are: what is
+// parsed comes from them.
 impl PartialEq for Document {
     fn eq(&self, other: &Self) -> bool {
-        self.text == other.text
+        self.text == other.text && self.changes == other.changes
+    }
+}
+
+impl Document {
+    /// A document read from `text`, as it is.
+    fn read(text: String, path: PathBuf) -> Self {
+        Self {
+            text,
+            path,
+            changes: Vec::new(),
+            parsed: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The text parsed, with the changes applied.
+    fn build(&self) -> Result<Value, GraphError> {
+        let mut parsed: Value =
+            serde_json::from_str(&self.text).map_err(|source| GraphError::ResolverOutput {
+                command: format!("reading {}", self.path.display()),
+                source,
+            })?;
+        if !lazy::apply_all(&mut parsed, &self.changes) {
+            return Err(GraphError::Adapter {
+                message: format!(
+                    "a change to a schema of {} matches no operation of it",
+                    self.path.display()
+                ),
+            });
+        }
+        Ok(parsed)
     }
 }
 
@@ -88,25 +122,8 @@ impl Generated {
         if let Some(parsed) = document.parsed.get() {
             return Ok(parsed);
         }
-        let parsed: Value =
-            serde_json::from_str(&document.text).map_err(|source| GraphError::ResolverOutput {
-                command: format!("reading {}", document.path.display()),
-                source,
-            })?;
+        let parsed = document.build()?;
         Ok(document.parsed.get_or_init(|| parsed))
-    }
-
-    /// The `OpenAPI` document, owned: what patching it for a change starts
-    /// from, without copying megabytes.
-    fn into_document(self) -> Result<Value, GraphError> {
-        let document = self.document;
-        if let Some(parsed) = document.parsed.into_inner() {
-            return Ok(parsed);
-        }
-        serde_json::from_str(&document.text).map_err(|source| GraphError::ResolverOutput {
-            command: format!("reading {}", document.path.display()),
-            source,
-        })
     }
 }
 
@@ -269,46 +286,24 @@ impl<'a> Adapter<'a> {
             base_digest: base.digest.clone(),
             changes,
         };
-        // Kept beside the document, so a later read of it knows the patch.
-        if let Ok(text) = serde_json::to_string(&patch) {
-            let _ = std::fs::write(patch_path(output), text);
-        }
         if patch.changes.is_empty() {
             return unpatched(base, output, patch).map(Some);
         }
-        let mut document = base.into_document()?;
-        if !lazy::apply_all(&mut document, &patch.changes) {
+        // Where the change's schemas are used is known from the base's
+        // request bodies, kept beside it; the patched document is built
+        // only if something reads it, as a contract patched from the base's
+        // does not.
+        let bodies = lazy::kept_bodies(&base_output, || base.document())?;
+        if !lazy::places_all(&bodies, &patch.changes) {
             log::info!("adapter: a changed schema is used by no operation; reading the code");
             return Ok(None);
         }
-        let text =
-            serde_json::to_string(&document).map_err(|source| GraphError::ResolverOutput {
-                command: "writing a patched document".to_owned(),
-                source,
-            })?;
-        std::fs::write(output, &text).map_err(|source| GraphError::Io {
-            path: output.to_owned(),
-            source,
-        })?;
         log::info!(
             "adapter: {} working directory: patched the base commit's document for the change in {:.2}s",
             root.display(),
             started.elapsed().as_secs_f64()
         );
-        // The document is in hand: reading back what was just written
-        // would only parse it again.
-        let (unread, reading) = reading_of(&document);
-        Ok(Some(Generated {
-            digest: lemma_model::content_hash(text.as_bytes()),
-            document: Document {
-                text,
-                path: output.to_owned(),
-                parsed: std::sync::OnceLock::from(document),
-            },
-            unread,
-            reading,
-            patch: Some(patch),
-        }))
+        Ok(Some(patched(base, base_output, patch)))
     }
 
     /// The document of the code at `commit` of the clone at `root`.
@@ -515,6 +510,10 @@ fn unpatched(base: Generated, output: &Path, patch: lazy::Patch) -> Result<Gener
         path: output.to_owned(),
         source,
     })?;
+    // Kept beside the document, so a later read of it knows the patch.
+    if let Ok(text) = serde_json::to_string(&patch) {
+        let _ = std::fs::write(patch_path(output), text);
+    }
     log::info!("adapter: the change touches no code the adapter reads; the base commit's document");
     Ok(Generated {
         document: Document {
@@ -524,6 +523,26 @@ fn unpatched(base: Generated, output: &Path, patch: lazy::Patch) -> Result<Gener
         patch: Some(patch),
         ..base
     })
+}
+
+/// The working directory's document as `base`'s, read from `base_path`,
+/// patched by `patch`, built when first read. Its digest names the base's
+/// and the changes, which say what it holds as well as its text would.
+fn patched(base: Generated, base_path: PathBuf, patch: lazy::Patch) -> Generated {
+    let changes = serde_json::to_string(&patch.changes).unwrap_or_default();
+    let digest =
+        lemma_model::content_hash(format!("{}\npatched\n{changes}", base.digest).as_bytes());
+    Generated {
+        digest,
+        document: Document {
+            changes: patch.changes.clone(),
+            path: base_path,
+            ..Document::read(base.document.text, PathBuf::new())
+        },
+        unread: base.unread,
+        reading: base.reading,
+        patch: Some(patch),
+    }
 }
 
 fn read_generated(path: &Path) -> Result<Generated, GraphError> {
@@ -544,11 +563,7 @@ fn read_generated(path: &Path) -> Result<Generated, GraphError> {
         .and_then(|patch_text| serde_json::from_str(&patch_text).ok());
     Ok(Generated {
         digest: lemma_model::content_hash(text.as_bytes()),
-        document: Document {
-            text,
-            path: path.to_owned(),
-            parsed: std::sync::OnceLock::new(),
-        },
+        document: Document::read(text, path.to_owned()),
         unread,
         reading,
         patch: kept_patch,
