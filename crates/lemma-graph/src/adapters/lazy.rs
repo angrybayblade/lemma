@@ -424,7 +424,7 @@ fn apply(schema: &mut Value, change: &SchemaChange) {
 pub(super) fn patched(
     root: &Path,
     base: &str,
-    base_document: &Value,
+    base_document: Value,
 ) -> Option<(Value, Vec<SchemaChange>)> {
     let mut changes = Vec::new();
     // Files in other languages (a Go service beside a TypeScript one) are
@@ -437,7 +437,7 @@ pub(super) fn patched(
         return None;
     }
     let mut extractor = lemma_syntax::Extractor::new().ok()?;
-    let mut document = base_document.clone();
+    let mut document = base_document;
     for path in &files {
         let before = base_text(root, base, path)?;
         let after = std::fs::read_to_string(root.join(path)).ok()?;

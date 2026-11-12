@@ -95,6 +95,19 @@ impl Generated {
             })?;
         Ok(document.parsed.get_or_init(|| parsed))
     }
+
+    /// The `OpenAPI` document, owned: what patching it for a change starts
+    /// from, without copying megabytes.
+    fn into_document(self) -> Result<Value, GraphError> {
+        let document = self.document;
+        if let Some(parsed) = document.parsed.into_inner() {
+            return Ok(parsed);
+        }
+        serde_json::from_str(&document.text).map_err(|source| GraphError::ResolverOutput {
+            command: format!("reading {}", document.path.display()),
+            source,
+        })
+    }
 }
 
 /// The top-level fields of a generated document that say how it was read,
@@ -248,12 +261,13 @@ impl<'a> Adapter<'a> {
             return Ok(None);
         }
         let base = read_generated(&base_output)?;
-        let Some((document, changes)) = lazy::patched(root, &commit, base.document()?) else {
+        let base_digest = base.digest.clone();
+        let Some((document, changes)) = lazy::patched(root, &commit, base.into_document()?) else {
             log::info!("adapter: the change is more than syntax can patch; reading the code");
             return Ok(None);
         };
         let patch = lazy::Patch {
-            base_digest: base.digest.clone(),
+            base_digest,
             changes,
         };
         // Kept beside the document, so a later read of it knows the patch.
@@ -541,7 +555,13 @@ pub fn patched_contract(
     for document in &base.documents {
         let text = std::fs::read_to_string(&document.path).ok()?;
         let mut value: Value = serde_json::from_str(&text).ok()?;
-        patched.extend(lazy::apply_changes(&mut value, &patch.changes));
+        let changed = lazy::apply_changes(&mut value, &patch.changes);
+        // A document the change does not touch is the base's, as it is.
+        if changed.is_empty() {
+            documents.push(document.clone());
+            continue;
+        }
+        patched.extend(changed);
         let text = serde_json::to_string(&value).ok()?;
         let written = store.join(format!(
             "{}.json",
