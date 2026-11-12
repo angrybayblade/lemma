@@ -1871,7 +1871,7 @@ fn retain_existing(
     for document in documents.drain(..) {
         let mut exists = false;
         for checkout in checkouts {
-            exists = exists || checkout.read(&document)?.is_some();
+            exists = exists || checkout.has(&document)?;
         }
         if exists {
             kept.push(document);

@@ -29,6 +29,12 @@ impl Checkout {
             .map_err(|source| GraphError::Source { source })
     }
 
+    /// Whether a file exists at this checkout, found without reading it.
+    pub fn has(&self, path: &str) -> Result<bool, GraphError> {
+        lemma_http::file_exists(&self.root, self.commit.as_deref(), path)
+            .map_err(|source| GraphError::Source { source })
+    }
+
     /// A directory holding the repository's files at this checkout: the
     /// clone itself for the working directory, otherwise a worktree in
     /// `cache`, created once per commit. Adding one removes all but the
