@@ -534,7 +534,11 @@ impl Tracing<'_> {
     /// documented operations' route files, when the change is one.
     fn change_reach(&self) -> Option<crate::reach::ChangeReach> {
         let reach = change_reach_of(self.repos, self.listings, self.facts)?;
-        Some(with_route_files(reach, self.repos, self.walkable))
+        Some(with_route_files(
+            reach,
+            (self.repos, self.facts),
+            self.walkable,
+        ))
     }
 }
 
@@ -581,22 +585,26 @@ fn change_reach_of(
 /// and the routes inference found.
 fn with_route_files(
     mut reach: crate::reach::ChangeReach,
-    repos: &BTreeMap<String, Repo>,
+    (repos, facts): (&BTreeMap<String, Repo>, Option<&lemma_verify::FactsCache>),
     walkable: &Walkable,
 ) -> crate::reach::ChangeReach {
     let Some(repo) = repos.get(&reach.repository) else {
         return reach;
     };
     let checkout = &repo.checkouts[HEAD];
+    // Verification kept each document's operations by its contents.
+    let kept = facts.map(lemma_verify::FactsCache::documents);
     for (service, declared) in &repo.files[HEAD].services {
         for document_file in &declared.exports.openapi {
             let Ok(Some(text)) = checkout.read(document_file) else {
                 continue;
             };
-            let Ok(document) = crate::adapters::parse_document(document_file, &text) else {
+            let Ok(operations) =
+                lemma_verify::document_operations(document_file, &text, kept.as_deref())
+            else {
                 continue;
             };
-            let found = route_files_of(&document, &reach.repository, walkable);
+            let found = route_files_of(&operations, &reach.repository, walkable);
             reach.route_files.extend(
                 found
                     .into_iter()
@@ -610,13 +618,13 @@ fn with_route_files(
 /// For each operation of `document` with an `operationId`, the files
 /// `repository`'s routes for it are declared in, when inference found any.
 fn route_files_of(
-    document: &serde_json::Value,
+    operations: &[lemma_http::Operation],
     repository: &str,
     walkable: &Walkable,
 ) -> Vec<(String, Vec<String>)> {
     let mut found = Vec::new();
-    for operation in lemma_http::operations(document) {
-        let Some(id) = operation.operation_id else {
+    for operation in operations {
+        let Some(id) = &operation.operation_id else {
             continue;
         };
         let key = format!("{} {}", operation.method, operation.path);
@@ -627,7 +635,7 @@ fn route_files_of(
             .map(|site| site.file.clone())
             .collect();
         if !files.is_empty() {
-            found.push((id, files));
+            found.push((id.clone(), files));
         }
     }
     found

@@ -141,7 +141,7 @@ pub fn extract_all(
         kept: options
             .facts_cache
             .as_ref()
-            .map(|cache| cache.directory.join("documents")),
+            .map(crate::FactsCache::documents),
     };
     let extracted = extract_with(manifest, writer, &specs, &mut extractor, focus);
     if let Some(warm) = warm {
@@ -2244,30 +2244,58 @@ fn read_spec_operations(
         return Ok(Vec::new());
     };
     let is_yaml = generated.is_none() && lemma_http::is_yaml_document(spec);
-    let key = format!("{is_yaml}{}", lemma_model::content_hash(text.as_bytes()));
+    let key = operations_key(&text, is_yaml);
     if let Some(found) = snapshot.specs.parsed.borrow().get(&key) {
         return Ok(found.clone());
     }
-    let kept = snapshot
+    let kept = snapshot.specs.kept.as_deref();
+    let operations = kept_or_parsed(spec, (&text, is_yaml), kept, &key)?;
+    snapshot
         .specs
-        .kept
-        .as_ref()
-        .map(|directory| directory.join(format!("{key}.json")));
+        .parsed
+        .borrow_mut()
+        .insert(key, operations.clone());
+    Ok(operations)
+}
+
+/// The operations a service document declares, given its file name and
+/// `text`: kept in the directory `kept` by the text, as a check's
+/// verification keeps them, so a document is parsed once across runs.
+pub fn document_operations(
+    file: &str,
+    text: &str,
+    kept: Option<&Path>,
+) -> Result<Vec<Operation>, VerifyError> {
+    let is_yaml = lemma_http::is_yaml_document(file);
+    let key = operations_key(text, is_yaml);
+    kept_or_parsed(file, (text, is_yaml), kept, &key)
+}
+
+/// What a document's operations are kept under: its text, and whether it
+/// is read as YAML.
+fn operations_key(text: &str, is_yaml: bool) -> String {
+    format!("{is_yaml}{}", lemma_model::content_hash(text.as_bytes()))
+}
+
+/// The operations of the document `spec`, its text read as YAML or JSON:
+/// kept in `kept` under `key` by an earlier run, or parsed now and kept.
+fn kept_or_parsed(
+    spec: &str,
+    (text, is_yaml): (&str, bool),
+    kept: Option<&Path>,
+    key: &str,
+) -> Result<Vec<Operation>, VerifyError> {
+    let kept = kept.map(|directory| directory.join(format!("{key}.json")));
     if let Some(found) = kept.as_deref().and_then(read_kept_operations) {
-        snapshot
-            .specs
-            .parsed
-            .borrow_mut()
-            .insert(key, found.clone());
         return Ok(found);
     }
     let document: serde_json::Value = if is_yaml {
-        yaml_serde::from_str(&text).map_err(|source| VerifyError::YamlSpec {
+        yaml_serde::from_str(text).map_err(|source| VerifyError::YamlSpec {
             file: spec.to_owned(),
             source,
         })?
     } else {
-        serde_json::from_str(&text).map_err(|source| VerifyError::Spec {
+        serde_json::from_str(text).map_err(|source| VerifyError::Spec {
             file: spec.to_owned(),
             source,
         })?
@@ -2276,11 +2304,6 @@ fn read_spec_operations(
     if let Some(kept) = &kept {
         keep_operations(kept, &operations);
     }
-    snapshot
-        .specs
-        .parsed
-        .borrow_mut()
-        .insert(key, operations.clone());
     Ok(operations)
 }
 
