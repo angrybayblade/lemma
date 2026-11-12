@@ -10,9 +10,8 @@
 //! read. Records merge into a table in the order their files are given,
 //! which is the order a walk visits functions in.
 
-use std::collections::HashMap;
-
 use lemma_store::{RecordError, RecordReader, RecordWriter, StringTable};
+use rustc_hash::FxHashMap;
 
 use crate::impact::Function;
 
@@ -480,7 +479,7 @@ impl FileRecord {
 pub(crate) struct Builder {
     /// Names in the order first seen, and each one's position there.
     seen: Vec<Box<str>>,
-    positions: HashMap<Box<str>, NameId>,
+    positions: FxHashMap<Box<str>, NameId>,
     table: Functions,
 }
 
