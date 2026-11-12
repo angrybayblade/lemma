@@ -5,7 +5,9 @@
 //! It favours clarity over speed (joins are nested loops) and serves as the
 //! oracle other engines are checked against, and for small programs.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+
+use rustc_hash::FxHashMap;
 use std::convert::Infallible;
 
 use crate::engine::{Derivation, Derived, Engine, Fact, Request};
@@ -85,7 +87,7 @@ struct Reason {
 
 struct State {
     known: BTreeMap<String, BTreeSet<Tuple>>,
-    reasons: HashMap<Fact, Reason>,
+    reasons: FxHashMap<Fact, Reason>,
     /// Whether derivations are recorded, for explaining facts.
     keeps_reasons: bool,
 }
@@ -115,7 +117,7 @@ fn needed_relations(program: &Program, outputs: &BTreeSet<String>) -> BTreeSet<S
     }
 }
 
-type Bindings<'a> = HashMap<&'a str, Value>;
+type Bindings<'a> = FxHashMap<&'a str, Value>;
 type Delta = BTreeMap<String, BTreeSet<Tuple>>;
 
 /// One rule to solve, optionally with one positive literal restricted to
@@ -132,12 +134,12 @@ struct Walk<'j, 'r, 'i> {
 /// within a round, so an index holds for all of the round's rules.
 #[derive(Default)]
 struct Indexes<'i> {
-    built: std::cell::RefCell<HashMap<(&'i str, usize), std::rc::Rc<ColumnIndex<'i>>>>,
+    built: std::cell::RefCell<FxHashMap<(&'i str, usize), std::rc::Rc<ColumnIndex<'i>>>>,
 }
 
 /// One relation's rows by one column's value, each list in the relation's
 /// order.
-type ColumnIndex<'i> = HashMap<Value, Vec<&'i Tuple>>;
+type ColumnIndex<'i> = FxHashMap<Value, Vec<&'i Tuple>>;
 
 impl<'i> Indexes<'i> {
     /// The rows of `relation` (all of them in `rows`) whose `column` holds
@@ -162,7 +164,7 @@ impl<'i> Indexes<'i> {
 
 /// `rows` by the value in `column`, each list in the rows' order.
 fn column_index(rows: &BTreeSet<Tuple>, column: usize) -> ColumnIndex<'_> {
-    let mut index: ColumnIndex<'_> = HashMap::new();
+    let mut index: ColumnIndex<'_> = FxHashMap::default();
     for row in rows {
         if let Some(found) = row.get(column) {
             index.entry(*found).or_default().push(row);
@@ -189,7 +191,7 @@ impl State {
         }
         Self {
             known,
-            reasons: HashMap::new(),
+            reasons: FxHashMap::default(),
             keeps_reasons: needed.is_none(),
         }
     }
@@ -286,7 +288,13 @@ impl State {
             found.push((fact, reason));
         };
         let walk = Walk { job, indexes };
-        self.join(&walk, 0, &mut Bindings::new(), &mut Vec::new(), &mut emit);
+        self.join(
+            &walk,
+            0,
+            &mut Bindings::default(),
+            &mut Vec::new(),
+            &mut emit,
+        );
     }
 
     #[expect(clippy::too_many_arguments, reason = "the recursive join's state")]
