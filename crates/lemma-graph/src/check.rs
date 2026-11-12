@@ -458,10 +458,19 @@ fn check_links<E: Engine>(
         facts: options.facts_cache.as_ref(),
         warm: options.warm.as_ref().map(|warm| warm.verify()),
     };
-    tracing.attach(&mut findings, &seeds, engine)?;
+    // The change's reach needs only the changed repository's functions,
+    // nothing tracing finds, so the two run side by side.
+    let (attached, reach) = std::thread::scope(|scope| {
+        let reach = scope.spawn(|| tracing.change_reach());
+        let attached = tracing.attach(&mut findings, &seeds, engine);
+        let reach = reach
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (attached, reach)
+    });
+    attached?;
     // After tracing, whose seeds point into the findings by index.
     shared.keep_selected(&mut findings);
-    let reach = tracing.change_reach();
     Ok(Linked {
         findings,
         inferred_links,
