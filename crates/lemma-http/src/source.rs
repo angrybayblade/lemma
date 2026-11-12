@@ -697,6 +697,11 @@ fn git_contents(
     commit: &str,
     paths: &[String],
 ) -> Result<Vec<SourceFile>, SourceError> {
+    // Callers ask for what their caches lack, often nothing; starting Git
+    // for no file costs a process.
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
     let io_error = |source| SourceError::Io {
         path: repository.to_owned(),
         source,
