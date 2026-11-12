@@ -2356,6 +2356,22 @@ fn unit_key(build: &str, path: &str, options: &str, contents: &[u8]) -> String {
 
 /// The terms segment of the files `keys` name, each file's terms taken
 /// from `fresh`, else from `stored`, else none.
+/// The name a selection's latest terms segment is recorded under. What sets
+/// a selection apart from the repository's others: its options, commit or
+/// working directory, and the span of its files, which edits leave alone.
+/// A clash only loses the head start a previous segment gives.
+fn latest_segment_name(
+    segment: &lemma_store::SegmentKey,
+    files: &[ListedFile],
+    options: &CodeOptions,
+    commit: Option<&str>,
+) -> String {
+    let first = files.first().map_or("", |file| file.path.as_str());
+    let last = files.last().map_or("", |file| file.path.as_str());
+    let selection = format!("{options:?}\0{}\0{first}\0{last}", commit.is_some());
+    crate::term_segments::latest_name(&segment.group, &selection)
+}
+
 fn term_segment(
     keys: &[String],
     stored: &BTreeMap<String, Vec<String>>,
@@ -2610,15 +2626,23 @@ impl FactReader {
         if let Some(found) = self.chosen_from_segment(segment.as_ref(), &wanted, &keyed, place) {
             return Ok(found);
         }
-        let (indexed, hits) = self.indexed_and_hits(&keys, &wanted);
+        let latest = segment
+            .as_ref()
+            .map(|segment| latest_segment_name(segment, files, options, commit));
+        let (known, remaining) = self.known_before(segment.as_ref(), latest.as_deref(), &keys);
+        let (indexed, hits) = self.indexed_and_hits(&remaining, &wanted);
+        let is_chosen = |key: &String| match known.get(key) {
+            Some(terms) => terms.iter().any(|term| wanted.contains(term)),
+            None => indexed.contains(key) && hits.contains(key),
+        };
         let mut chosen: BTreeSet<String> = keyed
             .iter()
-            .filter(|(_, key)| indexed.contains(key) && hits.contains(key))
+            .filter(|(_, key)| is_chosen(key))
             .map(|(file, _)| file.path.clone())
             .collect();
         let unindexed: Vec<ListedFile> = keyed
             .iter()
-            .filter(|(_, key)| !indexed.contains(key))
+            .filter(|(_, key)| !known.contains_key(key) && !indexed.contains(key))
             .map(|(file, _)| file.clone())
             .collect();
         let key_of: BTreeMap<&str, &String> = keyed
@@ -2646,10 +2670,75 @@ impl FactReader {
         // Every file's terms are known once each indexed file's are read
         // back, so the next run can skip the lookups above.
         let is_complete = fresh.len() == unindexed.len();
-        if let (Some(segment), true) = (segment, is_complete) {
-            self.put_term_segment(segment, keys, indexed, fresh);
+        if let (Some(segment), Some(latest), true) = (segment, latest, is_complete) {
+            fresh.extend(known);
+            self.put_term_segment((segment, latest), keys, indexed, fresh);
         }
         Ok(chosen)
+    }
+
+    /// The terms of those of `keys` the repository's previous segment, of
+    /// nearly the same files, holds, and the keys left to look up: a unit
+    /// key names the contents, so a shared key means the same terms.
+    fn known_before(
+        &self,
+        segment: Option<&lemma_store::SegmentKey>,
+        latest: Option<&str>,
+        keys: &[String],
+    ) -> (BTreeMap<String, Vec<String>>, Vec<String>) {
+        let known = segment
+            .zip(latest)
+            .map(|(segment, latest)| self.previous_terms(&segment.group, latest, keys))
+            .unwrap_or_default();
+        let remaining: Vec<String> = keys
+            .iter()
+            .filter(|key| !known.contains_key(*key))
+            .cloned()
+            .collect();
+        if !known.is_empty() {
+            log::debug!(
+                "{} files' terms from the previous segment; looking up {}",
+                known.len(),
+                remaining.len()
+            );
+        }
+        (known, remaining)
+    }
+
+    /// The terms of those of `keys` the segment of `group` recorded as
+    /// `latest` holds, by key; none when there is no such segment or it does
+    /// not check, which only means looking those files up.
+    fn previous_terms(
+        &self,
+        group: &str,
+        latest: &str,
+        keys: &[String],
+    ) -> BTreeMap<String, Vec<String>> {
+        let Some(kept) = &self.kept else {
+            return BTreeMap::new();
+        };
+        let Ok(Some(record)) = kept.units.named(latest) else {
+            return BTreeMap::new();
+        };
+        let Ok((inputs, previous_keys)) = crate::term_segments::decode_latest(&record) else {
+            return BTreeMap::new();
+        };
+        let key = lemma_store::SegmentKey {
+            group: group.to_owned(),
+            inputs,
+        };
+        let Ok(Some(bytes)) = kept.units.segment(&key) else {
+            return BTreeMap::new();
+        };
+        let Ok(by_file) = crate::term_segments::file_terms(&bytes, previous_keys.len()) else {
+            return BTreeMap::new();
+        };
+        let wanted: std::collections::HashSet<&str> = keys.iter().map(String::as_str).collect();
+        previous_keys
+            .into_iter()
+            .zip(by_file)
+            .filter(|(key, _)| wanted.contains(key.as_str()))
+            .collect()
     }
 
     /// The paths among `keyed` any of `wanted` indexes, from the terms
@@ -2723,13 +2812,13 @@ impl FactReader {
 
     /// Keeps the terms segment of the files `keys` name, from the terms of
     /// those `indexed`, read back from the cache, and of the others in
-    /// `fresh`. Built in the background: reading the indexed files' terms
+    /// `fresh`, and records it under `latest` for the selection's next run. Built in the background: reading the indexed files' terms
     /// back takes a while in a large repository, and nothing in this run
     /// reads the segment. Keeping is best effort: a segment that cannot be
     /// built or written only means looking files up again next run.
     fn put_term_segment(
         &mut self,
-        segment: lemma_store::SegmentKey,
+        (segment, latest): (lemma_store::SegmentKey, String),
         keys: Vec<String>,
         indexed: BTreeSet<String>,
         fresh: BTreeMap<String, Vec<String>>,
@@ -2748,6 +2837,9 @@ impl FactReader {
             };
             let bytes = term_segment(&keys, &stored, &fresh);
             units.put_segment_later(&segment, bytes);
+            // The next run of nearly the same files starts from this one.
+            let record = crate::term_segments::encode_latest(&segment.inputs, &keys);
+            units.put_named_later(&latest, record);
         });
         kept.writing.extend(writer.ok());
     }
