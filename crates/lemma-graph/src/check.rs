@@ -351,21 +351,6 @@ pub fn check<E: Engine>(
     log_repositories(&repos);
     let level = check_level(&repos, options);
     let (links, not_checked) = split_unchecked_links(collect_links(&repos)?, &repos);
-    let mut findings = check_declared_beside_adapters(&repos, &links, level, options)?;
-    if options.change.is_some() {
-        findings.extend(crate::description::introduced_by_change(&repos, level));
-    }
-    log::info!(
-        "checked {} declared links: {} findings",
-        links.len(),
-        findings.len()
-    );
-    let mut seeds = declared_seeds(&findings, &links, &repos);
-    // After the seeds: a doubtful anchor is no problem to trace from.
-    if let Some(references) = references {
-        let anchored = crate::anchors::check_anchors(&repos, &links, &options.cache, references)?;
-        findings.extend(anchored);
-    }
     // Verification and tracing read the same repositories; each is listed
     // once.
     let listings = options
@@ -373,32 +358,37 @@ pub fn check<E: Engine>(
         .as_ref()
         .map_or_else(Arc::default, |warm| warm.verify().listings());
     let mut shared = Shared::new(options, &listings, root_file, &repos)?;
-    let (inferred_links, walkable) = infer(&repos, &shared, engine, level, &mut findings)?;
-    let head_program = shared.program.take();
-    fail_unread_contracts(level, &mut findings);
-    seeds.extend(walkable.seeds.iter().cloned());
-    let tracing = Tracing {
+    let behaviors = Behaviors {
+        manifest: manifest_name(root_file),
         repos: &repos,
-        walkable: &walkable,
-        listings: &listings,
-        facts: options.facts_cache.as_ref(),
+        options,
     };
-    tracing.attach(&mut findings, &seeds, engine)?;
-    // After tracing, whose seeds point into the findings by index.
-    shared.keep_selected(&mut findings);
-    let program = ParentProgram {
-        root_file,
-        head: head_program,
-        reach: tracing.change_reach(),
-    };
+    let (mut linked, evaluated) = std::thread::scope(|scope| {
+        // Without a change no walk keys evidence, so behaviors need nothing
+        // the links' checks find, and their checkers run beside them.
+        let early = options.change.is_none().then(|| {
+            let program = shared.program.take();
+            scope.spawn(|| behaviors.run(program, None))
+        });
+        let mut linked = check_links(&repos, &links, &mut shared, engine, references)?;
+        let evaluated = match early {
+            Some(running) => running
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))?,
+            None => behaviors.run(shared.program.take(), linked.reach.take().as_ref())?,
+        };
+        Ok::<_, GraphError>((linked, evaluated))
+    })?;
     let (behaviors, requirement_changes) =
-        evaluate_behaviors(program, &repos, options, level, &mut findings)?;
+        apply_behaviors(evaluated, &repos, level, &mut linked.findings);
+    let mut findings = linked.findings;
     sort_findings(&mut findings);
     log_outcome(&findings, started);
+    let walkable = linked.walkable;
     Ok(Report {
         level,
         links: links.len(),
-        inferred_links,
+        inferred_links: linked.inferred_links,
         repositories: resolved(&repos),
         findings,
         link_list: options.list_links.then(|| link_list(&links, &walkable)),
@@ -406,6 +396,64 @@ pub fn check<E: Engine>(
         requirement_changes,
         not_checked,
         relations: walkable.relations,
+    })
+}
+
+/// What checking a system's links found: findings, the number of calls
+/// inference found, if it ran, what tracing walks, and what the change
+/// reaches.
+struct Linked {
+    findings: Vec<Finding>,
+    inferred_links: Option<usize>,
+    walkable: Walkable,
+    reach: Option<crate::reach::ChangeReach>,
+}
+
+/// Checks the declared links, infers links from code and traces what both
+/// found; with `references`, also checks that each link's caller is
+/// anchored at code that is called.
+fn check_links<E: Engine>(
+    repos: &BTreeMap<String, Repo>,
+    links: &BTreeSet<Link>,
+    shared: &mut Shared<'_>,
+    engine: &E,
+    references: Option<&mut dyn crate::anchors::References>,
+) -> Result<Linked, GraphError> {
+    let options = shared.options;
+    let level = check_level(repos, options);
+    let mut findings = check_declared_beside_adapters(repos, links, level, options)?;
+    if options.change.is_some() {
+        findings.extend(crate::description::introduced_by_change(repos, level));
+    }
+    log::info!(
+        "checked {} declared links: {} findings",
+        links.len(),
+        findings.len()
+    );
+    let mut seeds = declared_seeds(&findings, links, repos);
+    // After the seeds: a doubtful anchor is no problem to trace from.
+    if let Some(references) = references {
+        let anchored = crate::anchors::check_anchors(repos, links, &options.cache, references)?;
+        findings.extend(anchored);
+    }
+    let (inferred_links, walkable) = infer(repos, shared, engine, level, &mut findings)?;
+    fail_unread_contracts(level, &mut findings);
+    seeds.extend(walkable.seeds.iter().cloned());
+    let tracing = Tracing {
+        repos,
+        walkable: &walkable,
+        listings: shared.listings,
+        facts: options.facts_cache.as_ref(),
+    };
+    tracing.attach(&mut findings, &seeds, engine)?;
+    // After tracing, whose seeds point into the findings by index.
+    shared.keep_selected(&mut findings);
+    let reach = tracing.change_reach();
+    Ok(Linked {
+        findings,
+        inferred_links,
+        walkable,
+        reach,
     })
 }
 
@@ -555,32 +603,47 @@ fn route_files_of(
     found
 }
 
-/// The parent's `.lm` program as behaviors run it: where its manifest is,
-/// the head's program if inference already checked it, and what the change
-/// reaches, which decides what kept evidence still holds.
-struct ParentProgram<'a> {
-    root_file: &'a Path,
-    head: Option<crate::behaviors::HeadProgram>,
-    reach: Option<crate::reach::ChangeReach>,
-}
-
-/// Runs the behaviors of the parent's `.lm` program and adds what they
-/// found; their reports and what the change did to requirements.
-fn evaluate_behaviors(
-    program: ParentProgram<'_>,
-    repos: &BTreeMap<String, Repo>,
-    options: &CheckOptions,
-    level: Level,
-    findings: &mut Vec<Finding>,
-) -> Result<(Vec<BehaviorReport>, Vec<RequirementChange>), GraphError> {
-    let manifest = program.root_file.file_name().map_or_else(
+/// The file name of the parent's manifest, which behaviors load its
+/// program by.
+fn manifest_name(root_file: &Path) -> String {
+    root_file.file_name().map_or_else(
         || MODULE_FILE.to_owned(),
         |name| name.to_string_lossy().into_owned(),
-    );
-    let reach = program.reach.as_ref();
-    let evaluated = crate::behaviors::run(&manifest, repos, options, program.head, reach)?;
+    )
+}
+
+/// What running the parent's behaviors reads: its manifest, the
+/// repositories and the options.
+struct Behaviors<'a> {
+    manifest: String,
+    repos: &'a BTreeMap<String, Repo>,
+    options: &'a CheckOptions,
+}
+
+impl Behaviors<'_> {
+    /// Runs the behaviors of the parent's `.lm` program, with the head's
+    /// program if inference already checked it and what the change
+    /// reaches, which decides what kept evidence still holds.
+    fn run(
+        &self,
+        head: Option<crate::behaviors::HeadProgram>,
+        reach: Option<&crate::reach::ChangeReach>,
+    ) -> Result<Option<crate::behaviors::Evaluated>, GraphError> {
+        crate::behaviors::run(&self.manifest, self.repos, self.options, head, reach)
+    }
+}
+
+/// Adds what the behaviors found, with the allowances that cover it and
+/// every other finding; their reports and what the change did to
+/// requirements.
+fn apply_behaviors(
+    evaluated: Option<crate::behaviors::Evaluated>,
+    repos: &BTreeMap<String, Repo>,
+    level: Level,
+    findings: &mut Vec<Finding>,
+) -> (Vec<BehaviorReport>, Vec<RequirementChange>) {
     let Some(mut evaluated) = evaluated else {
-        return Ok((Vec::new(), Vec::new()));
+        return (Vec::new(), Vec::new());
     };
     // The newest commit read dates the check: a change's head, or, without
     // a change, the newest of the repositories' commits, whether or not the
@@ -605,7 +668,7 @@ fn evaluate_behaviors(
         .map(|result| result.address.clone())
         .collect();
     findings.extend(allowances.findings(&ran));
-    Ok((evaluated.reports, evaluated.changes))
+    (evaluated.reports, evaluated.changes)
 }
 
 /// The links inferred from code, as the options ask: for the change, at
