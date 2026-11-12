@@ -45,7 +45,15 @@ pub struct Listings {
 }
 
 /// Listings by repository and commit (`None` for the working directory).
-type Listed = BTreeMap<(PathBuf, Option<String>), Arc<Vec<ListedFile>>>;
+type Listed = BTreeMap<(PathBuf, Option<String>), Listing>;
+
+/// One listing: its files, and, of a working directory, the untracked
+/// files Git named while listing it.
+#[derive(Clone)]
+struct Listing {
+    files: Arc<Vec<ListedFile>>,
+    untracked: Arc<Vec<String>>,
+}
 
 impl Listings {
     /// The files of `repository` at `commit`, or in its working directory,
@@ -55,12 +63,27 @@ impl Listings {
         repository: &Path,
         commit: Option<&str>,
     ) -> Result<Arc<Vec<ListedFile>>, SourceError> {
+        Ok(Arc::clone(&self.listing(repository, commit)?.files))
+    }
+
+    /// The untracked files, not ignored, of the working directory at
+    /// `repository`, as `git ls-files --others --exclude-standard` names
+    /// them: what listing it found, so asking costs no other process.
+    pub fn untracked(&self, repository: &Path) -> Result<Arc<Vec<String>>, SourceError> {
+        Ok(self.listing(repository, None)?.untracked)
+    }
+
+    fn listing(&self, repository: &Path, commit: Option<&str>) -> Result<Listing, SourceError> {
         let key = (repository.to_owned(), commit.map(str::to_owned));
         if let Some(found) = self.locked().get(&key) {
-            return Ok(Arc::clone(found));
+            return Ok(found.clone());
         }
-        let listed = Arc::new(list_with_blobs(repository, commit)?);
-        self.locked().insert(key, Arc::clone(&listed));
+        let (files, untracked) = list_with_untracked(repository, commit)?;
+        let listed = Listing {
+            files: Arc::new(files),
+            untracked: Arc::new(untracked),
+        };
+        self.locked().insert(key, listed.clone());
         Ok(listed)
     }
 
@@ -211,14 +234,23 @@ pub fn list_with_blobs(
     repository: &Path,
     commit: Option<&str>,
 ) -> Result<Vec<ListedFile>, SourceError> {
-    let mut files = match commit {
-        Some(commit) => commit_listing(repository, commit)?,
+    Ok(list_with_untracked(repository, commit)?.0)
+}
+
+/// [`list_with_blobs`], with the untracked files Git named in a working
+/// directory (none at a commit).
+fn list_with_untracked(
+    repository: &Path,
+    commit: Option<&str>,
+) -> Result<(Vec<ListedFile>, Vec<String>), SourceError> {
+    let (mut files, untracked) = match commit {
+        Some(commit) => (commit_listing(repository, commit)?, Vec::new()),
         None => working_listing(repository)?,
     };
     files.retain(|file| !file.path.contains("node_modules/"));
     files.sort_by(|left, right| left.path.cmp(&right.path));
     files.dedup_by(|later, earlier| later.path == earlier.path);
-    Ok(files)
+    Ok((files, untracked))
 }
 
 /// Every entry of `commit`'s tree, with its blob. A submodule's commit is
@@ -246,15 +278,17 @@ fn commit_listing(repository: &Path, commit: &str) -> Result<Vec<ListedFile>, So
 /// The working directory's files as Git lists them, tracked and untracked
 /// but not ignored, less those deleted from the disk; every file, with no
 /// blobs, when Git lists none, as for a directory a parent repository
-/// ignores.
-fn working_listing(repository: &Path) -> Result<Vec<ListedFile>, SourceError> {
+/// ignores. With them, the untracked files Git named, nested repositories
+/// left out.
+fn working_listing(repository: &Path) -> Result<(Vec<ListedFile>, Vec<String>), SourceError> {
     let answers = working_state(repository);
     let tracked = &answers.tracked;
     if tracked.is_empty() {
-        return Ok(directory_paths(repository, &[])?
+        let files = directory_paths(repository, &[])?
             .into_iter()
             .map(|(_, relative)| unvouched(relative))
-            .collect());
+            .collect();
+        return Ok((files, Vec::new()));
     }
     let changes = &answers.changes;
     let mut files = Vec::new();
@@ -300,7 +334,12 @@ fn working_listing(repository: &Path) -> Result<Vec<ListedFile>, SourceError> {
         }
     }
     drop_converted_blobs(repository, &answers, &mut files);
-    Ok(files)
+    let untracked = answers
+        .untracked
+        .into_iter()
+        .filter(|path| !path.ends_with('/'))
+        .collect();
+    Ok((files, untracked))
 }
 
 /// What Git says about a working directory, asked all at once: each

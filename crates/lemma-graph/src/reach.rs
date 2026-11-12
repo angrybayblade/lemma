@@ -87,7 +87,10 @@ fn is_code(path: &str) -> bool {
 /// a change touched in it.
 type ChangedLines = Vec<(String, Vec<(u32, u32)>)>;
 
-fn changed_lines(root: &Path, base: &str) -> Option<ChangedLines> {
+/// Each changed file against `base` with the lines changed in it, new code
+/// among `untracked` counting whole; `None` when Git cannot say, or the
+/// untracked files are not known.
+fn changed_lines(root: &Path, base: &str, untracked: Option<&[String]>) -> Option<ChangedLines> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -130,17 +133,11 @@ fn changed_lines(root: &Path, base: &str) -> Option<ChangedLines> {
             ranges.push((first, last));
         }
     }
-    let untracked = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "--others", "--exclude-standard"])
-        .output()
-        .ok()?;
     // New files that are not code (notes, a description being written) are
     // read by nothing a checker is given; new code counts whole.
-    for path in String::from_utf8_lossy(&untracked.stdout).lines() {
+    for path in untracked? {
         if is_code(path) {
-            files.push((path.to_owned(), vec![(1, u32::MAX)]));
+            files.push((path.clone(), vec![(1, u32::MAX)]));
         }
     }
     Some(files)
@@ -197,11 +194,13 @@ fn symbols_touched(root: &Path, path: &str, ranges: &[(u32, u32)]) -> Vec<(Strin
 }
 
 /// What the working directory's change against `base` reaches among
-/// `functions`, the repository's functions at the working directory.
+/// `functions`, the repository's functions at the working directory, given
+/// its `untracked` files (see [`lemma_http::Listings::untracked`]): when
+/// those are not known, everything.
 pub(crate) fn change_reach(
     repository: &str,
-    root: &Path,
-    base: &str,
+    (root, base): (&Path, &str),
+    untracked: Option<&[String]>,
     functions: &Functions,
 ) -> ChangeReach {
     let mut reach = ChangeReach {
@@ -213,7 +212,7 @@ pub(crate) fn change_reach(
         families: HashSet::new(),
         route_files: HashMap::new(),
     };
-    let Some(changed) = changed_lines(root, base).filter(is_read_as_functions) else {
+    let Some(changed) = changed_lines(root, base, untracked).filter(is_read_as_functions) else {
         reach.everything = true;
         return reach;
     };
@@ -463,6 +462,14 @@ mod tests {
         root
     }
 
+    /// The untracked files a listing of `root`'s working directory names.
+    fn untracked(root: &Path) -> Vec<String> {
+        lemma_http::Listings::default()
+            .untracked(root)
+            .unwrap()
+            .to_vec()
+    }
+
     fn functions() -> Functions {
         Functions::from_functions(&[
             function(
@@ -487,7 +494,12 @@ mod tests {
             ),
         );
 
-        let reach = change_reach("#r", root.path(), "HEAD", &functions());
+        let reach = change_reach(
+            "#r",
+            (root.path(), "HEAD"),
+            Some(&untracked(root.path())),
+            &functions(),
+        );
 
         assert!(!reach.everything);
         assert!(reach.reaches("src/route.ts", "handle"));
@@ -503,10 +515,44 @@ mod tests {
             &GO.replace("\tID string\n", "\tID string\n\tURL string\n"),
         );
 
-        let reach = change_reach("#r", root.path(), "HEAD", &functions());
+        let reach = change_reach(
+            "#r",
+            (root.path(), "HEAD"),
+            Some(&untracked(root.path())),
+            &functions(),
+        );
 
         assert!(reach.reaches("handlers/setup.go", "Setup"));
         assert!(!reach.reaches("src/route.ts", "handle"));
+    }
+
+    #[test]
+    fn new_code_counts_whole_and_reaches_what_mentions_it() {
+        let root = repository();
+        write(
+            root.path(),
+            "src/extra.ts",
+            "export function parse(input) {\n  return input\n}\n",
+        );
+
+        let reach = change_reach(
+            "#r",
+            (root.path(), "HEAD"),
+            Some(&untracked(root.path())),
+            &functions(),
+        );
+
+        assert!(!reach.everything);
+        assert!(reach.reaches("src/route.ts", "handle"));
+    }
+
+    #[test]
+    fn untracked_files_not_known_reach_everything() {
+        let root = repository();
+
+        let reach = change_reach("#r", (root.path(), "HEAD"), None, &functions());
+
+        assert!(reach.everything);
     }
 
     #[test]
@@ -518,7 +564,12 @@ mod tests {
             "module example.test/handlers\n\ngo 1.22\n",
         );
 
-        let reach = change_reach("#r", root.path(), "HEAD", &functions());
+        let reach = change_reach(
+            "#r",
+            (root.path(), "HEAD"),
+            Some(&untracked(root.path())),
+            &functions(),
+        );
 
         assert!(reach.everything);
         assert!(reach.reaches("src/route.ts", "anything"));
