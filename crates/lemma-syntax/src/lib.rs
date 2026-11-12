@@ -96,22 +96,31 @@ pub struct Outline {
 /// Holds one parser and compiled query per language, so reuse a single
 /// extractor across many files.
 pub struct Extractor {
-    typescript: Grammar,
-    tsx: Grammar,
-    python: Grammar,
-    go: Grammar,
-    rust: Grammar,
+    /// Each language's grammar, by [`grammar_slot`], loaded when a file in
+    /// that language is first read: compiling a query takes milliseconds,
+    /// and most reads see one or two languages.
+    grammars: [Option<Grammar>; GRAMMARS],
+}
+
+/// How many languages an extractor reads.
+const GRAMMARS: usize = 5;
+
+/// Where `language`'s grammar is held in an extractor.
+fn grammar_slot(language: Language) -> usize {
+    match language {
+        Language::TypeScript => 0,
+        Language::Tsx => 1,
+        Language::Python => 2,
+        Language::Go => 3,
+        Language::Rust => 4,
+    }
 }
 
 impl Extractor {
-    /// Loads every grammar and compiles its definition query.
+    /// An extractor with no grammar loaded yet.
     pub fn new() -> Result<Self, SyntaxError> {
         Ok(Self {
-            typescript: Grammar::load(Language::TypeScript)?,
-            tsx: Grammar::load(Language::Tsx)?,
-            python: Grammar::load(Language::Python)?,
-            go: Grammar::load(Language::Go)?,
-            rust: Grammar::load(Language::Rust)?,
+            grammars: Default::default(),
         })
     }
 
@@ -123,7 +132,7 @@ impl Extractor {
     /// Parses one file's source and extracts its definitions, keeping the
     /// tree for whatever else is read from the file.
     pub fn parse(&mut self, language: Language, source: &str) -> Result<Parsed, SyntaxError> {
-        let grammar = self.grammar_mut(language);
+        let grammar = self.grammar_mut(language)?;
         let tree = repair::parse(&mut grammar.parser, language, source)
             .ok_or(SyntaxError::ParseAborted { language })?;
         let definitions = grammar.find_definitions(tree.root_node(), source);
@@ -141,7 +150,7 @@ impl Extractor {
     /// Extracts one file's definitions with what each is made of, from a
     /// single parse: the eager layer of the store (spec 17).
     pub fn outline(&mut self, language: Language, source: &str) -> Result<Outline, SyntaxError> {
-        let grammar = self.grammar_mut(language);
+        let grammar = self.grammar_mut(language)?;
         let tree = repair::parse(&mut grammar.parser, language, source)
             .ok_or(SyntaxError::ParseAborted { language })?;
         let root = tree.root_node();
@@ -155,14 +164,13 @@ impl Extractor {
         })
     }
 
-    fn grammar_mut(&mut self, language: Language) -> &mut Grammar {
-        match language {
-            Language::TypeScript => &mut self.typescript,
-            Language::Tsx => &mut self.tsx,
-            Language::Python => &mut self.python,
-            Language::Go => &mut self.go,
-            Language::Rust => &mut self.rust,
-        }
+    fn grammar_mut(&mut self, language: Language) -> Result<&mut Grammar, SyntaxError> {
+        let slot = &mut self.grammars[grammar_slot(language)];
+        let grammar = match slot.take() {
+            Some(grammar) => grammar,
+            None => Grammar::load(language)?,
+        };
+        Ok(slot.insert(grammar))
     }
 }
 
@@ -292,6 +300,27 @@ mod tests {
             .iter()
             .map(|(name, kind)| ((*name).to_owned(), *kind))
             .collect()
+    }
+
+    #[test]
+    fn one_extractor_reads_each_language_in_turn_and_again() {
+        let mut extractor = Extractor::new().unwrap();
+        let sources = [
+            (Language::Go, "package main\nfunc Run() {}\n", "Run"),
+            (Language::Python, "def run():\n    pass\n", "run"),
+            (Language::Go, "package main\nfunc Stop() {}\n", "Stop"),
+        ];
+
+        let names: Vec<String> = sources
+            .iter()
+            .map(|(language, source, _)| {
+                let symbols = extractor.extract(*language, source).unwrap().symbols;
+                symbols[0].qualified_name.clone()
+            })
+            .collect();
+
+        let expected: Vec<&str> = sources.iter().map(|(_, _, name)| *name).collect();
+        assert_eq!(names, expected);
     }
 
     #[test]

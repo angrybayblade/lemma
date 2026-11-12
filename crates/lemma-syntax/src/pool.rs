@@ -5,9 +5,10 @@ use std::sync::{Mutex, PoisonError};
 use crate::{Extractor, SyntaxError};
 
 /// One extractor per worker thread, created the first time that thread has
-/// to parse. Setting one up compiles every query (about 10 ms), so a read
-/// whose files are all cached should not pay for it, and a parallel read
-/// must not pay for it once per piece of work: rayon splits a large read
+/// to parse. An extractor compiles a language's query when it first reads
+/// that language (milliseconds each), so a read whose files are all cached
+/// should not pay for it, and a parallel read must not pay for it once per
+/// piece of work: rayon splits a large read
 /// into far more pieces than it has threads. Parsers cannot be shared
 /// between threads, so each thread has its own slot.
 pub struct ExtractorPool {
