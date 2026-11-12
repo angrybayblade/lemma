@@ -213,7 +213,7 @@ impl<'a> Adapter<'a> {
 
     /// The document of the code in the working directory at `root`.
     fn in_working_directory(&self, root: &Path) -> Result<Generated, GraphError> {
-        let Some(state) = cache::working_state(root)? else {
+        let Some(working) = cache::working_changes(root)? else {
             log::info!(
                 "adapter: reading {} in its working directory (not kept: not a Git repository)",
                 root.display()
@@ -222,7 +222,7 @@ impl<'a> Adapter<'a> {
             self.run(root, root, &output)?;
             return read_generated(&output);
         };
-        let output = self.output(&state);
+        let output = self.output(&working.state(root));
         if output.exists() {
             log::info!(
                 "adapter: {} working directory unchanged since last read; kept document",
@@ -230,7 +230,7 @@ impl<'a> Adapter<'a> {
             );
             return read_generated(&output);
         }
-        if let Some(generated) = self.patched_from_base(root, &output)? {
+        if let Some(generated) = self.patched_from_base(root, &output, &working)? {
             return Ok(generated);
         }
         let context = failure_context(root, std::env::vars_os());
@@ -251,28 +251,35 @@ impl<'a> Adapter<'a> {
         &self,
         root: &Path,
         output: &Path,
+        working: &cache::WorkingChanges,
     ) -> Result<Option<Generated>, GraphError> {
         let started = std::time::Instant::now();
-        let Some(commit) = lazy::head_commit(root) else {
-            return Ok(None);
-        };
-        let base_output = self.output(&cache::commit_state(root, &commit)?);
+        let base_output = self.output(&working.commit_state());
         if !base_output.exists() {
             return Ok(None);
         }
-        let base = read_generated(&base_output)?;
-        let base_digest = base.digest.clone();
-        let Some((document, changes)) = lazy::patched(root, &commit, base.into_document()?) else {
+        // The change is read from the code first: the base document, which
+        // runs to megabytes, is parsed only when there is something to patch.
+        let Some(changes) = lazy::changes(root, &working.commit, &working.changed) else {
             log::info!("adapter: the change is more than syntax can patch; reading the code");
             return Ok(None);
         };
+        let base = read_generated(&base_output)?;
         let patch = lazy::Patch {
-            base_digest,
+            base_digest: base.digest.clone(),
             changes,
         };
         // Kept beside the document, so a later read of it knows the patch.
         if let Ok(text) = serde_json::to_string(&patch) {
             let _ = std::fs::write(patch_path(output), text);
+        }
+        if patch.changes.is_empty() {
+            return unpatched(base, output, patch).map(Some);
+        }
+        let mut document = base.into_document()?;
+        if !lazy::apply_all(&mut document, &patch.changes) {
+            log::info!("adapter: a changed schema is used by no operation; reading the code");
+            return Ok(None);
         }
         let text =
             serde_json::to_string(&document).map_err(|source| GraphError::ResolverOutput {
@@ -500,6 +507,25 @@ fn create_directory(path: &Path) -> Result<(), GraphError> {
 }
 
 /// A generated document read back, with its reading.
+/// The working directory's document when its change touches nothing the
+/// adapter reads: the base commit's, kept at `output` as it is, so it keeps
+/// the base's digest and the contract laid over it.
+fn unpatched(base: Generated, output: &Path, patch: lazy::Patch) -> Result<Generated, GraphError> {
+    std::fs::write(output, &base.document.text).map_err(|source| GraphError::Io {
+        path: output.to_owned(),
+        source,
+    })?;
+    log::info!("adapter: the change touches no code the adapter reads; the base commit's document");
+    Ok(Generated {
+        document: Document {
+            path: output.to_owned(),
+            ..base.document
+        },
+        patch: Some(patch),
+        ..base
+    })
+}
+
 fn read_generated(path: &Path) -> Result<Generated, GraphError> {
     let text = std::fs::read_to_string(path).map_err(|source| GraphError::Io {
         path: path.to_owned(),
