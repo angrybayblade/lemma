@@ -14,7 +14,7 @@ use crate::paths::{canonical_method, canonical_route};
 const MAX_DEPTH: usize = 8;
 
 /// One operation of a service.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Operation {
     /// Upper-case HTTP method.
     pub method: String,
@@ -43,7 +43,7 @@ impl Operation {
 }
 
 /// A parameter of an operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Parameter {
     /// Its name.
     pub name: String,
@@ -54,7 +54,7 @@ pub struct Parameter {
 }
 
 /// A field of a body, by dotted path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Field {
     /// Dotted path, with `[]` for array items.
     pub path: String,

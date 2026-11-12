@@ -138,6 +138,10 @@ pub fn extract_all(
         listings: Arc::clone(listings),
         blobs: RefCell::new(memo.blobs),
         on_disk: RefCell::new(memo.on_disk),
+        kept: options
+            .facts_cache
+            .as_ref()
+            .map(|cache| cache.directory.join("documents")),
     };
     let extracted = extract_with(manifest, writer, &specs, &mut extractor, focus);
     if let Some(warm) = warm {
@@ -698,6 +702,10 @@ struct SpecCache {
     blobs: RefCell<BTreeMap<(PathBuf, String, String), Arc<SourceFile>>>,
     /// Files read from a working directory, by repository and path.
     on_disk: RefCell<BTreeMap<(PathBuf, String), Arc<SourceFile>>>,
+    /// Where documents' operations are kept between runs, by format and
+    /// contents, for this build: documents run to megabytes and most do
+    /// not change from one run to the next.
+    kept: Option<PathBuf>,
 }
 
 /// One run's reads that the next run over the same repositories may reuse:
@@ -2240,6 +2248,19 @@ fn read_spec_operations(
     if let Some(found) = snapshot.specs.parsed.borrow().get(&key) {
         return Ok(found.clone());
     }
+    let kept = snapshot
+        .specs
+        .kept
+        .as_ref()
+        .map(|directory| directory.join(format!("{key}.json")));
+    if let Some(found) = kept.as_deref().and_then(read_kept_operations) {
+        snapshot
+            .specs
+            .parsed
+            .borrow_mut()
+            .insert(key, found.clone());
+        return Ok(found);
+    }
     let document: serde_json::Value = if is_yaml {
         yaml_serde::from_str(&text).map_err(|source| VerifyError::YamlSpec {
             file: spec.to_owned(),
@@ -2252,12 +2273,35 @@ fn read_spec_operations(
         })?
     };
     let operations = lemma_http::operations(&document);
+    if let Some(kept) = &kept {
+        keep_operations(kept, &operations);
+    }
     snapshot
         .specs
         .parsed
         .borrow_mut()
         .insert(key, operations.clone());
     Ok(operations)
+}
+
+/// A document's operations an earlier run kept at `path`.
+fn read_kept_operations(path: &Path) -> Option<Vec<Operation>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Keeps a document's operations at `path`; a failure only means parsing
+/// the document again.
+fn keep_operations(path: &Path, operations: &[Operation]) {
+    let Ok(text) = serde_json::to_string(operations) else {
+        return;
+    };
+    let partial = path.with_extension(format!("{}.partial", std::process::id()));
+    let _ = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&partial, text))
+        .and_then(|()| std::fs::rename(&partial, path));
 }
 
 /// A file at the snapshot's commit, or at the change's other commit if the
@@ -3007,6 +3051,29 @@ mod tests {
             path: path.to_owned(),
             contents: String::new(),
         })
+    }
+
+    #[test]
+    fn kept_operations_read_back_as_parsed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("documents").join("key.json");
+        let document = serde_json::json!({ "paths": { "/v1/charges": { "post": {
+            "operationId": "createCharge",
+            "parameters": [{ "name": "id", "in": "query", "required": true }],
+            "requestBody": { "content": { "application/json": { "schema": {
+                "type": "object", "required": ["amount"],
+                "properties": { "amount": { "type": "integer" } }
+            } } } },
+            "responses": { "200": { "content": { "application/json": { "schema": {
+                "type": "object", "properties": { "id": { "type": "string" } }
+            } } } } }
+        } } } });
+        let operations = lemma_http::operations(&document);
+
+        keep_operations(&path, &operations);
+        let read = read_kept_operations(&path);
+
+        assert_eq!(read, Some(operations));
     }
 
     #[test]
