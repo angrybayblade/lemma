@@ -421,7 +421,13 @@ fn check_links<E: Engine>(
 ) -> Result<Linked, GraphError> {
     let options = shared.options;
     let level = check_level(repos, options);
-    let mut findings = check_declared_beside_adapters(repos, links, level, options)?;
+    let (mut findings, inference) = match options.change {
+        Some(_) => declared_beside_inference(repos, links, shared, engine, level)?,
+        None => (
+            check_declared_beside_adapters(repos, links, level, options)?,
+            None,
+        ),
+    };
     if options.change.is_some() {
         findings.extend(crate::description::introduced_by_change(repos, level));
     }
@@ -436,7 +442,10 @@ fn check_links<E: Engine>(
         let anchored = crate::anchors::check_anchors(repos, links, &options.cache, references)?;
         findings.extend(anchored);
     }
-    let (inferred_links, walkable) = infer(repos, shared, engine, level, &mut findings)?;
+    let (inferred_links, walkable) = match inference {
+        Some(inferred) => inferred.append_to(&mut findings),
+        None => infer(repos, shared, engine, level, &mut findings)?,
+    };
     fail_unread_contracts(level, &mut findings);
     seeds.extend(walkable.seeds.iter().cloned());
     let tracing = Tracing {
@@ -887,6 +896,58 @@ pub(crate) fn fetch_calls<E: Engine>(
 }
 
 /// The findings of the declared links, and of documents Lemma cannot read.
+/// What inference found apart from the declared links: the number of calls
+/// it found, if it ran, what tracing walks, and its findings, which its
+/// seeds point into from 0.
+struct InferredApart {
+    links: Option<usize>,
+    walkable: Walkable,
+    findings: Vec<Finding>,
+}
+
+impl InferredApart {
+    /// Adds the findings after `findings`, moving the seeds with them.
+    fn append_to(mut self, findings: &mut Vec<Finding>) -> (Option<usize>, Walkable) {
+        let offset = findings.len();
+        for (index, _) in &mut self.walkable.seeds {
+            *index += offset;
+        }
+        findings.append(&mut self.findings);
+        (self.links, self.walkable)
+    }
+}
+
+/// [`check_declared`] and, for a change, inference, at once: inference
+/// reads nothing declared links find unless there is no change, when what
+/// they found decides whether it traces. Inference runs its adapters
+/// itself, so none are run ahead.
+fn declared_beside_inference<E: Engine>(
+    repos: &BTreeMap<String, Repo>,
+    links: &BTreeSet<Link>,
+    shared: &Shared<'_>,
+    engine: &E,
+    level: Level,
+) -> Result<(Vec<Finding>, Option<InferredApart>), GraphError> {
+    let options = shared.options;
+    std::thread::scope(|scope| {
+        let declared = scope.spawn(|| check_declared(repos, links, level, options));
+        let mut findings = Vec::new();
+        let inferred = infer(repos, shared, engine, level, &mut findings);
+        let declared = declared
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+        let (links, walkable) = inferred?;
+        Ok((
+            declared,
+            Some(InferredApart {
+                links,
+                walkable,
+                findings,
+            }),
+        ))
+    })
+}
+
 /// [`check_declared`], with the adapters inference will ask for run beside
 /// it: their commands are the slowest part of a cold check and read nothing
 /// declared links decide.
