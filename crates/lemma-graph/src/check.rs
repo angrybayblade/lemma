@@ -544,7 +544,15 @@ fn change_reach_of(
     let base = repo.checkouts[BASE].commit.clone()?;
     let reading = affects::CodeReading { facts, listings };
     let functions = affects::Code::new(repos, &reading).functions(name);
-    let reach = crate::reach::change_reach(name, &repo.checkouts[HEAD].root, &base, &functions);
+    let root = &repo.checkouts[HEAD].root;
+    // The listing tracing read named the untracked files already.
+    let untracked = listings.untracked(root).ok();
+    let reach = crate::reach::change_reach(
+        name,
+        (root, &base),
+        untracked.as_deref().map(Vec::as_slice),
+        &functions,
+    );
     log::info!(
         "reach: the change to {name} reaches {} of {} functions' names{} in {:.1}s",
         reach.len(),
