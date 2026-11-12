@@ -5,9 +5,26 @@
 //! method, path })`). When a directive decides, the result is not a guess
 //! about the code's conventions.
 
-use regex::Regex;
+use std::sync::LazyLock;
 
 use super::{Definition, Lookup, RouteSite, after_literal, assigned_from, line_of, mask_strings};
+use regex::Regex;
+
+// Compiled once, as in the parent module.
+
+/// An argument naming a function (`listItems`, `h.Execute`) or calling one
+/// (`NewHandler(db)`).
+static NAMED_ARGUMENT: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"^&?(?:\w+\.)*(\w+)\s*(\()?").ok());
+
+/// A value bound by name before a call: `const X = define(`.
+static ASSIGNED: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(r"(?:const|let|var)\s+(\w+)\s*(?::[^=]+)?=\s*[\w.]*\s*(?:<[^>]*>)?\s*$").ok()
+});
+
+/// The first name a destructuring binds: `const { def: X } =`.
+static DESTRUCTURED: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"(?:const|let|var)\s*\{\s*(?:\w+\s*:\s*)?(\w+)").ok());
 
 /// The calls a service writes its routes with, by name.
 #[derive(Debug, Clone, Copy, Default)]
@@ -177,8 +194,7 @@ fn named_handler(
     line: u32,
     lookup: &Lookup<'_>,
 ) -> Option<Definition> {
-    let pattern = Regex::new(r"^&?(?:\w+\.)*(\w+)\s*(\()?").ok()?;
-    let captures = pattern.captures(argument)?;
+    let captures = NAMED_ARGUMENT.as_ref()?.captures(argument)?;
     let name = captures.get(1)?.as_str();
     let is_call = captures.get(2).is_some();
     let is_whole = captures.get(0)?.as_str().trim_end() == argument;
@@ -204,9 +220,7 @@ fn defined_value(masked: &str, opens_at: usize) -> Option<String> {
     let previous_start = masked[..line_start.saturating_sub(1)]
         .rfind('\n')
         .map_or(0, |at| at + 1);
-    let assigned =
-        Regex::new(r"(?:const|let|var)\s+(\w+)\s*(?::[^=]+)?=\s*[\w.]*\s*(?:<[^>]*>)?\s*$").ok()?;
-    let destructured = Regex::new(r"(?:const|let|var)\s*\{\s*(?:\w+\s*:\s*)?(\w+)").ok()?;
+    let (assigned, destructured) = (ASSIGNED.as_ref()?, DESTRUCTURED.as_ref()?);
     for start in [line_start, previous_start] {
         let statement = &masked[start..opens_at];
         let captures = assigned
