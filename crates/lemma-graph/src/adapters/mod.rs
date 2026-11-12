@@ -451,7 +451,8 @@ fn patch_path(document: &Path) -> PathBuf {
 /// The contract of a patched document, as the base document's kept contract
 /// patched the same way, without laying the documents over each other
 /// again; `None` when the base's contract is not kept or a change finds no
-/// schema to patch in it.
+/// schema to patch in it. `committed` holds the committed documents'
+/// digests.
 pub fn patched_contract(
     service: &str,
     generated: &Generated,
@@ -603,6 +604,76 @@ pub fn committed_texts(
     Ok(texts)
 }
 
+/// A digest of each committed document's contents, by name, for naming a
+/// contract: the digest of what [`committed_texts`] reads. At a commit a
+/// document is named by its blob, whose digest is kept in `cache` once
+/// read, so a document of megabytes is not read again to name a contract
+/// already kept.
+pub fn committed_digests(
+    checkout: &Checkout,
+    names: &[String],
+    cache: &Path,
+) -> Result<Vec<(String, String)>, GraphError> {
+    let Some(commit) = checkout.commit.as_deref() else {
+        let texts = committed_texts(checkout, names)?;
+        return Ok(texts
+            .into_iter()
+            .map(|(name, text)| {
+                let digest = lemma_model::content_hash(text.as_bytes());
+                (name, digest)
+            })
+            .collect());
+    };
+    let blobs = blobs_at(&checkout.root, commit, names)?;
+    let kept = cache.join("blob-digests");
+    let mut digests = Vec::new();
+    for name in names {
+        let Some(blob) = blobs.get(name) else {
+            continue;
+        };
+        let path = kept.join(blob);
+        if let Ok(digest) = std::fs::read_to_string(&path) {
+            digests.push((name.clone(), digest));
+            continue;
+        }
+        let Some(text) = checkout.read(name)? else {
+            continue;
+        };
+        let digest = lemma_model::content_hash(text.as_bytes());
+        // Keeping is best effort: a digest not kept is worked out again.
+        let _ = std::fs::create_dir_all(&kept).and_then(|()| std::fs::write(&path, &digest));
+        digests.push((name.clone(), digest));
+    }
+    Ok(digests)
+}
+
+/// The blob of each of `names` that is a file at `commit`, by name.
+fn blobs_at(
+    root: &Path,
+    commit: &str,
+    names: &[String],
+) -> Result<BTreeMap<String, String>, GraphError> {
+    if names.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut arguments = vec!["ls-tree", "-z", commit, "--"];
+    arguments.extend(names.iter().map(String::as_str));
+    let listed = repos::git(root, &arguments)?;
+    // `<mode> <type> <object>\t<path>`, each ended by NUL.
+    let mut blobs = BTreeMap::new();
+    for entry in listed.split('\0') {
+        let Some((described, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        let mut fields = described.split(' ');
+        let (kind, object) = (fields.nth(1), fields.next());
+        if let (Some("blob"), Some(object)) = (kind, object) {
+            blobs.insert(path.to_owned(), object.to_owned());
+        }
+    }
+    Ok(blobs)
+}
+
 /// Parses texts [`committed_texts`] read.
 pub fn parse_committed(texts: &[(String, String)]) -> Result<Vec<(String, Value)>, GraphError> {
     texts
@@ -612,8 +683,9 @@ pub fn parse_committed(texts: &[(String, String)]) -> Result<Vec<(String, Value)
 }
 
 /// Names a contract by everything it is made from: the service, the
-/// adapter's document and each committed document's contents, and the
-/// Lemma build that laid them, whose overlay may change.
+/// adapter's document and each committed document's contents (their
+/// digests, from [`committed_digests`]), and the Lemma build that laid
+/// them, whose overlay may change.
 pub fn contract_key(
     service: &str,
     generated_digest: &str,
@@ -623,10 +695,10 @@ pub fn contract_key(
         "{}\n{service}\n{generated_digest}\n",
         env!("CARGO_PKG_VERSION")
     );
-    for (name, text) in committed {
+    for (name, digest) in committed {
         input.push_str(name);
         input.push('\n');
-        input.push_str(&lemma_model::content_hash(text.as_bytes()));
+        input.push_str(digest);
         input.push('\n');
     }
     lemma_model::content_hash(input.as_bytes())
@@ -976,6 +1048,54 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    fn git(root: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn a_documents_digest_is_the_same_at_a_commit_kept_and_in_the_working_directory() {
+        let repository = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = repository.path();
+        std::fs::write(root.join("openapi.json"), "{\"paths\": {}}").unwrap();
+        git(root, &["init", "--quiet"]);
+        git(root, &["add", "."]);
+        git(root, &["commit", "--quiet", "-m", "first"]);
+        let commit = repos::git(root, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        let at_commit = Checkout {
+            root: root.to_path_buf(),
+            commit: Some(commit),
+        };
+        let working = Checkout {
+            root: root.to_path_buf(),
+            commit: None,
+        };
+        let names = ["openapi.json".to_owned(), "missing.json".to_owned()];
+
+        let read = committed_digests(&at_commit, &names, cache.path()).unwrap();
+        let kept = committed_digests(&at_commit, &names, cache.path()).unwrap();
+        let on_disk = committed_digests(&working, &names, cache.path()).unwrap();
+
+        let expected = vec![(
+            "openapi.json".to_owned(),
+            lemma_model::content_hash(b"{\"paths\": {}}"),
+        )];
+        assert_eq!(read, expected);
+        assert_eq!(kept, expected);
+        assert_eq!(on_disk, expected);
+    }
 
     #[test]
     fn a_failure_shows_what_failed_and_its_error_line_without_progress() {
