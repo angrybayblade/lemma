@@ -634,6 +634,32 @@ pub fn read_file(
     Ok(read.pop().map(|file| file.contents))
 }
 
+/// Whether `path` is a file at `commit`, or in the working directory. At a
+/// commit Git is asked for the object's type, not its contents: a service
+/// document runs to megabytes.
+pub fn file_exists(
+    repository: &Path,
+    commit: Option<&str>,
+    path: &str,
+) -> Result<bool, SourceError> {
+    let Some(commit) = commit else {
+        return Ok(read_file(repository, None, path)?.is_some());
+    };
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(["cat-file", "-t", &format!("{commit}:{path}")])
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|source| SourceError::Io {
+            path: repository.to_owned(),
+            source,
+        })?;
+    // Git fails for a path the commit lacks; a directory's path names a
+    // tree, which is not a file.
+    Ok(output.status.success() && output.stdout.trim_ascii() == b"blob")
+}
+
 fn git_paths(
     repository: &Path,
     commit: &str,
@@ -1067,6 +1093,23 @@ mod tests {
         assert!(sets_converting_attribute(lfs));
         assert!(sets_converting_attribute(macro_definition));
         assert!(!sets_converting_attribute(unset));
+    }
+
+    #[test]
+    fn a_file_exists_at_a_commit_only_as_a_file_it_holds() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("docs/openapi.json"), "{}\n").unwrap();
+        git_in(root, &["init", "-q"]);
+        git_in(root, &["add", "."]);
+        git_in(root, &["commit", "-q", "-m", "base"]);
+
+        let exists = |path: &str| file_exists(root, Some("HEAD"), path).unwrap();
+
+        assert!(exists("docs/openapi.json"));
+        assert!(!exists("docs"));
+        assert!(!exists("docs/missing.json"));
     }
 
     #[test]
