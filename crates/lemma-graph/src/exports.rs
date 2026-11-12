@@ -232,7 +232,7 @@ fn service_documents(
     let from_code_name = format!("{} (from code)", input.name);
     let laid = adapters::overlay::overlay(
         &committed,
-        &generated.document,
+        generated.document()?,
         &generated.reading,
         &from_code_name,
     );

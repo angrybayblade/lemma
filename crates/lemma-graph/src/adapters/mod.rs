@@ -50,8 +50,8 @@ pub enum Build {
 /// A document an adapter generated, and what it said about its reading.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Generated {
-    /// The `OpenAPI` document.
-    pub document: Value,
+    /// The `OpenAPI` document, parsed when first asked for.
+    document: Document,
     /// A digest of its text, which changes whenever it does.
     pub digest: String,
     /// What it could not read, for showing to a person.
@@ -61,6 +61,70 @@ pub struct Generated {
     /// When it is a base document patched for a change, how: a contract
     /// laid over the base's document can then be patched the same way.
     pub patch: Option<lazy::Patch>,
+}
+
+/// A generated document's text, parsed when first asked for: a document
+/// runs to megabytes, and a contract kept for it needs only its digest.
+#[derive(Debug, Clone)]
+struct Document {
+    text: String,
+    /// Where it was read from, for a parse error to name.
+    path: PathBuf,
+    parsed: std::sync::OnceLock<Value>,
+}
+
+// Two documents are the same when their texts are: what is parsed comes
+// from the text.
+impl PartialEq for Document {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
+}
+
+impl Generated {
+    /// The `OpenAPI` document, parsed the first time it is asked for.
+    pub fn document(&self) -> Result<&Value, GraphError> {
+        let document = &self.document;
+        if let Some(parsed) = document.parsed.get() {
+            return Ok(parsed);
+        }
+        let parsed: Value =
+            serde_json::from_str(&document.text).map_err(|source| GraphError::ResolverOutput {
+                command: format!("reading {}", document.path.display()),
+                source,
+            })?;
+        Ok(document.parsed.get_or_init(|| parsed))
+    }
+}
+
+/// The top-level fields of a generated document that say how it was read,
+/// read without building the rest of it.
+#[derive(serde::Deserialize)]
+struct ReadingFields {
+    #[serde(rename = "x-lemma-unread")]
+    unread: Option<Value>,
+    #[serde(rename = "x-lemma-complete")]
+    complete: Option<Value>,
+    #[serde(rename = "x-lemma-schemas")]
+    schemas: Option<Value>,
+}
+
+impl ReadingFields {
+    /// The fields as a document [`reading_of`] reads.
+    fn into_document(self) -> Value {
+        let mut fields = serde_json::Map::new();
+        let named = [
+            ("x-lemma-unread", self.unread),
+            ("x-lemma-complete", self.complete),
+            ("x-lemma-schemas", self.schemas),
+        ];
+        for (name, value) in named {
+            if let Some(value) = value {
+                fields.insert(name.to_owned(), value);
+            }
+        }
+        Value::Object(fields)
+    }
 }
 
 /// The names of Lemma's built-in adapters.
@@ -184,7 +248,7 @@ impl<'a> Adapter<'a> {
             return Ok(None);
         }
         let base = read_generated(&base_output)?;
-        let Some((document, changes)) = lazy::patched(root, &commit, &base.document) else {
+        let Some((document, changes)) = lazy::patched(root, &commit, base.document()?) else {
             log::info!("adapter: the change is more than syntax can patch; reading the code");
             return Ok(None);
         };
@@ -215,7 +279,11 @@ impl<'a> Adapter<'a> {
         let (unread, reading) = reading_of(&document);
         Ok(Some(Generated {
             digest: lemma_model::content_hash(text.as_bytes()),
-            document,
+            document: Document {
+                text,
+                path: output.to_owned(),
+                parsed: std::sync::OnceLock::from(document),
+            },
             unread,
             reading,
             patch: Some(patch),
@@ -423,18 +491,24 @@ fn read_generated(path: &Path) -> Result<Generated, GraphError> {
         path: path.to_owned(),
         source,
     })?;
-    let document: Value =
+    // Only how it was read is taken now, which still checks the whole
+    // text is JSON; the document is built when something asks for it.
+    let fields: ReadingFields =
         serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
             command: format!("reading {}", path.display()),
             source,
         })?;
-    let (unread, reading) = reading_of(&document);
+    let (unread, reading) = reading_of(&fields.into_document());
     let kept_patch = std::fs::read_to_string(patch_path(path))
         .ok()
         .and_then(|patch_text| serde_json::from_str(&patch_text).ok());
     Ok(Generated {
-        document,
         digest: lemma_model::content_hash(text.as_bytes()),
+        document: Document {
+            text,
+            path: path.to_owned(),
+            parsed: std::sync::OnceLock::new(),
+        },
         unread,
         reading,
         patch: kept_patch,
@@ -826,7 +900,7 @@ pub fn contract(
     let from_code_name = format!("{service} (from code)");
     let laid = overlay::overlay(
         committed,
-        &generated.document,
+        generated.document()?,
         &generated.reading,
         &from_code_name,
     );
