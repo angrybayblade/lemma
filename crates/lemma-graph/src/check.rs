@@ -1940,7 +1940,13 @@ pub(crate) fn load_manifests(
             cloning: options.cloning,
         };
         let (base_file, base_fallback) = read_manifest(&reading, &checkouts[BASE])?;
-        let (head_file, head_fallback) = read_manifest(&reading, &checkouts[HEAD])?;
+        // A repository the change is not in is read at one checkout for
+        // both snapshots; checking its program again gives the same file.
+        let (head_file, head_fallback) = if checkouts[BASE] == checkouts[HEAD] {
+            (base_file.clone(), base_fallback)
+        } else {
+            read_manifest(&reading, &checkouts[HEAD])?
+        };
         let files = [base_file, head_file];
         let manifest_from_working_directory = base_fallback || head_fallback;
         let base_directory = root.join(Path::new(&manifest).parent().unwrap_or(Path::new("")));
