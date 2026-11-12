@@ -1897,9 +1897,14 @@ pub(crate) fn load(
     options: &CheckOptions,
 ) -> Result<BTreeMap<String, Repo>, GraphError> {
     let mut repos = load_manifests(root_file, options)?;
+    let mut documents = Documents {
+        cache: &options.cache,
+        warm: options.warm.as_deref(),
+        declared: BTreeMap::new(),
+    };
     for repo in repos.values_mut() {
         for (file, checkout) in repo.files.iter_mut().zip(&repo.checkouts) {
-            add_documented_operations(file, checkout, options.warm.as_deref())?;
+            add_documented_operations(file, checkout, &mut documents)?;
         }
     }
     for (owner, service, route) in routes_named(&repos) {
@@ -2166,17 +2171,16 @@ fn read_language_manifest(
 fn add_documented_operations(
     file: &mut LemmaFile,
     checkout: &Checkout,
-    warm: Option<&crate::Warm>,
+    documents: &mut Documents<'_>,
 ) -> Result<(), GraphError> {
     for (name, service) in &mut file.services {
         if name.starts_with('#') {
             continue;
         }
-        for document_file in &service.exports.openapi {
-            let Some(text) = checkout.read(document_file)? else {
-                continue;
-            };
-            let documented = documented_operations(document_file, &text, warm)?;
+        let digests =
+            adapters::committed_digests(checkout, &service.exports.openapi, documents.cache)?;
+        for (document_file, digest) in digests {
+            let documented = documents.operations(checkout, &document_file, &digest)?;
             for (id, operation) in documented.iter() {
                 service
                     .exports
@@ -2189,30 +2193,103 @@ fn add_documented_operations(
     Ok(())
 }
 
-/// The operations the document `text` declares; kept in `warm`, if given,
-/// by the document's name and contents, since it can run to megabytes.
-fn documented_operations(
-    document_file: &str,
-    text: &str,
-    warm: Option<&crate::Warm>,
-) -> Result<crate::warm::Documented, GraphError> {
-    let key = (
-        document_file.to_owned(),
-        lemma_model::content_hash(text.as_bytes()),
-    );
-    if let Some(found) = warm.and_then(|warm| warm.documented(&key)) {
-        return Ok(found);
+/// Where loading finds what services' documents declare, by each
+/// document's contents: documents run to megabytes, every repository is
+/// read at both of a change's snapshots, and documents seldom change, so a
+/// document is parsed once and its declarations kept for later runs.
+struct Documents<'a> {
+    cache: &'a Path,
+    warm: Option<&'a crate::Warm>,
+    /// Declarations met in this load, by the document's digest.
+    declared: BTreeMap<String, Arc<Vec<crate::openapi::Declaration>>>,
+}
+
+/// Where declarations are kept between runs; named for their format.
+const DECLARATIONS: &str = "declarations-1";
+
+impl Documents<'_> {
+    /// The operations the document `document_file`, whose contents have
+    /// `digest`, declares at `checkout`.
+    fn operations(
+        &mut self,
+        checkout: &Checkout,
+        document_file: &str,
+        digest: &str,
+    ) -> Result<crate::warm::Documented, GraphError> {
+        let key = (document_file.to_owned(), digest.to_owned());
+        if let Some(found) = self.warm.and_then(|warm| warm.documented(&key)) {
+            return Ok(found);
+        }
+        let declarations = self.declarations(checkout, document_file, digest)?;
+        let operations = Arc::new(crate::openapi::declared_operations(
+            document_file,
+            &declarations,
+        ));
+        if let Some(warm) = self.warm {
+            warm.keep_documented(key, Arc::clone(&operations));
+        }
+        Ok(operations)
     }
+
+    /// What the document declares: met already, kept by an earlier run, or
+    /// read and parsed now and kept.
+    fn declarations(
+        &mut self,
+        checkout: &Checkout,
+        document_file: &str,
+        digest: &str,
+    ) -> Result<Arc<Vec<crate::openapi::Declaration>>, GraphError> {
+        if let Some(found) = self.declared.get(digest) {
+            return Ok(Arc::clone(found));
+        }
+        let kept = self.cache.join(DECLARATIONS).join(format!("{digest}.json"));
+        let found = if let Some(found) = read_kept_declarations(&kept) {
+            found
+        } else {
+            let parsed = parse_declarations(checkout, document_file)?;
+            keep_declarations(&kept, &parsed);
+            parsed
+        };
+        let found = Arc::new(found);
+        self.declared.insert(digest.to_owned(), Arc::clone(&found));
+        Ok(found)
+    }
+}
+
+/// Declarations an earlier run kept at `path`, if it kept them.
+fn read_kept_declarations(path: &Path) -> Option<Vec<crate::openapi::Declaration>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Keeps `declarations` at `path`; a failure only means parsing again.
+fn keep_declarations(path: &Path, declarations: &[crate::openapi::Declaration]) {
+    let Ok(text) = serde_json::to_string(declarations) else {
+        return;
+    };
+    let partial = path.with_extension(format!("{}.partial", std::process::id()));
+    let _ = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&partial, text))
+        .and_then(|()| std::fs::rename(&partial, path));
+}
+
+/// What the document `document_file` at `checkout` declares, parsed; none
+/// if the checkout has no such file.
+fn parse_declarations(
+    checkout: &Checkout,
+    document_file: &str,
+) -> Result<Vec<crate::openapi::Declaration>, GraphError> {
+    let Some(text) = checkout.read(document_file)? else {
+        return Ok(Vec::new());
+    };
     let document: serde_json::Value =
-        serde_json::from_str(text).map_err(|source| GraphError::ResolverOutput {
+        serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
             command: format!("reading {document_file}"),
             source,
         })?;
-    let operations = Arc::new(crate::openapi::operations(document_file, &document));
-    if let Some(warm) = warm {
-        warm.keep_documented(key, Arc::clone(&operations));
-    }
-    Ok(operations)
+    Ok(crate::openapi::declarations(&document))
 }
 
 fn external_services(file: &LemmaFile) -> impl Iterator<Item = (&String, &Service)> {
