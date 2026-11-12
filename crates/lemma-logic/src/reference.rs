@@ -120,6 +120,57 @@ type Delta = BTreeMap<String, BTreeSet<Tuple>>;
 
 /// One rule to solve, optionally with one positive literal restricted to
 /// the facts new in the previous round.
+/// A join in progress: the rule being solved and the round's indexes.
+struct Walk<'j, 'r, 'i> {
+    job: &'j Job<'r>,
+    indexes: &'j Indexes<'i>,
+}
+
+/// Known rows of a relation by the value in one column, built the first time
+/// a join asks in a round: without one, a join scans every row of each atom
+/// for every binding of the atoms before it. Known facts do not change
+/// within a round, so an index holds for all of the round's rules.
+#[derive(Default)]
+struct Indexes<'i> {
+    built: std::cell::RefCell<HashMap<(&'i str, usize), std::rc::Rc<ColumnIndex<'i>>>>,
+}
+
+/// One relation's rows by one column's value, each list in the relation's
+/// order.
+type ColumnIndex<'i> = HashMap<Value, Vec<&'i Tuple>>;
+
+impl<'i> Indexes<'i> {
+    /// The rows of `relation` (all of them in `rows`) whose `column` holds
+    /// `value`.
+    fn rows(
+        &self,
+        relation: &'i str,
+        rows: &'i BTreeSet<Tuple>,
+        column: usize,
+        value: Value,
+    ) -> Vec<&'i Tuple> {
+        let index = {
+            let mut built = self.built.borrow_mut();
+            let index = built
+                .entry((relation, column))
+                .or_insert_with(|| std::rc::Rc::new(column_index(rows, column)));
+            std::rc::Rc::clone(index)
+        };
+        index.get(&value).cloned().unwrap_or_default()
+    }
+}
+
+/// `rows` by the value in `column`, each list in the rows' order.
+fn column_index(rows: &BTreeSet<Tuple>, column: usize) -> ColumnIndex<'_> {
+    let mut index: ColumnIndex<'_> = HashMap::new();
+    for row in rows {
+        if let Some(found) = row.get(column) {
+            index.entry(*found).or_default().push(row);
+        }
+    }
+    index
+}
+
 struct Job<'r> {
     index: usize,
     rule: &'r Rule,
@@ -164,6 +215,18 @@ impl State {
         heads: &BTreeSet<&str>,
         delta: Option<&Delta>,
     ) -> Delta {
+        let found = self.derive(rules, heads, delta);
+        self.record(found)
+    }
+
+    /// Every fact the rules derive in one round, with its reason.
+    fn derive(
+        &self,
+        rules: &[(usize, &Rule)],
+        heads: &BTreeSet<&str>,
+        delta: Option<&Delta>,
+    ) -> Vec<(Fact, Reason)> {
+        let indexes = Indexes::default();
         let mut found = Vec::new();
         for &(index, rule) in rules {
             let positives = positive_positions(rule);
@@ -181,10 +244,10 @@ impl State {
                     positives: &positives,
                     restrict,
                 };
-                self.solve(&job, &mut found);
+                self.solve(&job, &indexes, &mut found);
             }
         }
-        self.record(found)
+        found
     }
 
     fn record(&mut self, found: Vec<(Fact, Reason)>) -> Delta {
@@ -206,7 +269,7 @@ impl State {
     }
 
     /// Finds every way to satisfy the rule's body.
-    fn solve(&self, job: &Job<'_>, found: &mut Vec<(Fact, Reason)>) {
+    fn solve<'i>(&'i self, job: &Job<'_>, indexes: &Indexes<'i>, found: &mut Vec<(Fact, Reason)>) {
         let rule = job.rule;
         let mut emit = |bindings: &Bindings<'_>, chosen: &[Fact]| {
             let Some(premises) = self.check_rest(rule, bindings, chosen) else {
@@ -222,18 +285,20 @@ impl State {
             };
             found.push((fact, reason));
         };
-        self.join(job, 0, &mut Bindings::new(), &mut Vec::new(), &mut emit);
+        let walk = Walk { job, indexes };
+        self.join(&walk, 0, &mut Bindings::new(), &mut Vec::new(), &mut emit);
     }
 
     #[expect(clippy::too_many_arguments, reason = "the recursive join's state")]
-    fn join<'r>(
-        &self,
-        job: &Job<'r>,
+    fn join<'r, 'i>(
+        &'i self,
+        walk: &Walk<'_, 'r, 'i>,
         depth: usize,
         bindings: &mut Bindings<'r>,
         chosen: &mut Vec<Fact>,
         emit: &mut dyn FnMut(&Bindings<'r>, &[Fact]),
     ) {
+        let job = walk.job;
         let Some(&position) = job.positives.get(depth) else {
             emit(bindings, chosen);
             return;
@@ -241,24 +306,56 @@ impl State {
         let Literal::Positive(atom) = &job.rule.body[position] else {
             return;
         };
-        let source = match job.restrict {
-            Some((restricted, delta)) if restricted == position => delta.get(&atom.relation),
-            _ => self.known.get(&atom.relation),
+        let rows: Vec<&Tuple> = match job.restrict {
+            Some((restricted, delta)) if restricted == position => {
+                delta.get(&atom.relation).into_iter().flatten().collect()
+            }
+            _ => self.known_rows(walk.indexes, atom, bindings),
         };
-        for row in source.into_iter().flatten() {
+        for row in rows {
             let mut added = Vec::new();
             if unify(atom, row, bindings, &mut added) {
                 chosen.push(Fact {
                     relation: atom.relation.clone(),
                     row: row.clone(),
                 });
-                self.join(job, depth + 1, bindings, chosen, emit);
+                self.join(walk, depth + 1, bindings, chosen, emit);
                 chosen.pop();
             }
             for name in added {
                 bindings.remove(name);
             }
         }
+    }
+
+    /// The known rows of `atom`'s relation that may unify under `bindings`:
+    /// those holding the value of its first bound column, found through an
+    /// index, or every row when no column is bound. In the relation's order,
+    /// so derivations come out in the same order either way.
+    fn known_rows<'i>(
+        &'i self,
+        indexes: &Indexes<'i>,
+        atom: &Atom,
+        bindings: &Bindings<'_>,
+    ) -> Vec<&'i Tuple> {
+        let Some((name, rows)) = self.known.get_key_value(&atom.relation) else {
+            return Vec::new();
+        };
+        let bound = atom
+            .terms
+            .iter()
+            .enumerate()
+            .find_map(|(column, term)| match term {
+                Term::Constant(value) => Some((column, *value)),
+                Term::Variable(variable) => bindings
+                    .get(variable.as_str())
+                    .map(|value| (column, *value)),
+                Term::Wildcard => None,
+            });
+        let Some((column, value)) = bound else {
+            return rows.iter().collect();
+        };
+        indexes.rows(name, rows, column, value)
     }
 
     /// Checks negations and comparisons under complete bindings, returning
