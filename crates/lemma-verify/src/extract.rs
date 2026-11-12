@@ -623,7 +623,7 @@ fn snapshots<'m>(
 
 /// Every repository and commit the snapshots of `manifest` read, to list
 /// them all at once.
-fn snapshot_listings(manifest: &Manifest) -> Vec<(PathBuf, Option<String>)> {
+pub fn snapshot_listings(manifest: &Manifest) -> Vec<(PathBuf, Option<String>)> {
     let mut wanted = Vec::new();
     for repository in manifest.repositories.values() {
         let commits = if is_changed(manifest, repository) {
