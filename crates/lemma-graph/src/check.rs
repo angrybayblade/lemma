@@ -1246,7 +1246,8 @@ fn infer_links<E: Engine>(
         .iter()
         .any(|finding| finding.severity != Severity::Info);
     let started = std::time::Instant::now();
-    let has_drift = apply_adapters(&mut inferred, repos, run, findings);
+    let snapshots = snapshots_to_list(&inferred.manifest, run.is_drift && !needs_trace);
+    let has_drift = adapters_beside_listings(&mut inferred, repos, run, findings, &snapshots);
     log::debug!("inference: adapters applied in {:.0?}", started.elapsed());
     if run.is_drift && !has_drift && !needs_trace {
         return Ok(None);
@@ -1353,6 +1354,34 @@ fn distinct_calls(report: &lemma_verify::Report) -> usize {
 /// warning, so a check never passes for want of a contract. Whether the
 /// changed repository's code describes anything its committed documents do
 /// not: a changed or removed operation.
+/// The snapshots verification of `manifest` will list; none when the
+/// inference may stop after its adapters, as a check without a change
+/// does when they find nothing.
+fn snapshots_to_list(
+    manifest: &lemma_verify::Manifest,
+    may_stop: bool,
+) -> Vec<(PathBuf, Option<String>)> {
+    if may_stop {
+        return Vec::new();
+    }
+    lemma_verify::snapshot_listings(manifest)
+}
+
+/// [`apply_adapters`], listing `snapshots` while they run: verification
+/// reads those listings first, and they need nothing adapters produce.
+fn adapters_beside_listings(
+    inferred: &mut infer::Inferred,
+    repos: &BTreeMap<String, Repo>,
+    run: &Inference<'_>,
+    findings: &mut Vec<Finding>,
+    snapshots: &[(PathBuf, Option<String>)],
+) -> bool {
+    std::thread::scope(|scope| {
+        scope.spawn(|| run.listings.prefetch(snapshots));
+        apply_adapters(inferred, repos, run, findings)
+    })
+}
+
 fn apply_adapters(
     inferred: &mut infer::Inferred,
     repos: &BTreeMap<String, Repo>,

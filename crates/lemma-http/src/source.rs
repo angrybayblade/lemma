@@ -80,25 +80,34 @@ impl Listings {
     /// for all of them in turn. A listing that fails is left for
     /// [`Listings::get`] to report.
     pub fn prefetch(&self, wanted: &[(PathBuf, Option<String>)]) {
-        let missing: Vec<&(PathBuf, Option<String>)> = {
+        // Services of one repository ask for the same listing; listing it
+        // twice at once would double the slowest work.
+        let missing: BTreeSet<&(PathBuf, Option<String>)> = {
             let listed = self.locked();
             wanted
                 .iter()
                 .filter(|key| !listed.contains_key(*key))
                 .collect()
         };
-        for batch in missing.chunks(PARALLEL_LISTINGS) {
-            self.list_together(batch);
+        if missing.is_empty() {
+            return;
         }
-    }
-
-    /// Lists each of `batch`, all at once.
-    fn list_together(&self, batch: &[&(PathBuf, Option<String>)]) {
+        let queue = Mutex::new(missing.into_iter());
+        // Workers take the next listing as each finishes, so one slow
+        // listing holds up only its own worker.
         std::thread::scope(|scope| {
-            for wanted in batch {
-                scope.spawn(move || self.list_ahead(wanted));
+            for _ in 0..PARALLEL_LISTINGS {
+                scope.spawn(|| self.list_from(&queue));
             }
         });
+    }
+
+    /// Lists what `queue` holds until it is empty.
+    fn list_from<'a>(&self, queue: &Mutex<impl Iterator<Item = &'a (PathBuf, Option<String>)>>) {
+        let next = || queue.lock().unwrap_or_else(PoisonError::into_inner).next();
+        while let Some(wanted) = next() {
+            self.list_ahead(wanted);
+        }
     }
 
     /// Lists `wanted` ahead of its use; a failure is reported then.
