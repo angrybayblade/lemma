@@ -413,9 +413,32 @@ struct Linked {
 }
 
 /// Checks the declared links, infers links from code and traces what both
-/// found; with `references`, also checks that each link's caller is
-/// anchored at code that is called.
+/// found, with what a change reaches; with `references`, also checks that
+/// each link's caller is anchored at code that is called.
 fn check_links<E: Engine>(
+    repos: &BTreeMap<String, Repo>,
+    links: &BTreeSet<Link>,
+    shared: &mut Shared<'_>,
+    engine: &E,
+    references: Option<&mut dyn crate::anchors::References>,
+) -> Result<Linked, GraphError> {
+    let (listings, facts) = (shared.listings, shared.options.facts_cache.as_ref());
+    std::thread::scope(|scope| {
+        // A change's reach reads only the changed repository's functions
+        // and lines, nothing inference or tracing finds, so it is worked
+        // out from the start, beside them.
+        let reach = scope.spawn(|| change_reach_of(repos, listings, facts));
+        let mut linked = link_and_trace(repos, links, shared, engine, references)?;
+        let reach = reach
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        linked.reach = reach.map(|reach| with_route_files(reach, (repos, facts), &linked.walkable));
+        Ok(linked)
+    })
+}
+
+/// [`check_links`] but for the change's reach.
+fn link_and_trace<E: Engine>(
     repos: &BTreeMap<String, Repo>,
     links: &BTreeSet<Link>,
     shared: &mut Shared<'_>,
@@ -458,24 +481,14 @@ fn check_links<E: Engine>(
         facts: options.facts_cache.as_ref(),
         warm: options.warm.as_ref().map(|warm| warm.verify()),
     };
-    // The change's reach needs only the changed repository's functions,
-    // nothing tracing finds, so the two run side by side.
-    let (attached, reach) = std::thread::scope(|scope| {
-        let reach = scope.spawn(|| tracing.change_reach());
-        let attached = tracing.attach(&mut findings, &seeds, engine);
-        let reach = reach
-            .join()
-            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-        (attached, reach)
-    });
-    attached?;
+    tracing.attach(&mut findings, &seeds, engine)?;
     // After tracing, whose seeds point into the findings by index.
     shared.keep_selected(&mut findings);
     Ok(Linked {
         findings,
         inferred_links,
         walkable,
-        reach,
+        reach: None,
     })
 }
 
@@ -528,17 +541,6 @@ impl Tracing<'_> {
             fetch: &mut fetch,
         };
         affects::attach(findings, seeds, &mut source, self.repos, &reading)
-    }
-
-    /// What a change to a repository's working directory reaches, with its
-    /// documented operations' route files, when the change is one.
-    fn change_reach(&self) -> Option<crate::reach::ChangeReach> {
-        let reach = change_reach_of(self.repos, self.listings, self.facts)?;
-        Some(with_route_files(
-            reach,
-            (self.repos, self.facts),
-            self.walkable,
-        ))
     }
 }
 
