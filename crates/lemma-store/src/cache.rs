@@ -59,6 +59,10 @@ fn terms_key(unit: &str) -> Digest {
     namespaced(b"terms", unit)
 }
 
+fn named_key(name: &str) -> Digest {
+    namespaced(b"named", name)
+}
+
 fn segment_key(key: &SegmentKey) -> Digest {
     namespaced(b"segment", &format!("{}\0{}", key.group, key.inputs))
 }
@@ -219,6 +223,21 @@ impl Cache {
         let _ = writer.batches.send(entries);
     }
 
+    /// Keeps `bytes` as the newest value named `name` in the background, a
+    /// pointer that each write replaces, such as which segment of a group
+    /// was built last; read back with [`Cache::named`].
+    pub fn put_named_later(&mut self, name: &str, bytes: Vec<u8>) {
+        self.send(vec![(named_key(name), bytes)]);
+    }
+
+    /// The newest value kept under `name`, if there is one.
+    pub fn named(&self, name: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        let Some(opened) = self.opened()? else {
+            return Ok(None);
+        };
+        Ok(get(&opened, &named_key(name))?.map(Cow::into_owned))
+    }
+
     /// The segment kept under `key`, if there is one.
     pub fn segment(&self, key: &SegmentKey) -> Result<Option<Vec<u8>>, StoreError> {
         let Some(opened) = self.opened()? else {
@@ -360,6 +379,20 @@ mod tests {
         let keys: Vec<String> = (0..20).map(|round| format!("only{round}")).collect();
         assert_eq!(cache.get_many(&keys).unwrap().len(), 20);
         assert_eq!(cache.get_many(&["same".to_owned()]).unwrap()["same"], [19]);
+    }
+
+    #[test]
+    fn a_named_value_reads_back_as_its_newest_write() {
+        let directory = tempfile::tempdir().unwrap();
+        for round in 0..3u8 {
+            let mut cache = cache_in(&directory);
+            cache.put_named_later("terms of billing", vec![round]);
+        }
+
+        let cache = cache_in(&directory);
+
+        assert_eq!(cache.named("terms of billing").unwrap(), Some(vec![2]));
+        assert_eq!(cache.named("terms of ledger").unwrap(), None);
     }
 
     #[test]

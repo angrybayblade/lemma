@@ -103,6 +103,92 @@ pub(crate) fn files_with(
     Ok(found)
 }
 
+/// What the latest terms segment of a group was built from: its inputs,
+/// and its files' unit keys in its order, so a run whose keys differ by a
+/// few files can take the others' terms from it.
+const LATEST_MAGIC: [u8; 4] = *b"LMTL";
+const LATEST_VERSION: u16 = 1;
+
+/// The name the latest terms segment of one selection is recorded under:
+/// its group, and what tells the repository's selections apart (`selection`,
+/// such as the extraction options and whether a commit or the working
+/// directory is read). Selections of one repository share a group, and one
+/// pointer for them all would keep only the last one's.
+pub(crate) fn latest_name(group: &str, selection: &str) -> String {
+    let selection = lemma_model::content_hash(selection.as_bytes());
+    format!("{INPUTS}\0latest\0{group}\0{selection}")
+}
+
+/// A record of the segment with `inputs` built from `keys`, in order.
+pub(crate) fn encode_latest(inputs: &str, keys: &[String]) -> Vec<u8> {
+    // String tables are sorted, so the keys go in sorted, with each
+    // position's index into them.
+    let mut sorted: Vec<&str> = keys.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let positions: Vec<u32> = keys
+        .iter()
+        .map(|key| {
+            let index = sorted.binary_search(&key.as_str()).unwrap_or(0);
+            u32::try_from(index).unwrap_or(u32::MAX)
+        })
+        .collect();
+    let mut writer = RecordWriter::new(LATEST_MAGIC, LATEST_VERSION);
+    writer.strings(&[inputs]);
+    writer.strings(&sorted);
+    writer.column(&positions);
+    writer.finish()
+}
+
+/// The inputs and the keys, in order, of a record [`encode_latest`] wrote.
+pub(crate) fn decode_latest(bytes: &[u8]) -> Result<(String, Vec<String>), RecordError> {
+    let mut reader = RecordReader::open(bytes, LATEST_MAGIC, LATEST_VERSION)?;
+    let inputs = reader.strings()?;
+    let sorted = reader.strings()?;
+    let positions = reader.column()?;
+    reader.finish()?;
+    let inputs = inputs
+        .first()
+        .ok_or(RecordError::OutOfRange { field: "inputs" })?;
+    let mut keys = Vec::with_capacity(positions.len());
+    for position in positions {
+        let key = sorted
+            .get(position as usize)
+            .ok_or(RecordError::OutOfRange { field: "keys" })?;
+        keys.push((*key).to_owned());
+    }
+    Ok(((*inputs).to_owned(), keys))
+}
+
+/// Each file's terms, by position, from a segment of `file_count` files.
+pub(crate) fn file_terms(bytes: &[u8], file_count: usize) -> Result<Vec<Vec<String>>, RecordError> {
+    let mut reader = RecordReader::open(bytes, MAGIC, VERSION)?;
+    let count = reader.u32()? as usize;
+    let terms = reader.strings()?;
+    let ends = reader.column()?;
+    let files = reader.column()?;
+    reader.finish()?;
+    if count != file_count || ends.len() != terms.len() {
+        return Err(RecordError::OutOfRange { field: "files" });
+    }
+    let mut by_file = vec![Vec::new(); count];
+    let mut start = 0usize;
+    for (term, end) in terms.iter().zip(&ends) {
+        let end = *end as usize;
+        let listed = files
+            .get(start..end)
+            .ok_or(RecordError::OutOfRange { field: "ends" })?;
+        for file in listed {
+            let terms_of_file = by_file
+                .get_mut(*file as usize)
+                .ok_or(RecordError::OutOfRange { field: "files" })?;
+            terms_of_file.push((*term).to_owned());
+        }
+        start = end;
+    }
+    Ok(by_file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +208,27 @@ mod tests {
         let found = files_with(&bytes, &wanted, 3).unwrap();
 
         assert_eq!(found, BTreeSet::from([0, 2]));
+    }
+
+    #[test]
+    fn a_segment_gives_back_each_files_terms() {
+        let first = terms(&["name:pay", "path:/a"]);
+        let second = terms(&[]);
+        let third = terms(&["path:/a"]);
+        let bytes = encode(&[&first, &second, &third]);
+
+        let found = file_terms(&bytes, 3).unwrap();
+
+        assert_eq!(found, vec![first, second, third]);
+    }
+
+    #[test]
+    fn the_latest_record_keeps_keys_in_their_order() {
+        let keys = terms(&["key-b", "key-a", "key-c"]);
+
+        let decoded = decode_latest(&encode_latest("inputs", &keys)).unwrap();
+
+        assert_eq!(decoded, ("inputs".to_owned(), keys));
     }
 
     #[test]
