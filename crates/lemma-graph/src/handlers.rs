@@ -11,7 +11,33 @@
 //! function passed, if it is one, else the definition holding that call, else
 //! the file's top-level code.
 
+use std::sync::LazyLock;
+
 use regex::Regex;
+
+// Patterns that do not depend on the route are compiled once: compiling
+// one took longer than matching it, and a large service has hundreds of
+// routes. A pattern that failed to compile only means its form of route
+// is not recognized.
+
+/// A name passed first in a call, up to the next argument or the call's end.
+static PASSED_NAME: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"^(\w+)\s*[,)\n]").ok());
+
+/// A destructuring statement (`const { def: X, handler: Y } = ...`).
+static DESTRUCTURING: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"(?:const|let|var)\s*\{([^}]*)\}\s*=").ok());
+
+/// An assignment from a call: `name := pkg.Build(` or `name = Build(`.
+static ASSIGNED_FROM_CALL: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"\b(\w+)\s*:?=\s*&?((?:\w+\.)*(\w+))\s*\(").ok());
+
+/// A call whose first argument is a name: `register(X, `.
+static CALL_PASSING_NAME: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"[\w.]+\s*\(\s*(\w+)\s*,\s*").ok());
+
+/// The name a call's argument list opens after, type arguments allowed.
+static CALLEE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"(\w+)\s*(?:<[^>]*>)?\s*$").ok());
 
 mod declared;
 
@@ -303,16 +329,41 @@ fn assigned_from(text: &str, line: u32, name: &str) -> Option<String> {
         .take(line.saturating_sub(1) as usize)
         .collect::<Vec<_>>()
         .join("\n");
-    let pattern = Regex::new(&format!(
-        r"\b{}\s*:?=\s*&?((?:\w+\.)*(\w+))\s*\(",
-        regex::escape(name)
-    ))
-    .ok()?;
-    pattern
+    // One pattern for every name, its matches filtered by name: no match
+    // of another name can overlap one of `name`, since what follows `=` holds
+    // no `=`. A name `\w` does not cover gets a pattern of its own.
+    if !is_word(name) {
+        let pattern = Regex::new(&format!(
+            r"\b{}\s*:?=\s*&?((?:\w+\.)*(\w+))\s*\(",
+            regex::escape(name)
+        ))
+        .ok()?;
+        return last_callee(pattern.captures_iter(&before), 2);
+    }
+    let assigned = ASSIGNED_FROM_CALL
+        .as_ref()?
         .captures_iter(&before)
+        .filter(|captures| captures.get(1).is_some_and(|found| found.as_str() == name));
+    last_callee(assigned, 3)
+}
+
+/// The callee in group `group` of the last of `matches`.
+fn last_callee<'t>(
+    matches: impl Iterator<Item = regex::Captures<'t>>,
+    group: usize,
+) -> Option<String> {
+    matches
         .last()
-        .and_then(|captures| captures.get(2))
+        .and_then(|captures| captures.get(group))
         .map(|callee| callee.as_str().to_owned())
+}
+
+/// Whether `name` is all ASCII word characters, which `\w` matches.
+fn is_word(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
 /// A route described in a value that a registration in the same file passes
@@ -321,7 +372,7 @@ fn registered_elsewhere(
     site: &RouteSite<'_>,
     lookup: &Lookup<'_>,
 ) -> Option<(Option<String>, Option<String>)> {
-    let named = Regex::new(r"^(\w+)\s*[,)\n]").ok()?;
+    let named = PASSED_NAME.as_ref()?;
     for definition in definitions_at(site, lookup) {
         let Some(call) = passed_first(site.text, &definition) else {
             continue;
@@ -344,8 +395,19 @@ fn registered_elsewhere(
 /// The first call in `text` that passes `value` as its first argument,
 /// through to the start of the next argument.
 fn passed_first<'a>(text: &'a str, value: &str) -> Option<regex::Match<'a>> {
-    let pattern = Regex::new(&format!(r"[\w.]+\s*\(\s*{}\s*,\s*", regex::escape(value))).ok()?;
-    pattern.find(text)
+    // As in `assigned_from`: a call passing another name first cannot
+    // overlap one passing `value`, so filtering one pattern's matches finds
+    // the same first call.
+    if !is_word(value) {
+        let pattern =
+            Regex::new(&format!(r"[\w.]+\s*\(\s*{}\s*,\s*", regex::escape(value))).ok()?;
+        return pattern.find(text);
+    }
+    CALL_PASSING_NAME
+        .as_ref()?
+        .captures_iter(text)
+        .find(|captures| captures.get(1).is_some_and(|found| found.as_str() == value))
+        .and_then(|captures| captures.get(0))
 }
 
 /// The values a route's path may be written in: the definition around it,
@@ -363,7 +425,7 @@ fn definitions_at(site: &RouteSite<'_>, lookup: &Lookup<'_>) -> Vec<String> {
             names.push(name.to_owned());
         }
     }
-    let Ok(destructuring) = Regex::new(r"(?:const|let|var)\s*\{([^}]*)\}\s*=") else {
+    let Some(destructuring) = DESTRUCTURING.as_ref() else {
         return names;
     };
     let lines: Vec<&str> = site.text.lines().collect();
@@ -469,8 +531,8 @@ fn literal_positions(text: &str, template: &str) -> Vec<usize> {
 /// `register(router, ` gives `register`.
 fn callee_before(before: &str) -> Option<String> {
     let opener = unclosed_paren(before)?;
-    let pattern = Regex::new(r"(\w+)\s*(?:<[^>]*>)?\s*$").ok()?;
-    pattern
+    CALLEE
+        .as_ref()?
         .captures(&before[..opener])
         .and_then(|captures| captures.get(1))
         .map(|name| name.as_str().to_owned())
@@ -625,6 +687,43 @@ mod tests {
             qualified: qualified.to_owned(),
             kind: kind.to_owned(),
         }
+    }
+
+    #[test]
+    fn a_variable_is_followed_to_its_last_assignment_before_the_route() {
+        let text = "h := handlers.Old(db)\nother = Build(x)\nh = pkg.New(db)\nr.Handle(\"/x\", h)\nh = Later(db)\n";
+
+        let built_by = assigned_from(text, 4, "h");
+
+        assert_eq!(built_by.as_deref(), Some("New"));
+    }
+
+    #[test]
+    fn a_name_is_not_matched_inside_a_longer_name() {
+        let text = "handler := Build(db)\nr.Handle(\"/x\", h)\n";
+
+        let built_by = assigned_from(text, 2, "h");
+
+        assert_eq!(built_by, None);
+    }
+
+    #[test]
+    fn a_name_beyond_ascii_is_followed_too() {
+        let text = "größe := sizes.Build(db)\nr.Handle(\"/x\", größe)\n";
+
+        let built_by = assigned_from(text, 2, "größe");
+
+        assert_eq!(built_by.as_deref(), Some("Build"));
+    }
+
+    #[test]
+    fn the_first_call_passing_a_value_first_is_found_past_others() {
+        let text =
+            "app.use(cors, {});\nconst x = wrap(Other, 1);\nrouter.openapi(Route, handler);\n";
+
+        let call = passed_first(text, "Route").map(|found| found.as_str());
+
+        assert_eq!(call, Some("router.openapi(Route, "));
     }
 
     #[test]
