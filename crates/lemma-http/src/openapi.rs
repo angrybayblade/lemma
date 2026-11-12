@@ -76,6 +76,13 @@ pub fn is_yaml_document(name: &str) -> bool {
 
 /// Every operation in a document, sorted by method and path.
 pub fn operations(document: &Json) -> Vec<Operation> {
+    operations_where(document, |_| true)
+}
+
+/// The operations in a document that `wanted` accepts, by their method and
+/// path as the document writes it (`POST /users/{id}`), sorted by method
+/// and path: when only some changed, reading those is enough.
+pub fn operations_where(document: &Json, wanted: impl Fn(&str) -> bool) -> Vec<Operation> {
     let mut found = Vec::new();
     let Some(paths) = document.get("paths").and_then(Json::as_object) else {
         return found;
@@ -92,6 +99,9 @@ pub fn operations(document: &Json) -> Vec<Operation> {
             let method = canonical_method(method);
             if method == "*" {
                 continue; // `parameters`, `summary` and other non-operation keys
+            }
+            if !wanted(&format!("{method} {template}")) {
+                continue;
             }
             let mut operation_parameters = shared.clone();
             operation_parameters.extend(parameters(document, operation.get("parameters")));

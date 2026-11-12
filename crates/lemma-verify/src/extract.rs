@@ -2271,6 +2271,44 @@ pub fn document_operations(
     kept_or_parsed(file, (text, is_yaml), kept, &key)
 }
 
+/// Keeps the operations of a JSON service document patched from another,
+/// in the directory `kept` where [`document_operations`] and verification
+/// look for them: the base document's operations, kept for `base_text`,
+/// with those `patched` names (`POST /users/{id}`, as the document writes
+/// it) read again from the patched `document`, whose text is `text`. Reading
+/// every operation of a large document again costs more than parsing it, so
+/// nothing is kept when the base's operations are not.
+pub fn keep_patched_operations(
+    kept: &Path,
+    (base_text, text): (&str, &str),
+    document: &serde_json::Value,
+    patched: &BTreeSet<String>,
+) {
+    let base = kept.join(format!("{}.json", operations_key(base_text, false)));
+    let Some(operations) = read_kept_operations(&base) else {
+        return;
+    };
+    let mut fresh: BTreeMap<String, Operation> =
+        lemma_http::operations_where(document, |key| patched.contains(key))
+            .into_iter()
+            .map(|operation| {
+                (
+                    format!("{} {}", operation.method, operation.template),
+                    operation,
+                )
+            })
+            .collect();
+    let operations: Vec<Operation> = operations
+        .into_iter()
+        .map(|operation| {
+            let key = format!("{} {}", operation.method, operation.template);
+            fresh.remove(&key).unwrap_or(operation)
+        })
+        .collect();
+    let key = operations_key(text, false);
+    keep_operations(&kept.join(format!("{key}.json")), &operations);
+}
+
 /// What a document's operations are kept under: its text, and whether it
 /// is read as YAML.
 fn operations_key(text: &str, is_yaml: bool) -> String {
@@ -3166,6 +3204,41 @@ mod tests {
             path: path.to_owned(),
             contents: String::new(),
         })
+    }
+
+    #[test]
+    fn a_patched_documents_operations_are_the_bases_with_the_patched_read_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let body = |fields: &[&str]| {
+            let properties: serde_json::Map<String, serde_json::Value> = fields
+                .iter()
+                .map(|field| ((*field).to_owned(), serde_json::json!({ "type": "string" })))
+                .collect();
+            serde_json::json!({ "content": { "application/json": { "schema": {
+                "type": "object", "properties": properties, "required": fields
+            } } } })
+        };
+        let document = |link: &[&str]| {
+            serde_json::json!({ "paths": {
+                "/v1/links/{id}": { "post": { "operationId": "link", "requestBody": body(link) } },
+                "/v1/charges": { "post": { "operationId": "charge", "requestBody": body(&["amount"]) } }
+            } })
+        };
+        let (base, head) = (document(&["id"]), document(&["id", "uuid"]));
+        let (base_text, head_text) = (base.to_string(), head.to_string());
+        document_operations("openapi.json", &base_text, Some(directory.path())).unwrap();
+
+        let patched = BTreeSet::from(["POST /v1/links/{id}".to_owned()]);
+        keep_patched_operations(directory.path(), (&base_text, &head_text), &head, &patched);
+        let kept = directory
+            .path()
+            .join(format!("{}.json", operations_key(&head_text, false)));
+
+        assert_eq!(
+            read_kept_operations(&kept),
+            Some(lemma_http::operations(&head))
+        );
+        assert_ne!(lemma_http::operations(&base), lemma_http::operations(&head));
     }
 
     #[test]

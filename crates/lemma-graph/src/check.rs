@@ -1432,7 +1432,8 @@ fn apply_adapters(
     findings: &mut Vec<Finding>,
 ) -> bool {
     let jobs = adapter_jobs(inferred, repos, run);
-    let results = run_adapter_jobs(&jobs, run.cache);
+    let operations = run.facts_cache.map(lemma_verify::FactsCache::documents);
+    let results = run_adapter_jobs(&jobs, run.cache, operations.as_deref());
     let mut has_drift = false;
     for (job, result) in jobs.iter().zip(results) {
         let Some(repository) = inferred.manifest.repositories.get_mut(&job.entry) else {
@@ -1541,7 +1542,11 @@ fn prefetch_adapters(repos: &BTreeMap<String, Repo>, options: &CheckOptions) {
         return;
     }
     let started = std::time::Instant::now();
-    let ran = run_adapter_jobs(&jobs, &options.cache);
+    let operations = options
+        .facts_cache
+        .as_ref()
+        .map(lemma_verify::FactsCache::documents);
+    let ran = run_adapter_jobs(&jobs, &options.cache, operations.as_deref());
     log::debug!(
         "adapter: {} runs prefetched in {:.0?}",
         ran.len(),
@@ -1615,9 +1620,11 @@ fn runtime_for<'r>(
 
 /// Runs every job, the jobs of one repository in turn (they share its
 /// build worktree) and repositories side by side; results in job order.
+/// `operations` is where verification keeps documents' operations.
 fn run_adapter_jobs(
     jobs: &[AdapterJob<'_>],
     cache: &Path,
+    operations: Option<&Path>,
 ) -> Vec<Result<Option<adapters::Contract>, GraphError>> {
     let mut by_repository: BTreeMap<&Path, Vec<usize>> = BTreeMap::new();
     for (index, job) in jobs.iter().enumerate() {
@@ -1635,7 +1642,7 @@ fn run_adapter_jobs(
                 scope.spawn(move || {
                     indices
                         .iter()
-                        .map(|&index| (index, adapter_contract(&jobs[index], cache)))
+                        .map(|&index| (index, adapter_contract(&jobs[index], cache, operations)))
                         .collect::<Vec<_>>()
                 })
             })
@@ -1664,6 +1671,7 @@ fn run_adapter_jobs(
 fn adapter_contract(
     job: &AdapterJob<'_>,
     cache: &Path,
+    operations: Option<&Path>,
 ) -> Result<Option<adapters::Contract>, GraphError> {
     log::info!(
         "adapter: reading the operations of {} ({}) from its code",
@@ -1688,7 +1696,8 @@ fn adapter_contract(
         );
         return Ok(Some(kept));
     }
-    if let Some(patched) = adapters::patched_contract(&job.service, &generated, &digests, cache) {
+    let patched = adapters::patched_contract(&job.service, &generated, &digests, cache, operations);
+    if let Some(patched) = patched {
         adapters::keep_contract(cache, &key, &patched);
         log::info!(
             "adapter: {} ({}): contract patched from the base's",

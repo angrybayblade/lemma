@@ -566,12 +566,15 @@ fn patch_path(document: &Path) -> PathBuf {
 /// patched the same way, without laying the documents over each other
 /// again; `None` when the base's contract is not kept or a change finds no
 /// schema to patch in it. `committed` holds the committed documents'
-/// digests.
+/// digests. Each patched document's operations are kept in `operations`,
+/// where verification looks for them, from the base's and the operations
+/// patched, as they are in hand here.
 pub fn patched_contract(
     service: &str,
     generated: &Generated,
     committed: &[(String, String)],
     cache: &Path,
+    operations: Option<&Path>,
 ) -> Option<Contract> {
     let patch = generated.patch.as_ref()?;
     let base = kept_contract(cache, &contract_key(service, &patch.base_digest, committed))?;
@@ -579,15 +582,14 @@ pub fn patched_contract(
     let mut documents = Vec::new();
     let mut patched = BTreeSet::new();
     for document in &base.documents {
-        let text = std::fs::read_to_string(&document.path).ok()?;
-        let mut value: Value = serde_json::from_str(&text).ok()?;
+        let base_text = std::fs::read_to_string(&document.path).ok()?;
+        let mut value: Value = serde_json::from_str(&base_text).ok()?;
         let changed = lazy::apply_changes(&mut value, &patch.changes);
         // A document the change does not touch is the base's, as it is.
         if changed.is_empty() {
             documents.push(document.clone());
             continue;
         }
-        patched.extend(changed);
         let text = serde_json::to_string(&value).ok()?;
         let written = store.join(format!(
             "{}.json",
@@ -599,6 +601,16 @@ pub fn patched_contract(
                 .and_then(|()| std::fs::rename(&partial, &written))
                 .ok()?;
         }
+        let changed: BTreeSet<String> = changed.into_iter().collect();
+        if let Some(operations) = operations {
+            lemma_verify::keep_patched_operations(
+                operations,
+                (&base_text, &text),
+                &value,
+                &changed,
+            );
+        }
+        patched.extend(changed);
         documents.push(GeneratedDocument {
             name: document.name.clone(),
             path: written,
