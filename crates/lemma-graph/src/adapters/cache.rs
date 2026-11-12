@@ -38,12 +38,22 @@ pub(crate) fn commit_state(root: &Path, commit: &str) -> Result<String, GraphErr
 /// the state, an unignored `.lemma/` would make every key new.
 const LEMMA_FILES: &str = ":(exclude,glob)**/.lemma/**";
 
-/// The state of the code in a working directory: its commit's tree, and a
-/// digest of every file that differs from it, untracked ones included;
-/// `None` outside a Git repository or before its first commit, where
-/// nothing can be cached.
-pub(crate) fn working_state(root: &Path) -> Result<Option<String>, GraphError> {
-    let Ok(tree) = repos::git(root, &["rev-parse", "HEAD^{tree}"]) else {
+/// A working directory against the commit it is on: the commit, its tree,
+/// and the files that differ from it, untracked ones included, sorted.
+pub(crate) struct WorkingChanges {
+    pub(crate) commit: String,
+    tree: String,
+    pub(crate) changed: Vec<String>,
+}
+
+/// The working directory at `root` against its commit; `None` outside a
+/// Git repository or before its first commit, where nothing can be cached.
+pub(crate) fn working_changes(root: &Path) -> Result<Option<WorkingChanges>, GraphError> {
+    let Ok(named) = repos::git(root, &["rev-parse", "HEAD", "HEAD^{tree}"]) else {
+        return Ok(None);
+    };
+    let mut lines = named.lines().map(str::trim);
+    let (Some(commit), Some(tree)) = (lines.next(), lines.next()) else {
         return Ok(None);
     };
     let status = repos::git(
@@ -61,24 +71,47 @@ pub(crate) fn working_state(root: &Path) -> Result<Option<String>, GraphError> {
             LEMMA_FILES,
         ],
     )?;
-    let changed = changed_paths(&status);
-    let tree = format!("tree {}", tree.trim());
-    if changed.is_empty() {
-        return Ok(Some(tree));
+    Ok(Some(WorkingChanges {
+        commit: commit.to_owned(),
+        tree: tree.to_owned(),
+        changed: changed_paths(&status),
+    }))
+}
+
+impl WorkingChanges {
+    /// The state of the commit's code: its tree, as [`commit_state`] gives.
+    pub(crate) fn commit_state(&self) -> String {
+        format!("tree {}", self.tree)
     }
-    let mut described = String::new();
-    for path in changed {
-        let contents = match std::fs::read(root.join(&path)) {
-            Ok(contents) => lemma_model::content_hash(&contents),
-            Err(_) => "absent".to_owned(),
-        };
-        described.push_str(&path);
-        described.push('\t');
-        described.push_str(&contents);
-        described.push('\n');
+
+    /// The state of the code in the working directory at `root`: the
+    /// commit's tree, and a digest of every file that differs from it.
+    pub(crate) fn state(&self, root: &Path) -> String {
+        let tree = self.commit_state();
+        if self.changed.is_empty() {
+            return tree;
+        }
+        let mut described = String::new();
+        for path in &self.changed {
+            let contents = match std::fs::read(root.join(path)) {
+                Ok(contents) => lemma_model::content_hash(&contents),
+                Err(_) => "absent".to_owned(),
+            };
+            described.push_str(path);
+            described.push('\t');
+            described.push_str(&contents);
+            described.push('\n');
+        }
+        let digest = lemma_model::content_hash(described.as_bytes());
+        format!("{tree} changes {digest}")
     }
-    let digest = lemma_model::content_hash(described.as_bytes());
-    Ok(Some(format!("{tree} changes {digest}")))
+}
+
+/// The state of the code in a working directory (see
+/// [`WorkingChanges::state`]); `None` outside a Git repository or before
+/// its first commit, where nothing can be cached.
+pub(crate) fn working_state(root: &Path) -> Result<Option<String>, GraphError> {
+    Ok(working_changes(root)?.map(|changes| changes.state(root)))
 }
 
 /// The paths `git status --porcelain=v1 -z` lists, sorted: each entry is

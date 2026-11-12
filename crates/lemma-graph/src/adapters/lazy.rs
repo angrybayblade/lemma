@@ -231,38 +231,6 @@ fn object_keys(
     Some(keys)
 }
 
-/// Files the working directory changed against `base`, or `None` when Git
-/// cannot say. New files are included.
-fn changed_files(root: &Path, base: &str) -> Option<Vec<String>> {
-    let diff = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["diff", "--name-only", "--no-ext-diff", base, "--"])
-        .output()
-        .ok()?;
-    let untracked = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "--others", "--exclude-standard"])
-        .output()
-        .ok()?;
-    if !diff.status.success() || !untracked.status.success() {
-        return None;
-    }
-    let mut files: Vec<String> = String::from_utf8_lossy(&diff.stdout)
-        .lines()
-        .map(str::to_owned)
-        .collect();
-    // New files that are not code are read by no adapter.
-    files.extend(
-        String::from_utf8_lossy(&untracked.stdout)
-            .lines()
-            .filter(|path| is_typescript(path) || is_other_code(path))
-            .map(str::to_owned),
-    );
-    Some(files)
-}
-
 fn is_typescript(path: &str) -> bool {
     [".ts", ".tsx", ".mts", ".cts"]
         .iter()
@@ -277,12 +245,6 @@ fn is_json(path: &str) -> bool {
 
 fn is_script(path: &str) -> bool {
     [".js", ".jsx", ".mjs", ".cjs"]
-        .iter()
-        .any(|extension| path.ends_with(extension))
-}
-
-fn is_other_code(path: &str) -> bool {
-    [".js", ".jsx", ".py", ".go", ".rs", ".json"]
         .iter()
         .any(|extension| path.ends_with(extension))
 }
@@ -419,44 +381,29 @@ fn apply(schema: &mut Value, change: &SchemaChange) {
     schema["required"] = Value::Array(required.into_iter().map(Value::String).collect());
 }
 
-/// The head document: `base_document` patched for the working directory's
-/// change against `base`, or `None` when the adapter must read the code.
-pub(super) fn patched(
-    root: &Path,
-    base: &str,
-    base_document: Value,
-) -> Option<(Value, Vec<SchemaChange>)> {
-    let mut changes = Vec::new();
+/// What the working directory's change does to the schemas an adapter of
+/// TypeScript writes, given the files that differ from `base` (as
+/// [`super::cache::WorkingChanges`] lists them); `None` when syntax cannot
+/// say and the adapter must read the code. No change is an empty list.
+pub(super) fn changes(root: &Path, base: &str, changed: &[String]) -> Option<Vec<SchemaChange>> {
     // Files in other languages (a Go service beside a TypeScript one) are
     // never imported by the code an adapter of TypeScript reads.
-    let files: Vec<String> = changed_files(root, base)?
-        .into_iter()
+    let files: Vec<&String> = changed
+        .iter()
         .filter(|path| is_typescript(path) || is_script(path) || is_json(path))
         .collect();
     if files.iter().any(|path| !is_typescript(path)) {
         return None;
     }
+    let mut found = Vec::new();
+    if files.is_empty() {
+        return Some(found);
+    }
     let mut extractor = lemma_syntax::Extractor::new().ok()?;
-    let mut document = base_document;
-    for path in &files {
+    for path in files {
         let before = base_text(root, base, path)?;
         let after = std::fs::read_to_string(root.join(path)).ok()?;
-        let options = lemma_http::CodeOptions::default();
-        let routes = |source: &str, extractor: &mut lemma_syntax::Extractor| {
-            lemma_http::extract(path, source, &options, extractor)
-                .ok()
-                .map(|facts| {
-                    let mut found: Vec<(String, String)> = facts
-                        .method_paths
-                        .iter()
-                        .filter(|route| route.method != "*")
-                        .map(|route| (route.method.clone(), route.path.clone()))
-                        .collect();
-                    found.sort();
-                    found
-                })
-        };
-        if routes(&before, &mut extractor)? != routes(&after, &mut extractor)? {
+        if routes(path, &before, &mut extractor)? != routes(path, &after, &mut extractor)? {
             return None;
         }
         let base_schemas = schemas_of(&before, &mut extractor)?;
@@ -466,21 +413,47 @@ pub(super) fn patched(
         }
         for (name, head) in &head_schemas {
             let base_keys = &base_schemas[name];
-            if base_keys == head {
-                continue;
+            if base_keys != head {
+                found.push(schema_change(base_keys, head)?);
             }
-            let change = schema_change(base_keys, head)?;
-            let bodies = matching_bodies(&mut document, &change.base_keys);
-            if bodies.is_empty() {
-                return None;
-            }
-            for (_, body) in bodies {
-                apply(body, &change);
-            }
-            changes.push(change);
         }
     }
-    Some((document, changes))
+    Some(found)
+}
+
+/// The routes a file declares, as `(method, path)`, sorted; `None` when it
+/// cannot be read.
+fn routes(
+    path: &str,
+    source: &str,
+    extractor: &mut lemma_syntax::Extractor,
+) -> Option<Vec<(String, String)>> {
+    let options = lemma_http::CodeOptions::default();
+    let facts = lemma_http::extract(path, source, &options, extractor).ok()?;
+    let mut found: Vec<(String, String)> = facts
+        .method_paths
+        .iter()
+        .filter(|route| route.method != "*")
+        .map(|route| (route.method.clone(), route.path.clone()))
+        .collect();
+    found.sort();
+    Some(found)
+}
+
+/// Patches the adapter's `document` with `changes` where each one's schema
+/// is used; `false` when a change's schema is used nowhere in it, which
+/// syntax cannot place, and the adapter must read the code.
+pub(super) fn apply_all(document: &mut Value, changes: &[SchemaChange]) -> bool {
+    for change in changes {
+        let bodies = matching_bodies(document, &change.base_keys);
+        if bodies.is_empty() {
+            return false;
+        }
+        for (_, body) in bodies {
+            apply(body, change);
+        }
+    }
+    true
 }
 
 /// The changes a patched document was made with, from the document of
@@ -505,20 +478,6 @@ pub(crate) fn apply_changes(document: &mut Value, changes: &[SchemaChange]) -> V
         }
     }
     patched
-}
-
-/// The commit the working directory at `root` is on.
-pub(super) fn head_commit(root: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 #[cfg(test)]
