@@ -416,7 +416,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let module = shop(directory.path());
 
-        run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
+        let _ = run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
 
         let (checked, root) = crate::check::load(&module).unwrap();
         assert!(refuse_errors(&checked).is_ok());
@@ -461,7 +461,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let module = aliased_shop(directory.path());
 
-        run(&request(
+        let _ = run(&request(
             &module,
             Some("orders.charge -> billing_api.createCharge"),
         ))
@@ -479,7 +479,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let module = aliased_shop(directory.path());
 
-        run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
+        let _ = run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
 
         let text = std::fs::read_to_string(&module).unwrap();
         assert!(
@@ -503,7 +503,7 @@ mod tests {
             );
         std::fs::write(&module, two).unwrap();
 
-        run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
+        let _ = run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
 
         let text = std::fs::read_to_string(&module).unwrap();
         assert!(
@@ -522,7 +522,7 @@ mod tests {
         );
         std::fs::write(&module, text).unwrap();
 
-        run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
+        let _ = run(&request(&module, Some("orders.charge -> api.createCharge"))).unwrap();
 
         let text = std::fs::read_to_string(&module).unwrap();
         assert!(
@@ -547,7 +547,7 @@ mod tests {
     fn a_name_already_taken_is_refused() {
         let directory = tempfile::tempdir().unwrap();
         let module = shop(directory.path());
-        run(&request(&module, None)).unwrap();
+        let _ = run(&request(&module, None)).unwrap();
 
         let error = run(&request(&module, None)).unwrap_err().to_string();
 
