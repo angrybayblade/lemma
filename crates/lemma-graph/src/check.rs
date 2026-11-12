@@ -348,22 +348,40 @@ pub fn check<E: Engine>(
     let (repos, mut options) = load_with_change_named(root_file, options)?;
     // Tracing verifies the same repositories again; without a long-lived
     // process's reads, this check keeps its own for those later runs.
+    let keeps_own_reads = options.warm.is_none();
     options.warm.get_or_insert_with(Arc::default);
-    let options = &options;
-    check_change_names_a_repository(&repos, options)?;
-    log_repositories(&repos);
-    let level = check_level(&repos, options);
-    let (links, not_checked) = split_unchecked_links(collect_links(&repos)?, &repos);
+    let report = check_loaded(root_file, (&repos, &options), engine, references, started);
+    if keeps_own_reads {
+        // Many maps of small values: freeing them is a noticeable part of a
+        // check, and nothing waits on it.
+        let reads = options.warm.take();
+        std::thread::spawn(move || drop(reads));
+    }
+    report
+}
+
+/// [`check`] of the repositories loaded for `options`.
+fn check_loaded<E: Engine>(
+    root_file: &Path,
+    (repos, options): (&BTreeMap<String, Repo>, &CheckOptions),
+    engine: &E,
+    references: Option<&mut dyn crate::anchors::References>,
+    started: std::time::Instant,
+) -> Result<Report, GraphError> {
+    check_change_names_a_repository(repos, options)?;
+    log_repositories(repos);
+    let level = check_level(repos, options);
+    let (links, not_checked) = split_unchecked_links(collect_links(repos)?, repos);
     // Verification and tracing read the same repositories; each is listed
     // once.
     let listings = options
         .warm
         .as_ref()
         .map_or_else(Arc::default, |warm| warm.verify().listings());
-    let mut shared = Shared::new(options, &listings, root_file, &repos)?;
+    let mut shared = Shared::new(options, &listings, root_file, repos)?;
     let behaviors = Behaviors {
         manifest: manifest_name(root_file),
-        repos: &repos,
+        repos,
         options,
     };
     let (mut linked, evaluated) = std::thread::scope(|scope| {
@@ -373,7 +391,7 @@ pub fn check<E: Engine>(
             let program = shared.program.take();
             scope.spawn(|| behaviors.run(program, None))
         });
-        let mut linked = check_links(&repos, &links, &mut shared, engine, references)?;
+        let mut linked = check_links(repos, &links, &mut shared, engine, references)?;
         let evaluated = match early {
             Some(running) => running
                 .join()
@@ -383,7 +401,7 @@ pub fn check<E: Engine>(
         Ok::<_, GraphError>((linked, evaluated))
     })?;
     let (behaviors, requirement_changes) =
-        apply_behaviors(evaluated, &repos, level, &mut linked.findings);
+        apply_behaviors(evaluated, repos, level, &mut linked.findings);
     let mut findings = linked.findings;
     sort_findings(&mut findings);
     log_outcome(&findings, started);
@@ -392,7 +410,7 @@ pub fn check<E: Engine>(
         level,
         links: links.len(),
         inferred_links: linked.inferred_links,
-        repositories: resolved(&repos),
+        repositories: resolved(repos),
         findings,
         link_list: options.list_links.then(|| link_list(&links, &walkable)),
         behaviors,
