@@ -347,6 +347,73 @@ fn matching_bodies<'d>(
     found
 }
 
+/// The key sets of the request bodies [`matching_bodies`] looks among, in
+/// the document's order: all a patch needs to know of a document to tell
+/// whether each change finds a body.
+fn body_keys(document: &Value) -> Vec<BTreeSet<String>> {
+    let Some(paths) = document.get("paths").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let operations = paths
+        .values()
+        .filter_map(Value::as_object)
+        .flat_map(|methods| methods.values());
+    operations
+        .filter_map(|operation| operation.pointer("/requestBody/content/application~1json/schema"))
+        .map(|schema| {
+            schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .map(|properties| properties.keys().cloned().collect())
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+/// The request bodies' key sets of the document kept at `document_path`:
+/// kept beside it, or read from `document` and kept. Losing them only
+/// costs reading the document again.
+pub(super) fn kept_bodies<'d>(
+    document_path: &Path,
+    document: impl FnOnce() -> Result<&'d Value, crate::GraphError>,
+) -> Result<Vec<BTreeSet<String>>, crate::GraphError> {
+    let mut path = document_path.as_os_str().to_owned();
+    path.push(".bodies");
+    let path = std::path::PathBuf::from(path);
+    if let Some(kept) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+    {
+        return Ok(kept);
+    }
+    let bodies = body_keys(document()?);
+    if let Ok(text) = serde_json::to_string(&bodies) {
+        let _ = std::fs::write(&path, text);
+    }
+    Ok(bodies)
+}
+
+/// Whether [`apply_all`] would find a body for every change of `changes`,
+/// told from the bodies' key sets: each change is applied to the key sets
+/// it matches, in turn, as it would be to the bodies.
+pub(super) fn places_all(bodies: &[BTreeSet<String>], changes: &[SchemaChange]) -> bool {
+    let mut bodies = bodies.to_vec();
+    for change in changes {
+        let mut found = false;
+        for keys in bodies.iter_mut().filter(|keys| **keys == change.base_keys) {
+            found = true;
+            for name in &change.removed {
+                keys.remove(name);
+            }
+            keys.extend(change.added.iter().map(|(name, _, _)| name.clone()));
+        }
+        if !found {
+            return false;
+        }
+    }
+    true
+}
+
 fn apply(schema: &mut Value, change: &SchemaChange) {
     let mut required: BTreeSet<String> = schema
         .get("required")
@@ -566,6 +633,32 @@ mod tests {
         };
         assert_eq!(required("/v1/link"), json!(["id", "uuid"]));
         assert_eq!(required("/v1/other"), json!(["id"]));
+    }
+
+    #[test]
+    fn the_bodies_key_sets_tell_whether_changes_find_a_body_as_patching_does() {
+        let document = json!({ "paths": {
+            "/v1/link": { "post": body(&["id", "name"]) },
+            "/v1/other": { "post": body(&["id"]) },
+        } });
+        let bodies = body_keys(&document);
+        let in_turn = [
+            change_adding("uuid", &["id", "name"]),
+            change_adding("region", &["id", "name", "uuid"]),
+        ];
+        let nowhere = [change_adding("uuid", &["id", "missing"])];
+
+        let placed = |changes: &[SchemaChange]| {
+            let mut patched = document.clone();
+            (
+                places_all(&bodies, changes),
+                apply_all(&mut patched, changes),
+            )
+        };
+
+        assert_eq!(placed(&in_turn), (true, true));
+        assert_eq!(placed(&nowhere), (false, false));
+        assert_eq!(placed(&in_turn[1..]), (false, false));
     }
 
     #[test]
