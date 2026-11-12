@@ -251,7 +251,7 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 | Command | Meaning |
 | --- | --- |
 | `lemma daemon status` | Whether it runs as a login service; its language servers: starting, running or paused, how long idle, and memory; and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. |
-| `lemma daemon stop` | Stop the running daemon. |
+| `lemma daemon stop` | Stop the running daemon; it returns once the daemon and its language servers have stopped. |
 | `lemma daemon install` | Run the daemon as a login service (launchd on macOS, systemd on Linux), so it is already up when an agent asks its first question. It is restarted only if it crashes, and a command that finds it stopped starts it through the service. The service keeps the `PATH` of the shell that installed it; run `install` again after installing a toolchain elsewhere. |
 | `lemma daemon uninstall` | Remove the login service and stop its daemon. |
 | `lemma daemon lsp [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |

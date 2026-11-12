@@ -558,6 +558,7 @@ dependencies = [
  "lemma-store",
  "lemma-verify",
  "log",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

@@ -37,6 +37,10 @@ use crate::sentry::Sentry;
 const STARTUP_LIMIT: Duration = Duration::from_secs(5);
 /// How often to retry connecting while a daemon starts or stops.
 const CONNECT_RETRY: Duration = Duration::from_millis(2);
+/// How long `lemma daemon stop` waits for the daemon to exit, and a new
+/// daemon for a stopping one: it stops sentry and its language servers
+/// first.
+const STOP_LIMIT: Duration = Duration::from_secs(30);
 /// How often idle language servers are checked.
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
 
@@ -155,7 +159,7 @@ pub(crate) fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
     let mut reply = exchange(&socket, &request).ok()?;
     if matches!(reply, Reply::Restart) {
         log::info!("the running daemon is another build; replacing it");
-        wait_until_gone(&socket);
+        wait_until_gone(&socket).ok()?;
         reply = exchange(&socket, &request).ok()?;
     }
     match reply {
@@ -229,7 +233,7 @@ pub(crate) fn stop() -> anyhow::Result<bool> {
     };
     send(&mut stream, &Request::Shutdown)?;
     receive::<Reply>(&mut stream)?;
-    wait_until_gone(&socket);
+    wait_until_gone(&socket)?;
     Ok(true)
 }
 
@@ -240,8 +244,11 @@ pub(crate) fn serve(
     logger: &'static crate::logging::Logger,
 ) -> anyhow::Result<()> {
     let socket = socket_path()?;
+    let Some(lock) = take_lock(&socket)? else {
+        // Another daemon serves, or won the race to start.
+        return Ok(());
+    };
     let Some(listener) = bind(&socket)? else {
-        // Another daemon won the race to start.
         return Ok(());
     };
     let mut settings = Settings::load(config::config_path().as_deref())?;
@@ -278,9 +285,15 @@ pub(crate) fn serve(
         }
     }
 
+    // Not serving from here: new connections are refused, and a caller runs
+    // without this daemon or starts another, which waits for the lock.
+    drop(listener);
     let _ = fs::remove_file(&socket);
     drop(sentry);
     engine.shutdown();
+    // Held until the process ends, when the system lets go of it: that is
+    // the moment `lemma daemon stop` waits for.
+    std::mem::forget(lock);
     Ok(())
 }
 
@@ -827,9 +840,53 @@ fn watch_for_idleness(socket: PathBuf, last_request: Arc<Mutex<Instant>>, idle_l
     });
 }
 
-fn wait_until_gone(socket: &Path) {
-    let deadline = Instant::now() + STARTUP_LIMIT;
-    while UnixStream::connect(socket).is_ok() && Instant::now() < deadline {
+/// Waits, up to [`STOP_LIMIT`], until the daemon of `socket` has exited:
+/// its lock is free.
+fn wait_until_gone(socket: &Path) -> anyhow::Result<()> {
+    let deadline = Instant::now() + STOP_LIMIT;
+    while try_lock(socket)?.is_none() && Instant::now() < deadline {
+        thread::sleep(CONNECT_RETRY);
+    }
+    Ok(())
+}
+
+/// The lock a daemon holds for as long as it runs: the system lets go of it
+/// when the daemon's process ends, however it ends, so a free lock means no
+/// daemon of `socket` runs or is still stopping.
+fn lock_path(socket: &Path) -> PathBuf {
+    socket.with_extension("lock")
+}
+
+/// The daemon's lock if it is free; `None` while a daemon holds it.
+fn try_lock(socket: &Path) -> anyhow::Result<Option<fs::File>> {
+    let path = lock_path(socket);
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("could not open {}", path.display()))?;
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(Some(file)),
+        Err(error) if error == rustix::io::Errno::WOULDBLOCK => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("could not lock {}", path.display())),
+    }
+}
+
+/// The daemon's lock for a daemon about to start, waiting, up to
+/// [`STOP_LIMIT`], for one that is stopping to finish; `None` when another
+/// daemon serves or is starting.
+fn take_lock(socket: &Path) -> anyhow::Result<Option<fs::File>> {
+    let deadline = Instant::now() + STOP_LIMIT;
+    loop {
+        if let Some(lock) = try_lock(socket)? {
+            return Ok(Some(lock));
+        }
+        // Held by a daemon that answers, or will once it is listening.
+        let is_serving = UnixStream::connect(socket).is_ok();
+        if is_serving || Instant::now() >= deadline {
+            return Ok(None);
+        }
         thread::sleep(CONNECT_RETRY);
     }
 }
@@ -957,6 +1014,34 @@ mod tests {
         };
         assert_eq!(exit_code, 2);
         assert!(stderr.contains("no-such-command"));
+    }
+
+    #[test]
+    fn a_daemons_lock_is_held_until_it_lets_go() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("d.sock");
+
+        let daemons = try_lock(&socket).unwrap();
+        let another_meanwhile = try_lock(&socket).unwrap();
+        drop(daemons);
+        let another_after = try_lock(&socket).unwrap();
+
+        assert!(another_meanwhile.is_none());
+        assert!(another_after.is_some());
+    }
+
+    #[test]
+    fn waiting_for_a_daemon_ends_once_its_lock_is_free() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("d.sock");
+        let daemons = try_lock(&socket).unwrap().unwrap();
+        let path = socket.clone();
+        let stop = thread::spawn(move || wait_until_gone(&path).unwrap());
+
+        drop(daemons);
+        stop.join().unwrap();
+
+        assert!(try_lock(&socket).unwrap().is_some());
     }
 
     #[test]
