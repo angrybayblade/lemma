@@ -172,8 +172,15 @@ pub fn trace_through_system<E: Engine>(
             ..SystemTrace::default()
         });
     };
-    let listings = Arc::new(lemma_http::Listings::default());
-    let walkable = current_inference(&repos, engine, caches.facts, &listings)?;
+    // Calls fetched as the trace goes share inference's reads.
+    let warm = Arc::new(lemma_verify::Warm::default());
+    let listings = warm.listings();
+    let reads = check::VerificationReads {
+        facts: caches.facts,
+        listings: &listings,
+        warm: Some(&warm),
+    };
+    let walkable = current_inference(&repos, engine, &reads)?;
     let routes = affects::read_routes(&walkable.routes, &repos)?;
     let in_repository = |file: &str| join(&offset, file);
     let start = Start::Reached {
@@ -190,13 +197,7 @@ pub fn trace_through_system<E: Engine>(
     let mut code = Code::new(&repos, &reading);
     let mut functions = |name: &str| code.functions(name);
     let mut fetch = |operations: &BTreeSet<String>| {
-        check::fetch_calls(
-            walkable.partial.as_ref(),
-            operations,
-            engine,
-            caches.facts,
-            &listings,
-        )
+        check::fetch_calls(walkable.partial.as_ref(), operations, engine, &reads)
     };
     let mut source = affects::CallSource {
         walkable: &walkable,
@@ -263,8 +264,7 @@ fn join(offset: &str, file: &str) -> String {
 fn current_inference<E: Engine>(
     repos: &BTreeMap<String, Repo>,
     engine: &E,
-    facts: Option<&lemma_verify::FactsCache>,
-    listings: &Arc<lemma_http::Listings>,
+    reads: &check::VerificationReads<'_>,
 ) -> Result<Walkable, GraphError> {
     let files = repos
         .values()
@@ -302,9 +302,9 @@ fn current_inference<E: Engine>(
         let options = lemma_verify::Options {
             explain: false,
             relations: affects::TRACED_RELATIONS.map(str::to_owned).to_vec(),
-            facts_cache: facts.cloned(),
+            facts_cache: reads.facts.cloned(),
             evaluation: lemma_verify::Evaluation::Demand,
-            warm: None,
+            warm: reads.warm.cloned(),
             also_keep: None,
         };
         // The calls of no operation: routes and operations, with calls
@@ -313,7 +313,7 @@ fn current_inference<E: Engine>(
             &inferred.manifest,
             engine,
             &options,
-            listings,
+            reads.listings,
             &BTreeSet::new(),
         )
         .map_err(|source| GraphError::Inference { source })?;
