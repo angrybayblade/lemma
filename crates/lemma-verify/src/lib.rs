@@ -22,7 +22,7 @@ use std::sync::Arc;
 use lemma_grammar::{CompiledGrammar, Severity};
 use lemma_logic::{Derivation, Engine, EvaluationError, Fact, Request, Symbols, Value};
 
-pub use extract::{is_code_path, operation_key, snapshot_listings};
+pub use extract::{document_operations, is_code_path, operation_key, snapshot_listings};
 pub use manifest::{Change, GeneratedDocument, Manifest, Repository, Role};
 pub use warm::Warm;
 
@@ -250,6 +250,14 @@ pub struct FactsCache {
     /// executable: facts one build read are never given to another, whose
     /// extraction may differ.
     pub build: String,
+}
+
+impl FactsCache {
+    /// Where service documents' operations are kept, by the documents'
+    /// contents (see [`document_operations`]).
+    pub fn documents(&self) -> PathBuf {
+        self.directory.join("documents")
+    }
 }
 
 /// The relations `options` asks for (such as `calls`), complete for calls
