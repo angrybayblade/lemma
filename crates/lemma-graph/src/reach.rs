@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
 
-use crate::functions::Functions;
+use crate::functions::{Functions, NameId};
 
 /// What a change reaches in one repository.
 #[derive(Debug, Clone)]
@@ -278,33 +278,92 @@ fn seed_names(root: &Path, changed: &ChangedLines, functions: &Functions) -> Vec
 /// mentions a reached name, in the same language family, is reached by its
 /// callable names in turn.
 fn walk(reach: &mut ChangeReach, seeds: Vec<(String, u8)>, functions: &Functions) {
-    let mut mentioned_by: HashMap<&str, Vec<usize>> = HashMap::new();
-    for function in 0..functions.len() {
-        for name in functions.mentions(function) {
-            mentioned_by
-                .entry(functions.text(*name))
-                .or_default()
-                .push(function);
-        }
-    }
-    let mut queue: VecDeque<(String, u8)> = seeds.into();
-    let mut seen: HashSet<(String, u8)> = HashSet::new();
-    while let Some((name, language)) = queue.pop_front() {
-        if name.is_empty() || !seen.insert((name.clone(), language)) {
+    // Names are followed by their ids in the table; the work is per
+    // mention, so strings and hashing stay out of it. A name only travels
+    // in its seed's family, so only those families' functions are indexed.
+    let family_of: Vec<u8> = (0..functions.len())
+        .map(|function| family(functions.file_text(function)))
+        .collect();
+    let seed_families: HashSet<u8> = seeds.iter().map(|(_, language)| *language).collect();
+    let mut mentioned_by: Vec<Vec<u32>> = vec![Vec::new(); functions.name_count()];
+    for (function, language) in family_of.iter().enumerate() {
+        if !seed_families.contains(language) {
             continue;
         }
-        reach.reached.insert(name.clone());
-        reach.families.insert(language);
-        for function in mentioned_by.get(name.as_str()).into_iter().flatten() {
-            let file = functions.file_text(*function);
-            if family(file) != language {
+        let Ok(index) = u32::try_from(function) else {
+            continue;
+        };
+        for name in functions.mentions(function) {
+            mentioned_by[*name as usize].push(index);
+        }
+    }
+    let mut walked = Walked {
+        reach,
+        functions,
+        seen: vec![0; functions.name_count()],
+        queue: VecDeque::new(),
+    };
+    for (name, language) in seeds {
+        walked.reach_seed(&name, language);
+    }
+    let mut files: HashSet<NameId> = HashSet::new();
+    while let Some((name, language)) = walked.queue.pop_front() {
+        for function in &mentioned_by[name as usize] {
+            let function = *function as usize;
+            if family_of[function] != language {
                 continue;
             }
-            reach.files.insert(file.to_owned());
-            for reached in functions.callable_names(*function) {
-                queue.push_back((functions.text(*reached).to_owned(), language));
+            files.insert(functions.file(function));
+            for reached in functions.callable_names(function) {
+                walked.reach_name(*reached, language);
             }
         }
+    }
+    let reach = walked.reach;
+    reach.files.extend(
+        files
+            .into_iter()
+            .map(|file| functions.text(file).to_owned()),
+    );
+}
+
+/// A walk in progress: what it reached, and the names still to follow.
+struct Walked<'a> {
+    reach: &'a mut ChangeReach,
+    functions: &'a Functions,
+    /// For each name, a bit for each language family it was reached in.
+    seen: Vec<u8>,
+    queue: VecDeque<(NameId, u8)>,
+}
+
+impl Walked<'_> {
+    /// Reaches the seed `name`, which the table may not hold (a type or
+    /// field no function record names), and follows it if it does.
+    fn reach_seed(&mut self, name: &str, language: u8) {
+        if name.is_empty() {
+            return;
+        }
+        if let Some(id) = self.functions.lookup(name) {
+            self.reach_name(id, language);
+            return;
+        }
+        self.reach.reached.insert(name.to_owned());
+        self.reach.families.insert(language);
+    }
+
+    /// Reaches the name `id` in `language`'s family, once, and queues it
+    /// to follow.
+    fn reach_name(&mut self, id: NameId, language: u8) {
+        let text = self.functions.text(id);
+        let bit = 1u8 << language;
+        let seen = &mut self.seen[id as usize];
+        if text.is_empty() || *seen & bit != 0 {
+            return;
+        }
+        *seen |= bit;
+        self.reach.reached.insert(text.to_owned());
+        self.reach.families.insert(language);
+        self.queue.push_back((id, language));
     }
 }
 
@@ -353,6 +412,36 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             binds: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_walk_follows_mentions_transitively_within_one_family() {
+        let functions = Functions::from_functions(&[
+            function("api/handle.ts", "handle", (1, 5), &["Request"]),
+            function("api/route.ts", "route", (1, 5), &["handle"]),
+            function("api/other.ts", "other", (1, 5), &["unrelated"]),
+            function("server/setup.go", "Setup", (1, 5), &["Request"]),
+        ]);
+        let mut reach = ChangeReach {
+            repository: "#billing".to_owned(),
+            base: "abc".to_owned(),
+            everything: false,
+            reached: HashSet::new(),
+            files: HashSet::new(),
+            families: HashSet::new(),
+            route_files: HashMap::new(),
+        };
+        let seeds = vec![("Request".to_owned(), 1), ("NotInTable".to_owned(), 1)];
+
+        walk(&mut reach, seeds, &functions);
+
+        let reached: BTreeSet<&str> = reach.reached.iter().map(String::as_str).collect();
+        let files: BTreeSet<&str> = reach.files.iter().map(String::as_str).collect();
+        assert_eq!(
+            reached,
+            BTreeSet::from(["NotInTable", "Request", "handle", "route"])
+        );
+        assert_eq!(files, BTreeSet::from(["api/handle.ts", "api/route.ts"]));
     }
 
     const SCHEMA: &str =
