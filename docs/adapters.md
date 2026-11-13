@@ -45,15 +45,17 @@ export service api {
 
 `command(...)` runs with `sh -c`: a script in the repository (`bun tools/lemma-adapter.ts`), a framework's generator, or a binary printing utoipa's document. A handler edit that changes what the generator writes is then checked against consumers before anyone regenerates the committed document.
 
+`http.adapter("tools/lemma-adapter.ts", ...)` names a script in the repository instead of a built-in adapter, by its path from the repository root. Lemma runs it with the interpreter its extension calls for: Bun for `.ts`, Node for `.js`, the service's Python for `.py` and `go run` for `.go`. The protocol is the one below. Unlike the same script run through `command(...)`, Lemma knows what runs it, so a script run with Bun is taken to read TypeScript and its document is patched as a built-in adapter's is (see [Code locations](#code-locations)). Commit the script: a commit's document is built from that commit's code, and a script that is new in the working directory is itself a change Lemma cannot patch.
+
 Lemma still reads a framework that knows its routes but not their schemas (Express, Flask, `gorilla/mux`): its adapter says so with `x-lemma-schemas: false`, the committed documents keep the schemas, and the code says which routes exist and where each is handled.
 
 ## Fields
 
 | Field | Meaning |
 | --- | --- |
-| The adapter | `hono.app(...)` or `fastapi.app(...)`, `http.adapter("express-routes", ...)` for another built-in adapter by name, or `command(...)` for a command run with `sh -c`; given to `http.openapi` as `command:`, or written straight into `operations`. |
+| The adapter | `hono.app(...)` or `fastapi.app(...)`, `http.adapter("express-routes", ...)` for another built-in adapter by name or a script in the repository by its path, or `command(...)` for a command run with `sh -c`; given to `http.openapi` as `command:`, or written straight into `operations`. |
 | `inputs` | The files and directories the document depends on, relative to the repository root. Lemma keeps the document by their contents alone, so a change elsewhere in the repository does not run the adapter again. Without `inputs` any change does, and `lm check` warns. They are paths, not patterns, and stay inside the repository. Lemma takes them as given: a file the adapter reads that `inputs` leaves out does not run it again when it changes. When none of them exists at a commit, the whole repository keys the document there. |
-| `entry` | What the adapter reads, relative to `directory`; given as `$LEMMA_ENTRY`, one per line. Required for a built-in adapter, optional for `command(...)`. |
+| `entry` | What the adapter reads, relative to `directory`; given as `$LEMMA_ENTRY`, one per line. Required for a built-in adapter, optional for `command(...)`; a script in the repository that reads none takes `[]`. |
 | `exclude` | Glob patterns of files under `entry` not to import, such as scripts that do work when imported; `$LEMMA_EXCLUDE`, one per line. |
 | `directory` | Where the adapter runs, relative to the repository root and inside it; the root if absent. |
 | `env` | Environment variables for the adapter and `setup`, on top of `runtime.env`. Importing an app often needs a few to keep it from connecting anywhere. |
@@ -68,7 +70,7 @@ Importing code runs it, so Lemma reads code where it already runs: the working d
 2. **Read in place.** A commit that is the working directory unchanged is read there; with `inputs`, a commit whose inputs are the working directory's.
 3. **Built.** Any other commit of the changed repository is checked out in one worktree Lemma keeps per repository, `setup` runs, and the adapter reads it. What earlier builds installed stays, so installing again is mostly a check. The document is then kept.
 
-When the working directory changes only TypeScript files, and a changed file's zod object schemas differ from its base commit's only in which top-level keys they have or which keys are optional, Lemma patches the base commit's kept document where those schemas are used instead of running the adapter, and patches the contract laid over the committed documents the same way. A changed nested schema, a spread, a moved route, or a schema no operation uses runs the adapter as above. Only an adapter that reads TypeScript (the ones run with Bun) is patched; a command, or an adapter run with Python or Go, runs whenever its inputs change.
+When the working directory changes only TypeScript files, and a changed file's zod object schemas differ from its base commit's only in which top-level keys they have or which keys are optional, Lemma patches the base commit's kept document where those schemas are used instead of running the adapter, and patches the contract laid over the committed documents the same way. A changed nested schema, a spread, a moved route, or a schema no operation uses runs the adapter as above. Only an adapter that reads TypeScript is patched: a built-in one run with Bun, or a repository's `.ts` script named with `http.adapter`. A command, or an adapter run with Node, Python or Go, runs whenever its inputs change.
 
 A contract laid over committed documents is kept by its inputs (the service, the adapter's document and the committed documents' contents), so a check whose documents are unchanged lays nothing again.
 
@@ -116,7 +118,7 @@ The document is cached by the adapter's configuration (its `inputs` included), i
 
 ## Add a built-in adapter
 
-A built-in adapter is a script under `crates/lemma-graph/adapters/` and a row in `crates/lemma-graph/src/adapters/registry.rs` naming it and the interpreter it runs with. Until it is built in, the same script works from a repository through `command(...)`.
+A built-in adapter is a script under `crates/lemma-graph/adapters/` and a row in `crates/lemma-graph/src/adapters/registry.rs` naming it and the interpreter it runs with. Until it is built in, the same script works from a repository through `http.adapter("path/to/script", ...)`.
 
 ## Limits
 

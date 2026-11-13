@@ -95,6 +95,7 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 - **One parse per file in a check.** Each file is parsed once per check, for its code facts and for tracing together, rather than three times.
 - **Generated documents.** `http.openapi("openapi.json", command: ...)` names the command that generates a document, so a handler edit is checked against consumers before the document is regenerated; a command's `inputs` decide when it runs again (see [Read operations from code](adapters.md)). `http.adapter_command(...)` is removed: write `command(...)`.
 - **Adapters outside TypeScript run on every change.** A change to a Python or Go handler under an adapter, or to code a command reads, used to reuse the base commit's document. Documents kept that way are dropped the first time rc2 runs.
+- **A repository's own adapter script.** `http.adapter("tools/lemma-adapter.ts", ...)` names a script in the repository, run with the interpreter its extension calls for. A `.ts` script is patched on a TypeScript edit as a built-in adapter is, where the same script under `command(...)` runs every time.
 
 ## New in rc1
 

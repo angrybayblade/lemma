@@ -24,7 +24,7 @@ HTTP contracts between services, their generated clients and consumers.
 
 - `openapi(document?: Text, command?: Generator): Operations`: The operations an OpenAPI document describes: one in the repository, one a command generates, or the committed one with the command's laid over it.
 - `generated_client(generated_from: List<Text>, specs?: List<Text>, call_names?: List<Text>): Client`: A client generated from OpenAPI documents, one function per operation.
-- `adapter(name: Text, entry: List<Text>, directory?: Text, setup?: Command, env?: Json, exclude?: List<Text>, timeout_ms?: Int, inputs?: List<Text>): Generator`: One of Lemma's built-in adapters, by its name, reading the service's operations from its code.
+- `adapter(name: Text, entry: List<Text>, directory?: Text, setup?: Command, env?: Json, exclude?: List<Text>, timeout_ms?: Int, inputs?: List<Text>): Generator`: One of Lemma's built-in adapters by its name, or a script in the repository by its path, reading the service's operations from its code.
 - `inferred_links(services?: List<Service>): Facts`: The links Lemma infers from calls in code to documented operations.
 
 ### Declarations

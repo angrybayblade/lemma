@@ -194,6 +194,15 @@ mod tests {
     }
 
     #[test]
+    fn every_script_the_language_accepts_has_an_interpreter() {
+        for extension in lemma_lang::stdlib::SCRIPT_EXTENSIONS {
+            let path = format!("tools/adapter.{extension}");
+
+            assert!(interpreter_for(&path).is_some(), "{path}");
+        }
+    }
+
+    #[test]
     fn an_adapter_is_built_in_or_a_script_in_the_repository() {
         let built_in = named("fastapi");
         let in_repository = named("tools/lemma-express.js");

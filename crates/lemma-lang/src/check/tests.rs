@@ -252,6 +252,41 @@ fn a_command_with_inputs_alone_gives_operations() {
 }
 
 #[test]
+fn an_adapter_is_a_built_in_one_or_a_script_inside_the_repository() {
+    let adapter = |name: &str| {
+        single(&format!(
+            "module m\nimport * as http from lemma.http\nexport service s {{\n    operations: http.adapter(\"{name}\", entry: [], inputs: [\"src\"])\n}}\n"
+        ))
+    };
+
+    for name in [
+        "express-routes",
+        "tools/lemma-adapter.ts",
+        "tools/routes.py",
+    ] {
+        let result = adapter(name);
+
+        assert_clean(&result);
+    }
+    for name in [
+        "express",
+        "tools/adapter.sh",
+        "../shared/adapter.ts",
+        "/opt/adapter.ts",
+    ] {
+        let result = adapter(name);
+
+        assert_eq!(
+            errors(&result).len(),
+            1,
+            "{name}: {:#?}",
+            result.diagnostics
+        );
+        assert!(errors(&result)[0].contains("there is no adapter"));
+    }
+}
+
+#[test]
 fn an_input_that_is_a_pattern_or_outside_the_repository_is_an_error() {
     for input in ["src/*", "../shared", "/etc"] {
         let text = format!(
