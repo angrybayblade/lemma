@@ -483,6 +483,25 @@ fn a_change_that_deletes_an_included_directory_is_reported_by_check() {
     );
 }
 
+#[test]
+fn an_untracked_file_does_not_stand_for_an_included_directory_a_change_deleted() {
+    let scratch = tempfile::tempdir().unwrap();
+    inferred_break(scratch.path());
+    std::fs::remove_dir_all(scratch.path().join("web/src")).unwrap();
+    write(&scratch.path().join("web/src/draft.ts"), "export {};\n");
+
+    let output = lemma(
+        scratch.path(),
+        &["check", "--change", "web", "--base", "HEAD", "--no-daemon"],
+    );
+
+    assert!(
+        text(&output).contains("include_matches_nothing"),
+        "{}",
+        text(&output)
+    );
+}
+
 /// [`inferred_break`], with web's included directory already gone from its
 /// last commit, so its `include` matched nothing before any later change.
 fn include_already_empty(root: &Path) {
