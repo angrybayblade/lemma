@@ -307,6 +307,9 @@ pub struct Checker {
     pub timeout_ms: Option<u64>,
     /// Whether stored evidence may be reused.
     pub is_cached: bool,
+    /// Whether its runs may overlap: each then works only in what its
+    /// input names, so the cases of one check run at once.
+    pub is_concurrent: bool,
     /// Its declaration as written, part of its evidence's key.
     pub text: String,
 }

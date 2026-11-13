@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use lemma_lang::eval::Evidence;
 use lemma_lang::model::Checker;
@@ -41,6 +41,9 @@ pub(crate) struct Store {
     environment: Option<Arc<BTreeMap<String, String>>>,
     /// The state of working directories' code, which evidence is kept by.
     states: Arc<crate::adapters::States>,
+    /// Held while a `setup` runs: demands running at once share one, which
+    /// runs once and before any of them.
+    setting_up: Mutex<()>,
 }
 
 /// Where a repository's code is read, and the state of that code: `None`
@@ -65,6 +68,42 @@ impl Place {
     }
 }
 
+/// A demand recorded to run beside others, owning what a [`Request`]
+/// borrows.
+pub(crate) struct RecordedDemand {
+    checker: Checker,
+    case: String,
+    arguments: Json,
+    reads: BTreeMap<String, Option<String>>,
+    place: Place,
+    roots: BTreeMap<String, String>,
+}
+
+impl RecordedDemand {
+    /// `request`, with a copy of what it borrows.
+    pub(crate) fn of(request: &Request<'_>) -> Self {
+        Self {
+            checker: request.checker.clone(),
+            case: request.case.to_owned(),
+            arguments: request.arguments.clone(),
+            reads: request.reads.clone(),
+            place: request.place.clone(),
+            roots: request.roots.clone(),
+        }
+    }
+
+    fn as_request(&self) -> Request<'_> {
+        Request {
+            checker: &self.checker,
+            case: &self.case,
+            arguments: self.arguments.clone(),
+            reads: self.reads.clone(),
+            place: &self.place,
+            roots: &self.roots,
+        }
+    }
+}
+
 /// One demand for evidence, with its arguments encoded.
 pub(crate) struct Request<'r> {
     pub(crate) checker: &'r Checker,
@@ -80,6 +119,13 @@ pub(crate) struct Request<'r> {
     pub(crate) roots: &'r BTreeMap<String, String>,
 }
 
+impl Request<'_> {
+    /// The key of this demand's evidence: equal demands have equal keys.
+    pub(crate) fn key(&self) -> String {
+        evidence_key(self)
+    }
+}
+
 impl Store {
     /// Evidence kept under `cache`; checkers run only if `may_run`.
     pub(crate) fn new(cache: &Path, may_run: bool) -> Self {
@@ -89,7 +135,52 @@ impl Store {
             may_run,
             environment: None,
             states: Arc::default(),
+            setting_up: Mutex::new(()),
         }
+    }
+
+    /// Whether checkers may run.
+    pub(crate) fn may_run(&self) -> bool {
+        self.may_run
+    }
+
+    /// The evidence for each of `demands`, by its key, with those that
+    /// have to run running at once, as many as the machine has processors.
+    /// Equal demands run once.
+    pub(crate) fn demand_at_once(
+        &self,
+        demands: Vec<RecordedDemand>,
+    ) -> BTreeMap<String, Evidence> {
+        let distinct: BTreeMap<String, RecordedDemand> = demands
+            .into_iter()
+            .map(|demand| (demand.as_request().key(), demand))
+            .collect();
+        let workers = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .min(distinct.len());
+        let waiting = Mutex::new(distinct.iter());
+        let answers = Mutex::new(BTreeMap::new());
+        let answer_waiting = || {
+            let next = || {
+                waiting
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .next()
+            };
+            while let Some((key, demand)) = next() {
+                let evidence = self.demand(&demand.as_request());
+                answers
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(key.clone(), evidence);
+            }
+        };
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(answer_waiting);
+            }
+        });
+        answers.into_inner().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The store, asking `states` for the state of working directories'
@@ -243,6 +334,10 @@ impl Store {
         let marker = self.directory.join("setup").join(lemma_model::content_hash(
             format!("{}\n{state}", request.checker.text).as_bytes(),
         ));
+        let _one_at_a_time = self
+            .setting_up
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if marker.exists() {
             return Ok(());
         }

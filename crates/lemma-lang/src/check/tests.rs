@@ -202,6 +202,26 @@ fn the_platform_example_checks_cleanly() {
     assert_clean(&result);
 }
 
+/// A program whose one checker has `fields` after its command.
+fn checker_with(fields: &str) -> Checked {
+    let text = format!(
+        "module example\nworkspace {{\n    language: \"0.2\"\n}}\n\
+         checker probe(): Evidence<Json> {{\n    command: [\"probe\"]\n{fields}}}\n"
+    );
+    checked(&[("", "mod.lm", &text)])
+}
+
+#[test]
+fn a_checkers_runs_do_not_overlap_unless_it_says_they_may() {
+    let silent = checker_with("");
+    let concurrent = checker_with("    concurrent: true\n");
+
+    assert_clean(&silent);
+    assert_clean(&concurrent);
+    assert!(!silent.model.checkers[0].is_concurrent);
+    assert!(concurrent.model.checkers[0].is_concurrent);
+}
+
 #[test]
 fn a_graph_row_holds_the_operations_it_names() {
     let result = platform_example();
