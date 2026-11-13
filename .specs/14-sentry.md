@@ -278,6 +278,8 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 
    **The index refresh before a graph uses the kept working states.** Every query refreshes the workspace's index first, and for each member with an adapter that asked Git for the working directory's state (`git status`, 50 ms on the largest repository) to find the document kept for it: by then most of an ask that stays in one repository. Once a workspace is traced, the refresh takes each watched member's state from what the trace keeps (`Warm::states`), which a change to that repository drops. A member indexed elsewhere, such as a worktree at a pin, is not watched and is asked about every time. Median 0.13 s to 0.08 s, mean 0.17 s to 0.11 s.
 
+   **After an edit.** The first graph after an edit took a median of 5.2 s on the same workspace (six kinds of edit, four each, base documents kept), nearly all of it building the edited repository's exports again: finding the routes its services' code writes parsed each of 2,300 files in turn. They are parsed on every core (2.5 s), and the daemon keeps each file's routes with the digest of the contents they were read from, so an edit parses the file it changed (1.8 s). What is left is 0.7 s reading the traced system again, 0.2–0.5 s of the rest of the exports, and, when the edited file holds the asked symbol, the language server resolving its references again (3.5 s for TypeScript and Python here).
+
 **Later:**
 
 - Lookups that know the working copy.

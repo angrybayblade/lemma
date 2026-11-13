@@ -7,8 +7,9 @@
 //! its handler, the function around it. A public module's top-level
 //! definitions are exports too.
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use lemma_model::{Export, ExportKind, ExportLink, FoundBy};
 use lemma_syntax::ExtractorPool;
@@ -36,18 +37,65 @@ pub struct IndexedSymbols<'a> {
     pub top_level: &'a dyn Fn(&str) -> Vec<String>,
 }
 
+/// The routes each file was found to write, kept by a process that stays:
+/// exports are built again after every edit, and reading a service's code
+/// for its routes is most of that, so a file is parsed again only when its
+/// contents change.
+#[derive(Default)]
+pub struct KeptRoutes {
+    /// By repository and path.
+    read: Mutex<HashMap<(PathBuf, String), ReadRoutes>>,
+}
+
+/// One file's routes, and the contents they were read from.
+struct ReadRoutes {
+    digest: String,
+    routes: Vec<Written>,
+}
+
+impl KeptRoutes {
+    /// The routes kept for the file at `path` of the repository at `root`,
+    /// if they were read from contents with this `digest`.
+    fn of(&self, root: &Path, path: &str, digest: &str) -> Option<Vec<Written>> {
+        let read = self.read.lock().unwrap_or_else(PoisonError::into_inner);
+        let kept = read.get(&(root.to_path_buf(), path.to_owned()))?;
+        (kept.digest == digest).then(|| kept.routes.clone())
+    }
+
+    fn keep(&self, root: &Path, path: &str, digest: String, routes: Vec<Written>) {
+        // A poisoned lock means a thread panicked while reading or
+        // replacing one entry; the others are whole.
+        let mut read = self.read.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = (root.to_path_buf(), path.to_owned());
+        read.insert(key, ReadRoutes { digest, routes });
+    }
+}
+
+/// How a service's files are read for routes: a parser for each thread,
+/// and the routes kept from earlier reads, if any are.
+#[derive(Clone, Copy)]
+struct RouteReading<'a> {
+    extractors: &'a ExtractorPool,
+    kept: Option<&'a KeptRoutes>,
+}
+
 /// Every local service's exports in `file`, read from the repository at
 /// `root` as it is on disk, and the links `file` declares. `from_code`
 /// holds, by service, the documents adapters generated from the code (see
-/// [`crate::adapters`]).
+/// [`crate::adapters`]); `kept` holds the routes earlier calls read.
 pub fn exports(
     file: &LemmaFile,
     root: &Path,
     symbols: &IndexedSymbols<'_>,
     from_code: &BTreeMap<String, adapters::Generated>,
+    kept: Option<&KeptRoutes>,
 ) -> Result<(Vec<Export>, Vec<ExportLink>), GraphError> {
     let mut found = Vec::new();
     let extractors = ExtractorPool::new();
+    let reading = RouteReading {
+        extractors: &extractors,
+        kept,
+    };
     for (name, service) in file
         .services
         .iter()
@@ -59,7 +107,7 @@ pub fn exports(
             service,
             from_code: from_code.get(name),
         };
-        found.extend(endpoints(&service_code, root, symbols, &extractors)?);
+        found.extend(endpoints(&service_code, root, symbols, reading)?);
         for path in &service.exports.symbols {
             found.extend(
                 (symbols.top_level)(path)
@@ -143,13 +191,13 @@ fn endpoints(
     input: &ServiceInput<'_>,
     root: &Path,
     symbols: &IndexedSymbols<'_>,
-    extractors: &ExtractorPool,
+    reading: RouteReading<'_>,
 ) -> Result<Vec<Export>, GraphError> {
     let service = input.service;
     if service.exports.openapi.is_empty() && input.from_code.is_none() {
         return Ok(Vec::new());
     }
-    let (written, mut texts) = routes(service, root, extractors)?;
+    let (written, mut texts) = routes(service, root, reading)?;
     let documents = service_documents(input, root)?;
     let registered: BTreeMap<(String, String), (String, u32)> =
         documents.iter().flat_map(adapters::handler_sites).collect();
@@ -323,11 +371,7 @@ type Written = (String, String, Route);
 /// finding handlers.
 type Routes = (Vec<Written>, BTreeMap<String, String>);
 
-fn routes(
-    service: &Service,
-    root: &Path,
-    extractors: &ExtractorPool,
-) -> Result<Routes, GraphError> {
+fn routes(service: &Service, root: &Path, reading: RouteReading<'_>) -> Result<Routes, GraphError> {
     let files = lemma_http::read_files(root, None, &service.index.include, &CODE_EXTENSIONS)
         .map_err(|source| GraphError::Source { source })?;
     let code: Vec<&lemma_http::SourceFile> = files
@@ -338,7 +382,7 @@ fn routes(
     // and the first error are those reading the files one by one gives.
     let read: Vec<Result<Vec<Written>, GraphError>> = code
         .par_iter()
-        .map(|file| parsed_routes(file, extractors))
+        .map(|file| written_routes(file, root, reading))
         .collect();
     let mut found = Vec::new();
     let mut texts = BTreeMap::new();
@@ -352,6 +396,25 @@ fn routes(
         found.extend(declared);
     }
     Ok((found, texts))
+}
+
+/// The routes the file `file` of the repository at `root` writes with a
+/// method: those kept for its contents, or read from them now.
+fn written_routes(
+    file: &lemma_http::SourceFile,
+    root: &Path,
+    reading: RouteReading<'_>,
+) -> Result<Vec<Written>, GraphError> {
+    let Some(kept) = reading.kept else {
+        return parsed_routes(file, reading.extractors);
+    };
+    let digest = lemma_model::content_hash(file.contents.as_bytes());
+    if let Some(routes) = kept.of(root, &file.path, &digest) {
+        return Ok(routes);
+    }
+    let routes = parsed_routes(file, reading.extractors)?;
+    kept.keep(root, &file.path, digest, routes.clone());
+    Ok(routes)
 }
 
 /// The routes `file`'s code writes with a method.
@@ -521,8 +584,14 @@ mod tests {
             top_level: &top_level,
         };
 
-        let (exports, links) =
-            exports(&file, Path::new("/nowhere"), &symbols, &BTreeMap::new()).unwrap();
+        let (exports, links) = exports(
+            &file,
+            Path::new("/nowhere"),
+            &symbols,
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(
             exports,
@@ -543,5 +612,38 @@ mod tests {
                 provider: "#billing:services.api.charge".to_owned(),
             }]
         );
+    }
+
+    fn server(path: &str) -> lemma_http::SourceFile {
+        lemma_http::SourceFile {
+            path: "src/server.ts".to_owned(),
+            contents: format!(
+                "import express from \"express\";\nconst app = express();\napp.post(\"{path}\", (req, res) => res.json({{}}));\n"
+            ),
+        }
+    }
+
+    #[test]
+    fn kept_routes_are_those_of_the_contents_last_read() {
+        let extractors = ExtractorPool::new();
+        let kept = KeptRoutes::default();
+        let reading = RouteReading {
+            extractors: &extractors,
+            kept: Some(&kept),
+        };
+        let root = Path::new("/repo");
+        let (first, edited) = (server("/v1/charges"), server("/v1/refunds"));
+        let digest =
+            |file: &lemma_http::SourceFile| lemma_model::content_hash(file.contents.as_bytes());
+
+        let read = written_routes(&first, root, reading).unwrap();
+        let kept_after_first = kept.of(root, &first.path, &digest(&first));
+        let after_edit = written_routes(&edited, root, reading).unwrap();
+
+        assert_eq!(read, parsed_routes(&first, &extractors).unwrap());
+        assert_eq!(kept_after_first, Some(read.clone()));
+        assert_eq!(after_edit, parsed_routes(&edited, &extractors).unwrap());
+        assert_ne!(after_edit, read);
+        assert_eq!(kept.of(root, &first.path, &digest(&first)), None);
     }
 }
