@@ -6,8 +6,10 @@
 //! repositories watched, what traces read of them, and the system as
 //! traces last read it, which holds until a file changes.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use lemma_graph::adapters::States;
 use lemma_graph::{GraphError, Reached, SystemTrace, TraceCaches, TracedSystem};
 use lemma_logic::Engine;
 
@@ -64,6 +66,15 @@ impl TracedWorkspace {
         })
     }
 
+    /// The state of each watched repository's working directory, as Git
+    /// gave it when last asked since the repository changed.
+    pub(crate) fn working_states(&mut self) -> WorkingStates {
+        WorkingStates {
+            states: self.watched.current().states(),
+            watched: self.watched.reported_roots(),
+        }
+    }
+
     /// The trace from `start`, through the system as last read if no file
     /// has changed since, and otherwise read again from what is kept.
     pub(crate) fn trace(&mut self, start: &Start<'_>) -> Result<SystemTrace, GraphError> {
@@ -80,6 +91,24 @@ impl TracedWorkspace {
         })?;
         self.system = Some((state, system));
         Ok(traced)
+    }
+}
+
+/// The working states a watched workspace keeps, for the repositories whose
+/// changes drop them.
+pub(crate) struct WorkingStates {
+    states: Arc<States>,
+    /// The watched repositories' directories, canonical.
+    watched: Vec<PathBuf>,
+}
+
+impl WorkingStates {
+    /// The kept states, if the directory at `root` is a watched
+    /// repository's: one that is not, such as a worktree at a pin, changes
+    /// unseen, so its state is asked for every time.
+    pub(crate) fn of(&self, root: &Path) -> Option<&States> {
+        let root = root.canonicalize().ok()?;
+        self.watched.contains(&root).then_some(&*self.states)
     }
 }
 
@@ -110,7 +139,7 @@ enum Evaluating<'a> {
 /// process that stays) and the engine to evaluate with: Soufflé when it is
 /// installed.
 fn with_engine<T>(
-    warm: Option<&std::sync::Arc<lemma_graph::Warm>>,
+    warm: Option<&Arc<lemma_graph::Warm>>,
     trace: impl FnOnce(&TraceCaches<'_>, Evaluating<'_>) -> Result<T, GraphError>,
 ) -> Result<T, GraphError> {
     let clones = lemma_graph::repos::cache_directory();
@@ -254,5 +283,18 @@ mod tests {
         assert_eq!(labels(&before), ["POST /v1/charges", "charge"]);
         assert_eq!(labels(&after), ["POST /v1/charges"]);
         assert_eq!(after, trace_once(&start).unwrap());
+    }
+
+    #[test]
+    fn working_states_are_kept_for_watched_repositories_only() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = shop(root.path());
+        let elsewhere = tempfile::tempdir().unwrap();
+        let mut traced = TracedWorkspace::start(&manifest).unwrap();
+
+        let states = traced.working_states();
+
+        assert!(states.of(&root.path().join("web")).is_some());
+        assert!(states.of(elsewhere.path()).is_none());
     }
 }

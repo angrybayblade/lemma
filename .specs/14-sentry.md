@@ -276,6 +276,8 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 
    **The system a trace read is kept too.** With the reads kept, a repeated ask still evaluated the inference again (0.13 s of 0.25 s), fetched the callers of each operation it reached, and decoded the functions of every repository it entered (0.6 s of a 0.95 s ask that crosses four repositories). Traces from different symbols share all of that, as one check's traces do, so the daemon keeps the system as last read (`lemma_graph::TracedSystem`: descriptions, routes and operations, fetched calls, indexed functions) with the workspace's state: each repository's generation and the description's stamp. A trace uses it while the state is the same and reads it again otherwise; an error drops it. This is an answer's inputs held, not an answer: the walk from the asked symbol runs every time. The median went from 0.34 s to 0.14 s and the mean from 0.51 s to 0.18 s, with the same output and the same answers after edits.
 
+   **The index refresh before a graph uses the kept working states.** Every query refreshes the workspace's index first, and for each member with an adapter that asked Git for the working directory's state (`git status`, 50 ms on the largest repository) to find the document kept for it: by then most of an ask that stays in one repository. Once a workspace is traced, the refresh takes each watched member's state from what the trace keeps (`Warm::states`), which a change to that repository drops. A member indexed elsewhere, such as a worktree at a pin, is not watched and is asked about every time. Median 0.13 s to 0.08 s, mean 0.17 s to 0.11 s.
+
 **Later:**
 
 - Lookups that know the working copy.
