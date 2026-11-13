@@ -29,6 +29,10 @@ import threading
 import traceback
 import types
 
+SAFE_PATH = getattr(sys.flags, "safe_path", False)
+"""Whether the interpreter leaves a run's own directory off its search path
+(`-P`, from Python 3.11): then the host adds none either."""
+
 STARTUP_HOOKS = ("sitecustomize", "usercustomize")
 """Modules an interpreter imports as it starts, from wherever its search path
 finds them: a system's own may live outside the interpreter's directories."""
@@ -247,17 +251,17 @@ def execute(request):
     try:
         if kind == "module":
             sys.argv = [target, *arguments]
-            if not sys.flags.safe_path:
+            if not SAFE_PATH:
                 sys.path.insert(0, os.getcwd())
             runpy.run_module(target, run_name="__main__", alter_sys=True)
         elif kind == "script":
             sys.argv = [target, *arguments]
-            if not sys.flags.safe_path:
+            if not SAFE_PATH:
                 sys.path.insert(0, os.path.dirname(os.path.realpath(target)))
             runpy.run_path(target, run_name="__main__")
         else:
             sys.argv = ["-c", *arguments]
-            if not sys.flags.safe_path:
+            if not SAFE_PATH:
                 sys.path.insert(0, "")
             main = types.ModuleType("__main__")
             sys.modules["__main__"] = main

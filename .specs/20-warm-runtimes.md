@@ -112,6 +112,7 @@ The whole check, after an edit to a Python model, took about 2.7 s with no warm 
 - **The first run in a new host pays what a cold run pays.** With a list kept from before, the host imports it as it starts and then runs: 1.3 to 1.6 s measured, against 1.6 to 1.7 s cold.
 - **One run at a time in a host.** A second check asking while the first's run is in progress runs its own command.
 - **Threads a library starts are not seen on every system the same way.** On Linux the count is exact. On macOS it comes from `ps`; if that undercounts, a forked child can crash, which is handled as any failed run.
+- **Python 3.8 and later.** The host was run on 3.8, 3.10, 3.12, 3.13 and 3.14. On an interpreter it cannot run on, a run ends without an answer and the check runs it itself.
 - **The interpreter's own directories are trusted.** A file edited in place in `site-packages`, with no package installed or removed, does not change the stamp, as it does not for kept resolver outputs.
 
 ## Where the code is
