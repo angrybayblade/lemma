@@ -87,10 +87,10 @@ pub(crate) struct Engine {
     /// root, so its servers can be started again later with the same `PATH`
     /// and provider configuration.
     origins: HashMap<(PathBuf, PathBuf), Origin>,
-    /// Workspaces whose repositories are watched, by description, so a
-    /// graph's trace through one reads only what changed since the last.
-    /// `None` for one that could not be watched.
-    watched_workspaces: HashMap<PathBuf, Option<crate::watched::WatchedWorkspace>>,
+    /// Workspaces graphs have been traced through, by description, each
+    /// watched so the next trace reads only what changed since. `None` for
+    /// one that could not be watched.
+    traced_workspaces: HashMap<PathBuf, Option<crate::trace::TracedWorkspace>>,
 }
 
 /// The parts of a command that decide which language servers it can use.
@@ -146,7 +146,7 @@ impl Engine {
             warms_up_after_index: false,
             searches: HashMap::new(),
             origins: HashMap::new(),
-            watched_workspaces: HashMap::new(),
+            traced_workspaces: HashMap::new(),
         }
     }
 
@@ -159,7 +159,7 @@ impl Engine {
             warms_up_after_index: true,
             searches: HashMap::new(),
             origins: HashMap::new(),
-            watched_workspaces: HashMap::new(),
+            traced_workspaces: HashMap::new(),
         }
     }
 
@@ -851,7 +851,7 @@ impl Engine {
         let is_trace_skipped = match &workspace {
             Some(workspace) => {
                 let tracing = self.tracing(workspace, &root);
-                follow_workspace(&mut graph, &tracing, across, args.workspace.is_some())?
+                follow_workspace(&mut graph, tracing, across, args.workspace.is_some())?
             }
             None => false,
         };
@@ -863,40 +863,37 @@ impl Engine {
         })
     }
 
-    /// Where a trace through the workspace described at `workspace`
-    /// starts, from the index rooted at `index_root`, and what this process
-    /// keeps of the workspace for it to read through.
-    fn tracing<'a>(&mut self, workspace: &'a Path, index_root: &'a Path) -> Tracing<'a> {
+    /// Where a trace through the workspace described at `workspace` starts,
+    /// from the index rooted at `index_root`, with what this process keeps
+    /// of the workspace.
+    fn tracing<'a>(&'a mut self, workspace: &'a Path, index_root: &'a Path) -> Tracing<'a> {
         Tracing {
             workspace,
             index_root,
-            warm: self.kept_reads(workspace),
+            kept: self.traced_workspace(workspace),
         }
     }
 
-    /// What this process keeps of the repositories of the workspace
-    /// described at `workspace` between traces, if it is long-lived and
-    /// can watch them: watched from the first trace on.
-    fn kept_reads(&mut self, workspace: &Path) -> Option<Arc<lemma_graph::Warm>> {
+    /// What this process keeps of the workspace described at `workspace`
+    /// for traces through it, if it is long-lived and can watch it: watched
+    /// from the first trace on.
+    fn traced_workspace(&mut self, workspace: &Path) -> Option<&mut crate::trace::TracedWorkspace> {
         if !self.warms_up_after_index {
             return None;
         }
         let manifest = workspace
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
-        let watched = self
-            .watched_workspaces
+        self.traced_workspaces
             .entry(manifest)
             .or_insert_with_key(|manifest| {
-                crate::watched::WatchedWorkspace::start(manifest)
+                crate::trace::TracedWorkspace::start(manifest)
                     .inspect_err(|error| {
                         log::warn!("not watching {}: {error:#}", manifest.display());
                     })
                     .ok()
-            });
-        watched
+            })
             .as_mut()
-            .map(crate::watched::WatchedWorkspace::current)
     }
 
     /// The symbol a command is about, the index holding it, and what
@@ -2072,7 +2069,7 @@ fn drawing_for(format: GraphDrawing) -> output::Drawing {
 /// already knows, so the failure becomes a note.
 fn follow_workspace(
     graph: &mut lemma_model::UseGraph,
-    tracing: &Tracing<'_>,
+    tracing: Tracing<'_>,
     across: Across,
     is_requested: bool,
 ) -> anyhow::Result<bool> {
@@ -2102,8 +2099,8 @@ struct Tracing<'a> {
     workspace: &'a Path,
     /// The root of the index the graph's symbols are in.
     index_root: &'a Path,
-    /// What is kept of the workspace's repositories between traces.
-    warm: Option<Arc<lemma_graph::Warm>>,
+    /// What a process that stays keeps of the workspace between traces.
+    kept: Option<&'a mut crate::trace::TracedWorkspace>,
 }
 
 /// How far a graph follows callers across a workspace.
@@ -2118,7 +2115,7 @@ struct Across {
 /// operations their handlers serve and the code elsewhere calling them.
 fn add_system_trace(
     graph: &mut lemma_model::UseGraph,
-    tracing: &Tracing<'_>,
+    tracing: Tracing<'_>,
     across: Across,
 ) -> anyhow::Result<()> {
     if across.direction == lemma_query::Direction::Callees {
@@ -2139,25 +2136,14 @@ fn add_system_trace(
             })
         })
         .collect();
-    let clones = lemma_graph::repos::cache_directory();
-    let facts = crate::verify::facts_cache();
-    let caches = lemma_graph::TraceCaches {
-        clones: &clones,
-        facts: facts.as_ref(),
-        warm: tracing.warm.as_ref(),
+    let start = crate::trace::Start {
+        workspace: tracing.workspace,
+        index_root: tracing.index_root,
+        reached: &reached,
     };
-    let (workspace, index_root) = (tracing.workspace, tracing.index_root);
-    let trace = match lemma_souffle::SouffleEngine::find() {
-        Ok(souffle) => {
-            lemma_graph::trace_through_system(workspace, index_root, &reached, &caches, &souffle)?
-        }
-        Err(_) => lemma_graph::trace_through_system(
-            workspace,
-            index_root,
-            &reached,
-            &caches,
-            &lemma_logic::ReferenceEngine,
-        )?,
+    let trace = match tracing.kept {
+        Some(kept) => kept.trace(&start)?,
+        None => crate::trace::trace_once(&start)?,
     };
     let starts = reached
         .iter()
