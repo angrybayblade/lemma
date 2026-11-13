@@ -141,6 +141,16 @@ pub struct Rule {
     pub body: Vec<Literal>,
 }
 
+impl Rule {
+    /// The relations the rule's body reads, positively or negated.
+    pub fn read_relations(&self) -> impl Iterator<Item = &str> {
+        self.body.iter().filter_map(|literal| match literal {
+            Literal::Positive(atom) | Literal::Negative(atom) => Some(atom.relation.as_str()),
+            Literal::Compare { .. } => None,
+        })
+    }
+}
+
 /// Optional language features beyond core Datalog, which engines declare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[expect(
@@ -199,6 +209,27 @@ impl Program {
     /// The rules, in the order given.
     pub fn rules(&self) -> &[Rule] {
         &self.rules
+    }
+
+    /// The relations `outputs` depend on, themselves included: every
+    /// relation a rule deriving a needed relation reads, positively or
+    /// negated. Facts of any other relation cannot change `outputs`' rows.
+    pub fn needed_for(&self, outputs: &BTreeSet<String>) -> BTreeSet<String> {
+        let mut needed: BTreeSet<String> = outputs.clone();
+        loop {
+            let read: Vec<String> = self
+                .rules
+                .iter()
+                .filter(|rule| needed.contains(&rule.head.relation))
+                .flat_map(Rule::read_relations)
+                .map(str::to_owned)
+                .collect();
+            let before = needed.len();
+            needed.extend(read);
+            if needed.len() == before {
+                return needed;
+            }
+        }
     }
 
     /// Rule indexes grouped into strata, lowest first. Every relation a

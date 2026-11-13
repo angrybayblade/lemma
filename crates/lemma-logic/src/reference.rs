@@ -51,7 +51,7 @@ impl Engine for ReferenceEngine {
         // those relations depend on run, over the facts they read, and no
         // derivation is recorded: the asked-for rows are the same.
         let needed = (request.explain.is_empty() && !request.outputs.is_empty())
-            .then(|| needed_relations(program, &request.outputs));
+            .then(|| program.needed_for(&request.outputs));
         let mut state = State::new(facts, needed.as_ref());
         for stratum in program.strata() {
             let rules: Vec<(usize, &Rule)> = stratum
@@ -90,31 +90,6 @@ struct State {
     reasons: FxHashMap<Fact, Reason>,
     /// Whether derivations are recorded, for explaining facts.
     keeps_reasons: bool,
-}
-
-/// The relations a rule's body reads, positively or negated.
-fn read_relations(rule: &Rule) -> impl Iterator<Item = &str> {
-    rule.body.iter().filter_map(|literal| match literal {
-        Literal::Positive(atom) | Literal::Negative(atom) => Some(atom.relation.as_str()),
-        Literal::Compare { .. } => None,
-    })
-}
-
-/// The relations `outputs` depend on, themselves included: every relation a
-/// rule deriving a needed relation reads, positively or negated.
-fn needed_relations(program: &Program, outputs: &BTreeSet<String>) -> BTreeSet<String> {
-    let mut needed: BTreeSet<String> = outputs.clone();
-    loop {
-        let before = needed.len();
-        for rule in program.rules() {
-            if needed.contains(&rule.head.relation) {
-                needed.extend(read_relations(rule).map(str::to_owned));
-            }
-        }
-        if needed.len() == before {
-            return needed;
-        }
-    }
 }
 
 type Bindings<'a> = FxHashMap<&'a str, Value>;
@@ -630,7 +605,7 @@ mod tests {
     fn the_relations_an_output_needs_follow_negations_and_recursion() {
         let (program, _) = reachability();
 
-        let needed = needed_relations(&program, &std::iter::once("from_one".to_owned()).collect());
+        let needed = program.needed_for(&std::iter::once("from_one".to_owned()).collect());
 
         let expected: BTreeSet<String> = ["from_one", "path", "edge"]
             .into_iter()

@@ -392,7 +392,10 @@ fn run<E: Engine>(
     };
     let evaluation = evaluation_label(evaluability.as_ref());
     let focus = focus(evaluability.as_ref(), operations);
-    let mut writer = extract::FactWriter::new(&mut grammar);
+    let mut writer = match operations {
+        Some(_) => extract::FactWriter::for_outputs(&mut grammar, &options.relations),
+        None => extract::FactWriter::new(&mut grammar),
+    };
     let covered = extract::extract_all(manifest, &mut writer, options, listings, &focus)?;
     let facts = writer.counts;
     let request = match operations {
