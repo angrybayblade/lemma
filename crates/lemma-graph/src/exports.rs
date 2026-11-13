@@ -11,7 +11,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use lemma_model::{Export, ExportKind, ExportLink, FoundBy};
-use lemma_syntax::Extractor;
+use lemma_syntax::ExtractorPool;
+use rayon::prelude::*;
 
 use crate::GraphError;
 use crate::adapters;
@@ -46,7 +47,7 @@ pub fn exports(
     from_code: &BTreeMap<String, adapters::Generated>,
 ) -> Result<(Vec<Export>, Vec<ExportLink>), GraphError> {
     let mut found = Vec::new();
-    let mut extractor = Extractor::new().map_err(|source| GraphError::Syntax { source })?;
+    let extractors = ExtractorPool::new();
     for (name, service) in file
         .services
         .iter()
@@ -58,7 +59,7 @@ pub fn exports(
             service,
             from_code: from_code.get(name),
         };
-        found.extend(endpoints(&service_code, root, symbols, &mut extractor)?);
+        found.extend(endpoints(&service_code, root, symbols, &extractors)?);
         for path in &service.exports.symbols {
             found.extend(
                 (symbols.top_level)(path)
@@ -142,13 +143,13 @@ fn endpoints(
     input: &ServiceInput<'_>,
     root: &Path,
     symbols: &IndexedSymbols<'_>,
-    extractor: &mut Extractor,
+    extractors: &ExtractorPool,
 ) -> Result<Vec<Export>, GraphError> {
     let service = input.service;
     if service.exports.openapi.is_empty() && input.from_code.is_none() {
         return Ok(Vec::new());
     }
-    let (written, mut texts) = routes(service, root, extractor)?;
+    let (written, mut texts) = routes(service, root, extractors)?;
     let documents = service_documents(input, root)?;
     let registered: BTreeMap<(String, String), (String, u32)> =
         documents.iter().flat_map(adapters::handler_sites).collect();
@@ -280,7 +281,7 @@ fn unnamed_operation_name(method: &str, template: &str) -> String {
 /// [`lemma_http::implied_aliases`]).
 fn route_aliases(
     documents: &[Vec<lemma_http::Operation>],
-    written: &[(String, String, Route)],
+    written: &[Written],
 ) -> BTreeMap<String, String> {
     let operations: Vec<Vec<(String, String)>> = documents
         .iter()
@@ -301,7 +302,7 @@ fn route_aliases(
 /// Routes by method and path, including the paths aliases also serve them
 /// at; the first route written for a path wins.
 fn served_routes(
-    written: Vec<(String, String, Route)>,
+    written: Vec<Written>,
     aliases: &BTreeMap<String, String>,
 ) -> BTreeMap<(String, String), Route> {
     let mut served = BTreeMap::new();
@@ -315,51 +316,76 @@ fn served_routes(
     served
 }
 
-/// The routes a service's code writes, as method, canonical path and where,
-/// and the texts of the files kept for finding handlers.
-type Routes = (Vec<(String, String, Route)>, BTreeMap<String, String>);
+/// A route as code writes it: method, canonical path and where.
+type Written = (String, String, Route);
 
-fn routes(service: &Service, root: &Path, extractor: &mut Extractor) -> Result<Routes, GraphError> {
+/// The routes a service's code writes, and the texts of the files kept for
+/// finding handlers.
+type Routes = (Vec<Written>, BTreeMap<String, String>);
+
+fn routes(
+    service: &Service,
+    root: &Path,
+    extractors: &ExtractorPool,
+) -> Result<Routes, GraphError> {
     let files = lemma_http::read_files(root, None, &service.index.include, &CODE_EXTENSIONS)
         .map_err(|source| GraphError::Source { source })?;
-    let mut found = Vec::new();
-    let mut texts = BTreeMap::new();
-    for file in files
+    let code: Vec<&lemma_http::SourceFile> = files
         .iter()
         .filter(|file| !lemma_http::is_test_file(&file.path))
-    {
-        let facts = lemma_http::extract(
-            &file.path,
-            &file.contents,
-            &lemma_http::CodeOptions::default(),
-            extractor,
-        )
+        .collect();
+    // Parsed on every core, and taken in the files' order, so the routes
+    // and the first error are those reading the files one by one gives.
+    let read: Vec<Result<Vec<Written>, GraphError>> = code
+        .par_iter()
+        .map(|file| parsed_routes(file, extractors))
+        .collect();
+    let mut found = Vec::new();
+    let mut texts = BTreeMap::new();
+    for (file, declared) in code.iter().zip(read) {
+        let declared = declared?;
+        // Kept for finding handlers: files that declare routes, and files
+        // that write paths a helper may register.
+        if !declared.is_empty() || file.contents.contains("'/") || file.contents.contains("\"/") {
+            texts.insert(file.path.clone(), file.contents.clone());
+        }
+        found.extend(declared);
+    }
+    Ok((found, texts))
+}
+
+/// The routes `file`'s code writes with a method.
+fn parsed_routes(
+    file: &lemma_http::SourceFile,
+    extractors: &ExtractorPool,
+) -> Result<Vec<Written>, GraphError> {
+    let facts = extractors
+        .with(|extractor| {
+            lemma_http::extract(
+                &file.path,
+                &file.contents,
+                &lemma_http::CodeOptions::default(),
+                extractor,
+            )
+        })
+        .map_err(|source| GraphError::Syntax { source })?
         .map_err(|source| GraphError::Schema {
             message: format!("could not read routes in {}: {source}", file.path),
         })?;
-        let declared_here: Vec<_> = facts
-            .method_paths
-            .iter()
-            .filter(|item| item.method != "*")
-            .collect();
-        // Kept for finding handlers: files that declare routes, and files
-        // that write paths a helper may register.
-        if !declared_here.is_empty()
-            || file.contents.contains("'/")
-            || file.contents.contains("\"/")
-        {
-            texts.insert(file.path.clone(), file.contents.clone());
-        }
-        for declared in declared_here {
+    let routes = facts
+        .method_paths
+        .iter()
+        .filter(|item| item.method != "*")
+        .map(|declared| {
             let route = Route {
                 file: file.path.clone(),
                 line: declared.location.line,
                 template: declared.template.clone(),
             };
-            found.push((declared.method.clone(), declared.path.clone(), route));
-        }
-    }
-    Ok((found, texts))
+            (declared.method.clone(), declared.path.clone(), route)
+        })
+        .collect();
+    Ok(routes)
 }
 
 /// What was found for a documented operation: its handler's file and
