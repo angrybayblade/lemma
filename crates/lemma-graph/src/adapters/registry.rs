@@ -85,6 +85,17 @@ pub(super) enum Script<'a> {
 }
 
 impl Script<'_> {
+    /// Whether it reads TypeScript, so that a change syntax can follow in
+    /// TypeScript is all that can change its document: a built-in adapter
+    /// run with Bun. A command may read anything.
+    pub(super) fn reads_typescript(&self) -> bool {
+        match self {
+            Script::BuiltIn(built_in) => built_in.interpreter == Interpreter::Bun,
+            Script::InRepository { interpreter, .. } => *interpreter == Interpreter::Bun,
+            Script::Command(_) => false,
+        }
+    }
+
     /// What of the script decides its documents beyond the configuration
     /// and the code: a built-in script's text. A script in the repository
     /// is part of the code, so its tree already decides.
@@ -160,6 +171,20 @@ pub(super) fn invocation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_adapters_reading_typescript_are_patched() {
+        let hono = named("hono-zod-openapi");
+        let fastapi = named("fastapi");
+        let command = OperationsFrom {
+            command: Some("make spec".to_owned()),
+            ..OperationsFrom::default()
+        };
+
+        assert!(script(&hono).unwrap().reads_typescript());
+        assert!(!script(&fastapi).unwrap().reads_typescript());
+        assert!(!script(&command).unwrap().reads_typescript());
+    }
 
     fn named(adapter: &str) -> OperationsFrom {
         OperationsFrom {

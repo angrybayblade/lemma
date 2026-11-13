@@ -284,6 +284,13 @@ impl<'a> Adapter<'a> {
         output: &Path,
         working: &cache::WorkingChanges,
     ) -> Result<Option<Generated>, GraphError> {
+        // Patching reads zod schemas, and takes a change to files in other
+        // languages as one the code it reads never imports: true only of an
+        // adapter reading TypeScript. A command, or a Python or Go adapter,
+        // reads code patching cannot see, so it always runs.
+        if !self.script.reads_typescript() {
+            return Ok(None);
+        }
         let started = std::time::Instant::now();
         let base_output = self.output(&working.commit_state());
         if !base_output.exists() {

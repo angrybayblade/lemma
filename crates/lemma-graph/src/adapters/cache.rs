@@ -14,7 +14,9 @@ use crate::config::{OperationsFrom, Runtime};
 use crate::repos;
 
 /// Bumped when what adapters write, or how Lemma reads it, changes.
-const PROTOCOL: &str = "2";
+// 3: a document patched from its base for a change in another language,
+// kept under the change's key, may be wrong; such documents are dropped.
+const PROTOCOL: &str = "3";
 
 /// The part of a key that names the adapter.
 pub(super) fn adapter_key(from: &OperationsFrom, runtime: &Runtime, script: &str) -> String {
