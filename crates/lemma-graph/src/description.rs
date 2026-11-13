@@ -117,6 +117,9 @@ fn configuration_findings(repos: &BTreeMap<String, Repo>) -> Vec<DescriptionFind
     for (name, repo) in repos {
         let checkout = &repo.checkouts[HEAD];
         let tracked = tracked_files(checkout);
+        let tracked: Option<Vec<&str>> = tracked
+            .as_ref()
+            .map(|files| files.iter().map(String::as_str).collect());
         for (service_name, service) in &repo.files[HEAD].services {
             let location = format!("{name}:{service_name}");
             if service_name.starts_with('#') {
@@ -124,7 +127,7 @@ fn configuration_findings(repos: &BTreeMap<String, Repo>) -> Vec<DescriptionFind
                 continue;
             }
             findings.extend(empty_service(&location, service));
-            findings.extend(selection_findings(&location, service, tracked.as_ref()));
+            findings.extend(selection_findings(&location, service, tracked.as_deref()));
             findings.extend(document_findings(&location, service, checkout));
             findings.extend(missing_runtimes(&location, &service.runtime, checkout));
         }
@@ -165,11 +168,11 @@ fn empty_service(location: &str, service: &Service) -> Option<DescriptionFinding
 }
 
 /// `pattern`'s matches among `files`: a directory or file, or a glob.
-fn matches_any(pattern: &str, files: &BTreeSet<String>) -> bool {
+fn matches_any(pattern: &str, files: &[&str]) -> bool {
     let directory = format!("{}/", pattern.trim_end_matches('/'));
     if files
         .iter()
-        .any(|file| file == pattern || file.starts_with(&directory))
+        .any(|file| *file == pattern || file.starts_with(&directory))
     {
         return true;
     }
@@ -182,7 +185,7 @@ fn matches_any(pattern: &str, files: &BTreeSet<String>) -> bool {
 fn selection_findings(
     location: &str,
     service: &Service,
-    tracked: Option<&BTreeSet<String>>,
+    tracked: Option<&[&str]>,
 ) -> Vec<DescriptionFinding> {
     let Some(tracked) = tracked else {
         return Vec::new();
@@ -361,14 +364,17 @@ fn is_inferred(declared: &str, inferred: &BTreeSet<(&str, &str)>) -> bool {
 
 /// What a change did to the description that `lemma check` must report:
 /// documents it deleted and `include`s it emptied.
-pub(crate) fn introduced_by_change(repos: &BTreeMap<String, Repo>, level: Level) -> Vec<Finding> {
+pub(crate) fn introduced_by_change(
+    repos: &BTreeMap<String, Repo>,
+    listings: &lemma_http::Listings,
+    level: Level,
+) -> Vec<Finding> {
     let severity = match level {
         Level::Audit => Severity::Warning,
         Level::Check | Level::Strict => Severity::Error,
     };
     // A repository outside the change reads the same at both snapshots, so
-    // it can introduce nothing, and listing its files on every check would
-    // be nearly all this function costs.
+    // it can introduce nothing.
     let changed: Vec<(&String, &Repo)> = repos
         .iter()
         .filter(|(_, repo)| repo.checkouts[BASE] != repo.checkouts[HEAD])
@@ -376,7 +382,7 @@ pub(crate) fn introduced_by_change(repos: &BTreeMap<String, Repo>, level: Level)
     let at = |snapshot: usize| -> BTreeSet<DescriptionFinding> {
         changed
             .iter()
-            .flat_map(|&(name, repo)| change_findings(name, repo, snapshot))
+            .flat_map(|&(name, repo)| change_findings(name, repo, snapshot, listings))
             .collect()
     };
     let after = at(HEAD);
@@ -402,22 +408,60 @@ pub(crate) fn introduced_by_change(repos: &BTreeMap<String, Repo>, level: Level)
         .collect()
 }
 
-/// The findings of `repo` at `snapshot` a change to it can cause.
-fn change_findings(name: &str, repo: &Repo, snapshot: usize) -> Vec<DescriptionFinding> {
+/// The findings of `repo` at `snapshot` a change to it can cause. Its
+/// tracked files come from `listings`, where the check's other passes have
+/// listed them already: a large repository takes Git long to list again.
+fn change_findings(
+    name: &str,
+    repo: &Repo,
+    snapshot: usize,
+    listings: &lemma_http::Listings,
+) -> Vec<DescriptionFinding> {
     let checkout = &repo.checkouts[snapshot];
-    let tracked = tracked_files(checkout);
+    let listed = listed_tracked(checkout, listings);
+    let tracked: Option<Vec<&str>> = listed.as_ref().map(ListedTracked::paths);
     let mut findings = Vec::new();
     for (service_name, service) in &repo.files[snapshot].services {
         if service_name.starts_with('#') {
             continue;
         }
         let location = format!("{name}:{service_name}");
-        findings.extend(selection_findings(&location, service, tracked.as_ref()));
+        findings.extend(selection_findings(&location, service, tracked.as_deref()));
         for document in &service.exports.openapi {
-            if matches!(checkout.read(document), Ok(None)) {
+            if matches!(checkout.has(document), Ok(false)) {
                 findings.push(missing_document(&location, document));
             }
         }
     }
     findings
+}
+
+/// A checkout's listing, and the untracked files in it.
+struct ListedTracked {
+    files: std::sync::Arc<Vec<lemma_http::ListedFile>>,
+    untracked: std::sync::Arc<Vec<String>>,
+}
+
+impl ListedTracked {
+    /// The files Git tracks among those listed.
+    fn paths(&self) -> Vec<&str> {
+        let untracked: BTreeSet<&str> = self.untracked.iter().map(String::as_str).collect();
+        self.files
+            .iter()
+            .map(|file| file.path.as_str())
+            .filter(|path| !untracked.contains(path))
+            .collect()
+    }
+}
+
+/// The listing of `checkout`, with what in it Git does not track; `None`
+/// where it cannot be listed.
+fn listed_tracked(checkout: &Checkout, listings: &lemma_http::Listings) -> Option<ListedTracked> {
+    let commit = checkout.commit.as_deref();
+    let files = listings.get(&checkout.root, commit).ok()?;
+    let untracked = match commit {
+        Some(_) => std::sync::Arc::default(),
+        None => listings.untracked(&checkout.root).ok()?,
+    };
+    Some(ListedTracked { files, untracked })
 }

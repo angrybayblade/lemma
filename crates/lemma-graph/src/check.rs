@@ -473,7 +473,8 @@ fn link_and_trace<E: Engine>(
         ),
     };
     if options.change.is_some() {
-        findings.extend(crate::description::introduced_by_change(repos, level));
+        let introduced = crate::description::introduced_by_change(repos, shared.listings, level);
+        findings.extend(introduced);
     }
     log::info!(
         "checked {} declared links: {} findings",
