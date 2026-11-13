@@ -574,7 +574,7 @@ fn exists_at_any(
     file: &str,
 ) -> Result<bool, VerifyError> {
     for commit in commits {
-        if lemma_http::read_file(repository, *commit, file)?.is_some() {
+        if lemma_http::file_exists(repository, *commit, file)? {
             return Ok(true);
         }
     }
