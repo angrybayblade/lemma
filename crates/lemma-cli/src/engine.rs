@@ -1116,6 +1116,15 @@ impl Engine {
 
     /// A line per running language server: what it serves, how long it has
     /// been idle, whether it is paused, and its memory.
+    /// The memory the language servers hold, as far as it can be read.
+    pub fn servers_memory_bytes(&mut self) -> u64 {
+        self.pool
+            .status(Instant::now())
+            .iter()
+            .filter_map(|server| server.memory_bytes)
+            .sum()
+    }
+
     pub fn status(&mut self) -> String {
         let mut text = self.server_status();
         text.push_str(&self.watch_status());

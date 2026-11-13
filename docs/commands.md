@@ -285,7 +285,13 @@ warm_on_activity = true    # start a project's servers again when its files chan
 
 [sentry]
 auto_attach = false        # attach sentry to a workspace on its first `lemma check`
+
+[runtime]
+memory = "512MB"           # what warm runtimes may hold: "0" keeps none, "none" sets no limit
+stop_after = "30m"         # stop an idle warm runtime
 ```
+
+**Warm runtimes.** While the daemon runs, `lemma check` asks it to run a repository's Python (a `json.command("{python} -m …")` or `{python} script.py` resolver, or a type read with Pydantic) in a process that has already imported the repository's dependencies, so a run pays only for the repository's own modules. It prints what a new interpreter would, and anything that goes wrong runs the command as before. `memory` is the trade: the more a runtime may hold, the less a run waits. On one service with about 1,700 dependency modules, a 1.6 s resolver ran in 1.2 s with `"24MB"`, 0.7 s with `"96MB"` and 0.2 s once it could hold all 140 MB. A project's `.lemma/config.toml` may set `[runtime]` too, and overrides this file setting by setting. `LEMMA_RUNTIME=off` keeps none warm. `lemma daemon status` lists each one with the memory it holds. A check never starts the daemon for this.
 
 Under each report it answers, sentry adds a line `sentry token: <token>`, and JSON output a `sentry` object; the findings and the exit code are the same as a check run on its own. A token stays the same while nothing a check reads changes. Sentry answers a check only from a daemon already running; `lemma check` never starts one for it. A check that asks for logs (`-l`) or for anchors (`--anchors`) runs in its own process, and `LEMMA_SENTRY=off` keeps every check there. A check sentry answers runs resolvers, adapters and checkers with the environment of the process that asked, as a check run on its own does. `auto_attach` applies only in the user's own settings, and never when `CI` is set. `LEMMA_DAEMON_SOCKET` names another socket for the daemon, to run a separate one.
 

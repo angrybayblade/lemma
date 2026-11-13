@@ -149,6 +149,7 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | candidate | A suspected gap in a description, found by a pattern rather than shown from the code; reported, and never fails a command | guess, hint |
 | harness | The program in a language pack that runs one operation's handler for a case, answers chosen calls in their place, and reports what happened | runner, simulator, driver |
 | replay case | The language-neutral interface a harness speaks: the handler, its input, the links to answer and their answers, and what was observed | scenario, fixture |
+| warm runtime | A service's interpreter kept by the daemon with its dependencies imported, which a check's runs of the repository's Python fork from | fork server, worker, warm interpreter |
 | language pack | An installable directory holding a manifest and a harness for one language; always written in full, never "pack", which names no Lemma concept | plugin, extension, package |
 | generator | A command Lemma runs to write an `OpenAPI` document from code, `command(...)` or a built-in adapter, kept by its inputs | script, hook, builder |
 | inputs | The paths a generator's document depends on, which key the document it writes; declared by the user and not checked | triggers, cache keys, watch list |

@@ -62,7 +62,7 @@ fn verify(args: &VerifyArgs, lsp: &LanguageServers) -> anyhow::Result<Descriptio
         select: None,
         warm: None,
         environment: None,
-        runtime: None,
+        runtime: crate::daemon::warm_runtime(directory),
     };
     let mut references = CheckReferences::new(lsp.asks_daemon, lsp.providers_file.clone());
     let report = if let Ok(souffle) = SouffleEngine::find() {

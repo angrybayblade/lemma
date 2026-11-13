@@ -18,6 +18,7 @@ mod engine;
 mod logging;
 mod mcp;
 mod output;
+mod runtime;
 mod selection;
 #[cfg(unix)]
 mod sentry;

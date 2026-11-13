@@ -260,6 +260,7 @@ pub(crate) fn serve(
     }
     send_maintenance_ticks(socket.clone());
     let mut sentry: Option<Sentry> = None;
+    let runtimes = start_runtimes(&socket);
 
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else {
@@ -273,9 +274,13 @@ pub(crate) fn serve(
             continue;
         };
         let is_status = matches!(request, Request::Status);
+        if matches!(request, Request::Maintain) {
+            maintain_runtimes(&runtimes, &mut engine, &settings.config);
+        }
         let mut reply = reply_to(request, &mut engine, &mut settings, &last_request, logger);
-        if let (true, Some(sentry), Reply::Done { stdout, .. }) = (is_status, &sentry, &mut reply) {
-            stdout.push_str(&sentry.status());
+        if let (true, Reply::Done { stdout, .. }) = (is_status, &mut reply) {
+            stdout.push_str(&runtimes.status());
+            stdout.push_str(&sentry.as_ref().map(Sentry::status).unwrap_or_default());
         }
         let is_exiting = matches!(reply, Reply::Stopping | Reply::Restart);
         // A caller that gave up is not a reason to stop serving others.
@@ -289,12 +294,57 @@ pub(crate) fn serve(
     // without this daemon or starts another, which waits for the lock.
     drop(listener);
     let _ = fs::remove_file(&socket);
+    let _ = fs::remove_file(crate::runtime::socket_beside(&socket));
     drop(sentry);
     engine.shutdown();
     // Held until the process ends, when the system lets go of it: that is
     // the moment `lemma daemon stop` waits for.
     std::mem::forget(lock);
     Ok(())
+}
+
+/// The daemon's warm runtimes, listening for checks beside `socket`. One
+/// that cannot listen only leaves checks to run their own commands.
+fn start_runtimes(socket: &Path) -> Arc<crate::runtime::Runtimes> {
+    let directory = lemma_graph::repos::cache_directory().join("runtimes");
+    let runtimes = Arc::new(crate::runtime::Runtimes::new(directory, build_id()));
+    if let Err(error) = runtimes.listen(&crate::runtime::socket_beside(socket)) {
+        log::warn!("warm runtimes are not listening: {error}");
+    }
+    runtimes
+}
+
+/// Stops the warm runtimes idle longer than they are kept, and all of them
+/// when they and the language servers together hold more than the servers'
+/// memory budget: a runtime is rebuilt in a second, a server in many.
+fn maintain_runtimes(runtimes: &crate::runtime::Runtimes, engine: &mut Engine, config: &Config) {
+    runtimes.stop_idle();
+    let Some(budget) = config.idle_policy.memory_budget_bytes else {
+        return;
+    };
+    let held = runtimes.memory_bytes();
+    if held > 0 && engine.servers_memory_bytes().saturating_add(held) > budget {
+        runtimes.stop_all();
+    }
+}
+
+/// The running daemon's warm runtimes, for a check of the description in
+/// `directory`: `None` when no daemon runs, or the settings keep none warm.
+/// No daemon is started for them.
+pub(crate) fn warm_runtime(directory: &Path) -> Option<lemma_graph::runtime::Runtime> {
+    let allowance = match config::runtime_allowance(directory) {
+        Ok(allowance) => allowance,
+        Err(error) => {
+            log::warn!("warm runtimes are not used: {error:#}");
+            return None;
+        }
+    };
+    let socket = crate::runtime::socket_beside(&socket_path().ok()?);
+    if allowance.memory_bytes == 0 || !socket.exists() {
+        return None;
+    }
+    let asked = crate::runtime::Asked::new(socket, build_id(), allowance);
+    Some(lemma_graph::runtime::Runtime(Arc::new(asked)))
 }
 
 /// Serves what is sentry's: a check asked of it, attaching or detaching it,
