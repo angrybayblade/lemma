@@ -24,6 +24,7 @@ mod selection;
 mod sentry;
 #[cfg(unix)]
 mod service;
+mod trace;
 mod verify;
 mod watched;
 

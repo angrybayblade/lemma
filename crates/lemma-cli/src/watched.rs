@@ -6,7 +6,9 @@
 //! a change only drops what was kept of the files it touched, so whoever
 //! reads next reads those again and nothing else.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,6 +26,7 @@ const BULK_PATHS: usize = 1000;
 /// read from them: dropped, repository by repository, as their files
 /// change.
 pub(crate) struct WatchedWorkspace {
+    manifest: PathBuf,
     watched: Vec<Watched>,
     warm: Arc<lemma_graph::Warm>,
 }
@@ -50,9 +53,24 @@ impl WatchedWorkspace {
     /// after a read goes unseen.
     pub(crate) fn start(manifest: &Path) -> anyhow::Result<Self> {
         Ok(Self {
+            manifest: manifest.to_path_buf(),
             watched: watch_repositories(manifest)?,
             warm: Arc::default(),
         })
+    }
+
+    /// A number that changes whenever a file a check can depend on may
+    /// have, as of the last [`WatchedWorkspace::collect`]: each
+    /// repository's generation and the workspace's own description.
+    /// Something worked out from the workspace holds while it stays the
+    /// same.
+    pub(crate) fn state(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        for watched in &self.watched {
+            watched.generation.hash(&mut hasher);
+        }
+        manifest_stamp(&self.manifest).hash(&mut hasher);
+        hasher.finish()
     }
 
     /// What is kept of what was read.
@@ -157,6 +175,21 @@ fn watch_repositories(manifest: &Path) -> anyhow::Result<Vec<Watched>> {
     Ok(watched)
 }
 
+/// The size and modification time of the workspace's own description
+/// (`mod.lm` beside `manifest`), which sits beside, not inside, the
+/// repositories watched.
+fn manifest_stamp(manifest: &Path) -> (u64, u128) {
+    let directory = manifest.parent().unwrap_or(manifest);
+    std::fs::metadata(directory.join("mod.lm")).map_or((0, 0), |metadata| {
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        (metadata.len(), modified)
+    })
+}
+
 /// One watched repository.
 pub(crate) struct Watched {
     root: PathBuf,
@@ -188,11 +221,6 @@ impl Watched {
     /// The repository's directory as a check names it.
     pub(crate) fn spelled(&self) -> &Path {
         &self.spelled
-    }
-
-    /// How many times a file a check can depend on may have changed.
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation
     }
 
     /// How many times only files no check reads changed.
@@ -399,19 +427,33 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let manifest = workspace(root.path());
         let mut watched = WatchedWorkspace::start(&manifest).unwrap();
-        let generations = |watched: &WatchedWorkspace| -> Vec<u64> {
-            watched
-                .repositories()
-                .iter()
-                .map(Watched::generation)
-                .collect()
-        };
-
         let first = watched.current();
-        let before = generations(&watched);
+        let before = watched.state();
         let second = watched.current();
 
         assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(generations(&watched), before);
+        assert_eq!(watched.state(), before);
+    }
+
+    #[test]
+    fn a_change_to_a_repository_or_the_description_moves_the_state() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = workspace(root.path());
+        let mut watched = WatchedWorkspace::start(&manifest).unwrap();
+        watched.current();
+        let at_first = watched.state();
+
+        write(&root.path().join("web/src/refund.ts"), "export {};\n");
+        watched.current();
+        let after_a_file = watched.state();
+        write(
+            &manifest,
+            "module shop\n\nworkspace {\n    repo web = local(\"web\")\n    config: { level: check }\n}\n",
+        );
+        watched.current();
+        let after_the_description = watched.state();
+
+        assert_ne!(after_a_file, at_first);
+        assert_ne!(after_the_description, after_a_file);
     }
 }
