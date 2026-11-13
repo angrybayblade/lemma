@@ -272,6 +272,8 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 
    **A second round, stopped early (build 0359bd6),** showed the same. The tasks that finished differ between the arms, so it gives no like-for-like comparison. Checks are a small part of an agent's run and the model most of it, which is the ceiling on what sentry can save an agent.
 
+7. **Graph traces read through what is kept (2026-11-13).** A `lemma graph` in a workspace follows callers across it by the same inference a check runs, and read everything for it on every ask: listing each repository through Git, the services' documents, the generated clients and the consumer files' facts. In the daemon it now reads through a `lemma_graph::Warm` of its own, kept per workspace with a watcher on each repository (`watched.rs`, which sentry's worker uses too). An ask waits for every watcher's barrier and drops what changed, as a check asked of sentry does; nothing is answered from memory, so the trace is evaluated each time over what is kept. It needs no sentry attached and keeps no answers. A workspace that cannot be watched is traced as before. On a six-repository workspace a repeated ask went from a median of 0.63 s to 0.34 s, with the same output, and edits made between asks gave the answer of a process that keeps nothing.
+
 **Later:**
 
 - Lookups that know the working copy.

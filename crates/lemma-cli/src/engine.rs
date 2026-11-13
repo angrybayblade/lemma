@@ -87,6 +87,10 @@ pub(crate) struct Engine {
     /// root, so its servers can be started again later with the same `PATH`
     /// and provider configuration.
     origins: HashMap<(PathBuf, PathBuf), Origin>,
+    /// Workspaces whose repositories are watched, by description, so a
+    /// graph's trace through one reads only what changed since the last.
+    /// `None` for one that could not be watched.
+    watched_workspaces: HashMap<PathBuf, Option<crate::watched::WatchedWorkspace>>,
 }
 
 /// The parts of a command that decide which language servers it can use.
@@ -142,6 +146,7 @@ impl Engine {
             warms_up_after_index: false,
             searches: HashMap::new(),
             origins: HashMap::new(),
+            watched_workspaces: HashMap::new(),
         }
     }
 
@@ -154,6 +159,7 @@ impl Engine {
             warms_up_after_index: true,
             searches: HashMap::new(),
             origins: HashMap::new(),
+            watched_workspaces: HashMap::new(),
         }
     }
 
@@ -844,8 +850,8 @@ impl Engine {
         let root = PathBuf::from(&snapshot.snapshot.root);
         let is_trace_skipped = match &workspace {
             Some(workspace) => {
-                let is_requested = args.workspace.is_some();
-                follow_workspace(&mut graph, workspace, &root, across, is_requested)?
+                let tracing = self.tracing(workspace, &root);
+                follow_workspace(&mut graph, &tracing, across, args.workspace.is_some())?
             }
             None => false,
         };
@@ -855,6 +861,42 @@ impl Engine {
         } else {
             0
         })
+    }
+
+    /// Where a trace through the workspace described at `workspace`
+    /// starts, from the index rooted at `index_root`, and what this process
+    /// keeps of the workspace for it to read through.
+    fn tracing<'a>(&mut self, workspace: &'a Path, index_root: &'a Path) -> Tracing<'a> {
+        Tracing {
+            workspace,
+            index_root,
+            warm: self.kept_reads(workspace),
+        }
+    }
+
+    /// What this process keeps of the repositories of the workspace
+    /// described at `workspace` between traces, if it is long-lived and
+    /// can watch them: watched from the first trace on.
+    fn kept_reads(&mut self, workspace: &Path) -> Option<Arc<lemma_graph::Warm>> {
+        if !self.warms_up_after_index {
+            return None;
+        }
+        let manifest = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+        let watched = self
+            .watched_workspaces
+            .entry(manifest)
+            .or_insert_with_key(|manifest| {
+                crate::watched::WatchedWorkspace::start(manifest)
+                    .inspect_err(|error| {
+                        log::warn!("not watching {}: {error:#}", manifest.display());
+                    })
+                    .ok()
+            });
+        watched
+            .as_mut()
+            .map(crate::watched::WatchedWorkspace::current)
     }
 
     /// The symbol a command is about, the index holding it, and what
@@ -2030,12 +2072,11 @@ fn drawing_for(format: GraphDrawing) -> output::Drawing {
 /// already knows, so the failure becomes a note.
 fn follow_workspace(
     graph: &mut lemma_model::UseGraph,
-    workspace: &Path,
-    index_root: &Path,
+    tracing: &Tracing<'_>,
     across: Across,
     is_requested: bool,
 ) -> anyhow::Result<bool> {
-    let Err(error) = add_system_trace(graph, workspace, index_root, across) else {
+    let Err(error) = add_system_trace(graph, tracing, across) else {
         return Ok(false);
     };
     if is_requested {
@@ -2055,6 +2096,16 @@ fn is_unanswered(graph: &lemma_model::UseGraph, is_trace_skipped: bool) -> bool 
     graph.relationships.is_empty() && graph.notes.len() > usize::from(is_trace_skipped)
 }
 
+/// Where a graph's trace through a workspace starts and what it reads.
+struct Tracing<'a> {
+    /// The workspace's description.
+    workspace: &'a Path,
+    /// The root of the index the graph's symbols are in.
+    index_root: &'a Path,
+    /// What is kept of the workspace's repositories between traces.
+    warm: Option<Arc<lemma_graph::Warm>>,
+}
+
 /// How far a graph follows callers across a workspace.
 #[derive(Clone, Copy)]
 struct Across {
@@ -2067,8 +2118,7 @@ struct Across {
 /// operations their handlers serve and the code elsewhere calling them.
 fn add_system_trace(
     graph: &mut lemma_model::UseGraph,
-    workspace: &Path,
-    index_root: &Path,
+    tracing: &Tracing<'_>,
     across: Across,
 ) -> anyhow::Result<()> {
     if across.direction == lemma_query::Direction::Callees {
@@ -2094,7 +2144,9 @@ fn add_system_trace(
     let caches = lemma_graph::TraceCaches {
         clones: &clones,
         facts: facts.as_ref(),
+        warm: tracing.warm.as_ref(),
     };
+    let (workspace, index_root) = (tracing.workspace, tracing.index_root);
     let trace = match lemma_souffle::SouffleEngine::find() {
         Ok(souffle) => {
             lemma_graph::trace_through_system(workspace, index_root, &reached, &caches, &souffle)?

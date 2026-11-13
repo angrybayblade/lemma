@@ -27,6 +27,8 @@ The daemon watches each indexed directory, so it knows which paths changed witho
 - It lists only directories with changes again, with the usual ignore rules. A changed `.gitignore` means a full walk.
 - If nothing changed and the commit has not moved, it returns the stored snapshot without reading or writing anything.
 
+In a workspace, `lemma graph` follows callers into other repositories, which reads their file listings, API documents and calling code. The daemon watches the workspace's repositories too and keeps what it read, so the next graph reads only what changed since.
+
 On a 73,000-file repository a re-index with nothing changed takes about 32 ms, and one after a small edit about 85 ms. See [Performance](performance.md).
 
 ## Stale results
