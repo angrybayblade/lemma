@@ -2,6 +2,8 @@
 
 Captured: 2026-10-28
 
+Updated 2026-11-13: [document 20](20-warm-runtimes.md) records warm runtimes: the daemon keeps a repository's Python interpreter with its dependencies imported, and a check's resolvers and Pydantic reads fork from it. How much memory they may hold is the user's to set.
+
 Updated 2026-11-12: [document 19](19-generated-documents.md) lets an `http.openapi` document name the command that generates it, so handler edits are checked before the document is regenerated, and keys a command's document by the `inputs` it declares. Its scheduling is parked.
 
 Updated 2026-11-10: [document 18](18-behavior-harnesses.md) proposes running behaviors in any language. Lemma core would define one interface for running a case, and harnesses would come in language packs that users install as they need them. It is parked with its open questions.
@@ -45,6 +47,7 @@ These notes consolidate the design discussion leading to Lemma. They include acc
 17. [The Lemma store](17-lemma-store.md)
 18. [Behavior harnesses and language packs](18-behavior-harnesses.md)
 19. [Generated documents](19-generated-documents.md)
+20. [Warm runtimes](20-warm-runtimes.md)
 
 ## Status conventions
 

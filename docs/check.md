@@ -125,6 +125,8 @@ An operation is something a service provides or calls, with a request and a resp
 
 Lemma keeps a command's output, and a Python type read with Pydantic, in its cache for the commit they were produced at, by the code's Git tree, the command and its environment, the interpreter and its installed packages when Python runs, and `PATH`, `VIRTUAL_ENV` and `PYTHONPATH`; a commit not checked out runs in one worktree Lemma reuses per repository. Pass `cache: false` to a `json.command` whose output depends on anything else, such as a running service or files Git ignores.
 
+When the code changed and Python has to run, a running daemon keeps the interpreter warm: it has imported the repository's dependencies already, and each run starts from there. A command written as `{python} -m module` or `{python} script.py`, with plain arguments, runs that way; one with a pipe, a quote or another program in front runs in a new interpreter each time. See [warm runtimes](commands.md#settings).
+
 `{python}`, `{node}`, `{go}` and `{cargo}` in a command are the service's `runtime`, which defaults to `python3`, `node`, `go` and `cargo`. A relative interpreter such as `.venv/bin/python` is the repository's own environment. `runtime: { env: { PYTHONPATH: "src" } }` sets environment variables for every command.
 
 Each language's reader follows its serializer's rules, because a type is read differently on the sending and receiving sides:

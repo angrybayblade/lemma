@@ -86,7 +86,7 @@ Inputs are set as they change, and results are computed only when asked for. Thi
 | Code facts per file | lists every file, hashes it, decodes kept unit records, parses misses | decoded facts by content hash, in memory | a batch reports the file |
 | Index terms for change-driven selection | reads kept term segments | in memory | with the file's facts |
 | The base side | reads the repository at the merge-base | kept | the merge-base moves |
-| Resolver outputs | read from the on-disk cache by repository state; run on a miss | nothing ahead; read the same way at the ask | — |
+| Resolver outputs | read from the on-disk cache by repository state; run on a miss, in a [warm runtime](20-warm-runtimes.md) when the daemon has one | nothing ahead; read the same way at the ask | — |
 | Answers | — | the report of each recent ask, by the fingerprint of its inputs | — |
 
 Preparation writes the same unit records and segments a fresh check would ([spec 12](12-segments-and-shared-storage.md)). None of that work is wasted: an in-process check after a batch also starts warmer.

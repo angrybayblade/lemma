@@ -91,7 +91,8 @@ pub(crate) fn evaluate(args: &CheckArgs, served: Option<&Served<'_>>) -> anyhow:
         .filter(|directory| !directory.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let cloning = crate::cloning::permitted(args.no_clone, directory)?;
-    let options = check_options(args, cloning, served);
+    let mut options = check_options(args, cloning, served);
+    options.runtime = crate::daemon::warm_runtime(directory);
     if args.evaluation.as_deref() == Some("both") {
         return check_both(&manifest, args, &options);
     }

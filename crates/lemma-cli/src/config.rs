@@ -1,5 +1,5 @@
-//! The user's settings for the daemon: when it exits, and how it treats
-//! language servers nobody is using.
+//! The user's settings for the daemon: when it exits, how it treats
+//! language servers nobody is using, and what warm runtimes may use.
 //!
 //! Read from `LEMMA_CONFIG`, else `$XDG_CONFIG_HOME/lemma/config.toml`, else
 //! `~/.config/lemma/config.toml`. A missing file means the defaults. The
@@ -55,6 +55,19 @@ struct ConfigFile {
     sentry: SentrySection,
     #[serde(default)]
     repositories: RepositoriesSection,
+    #[serde(default)]
+    runtime: RuntimeSection,
+}
+
+/// What warm runtimes may use: how much memory they may hold, and how long
+/// an idle one is kept. Each is a point between checks that start a
+/// repository's interpreter from nothing every time (`memory = "0"`) and
+/// checks that always find it ready.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RuntimeSection {
+    memory: Option<String>,
+    stop_after: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -121,6 +134,70 @@ struct ServersSection {
     stop_after: Option<String>,
     memory_budget: Option<String>,
     warm_on_activity: Option<bool>,
+}
+
+/// What warm runtimes may use for a description in `directory`: the user's
+/// config file says, and the project's `.lemma/config.toml` says otherwise
+/// for itself, setting by setting. `LEMMA_RUNTIME=off` keeps none warm,
+/// whatever either file says.
+pub(crate) fn runtime_allowance(directory: &Path) -> anyhow::Result<crate::runtime::Allowance> {
+    let local = directory.join(".lemma").join("config.toml");
+    let files: Vec<PathBuf> = config_path().into_iter().chain([local]).collect();
+    let mut allowance = layered_allowance(&files)?;
+    if std::env::var_os("LEMMA_RUNTIME").is_some_and(|value| value == "off") {
+        allowance.memory_bytes = 0;
+    }
+    Ok(allowance)
+}
+
+/// The defaults with what each of `files` that exists says set on top, in
+/// order: a later file overrides an earlier one setting by setting.
+fn layered_allowance(files: &[PathBuf]) -> anyhow::Result<crate::runtime::Allowance> {
+    let mut allowance = crate::runtime::Allowance::default();
+    for path in files {
+        if let Some(section) = runtime_section(path)? {
+            apply_runtime(&section, &mut allowance)
+                .with_context(|| format!("invalid settings in {}", path.display()))?;
+        }
+    }
+    Ok(allowance)
+}
+
+fn runtime_section(path: &Path) -> anyhow::Result<Option<RuntimeSection>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text =
+        fs::read_to_string(path).with_context(|| format!("could not read {}", path.display()))?;
+    let file: ConfigFile =
+        toml::from_str(&text).with_context(|| format!("invalid {}", path.display()))?;
+    Ok(Some(file.runtime))
+}
+
+/// Sets on `allowance` what `section` says.
+fn apply_runtime(
+    section: &RuntimeSection,
+    allowance: &mut crate::runtime::Allowance,
+) -> anyhow::Result<()> {
+    if let Some(memory) = &section.memory {
+        allowance.memory_bytes = parse_memory(memory)?;
+    }
+    if let Some(stop_after) = &section.stop_after {
+        let kept = crate::duration::parse_duration(stop_after)?;
+        // `never` keeps an idle runtime as long as the daemon runs.
+        allowance.stop_after_ms = kept.map_or(u64::MAX, |kept| {
+            u64::try_from(kept.as_millis()).unwrap_or(u64::MAX)
+        });
+    }
+    Ok(())
+}
+
+/// `0` (keep none), a size such as `256MB` or `2GB`, or `none` for no limit.
+fn parse_memory(text: &str) -> anyhow::Result<u64> {
+    if text.trim() == "0" {
+        return Ok(0);
+    }
+    Ok(parse_size(text)?.unwrap_or(u64::MAX))
 }
 
 /// Where the config file is, whether or not it exists.
@@ -200,6 +277,51 @@ fn parse_size(text: &str) -> anyhow::Result<Option<u64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn written(directory: &Path, name: &str, text: &str) -> PathBuf {
+        let path = directory.join(name);
+        fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_projects_runtime_settings_override_the_users_one_by_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let user = written(
+            directory.path(),
+            "user.toml",
+            "[runtime]\nmemory = \"0\"\nstop_after = \"5m\"\n",
+        );
+        let project = written(
+            directory.path(),
+            "project.toml",
+            "[runtime]\nmemory = \"256MB\"\n",
+        );
+
+        let allowance = layered_allowance(&[user, project]).unwrap();
+
+        assert_eq!(allowance.memory_bytes, 256 * 1024 * 1024);
+        assert_eq!(allowance.stop_after_ms, 5 * 60 * 1000);
+    }
+
+    #[test]
+    fn with_no_runtime_settings_runtimes_are_kept_warm() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing.toml");
+
+        let allowance = layered_allowance(&[missing]).unwrap();
+
+        assert_eq!(allowance, crate::runtime::Allowance::default());
+        assert!(allowance.memory_bytes > 0);
+    }
+
+    #[test]
+    fn runtime_memory_is_nothing_a_size_or_unbounded() {
+        assert_eq!(parse_memory("0").unwrap(), 0);
+        assert_eq!(parse_memory("64MB").unwrap(), 64 * 1024 * 1024);
+        assert_eq!(parse_memory("none").unwrap(), u64::MAX);
+        assert!(parse_memory("lots").is_err());
+    }
 
     #[test]
     fn an_empty_file_gives_the_defaults() {
