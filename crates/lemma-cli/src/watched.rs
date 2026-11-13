@@ -1,9 +1,10 @@
 //! A workspace's repositories, watched for changes, and what a long-lived
 //! process keeps of what it read from them.
 //!
-//! Sentry answers checks from it (`.specs/14-sentry.md`). Nothing is
-//! evaluated here: a change only drops what was kept of the files it
-//! touched, so whoever reads next reads those again and nothing else.
+//! Sentry answers checks from it (`.specs/14-sentry.md`), and a graph's
+//! trace through a workspace reads through it. Nothing is evaluated here:
+//! a change only drops what was kept of the files it touched, so whoever
+//! reads next reads those again and nothing else.
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -89,6 +90,13 @@ impl WatchedWorkspace {
             }
         }
         batches
+    }
+
+    /// What is kept, once every change made before this call has dropped
+    /// what it touched.
+    pub(crate) fn current(&mut self) -> Arc<lemma_graph::Warm> {
+        self.collect(true);
+        Arc::clone(&self.warm)
     }
 
     /// Takes the changes whose repositories have settled as of `now` and
@@ -309,5 +317,101 @@ fn watch(root: PathBuf, spelled: PathBuf, inner: &[PathBuf]) -> Watched {
         generation: 0,
         unread_generation: 0,
         unprepared: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(directory: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// A workspace of one committed repository, `web`, under `root`; its
+    /// description.
+    fn workspace(root: &Path) -> PathBuf {
+        let web = root.join("web");
+        write(&web.join("src/charge.ts"), "export const charge = 1;\n");
+        write(
+            &web.join("mod.lm"),
+            "module web\n\nexport service web {\n    index: { include: [\"src\"] }\n}\n",
+        );
+        git(&web, &["init", "-q"]);
+        git(&web, &["add", "."]);
+        git(&web, &["commit", "-q", "-m", "web"]);
+        write(
+            &root.join("mod.lm"),
+            "module shop\n\nworkspace {\n    repo web = local(\"web\")\n}\n",
+        );
+        root.join("mod.lm").canonicalize().unwrap()
+    }
+
+    /// The untracked files of the repository whose directory ends in
+    /// `name`, as what is kept lists them.
+    fn untracked(watched: &WatchedWorkspace, warm: &lemma_graph::Warm, name: &str) -> Vec<String> {
+        let repository = watched
+            .repositories()
+            .iter()
+            .find(|repository| repository.spelled().ends_with(name))
+            .unwrap();
+        let listings = warm.verify().listings();
+        listings.untracked(repository.spelled()).unwrap().to_vec()
+    }
+
+    #[test]
+    fn a_file_written_after_a_read_is_seen_by_the_next() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = workspace(root.path());
+        let mut watched = WatchedWorkspace::start(&manifest).unwrap();
+
+        let warm = watched.current();
+        let before = untracked(&watched, &warm, "web");
+        write(&root.path().join("web/src/refund.ts"), "export {};\n");
+        let warm = watched.current();
+        let after = untracked(&watched, &warm, "web");
+
+        assert_eq!(before, Vec::<String>::new());
+        assert_eq!(after, ["src/refund.ts"]);
+    }
+
+    #[test]
+    fn what_is_kept_stays_while_nothing_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = workspace(root.path());
+        let mut watched = WatchedWorkspace::start(&manifest).unwrap();
+        let generations = |watched: &WatchedWorkspace| -> Vec<u64> {
+            watched
+                .repositories()
+                .iter()
+                .map(Watched::generation)
+                .collect()
+        };
+
+        let first = watched.current();
+        let before = generations(&watched);
+        let second = watched.current();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(generations(&watched), before);
     }
 }
