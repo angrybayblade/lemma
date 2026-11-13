@@ -125,14 +125,17 @@ pub struct TraceCaches<'a> {
     /// Facts read from code, as `lemma check` keeps them; read afresh
     /// without.
     pub facts: Option<&'a lemma_verify::FactsCache>,
+    /// What a long-lived process keeps of the workspace's repositories
+    /// between traces, dropping what changed; everything is read without.
+    pub warm: Option<&'a Arc<crate::Warm>>,
 }
 
 /// How a trace reads the system: at the head, all consumer code, no change.
-fn trace_options(cache: &Path) -> CheckOptions {
+fn trace_options(caches: &TraceCaches<'_>) -> CheckOptions {
     CheckOptions {
         change: None,
         level: None,
-        cache: cache.to_path_buf(),
+        cache: caches.clones.to_path_buf(),
         // A trace answers a query, which must not start a clone.
         cloning: crate::repos::Cloning::Forbidden,
         explain: false,
@@ -143,7 +146,7 @@ fn trace_options(cache: &Path) -> CheckOptions {
         run_checkers: true,
         runs_base_checkers: false,
         select: None,
-        warm: None,
+        warm: caches.warm.cloned(),
         environment: None,
         runtime: None,
     }
@@ -160,7 +163,7 @@ pub fn trace_through_system<E: Engine>(
     caches: &TraceCaches<'_>,
     engine: &E,
 ) -> Result<SystemTrace, GraphError> {
-    let options = trace_options(caches.clones);
+    let options = trace_options(caches);
     let repos = check::load(workspace, &options)?;
     let Some((repository, offset)) = owning_repository(&repos, index_root) else {
         let note = format!(
@@ -173,8 +176,9 @@ pub fn trace_through_system<E: Engine>(
             ..SystemTrace::default()
         });
     };
-    // Calls fetched as the trace goes share inference's reads.
-    let warm = Arc::new(lemma_verify::Warm::default());
+    // Calls fetched as the trace goes share inference's reads, and a
+    // long-lived process's traces share them with each other.
+    let warm = caches.warm.map_or_else(Arc::default, |warm| warm.verify());
     let listings = warm.listings();
     let reads = check::VerificationReads {
         facts: caches.facts,
