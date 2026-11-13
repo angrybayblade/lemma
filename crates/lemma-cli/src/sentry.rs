@@ -90,7 +90,7 @@ impl Sentry {
         let watched = manifest.clone();
         let worker = thread::Builder::new()
             .name("sentry".to_owned())
-            .spawn(move || match Worker::start(watched) {
+            .spawn(move || match Worker::start(&watched) {
                 Ok(mut worker) => {
                     let _ = ready.send(Ok(()));
                     worker.serve(&receiver);
@@ -231,7 +231,6 @@ struct Waiting {
 }
 
 struct Worker {
-    manifest: PathBuf,
     workspace: WatchedWorkspace,
     /// Names this attachment in tokens, so a token from another is known.
     instance: String,
@@ -247,10 +246,9 @@ struct Worker {
 }
 
 impl Worker {
-    fn start(manifest: PathBuf) -> anyhow::Result<Self> {
-        let workspace = WatchedWorkspace::start(&manifest)?;
+    fn start(manifest: &Path) -> anyhow::Result<Self> {
+        let workspace = WatchedWorkspace::start(manifest)?;
         Ok(Self {
-            manifest,
             workspace,
             instance: instance(),
             journal: VecDeque::new(),
@@ -520,10 +518,7 @@ impl Worker {
         question.json.hash(&mut hasher);
         question.cwd.hash(&mut hasher);
         question.environment.hash(&mut hasher);
-        for watched in self.workspace.repositories() {
-            watched.generation().hash(&mut hasher);
-        }
-        manifest_stamp(&self.manifest).hash(&mut hasher);
+        self.workspace.state().hash(&mut hasher);
         today().hash(&mut hasher);
         hasher.finish()
     }
@@ -722,25 +717,6 @@ fn instance() -> String {
     format!("{:08x}", hasher.finish() & 0xffff_ffff)
 }
 
-/// The size and modification time of the workspace's own manifests, which
-/// sit beside, not inside, the repositories watched.
-fn manifest_stamp(manifest: &Path) -> Vec<(u64, u128)> {
-    let directory = manifest.parent().unwrap_or(manifest);
-    ["mod.lm"]
-        .iter()
-        .map(|name| {
-            std::fs::metadata(directory.join(name)).map_or((0, 0), |metadata| {
-                let modified = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |elapsed| elapsed.as_nanos());
-                (metadata.len(), modified)
-            })
-        })
-        .collect()
-}
-
 /// Days since the Unix epoch.
 fn today() -> u64 {
     std::time::SystemTime::now()
@@ -893,7 +869,8 @@ mod tests {
     fn sentry_answers_as_a_fresh_check_reusing_an_answer_only_while_nothing_changes() {
         let root = tempfile::tempdir().unwrap();
         shop(root.path());
-        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let mut worker =
+            Worker::start(&root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
         let asked = question(root.path());
 
         let first = worker.respond(&asked);
@@ -915,7 +892,8 @@ mod tests {
     fn a_check_since_a_token_lists_what_came_and_went() {
         let root = tempfile::tempdir().unwrap();
         shop(root.path());
-        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let mut worker =
+            Worker::start(&root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
         let asked = question(root.path());
         let token = token_of(&worker.respond(&asked));
 
@@ -998,7 +976,8 @@ mod tests {
     fn an_installed_package_keeps_sentry_from_giving_an_answer_again() {
         let root = tempfile::tempdir().unwrap();
         python_shop(root.path(), "api.py");
-        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let mut worker =
+            Worker::start(&root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
         let asked = question(root.path());
 
         let first = worker.respond(&asked);
@@ -1020,7 +999,8 @@ mod tests {
     fn each_set_of_options_keeps_its_own_answer() {
         let root = tempfile::tempdir().unwrap();
         shop(root.path());
-        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let mut worker =
+            Worker::start(&root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
         let billing = question(root.path());
         let mut web = question(root.path());
         web.args.change = Some("web".to_owned());
@@ -1039,7 +1019,8 @@ mod tests {
     fn an_edit_to_a_file_no_check_reads_gives_the_answer_again() {
         let root = tempfile::tempdir().unwrap();
         shop(root.path());
-        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let mut worker =
+            Worker::start(&root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
         let asked = question(root.path());
         let first = worker.respond(&asked);
 
@@ -1056,7 +1037,8 @@ mod tests {
     fn a_test_file_a_description_names_is_still_read() {
         let root = tempfile::tempdir().unwrap();
         python_shop(root.path(), "src/tests/handlers.py");
-        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let mut worker =
+            Worker::start(&root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
         let asked = question(root.path());
         worker.respond(&asked);
 
@@ -1243,7 +1225,8 @@ mod tests {
     fn a_settled_change_is_parsed_before_it_is_asked_about() {
         let root = tempfile::tempdir().unwrap();
         shop(root.path());
-        let mut worker = Worker::start(root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let mut worker =
+            Worker::start(&root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
         let asked = question(root.path());
         worker.respond(&asked);
 
@@ -1263,7 +1246,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let root_path = root.path().canonicalize().unwrap();
         shop_with_hidden_document(&root_path);
-        let mut worker = Worker::start(root_path.join("mod.lm")).unwrap();
+        let mut worker = Worker::start(&root_path.join("mod.lm")).unwrap();
         let billing = question(&root_path);
         let mut web = question(&root_path);
         web.args.change = Some("web".to_owned());
