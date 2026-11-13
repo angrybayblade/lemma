@@ -44,8 +44,14 @@ pub struct Listings {
     listed: Mutex<Listed>,
 }
 
-/// Listings by repository and commit (`None` for the working directory).
-type Listed = BTreeMap<(PathBuf, Option<String>), Listing>;
+/// A repository and a commit (`None` for the working directory).
+type ListingKey = (PathBuf, Option<String>);
+
+/// Listings by what they list. Each has a place of its own, locked while
+/// it is listed, so two askers at once wait for one listing: a large
+/// repository takes several Git processes a while, and many threads ask for
+/// the changed repository's as a check starts.
+type Listed = BTreeMap<ListingKey, Arc<Mutex<Option<Listing>>>>;
 
 /// One listing: its files, and, of a working directory, the untracked
 /// files Git named while listing it.
@@ -75,15 +81,29 @@ impl Listings {
 
     fn listing(&self, repository: &Path, commit: Option<&str>) -> Result<Listing, SourceError> {
         let key = (repository.to_owned(), commit.map(str::to_owned));
-        if let Some(found) = self.locked().get(&key) {
+        self.listed_once(key, || {
+            let (files, untracked) = list_with_untracked(repository, commit)?;
+            Ok(Listing {
+                files: Arc::new(files),
+                untracked: Arc::new(untracked),
+            })
+        })
+    }
+
+    /// The listing kept under `key`, or else what `list` gives, kept if it
+    /// succeeds. Whoever asks for the same listing meanwhile waits for it.
+    fn listed_once(
+        &self,
+        key: ListingKey,
+        list: impl FnOnce() -> Result<Listing, SourceError>,
+    ) -> Result<Listing, SourceError> {
+        let place = Arc::clone(self.locked().entry(key).or_default());
+        let mut kept = place.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(found) = kept.as_ref() {
             return Ok(found.clone());
         }
-        let (files, untracked) = list_with_untracked(repository, commit)?;
-        let listed = Listing {
-            files: Arc::new(files),
-            untracked: Arc::new(untracked),
-        };
-        self.locked().insert(key, listed.clone());
+        let listed = list()?;
+        *kept = Some(listed.clone());
         Ok(listed)
     }
 
@@ -105,12 +125,16 @@ impl Listings {
     pub fn prefetch(&self, wanted: &[(PathBuf, Option<String>)]) {
         // Services of one repository ask for the same listing; listing it
         // twice at once would double the slowest work.
-        let missing: BTreeSet<&(PathBuf, Option<String>)> = {
+        let missing: BTreeSet<&ListingKey> = {
             let listed = self.locked();
-            wanted
-                .iter()
-                .filter(|key| !listed.contains_key(*key))
-                .collect()
+            // One being listed now counts as missing: asking for it waits.
+            let is_listed = |key: &ListingKey| {
+                listed
+                    .get(key)
+                    .and_then(|place| place.try_lock().ok())
+                    .is_some_and(|kept| kept.is_some())
+            };
+            wanted.iter().filter(|key| !is_listed(key)).collect()
         };
         if missing.is_empty() {
             return;
@@ -1008,6 +1032,56 @@ mod tests {
         assert!(is_under_any("src/app.ts", &prefixes(&["src/app.ts"])));
         assert!(!is_under_any("srcx/app.ts", &prefixes(&["src"])));
         assert!(!is_under_any("lib/app.ts", &prefixes(&["./src"])));
+    }
+
+    #[test]
+    fn askers_at_once_wait_for_one_listing() {
+        let listings = Listings::default();
+        let times_listed = std::sync::atomic::AtomicUsize::new(0);
+        let both_asking = std::sync::Barrier::new(2);
+        let ask = || {
+            both_asking.wait();
+            let key = (PathBuf::from("repository"), None);
+            listings.listed_once(key, || {
+                times_listed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // Long enough for the other asker to arrive meanwhile.
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                Ok(Listing {
+                    files: Arc::default(),
+                    untracked: Arc::default(),
+                })
+            })
+        };
+
+        std::thread::scope(|scope| {
+            let other = scope.spawn(ask);
+            ask().unwrap();
+            other.join().unwrap().unwrap();
+        });
+
+        assert_eq!(times_listed.into_inner(), 1);
+    }
+
+    #[test]
+    fn a_listing_that_failed_is_asked_for_again() {
+        let listings = Listings::default();
+        let key = || (PathBuf::from("repository"), None);
+        let failed = listings.listed_once(key(), || {
+            Err(SourceError::Git {
+                repository: PathBuf::from("repository"),
+                message: "not now".to_owned(),
+            })
+        });
+
+        let listed = listings.listed_once(key(), || {
+            Ok(Listing {
+                files: Arc::default(),
+                untracked: Arc::default(),
+            })
+        });
+
+        assert!(failed.is_err());
+        assert!(listed.is_ok());
     }
 
     fn git_in(directory: &Path, args: &[&str]) {
