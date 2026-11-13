@@ -98,6 +98,9 @@ pub struct CheckOptions {
     /// of this process's own: the asking process's, for a check the daemon
     /// answers on its behalf. `None` uses this process's.
     pub environment: Option<Arc<BTreeMap<String, String>>>,
+    /// Runtimes kept warm, which a repository's Python may run in instead
+    /// of starting from nothing; `None` starts each run itself.
+    pub runtime: Option<crate::runtime::Runtime>,
 }
 
 impl CheckOptions {
@@ -1050,6 +1053,7 @@ fn check_declared(
         has_change: options.change.is_some(),
         environment: options.environment.clone(),
         states: states_of(options),
+        warm_runtime: options.runtime.clone(),
         unread: BTreeMap::new(),
     };
     let links_read = links.iter().try_for_each(|link| checker.check_link(link));
@@ -2512,6 +2516,8 @@ struct Checker<'a> {
     /// The state of working directories' code, which resolvers' outputs
     /// are kept by.
     states: Arc<adapters::States>,
+    /// Runtimes kept warm, which resolvers may run in.
+    warm_runtime: Option<crate::runtime::Runtime>,
     /// Schemas a resolver could not produce, by its command and directory:
     /// one resolver that cannot run here leaves every schema it serves
     /// unread, and that is one thing to fix, so one warning.
@@ -2753,9 +2759,7 @@ impl Checker<'_> {
             role,
         } = want;
         let found = self.find(address, snapshot)?;
-        let Some(schemas) = &found.operation.schema else {
-            return None;
-        };
+        let schemas = found.operation.schema.as_ref()?;
         let source: Option<&SchemaSource> = match part {
             Part::Request => schemas.request.as_ref(),
             Part::Response => schemas.response.as_ref(),
@@ -2773,6 +2777,7 @@ impl Checker<'_> {
             outputs: &mut self.outputs,
             reads: &mut self.reads,
             states: &self.states,
+            warm_runtime: self.warm_runtime.as_ref(),
             environment: self.environment.as_deref(),
         };
         match schema::resolve(&source, &mut context) {

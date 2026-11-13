@@ -271,6 +271,7 @@ fn check_options(
         select: args.select.clone(),
         warm: served.map(|served| Arc::clone(&served.warm)),
         environment: served.map(|served| Arc::clone(&served.environment)),
+        runtime: None,
     }
 }
 

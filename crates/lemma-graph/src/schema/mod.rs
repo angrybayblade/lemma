@@ -64,6 +64,8 @@ pub struct Context<'a> {
     pub reads: &'a mut Reads,
     /// The state of working directories' code.
     pub states: &'a adapters::States,
+    /// Runtimes kept warm, which the repository's Python may run in.
+    pub warm_runtime: Option<&'a crate::runtime::Runtime>,
     /// The environment commands start from instead of this process's own,
     /// for a check answered on behalf of another process.
     pub environment: Option<&'a BTreeMap<String, String>>,
@@ -448,12 +450,16 @@ fn python_schema(
     );
     let env = context.runtime.env.clone();
     let base = context.environment;
+    let runtime = context.warm_runtime.map(|runtime| python::Warm {
+        runtime,
+        interpreter: interpreter.clone(),
+    });
     let imported = kept_or_run(context, &described, true, |root| {
         python::type_schema(
             root,
             &python,
             (file, symbol),
-            repos::Environment { base, added: &env },
+            (repos::Environment { base, added: &env }, runtime.as_ref()),
         )
     });
     let error = match imported {
@@ -543,32 +549,79 @@ fn run_resolver(resolver: &Resolver, context: &mut Context<'_>) -> Result<Arc<Va
         "command\n{command}\n{env:?}\n{:?}\n{interpreter}",
         resolver.output
     );
+    let environment = repos::Environment {
+        base: environment,
+        added: &env,
+    };
+    let warm = WarmResolver {
+        runtime: context.warm_runtime,
+        invocation: crate::runtime::invocation(&resolver.command),
+        interpreter: &interpreter,
+        python: &python,
+    };
     let document = kept_or_run(context, &described, resolver.cache, |root| {
-        let stdout = repos::run(
-            root,
-            &command,
-            repos::Environment {
-                base: environment,
-                added: &env,
-            },
-        )?;
-        let text = match &resolver.output {
-            Some(output) => {
-                std::fs::read_to_string(root.join(output)).map_err(|source| GraphError::Io {
-                    path: root.join(output),
-                    source,
-                })?
-            }
-            None => stdout,
+        // A warm runtime answers only with a run that ended cleanly; any
+        // other, the command is run here and says what went wrong.
+        let stdout = match warm.run(root, environment) {
+            Some(stdout) => stdout,
+            None => repos::run(root, &command, environment)?,
         };
-        serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
-            command: resolver.command.clone(),
-            source,
-        })
+        resolver_document(resolver, root, stdout)
     })?;
     let document = Arc::new(document);
     context.outputs.insert(key, Arc::clone(&document));
     Ok(document)
+}
+
+/// The document a resolver's run in `root` produced: the file it says it
+/// writes, or else what it printed.
+fn resolver_document(
+    resolver: &Resolver,
+    root: &Path,
+    stdout: String,
+) -> Result<Value, GraphError> {
+    let text = match &resolver.output {
+        Some(output) => {
+            std::fs::read_to_string(root.join(output)).map_err(|source| GraphError::Io {
+                path: root.join(output),
+                source,
+            })?
+        }
+        None => stdout,
+    };
+    serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
+        command: resolver.command.clone(),
+        source,
+    })
+}
+
+/// A resolver's command as a warm runtime can run it, when it is the
+/// service's interpreter running one module or script and a check has
+/// runtimes to ask.
+struct WarmResolver<'a> {
+    runtime: Option<&'a crate::runtime::Runtime>,
+    invocation: Option<(crate::runtime::PythonCode, Vec<String>)>,
+    /// What names the interpreter's version and installed packages.
+    interpreter: &'a str,
+    python: &'a str,
+}
+
+impl WarmResolver<'_> {
+    /// The command's standard output from a warm run in `root`, if one
+    /// ended cleanly.
+    fn run(&self, root: &Path, environment: repos::Environment<'_>) -> Option<String> {
+        let (code, arguments) = self.invocation.clone()?;
+        let runtime = self.runtime?;
+        let whole = crate::runtime::whole_environment(environment);
+        runtime.0.run(&crate::runtime::PythonRun {
+            python: self.python.to_owned(),
+            key: crate::runtime::key(self.python, self.interpreter, environment.added, &whole),
+            code,
+            arguments,
+            directory: root.to_owned(),
+            environment: whole,
+        })
+    }
 }
 
 /// What `run` produces from the code at the checkout, `described` naming
@@ -734,6 +787,76 @@ mod tests {
 
         assert_ne!(before, after);
         assert_eq!(after, interpreter_stamp(&python));
+    }
+
+    /// A warm runtime that answers every run with `answer`, and keeps
+    /// what it was asked.
+    struct Answering {
+        answer: Option<String>,
+        asked: std::sync::Mutex<Vec<crate::runtime::PythonRun>>,
+    }
+
+    impl crate::runtime::WarmRuntime for Answering {
+        fn run(&self, run: &crate::runtime::PythonRun) -> Option<String> {
+            self.asked.lock().unwrap().push(run.clone());
+            self.answer.clone()
+        }
+    }
+
+    fn answering(answer: Option<&str>) -> (Arc<Answering>, crate::runtime::Runtime) {
+        let answering = Arc::new(Answering {
+            answer: answer.map(str::to_owned),
+            asked: std::sync::Mutex::default(),
+        });
+        let runtime = crate::runtime::Runtime(Arc::clone(&answering) as _);
+        (answering, runtime)
+    }
+
+    #[test]
+    fn a_resolver_that_runs_a_module_is_asked_of_a_warm_runtime() {
+        let (answering, runtime) = answering(Some("{}"));
+        let declared: BTreeMap<String, String> = [("MODE".to_owned(), "schemas".to_owned())].into();
+        let warm = WarmResolver {
+            runtime: Some(&runtime),
+            invocation: crate::runtime::invocation("{python} -m billing.schemas --all"),
+            interpreter: "3.12",
+            python: "/repo/.venv/bin/python",
+        };
+
+        let stdout = warm.run(Path::new("/repo"), repos::Environment::with(&declared));
+
+        assert_eq!(stdout.as_deref(), Some("{}"));
+        let asked = answering.asked.lock().unwrap();
+        let run = &asked[0];
+        let module = crate::runtime::PythonCode::Module("billing.schemas".to_owned());
+        assert_eq!(
+            (&run.code, run.arguments.as_slice()),
+            (&module, &["--all".to_owned()][..])
+        );
+        assert_eq!(run.directory, Path::new("/repo"));
+        assert_eq!(
+            run.environment.get("MODE").map(String::as_str),
+            Some("schemas")
+        );
+    }
+
+    #[test]
+    fn a_resolver_a_shell_has_to_read_is_not_asked_of_a_warm_runtime() {
+        let (answering, runtime) = answering(Some("{}"));
+        let warm = WarmResolver {
+            runtime: Some(&runtime),
+            invocation: crate::runtime::invocation("{python} -m billing.schemas | jq ."),
+            interpreter: "3.12",
+            python: "python3",
+        };
+
+        let stdout = warm.run(
+            Path::new("/repo"),
+            repos::Environment::with(&BTreeMap::new()),
+        );
+
+        assert_eq!(stdout, None);
+        assert!(answering.asked.lock().unwrap().is_empty());
     }
 
     #[test]

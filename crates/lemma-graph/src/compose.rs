@@ -54,6 +54,7 @@ pub fn composition(
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
     let repos = check::load_manifests(workspace, &options)?;
     let unavailable = check::unavailable_repositories(&repos)

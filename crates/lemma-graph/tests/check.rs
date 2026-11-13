@@ -155,6 +155,7 @@ fn a_provider_change_that_breaks_a_go_caller_is_reported() {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
 
     let report = check(
@@ -223,6 +224,7 @@ fn a_caller_anchored_at_a_method_nothing_calls_is_warned_about() {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
 
     let report = check(
@@ -317,6 +319,7 @@ fn link_problems(workspace: &Path) -> Vec<String> {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
     let report = check(
         &workspace.join("web/mod.lm"),
@@ -405,6 +408,7 @@ fn errors_after_rename(says_previously: bool) -> usize {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
     let report = check(
         &workspace.path().join("mod.lm"),
@@ -456,6 +460,7 @@ fn checked_without_resolver(level: Level) -> Vec<(Severity, String)> {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
     let report = check(
         &workspace.path().join("mod.lm"),

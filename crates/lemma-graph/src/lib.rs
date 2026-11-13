@@ -29,6 +29,7 @@ pub mod lm;
 pub mod openapi;
 mod reach;
 pub mod repos;
+pub mod runtime;
 pub mod schema;
 mod trace;
 mod warm;

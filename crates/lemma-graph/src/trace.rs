@@ -145,6 +145,7 @@ fn trace_options(cache: &Path) -> CheckOptions {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     }
 }
 

@@ -119,6 +119,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
 
     let report = check(
@@ -167,6 +168,7 @@ fn selected_problems(workspace: &Path, select: &str) -> Result<Vec<String>, Stri
         select: Some(select.to_owned()),
         warm: None,
         environment: None,
+        runtime: None,
     };
     let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None)
         .map_err(|error| error.to_string())?;
@@ -224,6 +226,7 @@ fn link_findings(
         select: None,
         warm: warm.cloned(),
         environment: None,
+        runtime: None,
     };
     let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
     report
@@ -320,6 +323,7 @@ fn checks_of(workspace: &Path) -> Vec<(Severity, String)> {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
     let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
     report
@@ -401,6 +405,7 @@ fn select_runs_another_check_and_an_unknown_one_is_refused() {
         select: Some(select.to_owned()),
         warm: None,
         environment: None,
+        runtime: None,
     };
     let entry = workspace.path().join("mod.lm");
 
@@ -451,6 +456,7 @@ fn a_change_may_name_its_repository_as_a_module_does() {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
 
     let report = check(
