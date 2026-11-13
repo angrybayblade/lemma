@@ -301,7 +301,7 @@ impl Engine {
             self.index_files(&db_path, &root, source.as_ref())?;
             return Ok(0);
         }
-        let indexed = self.index_repository(&db_path, &root, source.as_ref())?;
+        let indexed = self.index_repository(&db_path, &root, source.as_ref(), None)?;
         if let Indexing::Command(retention, _) = indexing {
             self.apply_retention(&db_path, &root, retention)?;
         }
@@ -341,11 +341,12 @@ impl Engine {
         db_path: &Path,
         root: &Path,
         source: Option<&lemma_graph::config::LemmaFile>,
+        states: Option<&lemma_graph::adapters::States>,
     ) -> anyhow::Result<Indexed> {
         let summary = self.index_files(db_path, root, source)?;
         let store = store_for_writing(&mut self.stores, db_path)?;
         let exports = match source {
-            Some(source) => update_exports(store, &summary, source, root)?,
+            Some(source) => update_exports(store, &summary, (source, root), states)?,
             None => clear_exports(store, &summary)?,
         };
         Ok(Indexed { summary, exports })
@@ -411,8 +412,9 @@ impl Engine {
             return Ok(0);
         }
         let mut workspace = WorkspaceIndex::default();
+        let kept = self.kept_working_states(lemma_path);
         for member in &members {
-            let result = self.index_member(member, &cache);
+            let result = self.index_member(member, &cache, kept.as_ref());
             if let (Ok(_), Indexing::Command(retention, _)) = (&result, indexing) {
                 self.apply_retention(&default_index_path(&member.root)?, &member.root, retention)?;
             }
@@ -479,16 +481,28 @@ impl Engine {
         Ok(())
     }
 
+    /// The working states kept of the repositories of the workspace
+    /// described at `workspace`, once graphs are traced through it: an
+    /// index of it then asks Git about a repository only after it changed.
+    fn kept_working_states(&mut self, workspace: &Path) -> Option<crate::trace::WorkingStates> {
+        let manifest = workspace.canonicalize().ok()?;
+        let traced = self.traced_workspaces.get_mut(&manifest)?.as_mut()?;
+        Some(traced.working_states())
+    }
+
     /// Indexes one member into the index in its clone: at its pin through a
-    /// worktree, or its working directory.
+    /// worktree, or its working directory. `kept` holds the working states
+    /// of the members that are watched.
     fn index_member(
         &mut self,
         member: &lemma_graph::compose::Member,
         cache: &Path,
+        kept: Option<&crate::trace::WorkingStates>,
     ) -> anyhow::Result<(StoredMember, Indexed)> {
         let indexed_root = member_root(member, cache)?;
         let db_path = default_index_path(&member.root)?;
-        let indexed = self.index_repository(&db_path, &indexed_root, Some(&member.file))?;
+        let states = kept.and_then(|kept| kept.of(&indexed_root));
+        let indexed = self.index_repository(&db_path, &indexed_root, Some(&member.file), states)?;
         let stored = StoredMember {
             name: member.name.clone(),
             root: member.root.display().to_string(),
@@ -1425,8 +1439,8 @@ fn clear_exports(
 fn update_exports(
     store: &mut Store,
     summary: &lemma_index::IndexSummary,
-    source: &lemma_graph::config::LemmaFile,
-    root: &Path,
+    (source, root): (&lemma_graph::config::LemmaFile, &Path),
+    states: Option<&lemma_graph::adapters::States>,
 ) -> anyhow::Result<output::ExportCounts> {
     let snapshot_id = summary.snapshot_id;
     let mut warnings: Vec<String> = selection::whole_repository_warning(source)
@@ -1436,7 +1450,7 @@ fn update_exports(
     // read, and its warnings are shown on every index, not only the one
     // that rebuilt the exports.
     warnings.extend(selection::not_cloned_warnings(source));
-    let from_code = documents_from_code(source, root, &mut warnings);
+    let from_code = documents_from_code(source, root, states, &mut warnings);
     let from_code_digests: Vec<String> = from_code
         .iter()
         .map(|(service, generated)| format!("{service} {}", generated.digest))
@@ -1510,13 +1524,16 @@ fn handlers_found_by(exports: &[lemma_model::Export]) -> BTreeMap<String, usize>
 fn documents_from_code(
     file: &lemma_graph::config::LemmaFile,
     root: &Path,
+    states: Option<&lemma_graph::adapters::States>,
     warnings: &mut Vec<String>,
 ) -> BTreeMap<String, lemma_graph::adapters::Generated> {
     let cache = lemma_graph::repos::cache_directory();
     let mut from_code = BTreeMap::new();
+    // Without kept states Git is asked about the working directory now.
+    let asked_now = lemma_graph::adapters::States::default();
     let keeping = lemma_graph::adapters::Keeping {
         cache: &cache,
-        states: &lemma_graph::adapters::States::default(),
+        states: states.unwrap_or(&asked_now),
     };
     for (service, generated) in lemma_graph::adapters::from_working_directory(file, root, keeping) {
         match generated {

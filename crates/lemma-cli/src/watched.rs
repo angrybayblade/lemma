@@ -83,6 +83,16 @@ impl WatchedWorkspace {
         &self.watched
     }
 
+    /// The directories, canonical, of the repositories whose changes are
+    /// reported: what is kept of any other is dropped on every collection.
+    pub(crate) fn reported_roots(&self) -> Vec<PathBuf> {
+        self.watched
+            .iter()
+            .filter(|watched| watched.watch.is_some())
+            .map(|watched| watched.root.clone())
+            .collect()
+    }
+
     /// Drops what is kept of what changed in each repository; the changes,
     /// by repository. `confirming` waits for every watcher's barrier, so a
     /// change made just before the call counts, and leaves nothing to

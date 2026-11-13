@@ -56,7 +56,7 @@ impl Warm {
 
     /// The state of working directories' code, asked once per repository
     /// by everything a check keys by it.
-    pub(crate) fn states(&self) -> Arc<crate::adapters::States> {
+    pub fn states(&self) -> Arc<crate::adapters::States> {
         Arc::clone(&self.states)
     }
 
