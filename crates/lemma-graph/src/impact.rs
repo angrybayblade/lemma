@@ -713,29 +713,35 @@ impl Walked {
         names: &NameIndex,
         frontier: &BTreeMap<NameId, Option<usize>>,
     ) -> Vec<Reached> {
-        // Only functions that mention a frontier name can be callers; they
-        // are taken in index order, as a scan of every function would.
-        let candidates: BTreeSet<usize> = frontier
-            .keys()
-            .flat_map(|name| names.mentioners(*name))
-            .map(|index| *index as usize)
+        // Only functions that mention a frontier name can be callers, and
+        // the name index says which mention each name: reading it costs
+        // one step per mention of a frontier name, where reading each
+        // candidate's mentions cost one per name it mentions at all. The
+        // sort keeps each function's names in the frontier's order, which
+        // is the order of its own mentions, and takes the functions in
+        // index order, as a scan of every function would.
+        let mut mentioning: Vec<(usize, NameId, Option<usize>)> = frontier
+            .iter()
+            .flat_map(|(name, from)| {
+                let mentioners = names.mentioners(*name).iter();
+                mentioners.map(move |index| (*index as usize, *name, *from))
+            })
+            .filter(|(index, _, _)| !self.is_reached[*index])
             .collect();
+        mentioning.sort_by_key(|(index, _, _)| *index);
         let mut found = Vec::new();
-        for index in candidates {
-            if self.is_reached[index] {
-                continue;
-            }
+        for mentioned in mentioning.chunk_by(|one, other| one.0 == other.0) {
+            let index = mentioned[0].0;
             let own = functions.callable_names(index);
             let file = functions.file_text(index);
             // A call by name stays within one language.
             let same_language = |from: &Option<usize>| {
                 from.is_none_or(|from| language(functions.file_text(from)) == language(file))
             };
-            let matched: Vec<(NameId, Option<usize>)> = functions
-                .mentions(index)
+            let matched: Vec<(NameId, Option<usize>)> = mentioned
                 .iter()
-                .filter(|name| !own.contains(name))
-                .filter_map(|name| Some((*name, *frontier.get(name)?)))
+                .map(|(_, name, from)| (*name, *from))
+                .filter(|(name, _)| !own.contains(name))
                 .filter(|(_, from)| same_language(from))
                 .collect();
             let through_type = |(name, from): &(NameId, Option<usize>)| {
