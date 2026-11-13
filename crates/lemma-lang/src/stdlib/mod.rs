@@ -63,9 +63,16 @@ pub const ADAPTERS: [&str; 5] = [
     "go-http-routes",
 ];
 
+/// The extensions of a script in the repository that `http.adapter` may
+/// name instead, each run with its language's interpreter; `lemma-graph`'s
+/// registry knows an interpreter for every one.
+pub const SCRIPT_EXTENSIONS: [&str; 9] =
+    ["ts", "tsx", "mts", "cts", "js", "mjs", "cjs", "py", "go"];
+
 /// A problem with a built-in function's known arguments, beyond their
 /// types: an `http.openapi` with neither a document nor a command, or an
-/// adapter name Lemma does not have.
+/// adapter name that is neither one Lemma has nor a script in the
+/// repository.
 pub fn argument_problem(
     function: &str,
     arguments: &[(String, crate::types::Value)],
@@ -88,13 +95,33 @@ pub fn argument_problem(
         .iter()
         .find(|(parameter, _)| parameter == "name")
         .and_then(|(_, value)| value.as_text())?;
-    if ADAPTERS.contains(&name) {
+    if ADAPTERS.contains(&name) || is_script_in_repository(name) {
         return None;
     }
     Some(format!(
-        "there is no built-in adapter `{name}`; there are {}",
+        "there is no adapter `{name}`: name a built-in one ({}) or a script inside the repository (`.ts`, `.js`, `.py` or `.go`)",
         ADAPTERS.join(", ")
     ))
+}
+
+/// Whether `name` is a script in the repository an adapter may be: a path
+/// inside it whose extension says which interpreter runs it.
+fn is_script_in_repository(name: &str) -> bool {
+    let extension = std::path::Path::new(name)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase);
+    let is_script =
+        extension.is_some_and(|extension| SCRIPT_EXTENSIONS.contains(&extension.as_str()));
+    is_script && is_repository_path(name)
+}
+
+/// Whether `path` names something inside the repository: not a pattern,
+/// an absolute path or one leaving it.
+fn is_repository_path(path: &str) -> bool {
+    !path.starts_with('/')
+        && !path.contains(['*', '?', '['])
+        && !path.split('/').any(|part| part == "..")
 }
 
 /// Built-in functions returning a [`GENERATOR`]: a command Lemma runs to
@@ -117,15 +144,10 @@ fn inputs_problem(arguments: &[(String, crate::types::Value)]) -> Option<String>
     else {
         return None;
     };
-    let is_path = |input: &str| {
-        !input.starts_with('/')
-            && !input.contains(['*', '?', '['])
-            && !input.split('/').any(|part| part == "..")
-    };
     let wrong = inputs
         .iter()
         .filter_map(crate::types::Value::as_text)
-        .find(|input| !is_path(input))?;
+        .find(|input| !is_repository_path(input))?;
     Some(format!(
         "`inputs` are paths inside the repository, not patterns or paths outside it: `{wrong}`"
     ))
@@ -296,7 +318,7 @@ fn http() -> Vec<Builtin> {
             "adapter",
             [vec![required("name", Type::Text)], adapter_parameters()].concat(),
             GENERATOR,
-            "One of Lemma's built-in adapters, by its name, reading the service's operations from its code.",
+            "One of Lemma's built-in adapters by its name, or a script in the repository by its path, reading the service's operations from its code.",
         ),
         builtin(
             "lemma.http",
