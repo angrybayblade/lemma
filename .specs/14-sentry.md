@@ -280,6 +280,8 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 
    **After an edit.** The first graph after an edit took a median of 5.2 s on the same workspace (six kinds of edit, four each, base documents kept), nearly all of it building the edited repository's exports again: finding the routes its services' code writes parsed each of 2,300 files in turn. They are parsed on every core (2.5 s), and the daemon keeps each file's routes with the digest of the contents they were read from, so an edit parses the file it changed (1.8 s). What is left is 0.7 s reading the traced system again, 0.2–0.5 s of the rest of the exports, and, when the edited file holds the asked symbol, the language server resolving its references again (3.5 s for TypeScript and Python here).
 
+   **What it costs, and when it is let go.** After the same 33 asks the daemon held 188 MB where it held 761 MB before (it no longer reads megabyte documents on every ask), and 11,003 inotify watches where the index's own took 1,841: a watch per directory Git lists in every repository of the workspace. A workspace no graph has been traced through for the servers' `stop_after`, or whose description is gone, is let go with its watches (`Engine::maintain`), and `lemma daemon status` lists what is watched.
+
 **Later:**
 
 - Lookups that know the working copy.
