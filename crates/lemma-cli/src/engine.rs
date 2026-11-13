@@ -91,6 +91,9 @@ pub(crate) struct Engine {
     /// watched so the next trace reads only what changed since. `None` for
     /// one that could not be watched.
     traced_workspaces: HashMap<PathBuf, Option<crate::trace::TracedWorkspace>>,
+    /// The routes read from services' files, so exports built again after
+    /// an edit parse only the files that changed.
+    kept_routes: lemma_graph::exports::KeptRoutes,
 }
 
 /// The parts of a command that decide which language servers it can use.
@@ -147,6 +150,7 @@ impl Engine {
             searches: HashMap::new(),
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
+            kept_routes: lemma_graph::exports::KeptRoutes::default(),
         }
     }
 
@@ -160,6 +164,7 @@ impl Engine {
             searches: HashMap::new(),
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
+            kept_routes: lemma_graph::exports::KeptRoutes::default(),
         }
     }
 
@@ -346,7 +351,12 @@ impl Engine {
         let summary = self.index_files(db_path, root, source)?;
         let store = store_for_writing(&mut self.stores, db_path)?;
         let exports = match source {
-            Some(source) => update_exports(store, &summary, (source, root), states)?,
+            Some(source) => {
+                // Only a process that stays reads the same files twice.
+                let kept = self.warms_up_after_index.then_some(&self.kept_routes);
+                let reading = ExportReading { states, kept };
+                update_exports(store, &summary, (source, root), reading)?
+            }
             None => clear_exports(store, &summary)?,
         };
         Ok(Indexed { summary, exports })
@@ -1434,13 +1444,22 @@ fn clear_exports(
     Ok(output::ExportCounts::default())
 }
 
+/// What a process that stays has kept for building a repository's exports.
+#[derive(Clone, Copy)]
+struct ExportReading<'a> {
+    /// The working directory's state, of a watched repository.
+    states: Option<&'a lemma_graph::adapters::States>,
+    /// The routes read from the repository's files before.
+    kept: Option<&'a lemma_graph::exports::KeptRoutes>,
+}
+
 /// Rebuilds the snapshot's exports and links unless they were built from
 /// this description and snapshot already; how many there are.
 fn update_exports(
     store: &mut Store,
     summary: &lemma_index::IndexSummary,
     (source, root): (&lemma_graph::config::LemmaFile, &Path),
-    states: Option<&lemma_graph::adapters::States>,
+    reading: ExportReading<'_>,
 ) -> anyhow::Result<output::ExportCounts> {
     let snapshot_id = summary.snapshot_id;
     let mut warnings: Vec<String> = selection::whole_repository_warning(source)
@@ -1450,7 +1469,7 @@ fn update_exports(
     // read, and its warnings are shown on every index, not only the one
     // that rebuilt the exports.
     warnings.extend(selection::not_cloned_warnings(source));
-    let from_code = documents_from_code(source, root, states, &mut warnings);
+    let from_code = documents_from_code(source, root, reading.states, &mut warnings);
     let from_code_digests: Vec<String> = from_code
         .iter()
         .map(|(service, generated)| format!("{service} {}", generated.digest))
@@ -1480,7 +1499,7 @@ fn update_exports(
                 },
                 top_level: &top_level,
             };
-            lemma_graph::exports::exports(source, root, &symbols, &from_code)?
+            lemma_graph::exports::exports(source, root, &symbols, &from_code, reading.kept)?
         };
         store.replace_exports(snapshot_id, &fingerprint, &exports, &links)?;
     }
