@@ -24,9 +24,8 @@ use lemma_graph::{Finding, Report, Severity};
 
 use crate::check::{Delta, SentryNote, Served, Streams};
 use crate::cli::CheckArgs;
+use crate::watched::{BATCH_INTERVAL, Watched, WatchedWorkspace};
 
-/// How often the worker collects changes reported by the watchers.
-const BATCH_INTERVAL: Duration = Duration::from_millis(200);
 /// How many events the journal keeps.
 const JOURNAL_LIMIT: usize = 1000;
 /// How many earlier answers it keeps per set of options, for `--since`.
@@ -34,12 +33,6 @@ const ANSWERS_KEPT: usize = 8;
 /// How many answers it holds ready to give again. Each set of options has
 /// its own, so a check of one repository does not displace another's.
 const ANSWERS_HELD: usize = 16;
-/// How long after a repository's first unprepared change it is prepared,
-/// even if changes keep coming.
-const PREPARE_WITHIN: Duration = Duration::from_secs(2);
-/// More changed paths than this are a bulk state: too many to parse one by
-/// one, so a batch only lists the repository again.
-const BULK_PATHS: usize = 1000;
 
 /// A check asked of sentry, with the connection to answer on.
 pub(crate) struct Ask {
@@ -169,109 +162,6 @@ impl Drop for Sentry {
     }
 }
 
-/// A repository sentry watches.
-struct Watched {
-    root: PathBuf,
-    /// The root as a check names it, which is how reads are kept.
-    spelled: PathBuf,
-    watch: Option<lemma_index::Watch>,
-    /// Why it is not watched, when watching failed.
-    failure: Option<String>,
-    /// Bumped whenever a file a check can depend on may have changed.
-    generation: u64,
-    /// Bumped when only files no check reads changed. Those matter only to
-    /// an answer that ran a behavior, whose checker can read anything.
-    unread_generation: u64,
-    /// Changes not prepared yet.
-    unprepared: Option<Unprepared>,
-}
-
-/// A repository's changes since it was last prepared.
-struct Unprepared {
-    /// Changed paths, relative to the repository.
-    paths: BTreeSet<String>,
-    /// Whether there are too many to prepare one by one, or some were lost.
-    is_bulk: bool,
-    first: Instant,
-    last: Instant,
-}
-
-impl Watched {
-    /// Takes the reported changes, dropping what is kept of the paths they
-    /// touched; whether there were any, and how many paths.
-    fn take_changes(&mut self, warm: &lemma_graph::Warm, confirming: bool) -> Option<usize> {
-        let watch = self.watch.as_mut()?;
-        if !confirming && !watch.has_pending() {
-            return None;
-        }
-        let observed = watch.changes();
-        if !observed.needs_full_walk && observed.paths.is_empty() {
-            return None;
-        }
-        let changed = relative_paths(&self.root, &observed.paths);
-        let is_unread = !observed.needs_full_walk
-            && !changed.is_empty()
-            && !changed
-                .iter()
-                .any(|path| warm.can_depend_on(&self.root, path));
-        if is_unread {
-            // No check reads them, but the repository's state counts them.
-            warm.forget_state(&self.root);
-            self.unread_generation += 1;
-            return None;
-        }
-        if observed.needs_full_walk {
-            warm.forget_working(&self.root);
-        } else {
-            warm.forget_paths(&self.root, &changed);
-        }
-        self.generation += 1;
-        self.note_unprepared(changed, observed.needs_full_walk);
-        Some(observed.paths.len())
-    }
-
-    fn note_unprepared(&mut self, changed: Vec<String>, is_lost: bool) {
-        let now = Instant::now();
-        let unprepared = self.unprepared.get_or_insert_with(|| Unprepared {
-            paths: BTreeSet::new(),
-            is_bulk: false,
-            first: now,
-            last: now,
-        });
-        unprepared.last = now;
-        unprepared.paths.extend(changed);
-        unprepared.is_bulk |= is_lost || unprepared.paths.len() > BULK_PATHS;
-        if unprepared.is_bulk {
-            unprepared.paths.clear();
-        }
-    }
-
-    /// Takes the changes to prepare, once they have settled and Git has
-    /// let go of the repository.
-    fn take_settled(&mut self, now: Instant) -> Option<Unprepared> {
-        let unprepared = self.unprepared.as_ref()?;
-        let is_settled = now.duration_since(unprepared.last) >= BATCH_INTERVAL
-            || now.duration_since(unprepared.first) >= PREPARE_WITHIN;
-        if !is_settled || self.root.join(".git/index.lock").exists() {
-            return None;
-        }
-        self.unprepared.take()
-    }
-}
-
-/// `paths` relative to `root`, with `/`, those outside it and in `.git`
-/// left out: the latter say nothing about a file's contents.
-fn relative_paths(root: &Path, paths: &std::collections::HashSet<PathBuf>) -> Vec<String> {
-    let mut relative: Vec<String> = paths
-        .iter()
-        .filter_map(|path| path.strip_prefix(root).ok())
-        .filter(|path| !path.starts_with(".git"))
-        .map(|path| path.to_string_lossy().replace('\\', "/"))
-        .collect();
-    relative.sort();
-    relative
-}
-
 /// How much sentry has done, for status.
 #[derive(Default)]
 struct Counts {
@@ -342,8 +232,7 @@ struct Waiting {
 
 struct Worker {
     manifest: PathBuf,
-    watched: Vec<Watched>,
-    warm: Arc<lemma_graph::Warm>,
+    workspace: WatchedWorkspace,
     /// Names this attachment in tokens, so a token from another is known.
     instance: String,
     journal: VecDeque<(u64, Event)>,
@@ -359,46 +248,10 @@ struct Worker {
 
 impl Worker {
     fn start(manifest: PathBuf) -> anyhow::Result<Self> {
-        let options = lemma_graph::CheckOptions {
-            change: None,
-            level: None,
-            cache: lemma_graph::repos::cache_directory(),
-            cloning: lemma_graph::repos::Cloning::Forbidden,
-            explain: false,
-            relations: Vec::new(),
-            facts_cache: None,
-            evaluation: lemma_verify::Evaluation::Demand,
-            list_links: false,
-            run_checkers: false,
-            runs_base_checkers: false,
-            select: None,
-            warm: None,
-            environment: None,
-            runtime: None,
-        };
-        let spelled = lemma_graph::repository_roots(&manifest, &options)?;
-        let roots: Vec<PathBuf> = spelled
-            .iter()
-            .map(|root| root.canonicalize().unwrap_or_else(|_| root.clone()))
-            .collect();
-        let watched = roots
-            .iter()
-            .zip(spelled)
-            .map(|(root, spelled)| {
-                // A workspace's directory holds its repositories, each
-                // watched on its own.
-                let inner: Vec<PathBuf> = roots
-                    .iter()
-                    .filter(|other| *other != root && other.starts_with(root))
-                    .cloned()
-                    .collect();
-                watch(root.clone(), spelled, &inner)
-            })
-            .collect();
+        let workspace = WatchedWorkspace::start(&manifest)?;
         Ok(Self {
             manifest,
-            watched,
-            warm: Arc::default(),
+            workspace,
             instance: instance(),
             journal: VecDeque::new(),
             position: 0,
@@ -435,54 +288,35 @@ impl Worker {
     /// known before a check says how its repositories are read.
     fn prepare_attached(&self) {
         let wanted: Vec<(PathBuf, Option<String>)> = self
-            .watched
+            .workspace
+            .repositories()
             .iter()
-            .map(|watched| (watched.spelled.clone(), None))
+            .map(|watched| (watched.spelled().to_path_buf(), None))
             .collect();
-        self.warm.verify().listings().prefetch(&wanted);
+        self.workspace.warm().verify().listings().prefetch(&wanted);
     }
 
     /// Prepares each repository whose changes have settled. Nothing is
     /// evaluated: only listings and the facts of the files that changed.
     fn prepare_settled(&mut self) {
-        let now = Instant::now();
-        for watched in &mut self.watched {
-            let Some(unprepared) = watched.take_settled(now) else {
-                continue;
-            };
-            let changed: Vec<String> = unprepared.paths.into_iter().collect();
-            self.counts.read_ahead += self.warm.verify().prepare(&watched.spelled, &changed);
+        for settled in self.workspace.take_settled(Instant::now()) {
+            let verify = self.workspace.warm().verify();
+            self.counts.read_ahead += verify.prepare(&settled.repository, &settled.paths);
             self.counts.prepared += 1;
         }
     }
 
-    /// Drops what is kept of what changed in each repository. On an ask,
-    /// `confirming` waits for every watcher's barrier, so a change made
-    /// just before the ask counts, and leaves nothing to prepare, since
-    /// the ask reads what it needs; between asks only repositories with
-    /// reported changes are looked at.
+    /// Drops what is kept of what changed in each repository, and records
+    /// each repository's changes as a batch. On an ask, `confirming` waits
+    /// for every watcher's barrier, so a change made just before the ask
+    /// counts.
     fn collect(&mut self, confirming: bool) {
-        let mut batches = Vec::new();
-        for watched in &mut self.watched {
-            if watched.watch.is_none() {
-                // Unwatched: anything may have changed.
-                self.warm.forget_working(&watched.root);
-                watched.generation += 1;
-                continue;
-            }
-            if let Some(paths) = watched.take_changes(&self.warm, confirming) {
-                batches.push(Event::Batch {
-                    repository: watched.root.display().to_string(),
-                    paths,
-                });
-            }
-            if confirming {
-                watched.unprepared = None;
-            }
-        }
-        for batch in batches {
+        for batch in self.workspace.collect(confirming) {
             self.counts.batches += 1;
-            self.record(batch);
+            self.record(Event::Batch {
+                repository: batch.repository,
+                paths: batch.paths,
+            });
         }
     }
 
@@ -508,7 +342,12 @@ impl Worker {
             options,
             fingerprint,
         };
-        let unread_generations: u64 = self.watched.iter().map(|one| one.unread_generation).sum();
+        let unread_generations: u64 = self
+            .workspace
+            .repositories()
+            .iter()
+            .map(Watched::unread_generation)
+            .sum();
         let reused = self
             .held
             .get(&fingerprint)
@@ -520,7 +359,7 @@ impl Worker {
                 Kept {
                     position: 0,
                     last_given: 0,
-                    interpreters: self.warm.interpreter_stamps(),
+                    interpreters: self.workspace.warm().interpreter_stamps(),
                     unread_generations,
                     report,
                 },
@@ -665,7 +504,7 @@ impl Worker {
         let manifest = crate::check::entry_manifest_in(&question.cwd, &question.args.manifest);
         let served = Served {
             manifest: &manifest,
-            warm: Arc::clone(&self.warm),
+            warm: Arc::clone(self.workspace.warm()),
             environment: Arc::new(question.environment.clone()),
         };
         crate::check::evaluate(&question.args, Some(&served)).map_err(|error| format!("{error:#}"))
@@ -681,8 +520,8 @@ impl Worker {
         question.json.hash(&mut hasher);
         question.cwd.hash(&mut hasher);
         question.environment.hash(&mut hasher);
-        for watched in &self.watched {
-            watched.generation.hash(&mut hasher);
+        for watched in self.workspace.repositories() {
+            watched.generation().hash(&mut hasher);
         }
         manifest_stamp(&self.manifest).hash(&mut hasher);
         today().hash(&mut hasher);
@@ -768,8 +607,8 @@ impl Worker {
 
     fn status(&self) -> String {
         let mut text = String::new();
-        for watched in &self.watched {
-            let _ = writeln!(text, "  {}", watch_line(watched));
+        for watched in self.workspace.repositories() {
+            let _ = writeln!(text, "  {}", watched.status_line());
         }
         let counts = &self.counts;
         let last = counts.last.map_or_else(String::new, |(took, reused)| {
@@ -873,25 +712,6 @@ fn describe(event: &Event) -> String {
     }
 }
 
-fn watch_line(watched: &Watched) -> String {
-    let root = watched.root.display();
-    match (&watched.watch, &watched.failure) {
-        (Some(watch), _) => match watch.report() {
-            lemma_index::WatchReport::Watching {
-                directories: Some(count),
-            } => format!("watching {root}: {count} directories"),
-            lemma_index::WatchReport::Watching { directories: None } => format!("watching {root}"),
-            lemma_index::WatchReport::Walking { reason } => {
-                format!("not watching {root}: {reason}")
-            }
-        },
-        (None, failure) => format!(
-            "not watching {root}: {}",
-            failure.as_deref().unwrap_or("unknown")
-        ),
-    }
-}
-
 /// A name for this attachment, different each time sentry attaches.
 fn instance() -> String {
     let started = std::time::SystemTime::now()
@@ -900,29 +720,6 @@ fn instance() -> String {
     let mut hasher = DefaultHasher::new();
     (started, std::process::id()).hash(&mut hasher);
     format!("{:08x}", hasher.finish() & 0xffff_ffff)
-}
-
-/// A watcher for the repository at `root` (canonical), named `spelled` by
-/// checks, leaving out the repositories `inner` to it, or why there is none.
-fn watch(root: PathBuf, spelled: PathBuf, inner: &[PathBuf]) -> Watched {
-    let selection = lemma_index::Selection::everything_git_lists();
-    let started = lemma_index::Watch::start_without(&root, &selection, inner);
-    let (watch, failure) = match started {
-        Ok(watch) => (Some(watch), None),
-        Err(reason) => {
-            log::warn!("sentry: not watching {}: {reason}", root.display());
-            (None, Some(reason))
-        }
-    };
-    Watched {
-        root,
-        spelled,
-        watch,
-        failure,
-        generation: 0,
-        unread_generation: 0,
-        unprepared: None,
-    }
 }
 
 /// The size and modification time of the workspace's own manifests, which
