@@ -180,19 +180,13 @@ pub(crate) fn run(
     }
     let base_model = base.as_ref().map(|base| &base.checked.model);
     let selected = options.select.as_deref();
-    let results = head.run(
-        &Store::new(cache, options.run_checkers).with_environment(options.environment.clone()),
-        base_model,
-        selected,
-        reach,
-    )?;
+    let (head_store, base_store) = stores(options);
+    let results = head.run(&head_store, base_model, selected, reach)?;
     // The base may lack what the head selects. A check the head defines
     // may have been renamed, so the base then runs them all; a behavior or
     // requirement it lacks is new, and has nothing at the base to compare
     // with, so nothing runs there (with `--run-base`, every base behavior's
     // checkers would run for none of their cases to be compared).
-    let base_store = Store::new(cache, options.run_checkers && options.runs_base_checkers)
-        .with_environment(options.environment.clone());
     let selects_a_check = selected.is_none_or(|name| names_a_check(&head.checked, name));
     let base_results = base.as_ref().map(|base| {
         base.run(&base_store, None, selected, None)
@@ -214,6 +208,24 @@ pub(crate) fn run(
         reports,
         changes,
     }))
+}
+
+/// Where the head's and the base's evidence is kept. Both ask the check's
+/// own states, so a repository's is asked of Git once.
+fn stores(options: &CheckOptions) -> (Store, Store) {
+    let states = options
+        .warm
+        .as_ref()
+        .map_or_else(std::sync::Arc::default, |warm| warm.states());
+    let store = |may_run: bool| {
+        Store::new(&options.cache, may_run)
+            .with_environment(options.environment.clone())
+            .with_states(std::sync::Arc::clone(&states))
+    };
+    (
+        store(options.run_checkers),
+        store(options.run_checkers && options.runs_base_checkers),
+    )
 }
 
 /// The parent's program checked at the head, kept from lowering its grammar
@@ -425,7 +437,7 @@ impl CheckWorld<'_> {
         if let Some(found) = self.places.get(name) {
             return Some(found.clone());
         }
-        let place = Place::of(self.checkouts.get(name)?);
+        let place = self.store.place(self.checkouts.get(name)?);
         self.places.insert(name.to_owned(), place.clone());
         Some(place)
     }

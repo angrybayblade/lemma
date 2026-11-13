@@ -62,6 +62,8 @@ pub struct Context<'a> {
     pub outputs: &'a mut BTreeMap<(String, String, String), Arc<Value>>,
     /// What this run has read from repositories already.
     pub reads: &'a mut Reads,
+    /// The state of working directories' code.
+    pub states: &'a adapters::States,
     /// The environment commands start from instead of this process's own,
     /// for a check answered on behalf of another process.
     pub environment: Option<&'a BTreeMap<String, String>>,
@@ -94,8 +96,6 @@ pub struct Reads {
     go_packages: BTreeMap<(PathBuf, Option<String>, String), Arc<go::Package>>,
     /// A JSON document parsed, by repository, commit and path.
     documents: BTreeMap<(PathBuf, Option<String>, String), Arc<Value>>,
-    /// A working directory's state (see [`adapters::working_state`]).
-    states: BTreeMap<PathBuf, Option<String>>,
     /// What each Python interpreter reports of itself and its packages,
     /// with the stamp of its files it was asked under.
     interpreters: BTreeMap<String, (String, String)>,
@@ -286,16 +286,6 @@ impl Reads {
             .retain(|(root, commit, _), _| commit.is_some() || !is_it(root));
         self.go_packages
             .retain(|(root, commit, _), _| commit.is_some() || !is_it(root));
-        self.states.retain(|root, _| !is_it(root));
-    }
-
-    fn working_state(&mut self, root: &Path) -> Result<Option<String>, GraphError> {
-        if let Some(found) = self.states.get(root) {
-            return Ok(found.clone());
-        }
-        let found = adapters::working_state(root)?;
-        self.states.insert(root.to_owned(), found.clone());
-        Ok(found)
     }
 
     /// The files with `extension` directly in `directory` at the checkout,
@@ -595,7 +585,7 @@ fn kept_or_run(
     let checkout = context.checkout;
     let state = match &checkout.commit {
         Some(commit) => Some(adapters::commit_state(&checkout.root, commit)?),
-        None => context.reads.working_state(&checkout.root)?,
+        None => context.states.working_state(&checkout.root)?,
     };
     let kept = state.as_ref().filter(|_| may_keep).map(|state| {
         let described = format!(
@@ -616,7 +606,7 @@ fn kept_or_run(
     // Only now, on a miss, is the working directory's state worth asking.
     let is_checked_out = match &checkout.commit {
         None => true,
-        Some(_) => state.is_some() && context.reads.working_state(&checkout.root)? == state,
+        Some(_) => state.is_some() && context.states.working_state(&checkout.root)? == state,
     };
     let output = if is_checked_out {
         run(&checkout.root)?
