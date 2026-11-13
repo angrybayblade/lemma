@@ -10,12 +10,14 @@ import * as hono from lemma.hono
 
 export service api {
     index: { include: ["src"] }
-    operations: [
-        http.openapi("openapi.json"), // optional: the committed documents
-        hono.app(entry: ["src/index.ts#app", "src/routes"]),
-    ]
+    operations: http.openapi(
+        "openapi.json", // optional: the committed document
+        command: hono.app(entry: ["src/index.ts#app", "src/routes"], inputs: ["src"]),
+    )
 }
 ```
+
+The committed document is optional: `http.openapi(command: ...)` reads operations from code alone, and so does an adapter written straight into `operations`. A service with several committed documents names the same command in each; it runs once, and each document takes the operations under its paths (see [Output document](#output-document)).
 
 ## Built-in adapters
 
@@ -27,7 +29,21 @@ export service api {
 | `flask-routes` | Flask apps, routes only: every rule of the URL map, through blueprints, nested blueprints, `add_url_rule` and class-based views, each placed at its view function or `MethodView` method; apps mounted with werkzeug's `DispatcherMiddleware` under their mount path. Runs with the service's Python. | `module:attribute`: an app, a function making one (`app:create_app`), or a `DispatcherMiddleware`; or a module whose top-level apps are all read. |
 | `go-http-routes` | Go services routed with `gorilla/mux` or `net/http`'s `ServeMux`, routes only. Runs with `go run`: it builds a temporary program inside the service's module that calls the entry with zero values (pointers to zero values if that panics) and lists the routers it gets, each route placed at its handler's definition; it removes what it wrote and leaves `go.mod` and `go.sum` as they were. | What builds the router: `./internal/http#NewRouter` (a `*mux.Router` or `*http.ServeMux` parameter gets a fresh router, read after the call), `./pkg#Server.Routes`, `./pkg#Router` (a variable), or `./cmd/api` (its `init` functions and `http.DefaultServeMux`). Files tagged `//go:build lemma` are built in, for a constructor written for Lemma. |
 
-A command that follows the protocol below reads any other framework: `http.adapter_command(command: "bun tools/lemma-adapter.ts", entry: ["src"])` runs a script in the repository, and the same runs anything else, such as a binary printing utoipa's document.
+A command that follows the protocol below reads any other framework, and so does a service's own OpenAPI generator, when it can write its document where `$LEMMA_OUTPUT` says:
+
+```lm
+let spec = command(
+    "go run ./cmd/openapi > \"$LEMMA_OUTPUT\"",
+    directory: "apps/api",
+    inputs: ["apps/api"],
+)
+
+export service api {
+    operations: http.openapi("apps/api/openapi.json", command: spec)
+}
+```
+
+`command(...)` runs with `sh -c`: a script in the repository (`bun tools/lemma-adapter.ts`), a framework's generator, or a binary printing utoipa's document. A handler edit that changes what the generator writes is then checked against consumers before anyone regenerates the committed document.
 
 Lemma still reads a framework that knows its routes but not their schemas (Express, Flask, `gorilla/mux`): its adapter says so with `x-lemma-schemas: false`, the committed documents keep the schemas, and the code says which routes exist and where each is handled.
 
@@ -35,8 +51,9 @@ Lemma still reads a framework that knows its routes but not their schemas (Expre
 
 | Field | Meaning |
 | --- | --- |
-| The adapter | `hono.app(...)` or `fastapi.app(...)`, `http.adapter("express-routes", ...)` for another built-in adapter by name, or `http.adapter_command(command: ...)` for a command run with `sh -c`. |
-| `entry` | What the adapter reads, relative to `directory`; given as `$LEMMA_ENTRY`, one per line. |
+| The adapter | `hono.app(...)` or `fastapi.app(...)`, `http.adapter("express-routes", ...)` for another built-in adapter by name, or `command(...)` for a command run with `sh -c`; given to `http.openapi` as `command:`, or written straight into `operations`. |
+| `inputs` | The files and directories the document depends on, relative to the repository root. Lemma keeps the document by their contents alone, so a change elsewhere in the repository does not run the adapter again. Without `inputs` any change does, and `lm check` warns. They are paths, not patterns, and stay inside the repository. Lemma takes them as given: a file the adapter reads that `inputs` leaves out does not run it again when it changes. When none of them exists at a commit, the whole repository keys the document there. |
+| `entry` | What the adapter reads, relative to `directory`; given as `$LEMMA_ENTRY`, one per line. Required for a built-in adapter, optional for `command(...)`. |
 | `exclude` | Glob patterns of files under `entry` not to import, such as scripts that do work when imported; `$LEMMA_EXCLUDE`, one per line. |
 | `directory` | Where the adapter runs, relative to the repository root and inside it; the root if absent. |
 | `env` | Environment variables for the adapter and `setup`, on top of `runtime.env`. Importing an app often needs a few to keep it from connecting anywhere. |
@@ -45,13 +62,13 @@ Lemma still reads a framework that knows its routes but not their schemas (Expre
 
 ## Code locations
 
-Importing code runs it, so Lemma reads code where it already runs: the working directory, uncommitted changes included. That is the head of every change you check. Lemma keeps a commit's document in its cache under the commit's Git tree, so it is generated once:
+Importing code runs it, so Lemma reads code where it already runs: the working directory, uncommitted changes included. That is the head of every change you check. Lemma keeps a commit's document in its cache under the commit's Git tree, or, with `inputs`, under the objects those paths name at the commit, so it is generated once:
 
 1. **Kept.** Whenever an adapter reads a clean working directory, its document is that commit's too. Indexing on `main`, or CI on `main`, keeps the document for every commit a branch later starts from.
-2. **Read in place.** A commit that is the working directory unchanged is read there.
+2. **Read in place.** A commit that is the working directory unchanged is read there; with `inputs`, a commit whose inputs are the working directory's.
 3. **Built.** Any other commit of the changed repository is checked out in one worktree Lemma keeps per repository, `setup` runs, and the adapter reads it. What earlier builds installed stays, so installing again is mostly a check. The document is then kept.
 
-When the working directory changes only TypeScript files, and a changed file's zod object schemas differ from its base commit's only in which top-level keys they have or which keys are optional, Lemma patches the base commit's kept document where those schemas are used instead of running the adapter, and patches the contract laid over the committed documents the same way. A changed nested schema, a spread, a moved route, or a schema no operation uses runs the adapter as above. Changes in other languages leave the document as it was.
+When the working directory changes only TypeScript files, and a changed file's zod object schemas differ from its base commit's only in which top-level keys they have or which keys are optional, Lemma patches the base commit's kept document where those schemas are used instead of running the adapter, and patches the contract laid over the committed documents the same way. A changed nested schema, a spread, a moved route, or a schema no operation uses runs the adapter as above. Only an adapter that reads TypeScript (the ones run with Bun) is patched; a command, or an adapter run with Python or Go, runs whenever its inputs change.
 
 A contract laid over committed documents is kept by its inputs (the service, the adapter's document and the committed documents' contents), so a check whose documents are unchanged lays nothing again.
 
@@ -95,11 +112,11 @@ The document may carry three extensions:
 | `x-lemma-complete` | the document | `true` when the adapter read every route the code registers, so an operation it does not describe is gone. Any unread module makes a reading incomplete. |
 | `x-lemma-schemas` | the document | `false` when the adapter describes routes only, without parameters, bodies or responses: matched operations keep their committed definitions. |
 
-The document is cached by the adapter's configuration, its script, the runtime it runs with and Lemma's version, so changing any of them reads the code again. A failure is kept under the same key, in a `.failed` file beside where the document would go, holding the adapter's whole output, and bound to the clone it happened in and its toolchain environment (`PATH`, and the settings and caches of Go, Node and its package managers, Python and its package managers, Rust and Java). The same code and adapter would fail the same way there, so Lemma does not run them again; a fresh clone, or a shell with another Go cache, tries again. Each environment keeps its own file, so the daemon and a shell remember their failures side by side. Lemma logs a failure the network caused (a timeout, a refused connection, a 502 or 503) but tries again next time. The warning shows what failed and the lines naming an error, without a package manager's progress, and names the file. Delete it to try again after changing something it does not cover, such as an installed toolchain version. At `--level strict` an adapter that could not read the code fails the check, so a CI job missing the dependencies it needs does not pass on committed documents alone.
+The document is cached by the adapter's configuration (its `inputs` included), its script, the runtime it runs with and Lemma's version, so changing any of them reads the code again. A failure is kept under the same key, in a `.failed` file beside where the document would go, holding the adapter's whole output, and bound to the clone it happened in and its toolchain environment (`PATH`, and the settings and caches of Go, Node and its package managers, Python and its package managers, Rust and Java). The same code and adapter would fail the same way there, so Lemma does not run them again; a fresh clone, or a shell with another Go cache, tries again. Each environment keeps its own file, so the daemon and a shell remember their failures side by side. Lemma logs a failure the network caused (a timeout, a refused connection, a 502 or 503) but tries again next time. The warning shows what failed and the lines naming an error, without a package manager's progress, and names the file. Delete it to try again after changing something it does not cover, such as an installed toolchain version. At `--level strict` an adapter that could not read the code fails the check, so a CI job missing the dependencies it needs does not pass on committed documents alone.
 
 ## Add a built-in adapter
 
-A built-in adapter is a script under `crates/lemma-graph/adapters/` and a row in `crates/lemma-graph/src/adapters/registry.rs` naming it and the interpreter it runs with. Until it is built in, the same script works from a repository through `http.adapter_command`.
+A built-in adapter is a script under `crates/lemma-graph/adapters/` and a row in `crates/lemma-graph/src/adapters/registry.rs` naming it and the interpreter it runs with. Until it is built in, the same script works from a repository through `command(...)`.
 
 ## Limits
 

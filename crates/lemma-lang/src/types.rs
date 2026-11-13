@@ -143,6 +143,8 @@ impl Type {
             | (_, Type::Unknown)
             | (Type::ClientOperation, Type::Operation)
             | (Type::Text, Type::Builtin("Command"))
+            // A generator alone gives the operations it reads from code.
+            | (Type::Builtin("Generator"), Type::Builtin("Operations"))
             | (Type::Null | Type::Bool | Type::Int | Type::Text, Type::Json) => true,
             (Type::List(item), Type::Builtin("Command")) => item.fits(&Type::Text),
             (Type::List(item), Type::Json) => item.fits(&Type::Json),

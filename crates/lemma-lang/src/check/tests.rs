@@ -169,10 +169,10 @@ import * as hono from lemma.hono
 
 export service Gateway {
     index: { include: ["apps/gateway/src"] }
-    operations: [
-        http.openapi("apps/gateway/openapi.json"),
-        hono.app(directory: "apps/gateway", entry: ["src/index.ts#app", "src/routes"], setup: "pnpm install"),
-    ]
+    operations: http.openapi(
+        "apps/gateway/openapi.json",
+        command: hono.app(directory: "apps/gateway", entry: ["src/index.ts#app", "src/routes"], setup: "pnpm install", inputs: ["apps/gateway/src"]),
+    )
 }
 "#;
 
@@ -220,6 +220,57 @@ fn a_checkers_runs_do_not_overlap_unless_it_says_they_may() {
     assert_clean(&concurrent);
     assert!(!silent.model.checkers[0].is_concurrent);
     assert!(concurrent.model.checkers[0].is_concurrent);
+}
+
+fn warnings(checked: &Checked) -> Vec<String> {
+    checked
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect()
+}
+
+#[test]
+fn a_command_without_inputs_is_warned_about() {
+    let result = single(
+        "module m\nimport * as http from lemma.http\nexport service s {\n    operations: http.openapi(\"openapi.json\", command: command(\"make spec\"))\n}\n",
+    );
+
+    assert!(errors(&result).is_empty(), "{:#?}", result.diagnostics);
+    assert_eq!(warnings(&result).len(), 1);
+    assert!(warnings(&result)[0].contains("no `inputs`"));
+}
+
+#[test]
+fn a_command_with_inputs_alone_gives_operations() {
+    let result = single(
+        "module m\nimport * as http from lemma.http\nexport service s {\n    operations: http.openapi(command: command(\"make spec\", inputs: [\"src\"]))\n}\n",
+    );
+
+    assert_clean(&result);
+}
+
+#[test]
+fn an_input_that_is_a_pattern_or_outside_the_repository_is_an_error() {
+    for input in ["src/*", "../shared", "/etc"] {
+        let text = format!(
+            "module m\nimport * as http from lemma.http\nexport service s {{\n    operations: http.openapi(command: command(\"make spec\", inputs: [\"{input}\"]))\n}}\n"
+        );
+
+        let result = single(&text);
+
+        assert_error(&result, "paths inside the repository");
+    }
+}
+
+#[test]
+fn an_openapi_with_neither_document_nor_command_is_an_error() {
+    let result = single(
+        "module m\nimport * as http from lemma.http\nexport service s {\n    operations: http.openapi()\n}\n",
+    );
+
+    assert_error(&result, "needs a document, a command");
 }
 
 #[test]

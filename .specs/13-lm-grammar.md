@@ -222,16 +222,19 @@ import * as hono from lemma.hono
 export service Gateway {
     index: { include: ["apps/gateway/src"] }
 
-    operations: [
-        http.openapi("apps/gateway/openapi.json"),
-        hono.app(
+    operations: http.openapi(
+        "apps/gateway/openapi.json",
+        command: hono.app(
             directory: "apps/gateway",
             entry: ["src/index.ts#app", "src/routes"],
             setup: ["pnpm", "install", "--frozen-lockfile"],
+            inputs: ["apps/gateway/src"],
         ),
-    ]
+    )
 }
 ```
+
+An `http.openapi` document may name the command that generates it: an adapter (`hono.app`, `fastapi.app`, `http.adapter`) or `command(...)`, any command writing an OpenAPI document to `$LEMMA_OUTPUT`, such as a service's own generator. Either part is optional: a spec-first service has only the document, and `http.openapi(command: ...)` reads operations from code alone. The command's document is laid over the committed one, so a handler edit is checked against consumers before anyone regenerates the document. Several documents may name the same command; it runs once, only when a check reads the service. A command's `inputs` are the paths its document depends on, and it runs again only when they change; without `inputs` any change in the repository runs it, and `lm check` warns. Lemma does not check `inputs` against what the command reads. See [`19-generated-documents.md`](19-generated-documents.md).
 
 Service fields:
 
@@ -836,7 +839,7 @@ The rule layer, links and requirements lower into the structures Lemma evaluates
 | `repo` in the entry workspace | the parent's `services: "#name": { path \| git, ref }` |
 | `repo` at the top of a root module | a repository's external-service pins |
 | `service` with `index` and `operations: http.openapi(...)` | `services.<name>.index`, `exports.openapi` |
-| `operations: hono.app(...)`, `fastapi.app(...)`, `http.adapter("express-routes", ...)`, `http.adapter_command(...)` | `exports.operations_from`: the shorthands, any built-in adapter by name, or a command |
+| `operations: http.openapi(..., command: ...)`, or `hono.app(...)`, `fastapi.app(...)`, `http.adapter("express-routes", ...)`, `command(...)` alone | `exports.operations_from`: the shorthands, any built-in adapter by name, or a command, with its `inputs` |
 | a hand-written `operation` | `exports.operations.<name>`, with `path` and `schema` |
 | `client: http.generated_client(...)` | `exports.client` |
 | `graph g : Link { a -> b }` | `graph.links` |
@@ -852,7 +855,7 @@ Standard library:
 
 | Module | Contents |
 | --- | --- |
-| `lemma.http` | `operation`, parameters, request and response fields, routes, `calls_path`, `calls_client`, `client_operation`, and the syntax facts the rules read (`mentions`, `imports`, `in_file`, `named`); providers `openapi`, `generated_client`, `inferred_links`, `adapter`, `adapter_command`; the rules and requirements of `grammars/http-contracts.yaml` |
+| `lemma.http` | `operation`, parameters, request and response fields, routes, `calls_path`, `calls_client`, `client_operation`, and the syntax facts the rules read (`mentions`, `imports`, `in_file`, `named`); providers `openapi` (a document, the command generating it, or both), `generated_client`, `inferred_links`, `adapter`; the rules and requirements of `grammars/http-contracts.yaml` |
 | `lemma.links` | `Link`. `lemma check` checks each link for persistence and schema agreement in code of its own, not as requirements, so allowances do not name those checks yet |
 | `lemma.hono`, `lemma.fastapi` | Operation providers, today's built-in adapters |
 | `lemma.python`, `lemma.typescript`, `lemma.go`, `lemma.rust` | Resolution requests: `module` or `package`, `symbol`, `method`, `type` |

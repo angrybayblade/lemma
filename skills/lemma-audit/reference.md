@@ -33,14 +33,15 @@ export service api {
         exclude: ["**/generated/**"]
         languages: ["typescript"]
     }
-    operations: [
-        http.openapi("openapi.json"),          // documents it serves: calls to them are inferred
-        hono.app(                              // optional: read operations from the code, not committed documents
+    operations: http.openapi(
+        "openapi.json",                        // the document it serves: calls to it are inferred
+        command: hono.app(                     // optional: read operations from the code, laid over the document
             entry: ["src/index.ts#app", "src/routes"],
             directory: "apps/api",             // where it runs
             setup: "npm ci",                   // prepares Lemma's worktree of a commit no one has read clean
+            inputs: ["apps/api/src"],          // what the document depends on: other changes reuse it
         ),
-    ]
+    )
     symbols: ["src/index.ts"]                  // a library's public modules
     routes: {                                  // optional, rarely needed with an adapter: the calls routes are written with
         register: ["openapi"]                  // take a route and its handler: router.openapi(DEF, handler)
@@ -74,7 +75,7 @@ export graph links : Link {
 }
 ```
 
-Other adapters: `fastapi.app(entry: ["app.main:app"])`, `http.adapter("express-routes", entry: [...])`, and `http.adapter_command(command: "...", entry: [...])`.
+Other adapters: `fastapi.app(entry: ["app.main:app"])` and `http.adapter("express-routes", entry: [...])`. A service whose own generator writes its document is described with that command, so handler edits are checked before the document is regenerated: `http.openapi("openapi.json", command: command("go run ./cmd/openapi > \"$LEMMA_OUTPUT\"", directory: "apps/api", inputs: ["apps/api"]))`; the command can be any program writing the document to `$LEMMA_OUTPUT`, in any language. Give every command or adapter `inputs`, the paths its document depends on; without them any change in the repository runs it again, and `lm check` warns.
 
 A schema can also be a document: `json.document("spec.json", format: "openapi").at("$...")`. `json.command(..., cache: false)` re-runs a command whose output depends on more than the code.
 

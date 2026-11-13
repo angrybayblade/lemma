@@ -59,7 +59,7 @@ export service api {
 }
 ```
 
-- In each repository serving an API, add a service with what it is made of and its OpenAPI documents; calls to it are then inferred everywhere. A service reading its operations from code uses an adapter: `hono.app(...)`, `fastapi.app(...)` or `http.adapter(...)`.
+- In each repository serving an API, add a service with what it is made of and its OpenAPI documents; calls to it are then inferred everywhere. A service reading its operations from code uses an adapter: `hono.app(...)`, `fastapi.app(...)` or `http.adapter(...)`. A service that generates its committed document from code (a Go program printing its router's document, a Rust binary printing utoipa's, a script calling the framework's generator) gives that generator to `http.openapi("openapi.json", command: command("...", inputs: [...]))`, writing to `$LEMMA_OUTPUT`, so handler edits are checked before anyone regenerates the document. Give every command and adapter `inputs`.
 - In each repository calling others, add a service with its `index`.
 - A generated client is a service with `client: http.generated_client(generated_from: [...], call_names: [...])`.
 - For a call inference cannot see (function runtimes, queues, RPC), declare an operation on each side (`export operation`, and `export client operation` on the caller) with `implementation` and schemas, and a link in the caller's `export graph links : Link { ... }`.

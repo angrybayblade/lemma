@@ -61,7 +61,7 @@ Read through `lemma-graph/src/lm/mod.rs` against `config.rs`, every field `lemma
 | `runtime`, its interpreters and `env` | `runtime` |
 | `rejects_unknown_fields`, `exports.symbols`, `exports.routes` | The fields of those names, `routes` holding `register` and `define` |
 | `exports.openapi` | `http.openapi(...)` in `operations` |
-| `exports.operations_from`, with `adapter`, `command`, `entry`, `directory`, `setup`, `env`, `exclude`, `timeout_ms` | `lemma.hono.app`, `lemma.fastapi.app`, `http.adapter`, `http.adapter_command` |
+| `exports.operations_from`, with `adapter`, `command`, `entry`, `directory`, `setup`, `env`, `exclude`, `timeout_ms`, `inputs` | `lemma.hono.app`, `lemma.fastapi.app`, `http.adapter`, `command(...)`, alone or as `http.openapi(..., command: ...)` |
 | `exports.client`, with `generated_from`, `specs`, `call_names` | `client` |
 | `exports.operations`, with `path`, `previously` | `operation`, `implementation`, `previously` |
 | `schema`, with code, a document, or a `resolver` and its `output`, `env`, `cache` | `request`, `response` (or `sends`, `accepts`) |

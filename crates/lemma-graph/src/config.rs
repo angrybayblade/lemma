@@ -108,6 +108,11 @@ pub struct OperationsFrom {
     /// and its service checked against its committed documents; five
     /// minutes if absent.
     pub timeout_ms: Option<u64>,
+    /// The files and directories the document depends on, relative to the
+    /// repository root. Its kept document is keyed by their contents alone,
+    /// so a change elsewhere does not run it again; empty means the whole
+    /// repository.
+    pub inputs: Vec<String>,
 }
 
 /// The calls a service writes its routes with, by name (`exports.routes`).
