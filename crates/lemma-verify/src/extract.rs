@@ -42,6 +42,9 @@ pub struct FactWriter<'g> {
     /// The grammar's input relation for each relation and snapshot asked
     /// about, `None` when it reads none: asked once per fact otherwise.
     inputs: BTreeMap<String, BTreeMap<String, Option<String>>>,
+    /// The only relations facts are written for, when a run asks for some
+    /// relations' rows and nothing else: the ones those depend on.
+    needed: Option<BTreeSet<String>>,
 }
 
 impl<'g> FactWriter<'g> {
@@ -50,6 +53,20 @@ impl<'g> FactWriter<'g> {
             grammar,
             counts: BTreeMap::new(),
             inputs: BTreeMap::new(),
+            needed: None,
+        }
+    }
+
+    /// A writer for a run that reads only `outputs`' rows: facts of
+    /// relations those do not depend on are left unwritten, since they
+    /// cannot change a row. A system's schemas are most of its facts, and
+    /// who calls an operation rests on none of them.
+    pub fn for_outputs(grammar: &'g mut CompiledGrammar, outputs: &[String]) -> Self {
+        let outputs: BTreeSet<String> = outputs.iter().cloned().collect();
+        let needed = grammar.program.needed_for(&outputs);
+        Self {
+            needed: Some(needed),
+            ..Self::new(grammar)
         }
     }
 
@@ -61,7 +78,9 @@ impl<'g> FactWriter<'g> {
     /// Whether the grammar reads `relation` in `snapshot`, so facts for it
     /// there are worth reading.
     fn wants(&self, relation: &str, snapshot: &str) -> bool {
-        self.grammar.input_relation(relation, snapshot).is_some()
+        self.grammar
+            .input_relation(relation, snapshot)
+            .is_some_and(|name| is_needed(self.needed.as_ref(), &name))
     }
 
     fn add(&mut self, relation: &str, snapshots: &[&str], args: &[Arg<'_>]) {
@@ -69,9 +88,11 @@ impl<'g> FactWriter<'g> {
             grammar,
             counts,
             inputs,
+            needed,
         } = self;
         for snapshot in snapshots {
-            let Some(name) = input_relation(inputs, grammar, relation, snapshot) else {
+            let Some(name) = input_relation(inputs, (grammar, needed.as_ref()), relation, snapshot)
+            else {
                 continue;
             };
             let row: Vec<Value> = args
@@ -89,11 +110,18 @@ impl<'g> FactWriter<'g> {
     }
 }
 
+/// Whether facts of the program's relation `name` are written: all are
+/// unless only some are `needed`.
+fn is_needed(needed: Option<&BTreeSet<String>>, name: &str) -> bool {
+    needed.is_none_or(|needed| needed.contains(name))
+}
+
 /// The grammar's input relation for `relation` in `snapshot`, if it reads
-/// one, remembered in `inputs` after the first time it is asked.
+/// one whose facts are `needed`, remembered in `inputs` after the first
+/// time it is asked.
 fn input_relation<'i>(
     inputs: &'i mut BTreeMap<String, BTreeMap<String, Option<String>>>,
-    grammar: &CompiledGrammar,
+    (grammar, needed): (&CompiledGrammar, Option<&BTreeSet<String>>),
     relation: &str,
     snapshot: &str,
 ) -> Option<&'i str> {
@@ -101,7 +129,9 @@ fn input_relation<'i>(
         .get(relation)
         .is_some_and(|by_snapshot| by_snapshot.contains_key(snapshot));
     if !is_known {
-        let name = grammar.input_relation(relation, snapshot);
+        let name = grammar
+            .input_relation(relation, snapshot)
+            .filter(|name| is_needed(needed, name));
         inputs
             .entry(relation.to_owned())
             .or_default()
@@ -3344,6 +3374,32 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn a_run_asking_for_some_relations_writes_only_the_facts_they_rest_on() {
+        let mut grammar = http_contracts();
+        let outputs = ["operation".to_owned()];
+        let mut writer = FactWriter::for_outputs(&mut grammar, &outputs);
+        let operation = [
+            Arg::Text("billing"),
+            Arg::Text("GET /api/a"),
+            Arg::Text("GET"),
+            Arg::Text("/api/a"),
+        ];
+        let field = [
+            Arg::Text("GET /api/a"),
+            Arg::Text("name"),
+            Arg::Text("name"),
+        ];
+
+        writer.add("operation", &["head"], &operation);
+        writer.add("request_field", &["head"], &field);
+
+        assert!(writer.wants("operation", "head"));
+        assert!(!writer.wants("request_field", "head"));
+        assert_eq!(writer.counts.get("operation"), Some(&1));
+        assert_eq!(writer.counts.get("request_field"), None);
     }
 
     #[test]
