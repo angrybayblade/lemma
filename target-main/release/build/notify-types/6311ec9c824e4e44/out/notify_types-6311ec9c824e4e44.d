@@ -1,0 +1,10 @@
+/home/exedev/lemma-walk/target-main/release/build/notify-types/6311ec9c824e4e44/out/notify_types-6311ec9c824e4e44.d: /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/lib.rs /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/debouncer_full.rs /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/debouncer_mini.rs /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/event.rs
+
+/home/exedev/lemma-walk/target-main/release/build/notify-types/6311ec9c824e4e44/out/libnotify_types-6311ec9c824e4e44.rlib: /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/lib.rs /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/debouncer_full.rs /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/debouncer_mini.rs /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/event.rs
+
+/home/exedev/lemma-walk/target-main/release/build/notify-types/6311ec9c824e4e44/out/libnotify_types-6311ec9c824e4e44.rmeta: /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/lib.rs /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/debouncer_full.rs /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/debouncer_mini.rs /home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/event.rs
+
+/home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/lib.rs:
+/home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/debouncer_full.rs:
+/home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/debouncer_mini.rs:
+/home/exedev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-types-2.1.0/src/event.rs:

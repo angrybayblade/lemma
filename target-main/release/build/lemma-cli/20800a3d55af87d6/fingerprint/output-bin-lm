@@ -1,0 +1,1 @@
+{"$message_type":"unused_extern","lint_level":"force-warn","unused_extern_names":["anyhow","blake3","clap","lemma_graph","lemma_http","lemma_index","lemma_lang","lemma_logic","lemma_model","lemma_providers","lemma_query","lemma_souffle","lemma_store","lemma_verify","log","rustix","serde","serde_json","thiserror","toml"]}
