@@ -1144,6 +1144,7 @@ impl Engine {
     pub fn maintain(&mut self, policy: &IdlePolicy, warms_up_on_activity: bool) {
         self.forget_vanished();
         self.pool.maintain(policy, Instant::now());
+        self.forget_untraced(policy, Instant::now());
         if !warms_up_on_activity {
             return;
         }
@@ -1162,6 +1163,20 @@ impl Engine {
         }
     }
 
+    /// Stops watching the workspaces no graph has been traced through for
+    /// as long as an unused language server is kept, and lets go of what
+    /// was kept of them: the next trace reads everything, and watches again.
+    fn forget_untraced(&mut self, policy: &IdlePolicy, now: Instant) {
+        let Some(stop_after) = policy.stop_after else {
+            return;
+        };
+        self.traced_workspaces.retain(|_, traced| {
+            traced
+                .as_ref()
+                .is_none_or(|traced| traced.idle_for(now) < stop_after)
+        });
+    }
+
     /// Lets go of indexes whose database or directory is gone, such as a
     /// worktree deleted after use: their connections, watchers and servers.
     /// A long-lived daemon serving many short-lived directories otherwise
@@ -1174,6 +1189,8 @@ impl Engine {
             .retain(|(db_path, root), _| is_present(db_path, root));
         self.stores.retain(|db_path, _| db_path.exists());
         self.searches.retain(|db_path, _| db_path.exists());
+        self.traced_workspaces
+            .retain(|manifest, _| manifest.exists());
         self.pool.stop_vanished();
     }
 
@@ -1191,6 +1208,7 @@ impl Engine {
     pub fn status(&mut self) -> String {
         let mut text = self.server_status();
         text.push_str(&self.watch_status());
+        text.push_str(&self.trace_status());
         text
     }
 
@@ -1221,6 +1239,25 @@ impl Engine {
         for line in lines {
             text.push_str(&line);
             text.push('\n');
+        }
+        text
+    }
+
+    /// A line per workspace graphs are traced through, and under it one
+    /// per repository watched to keep what traces read.
+    fn trace_status(&self) -> String {
+        let mut workspaces: Vec<(&PathBuf, &crate::trace::TracedWorkspace)> = self
+            .traced_workspaces
+            .iter()
+            .filter_map(|(manifest, traced)| Some((manifest, traced.as_ref()?)))
+            .collect();
+        workspaces.sort_by_key(|(manifest, _)| *manifest);
+        let mut text = String::new();
+        for (manifest, traced) in workspaces {
+            let _ = writeln!(text, "graphs traced through {}:", manifest.display());
+            for line in traced.status_lines() {
+                let _ = writeln!(text, "  {line}");
+            }
         }
         text
     }
@@ -2517,6 +2554,77 @@ mod tests {
 
         assert!(!gone_path.exists());
         assert_eq!(engine.stores.keys().collect::<Vec<_>>(), [&kept_db]);
+    }
+
+    /// A workspace of one committed repository under `root`; its
+    /// description.
+    fn workspace_of_one(root: &Path) -> PathBuf {
+        let web = root.join("web");
+        std::fs::create_dir_all(web.join("src")).unwrap();
+        std::fs::write(web.join("src/charge.ts"), "export const charge = 1;\n").unwrap();
+        std::fs::write(
+            web.join("mod.lm"),
+            "module web\n\nexport service web {\n    index: { include: [\"src\"] }\n}\n",
+        )
+        .unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "web",
+            ],
+        ] {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&web)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        std::fs::write(
+            root.join("mod.lm"),
+            "module shop\n\nworkspace {\n    repo web = local(\"web\")\n}\n",
+        )
+        .unwrap();
+        root.join("mod.lm").canonicalize().unwrap()
+    }
+
+    #[test]
+    fn a_long_lived_engine_lets_go_of_a_traced_workspace_that_is_gone_or_unused() {
+        let kept = tempfile::tempdir().unwrap();
+        let gone = tempfile::tempdir().unwrap();
+        let kept_manifest = workspace_of_one(kept.path());
+        let gone_manifest = workspace_of_one(gone.path());
+        let mut engine = Engine::long_lived();
+        assert!(engine.traced_workspace(&kept_manifest).is_some());
+        assert!(engine.traced_workspace(&gone_manifest).is_some());
+        drop(gone);
+        let keeps_two_hours = IdlePolicy {
+            pause_after: None,
+            stop_after: Some(Duration::from_secs(2 * 60 * 60)),
+            memory_budget_bytes: None,
+        };
+        let keeps_nothing = IdlePolicy {
+            stop_after: Some(Duration::ZERO),
+            ..keeps_two_hours
+        };
+
+        engine.maintain(&keeps_two_hours, false);
+        let after_one_vanished: Vec<PathBuf> = engine.traced_workspaces.keys().cloned().collect();
+        engine.maintain(&keeps_nothing, false);
+
+        assert_eq!(after_one_vanished, [kept_manifest]);
+        assert!(engine.traced_workspaces.is_empty());
     }
 
     #[test]

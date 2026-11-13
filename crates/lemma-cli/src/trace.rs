@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use lemma_graph::adapters::States;
 use lemma_graph::{GraphError, Reached, SystemTrace, TraceCaches, TracedSystem};
@@ -54,6 +55,8 @@ pub(crate) struct TracedWorkspace {
     watched: WatchedWorkspace,
     /// The system as traces last read it, and the workspace's state then.
     system: Option<(u64, TracedSystem)>,
+    /// When a trace last went through it, or it started being watched.
+    last_traced: Instant,
 }
 
 impl TracedWorkspace {
@@ -63,7 +66,21 @@ impl TracedWorkspace {
         Ok(Self {
             watched: WatchedWorkspace::start(manifest)?,
             system: None,
+            last_traced: Instant::now(),
         })
+    }
+
+    /// How long ago, at `now`, a trace last went through it.
+    pub(crate) fn idle_for(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_traced)
+    }
+
+    /// Each repository it watches, a line each, for status.
+    pub(crate) fn status_lines(&self) -> Vec<String> {
+        let repositories = self.watched.repositories().iter();
+        repositories
+            .map(crate::watched::Watched::status_line)
+            .collect()
     }
 
     /// The state of each watched repository's working directory, as Git
@@ -78,6 +95,7 @@ impl TracedWorkspace {
     /// The trace from `start`, through the system as last read if no file
     /// has changed since, and otherwise read again from what is kept.
     pub(crate) fn trace(&mut self, start: &Start<'_>) -> Result<SystemTrace, GraphError> {
+        self.last_traced = Instant::now();
         let warm = self.watched.current();
         let state = self.watched.state();
         let kept = self
