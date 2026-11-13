@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use lemma_model::{Export, ExportKind, ExportLink, FoundBy};
 use lemma_syntax::ExtractorPool;
@@ -37,14 +37,16 @@ pub struct IndexedSymbols<'a> {
     pub top_level: &'a dyn Fn(&str) -> Vec<String>,
 }
 
-/// The routes each file was found to write, kept by a process that stays:
-/// exports are built again after every edit, and reading a service's code
-/// for its routes is most of that, so a file is parsed again only when its
-/// contents change.
+/// What a process that stays keeps between builds of exports, which
+/// happen after every edit: each file's routes, so a file is parsed again
+/// only when its contents change, and each service's documents, so they
+/// are parsed and laid over each other again only when one of them does.
 #[derive(Default)]
-pub struct KeptRoutes {
+pub struct Kept {
     /// By repository and path.
-    read: Mutex<HashMap<(PathBuf, String), ReadRoutes>>,
+    routes: Mutex<HashMap<(PathBuf, String), ReadRoutes>>,
+    /// By repository and service.
+    documents: Mutex<HashMap<(PathBuf, String), LaidDocuments>>,
 }
 
 /// One file's routes, and the contents they were read from.
@@ -53,42 +55,69 @@ struct ReadRoutes {
     routes: Vec<Written>,
 }
 
-impl KeptRoutes {
+/// A service's documents, and a digest of the texts they were made from.
+struct LaidDocuments {
+    made_from: String,
+    documents: Arc<Vec<serde_json::Value>>,
+}
+
+impl Kept {
     /// The routes kept for the file at `path` of the repository at `root`,
     /// if they were read from contents with this `digest`.
-    fn of(&self, root: &Path, path: &str, digest: &str) -> Option<Vec<Written>> {
-        let read = self.read.lock().unwrap_or_else(PoisonError::into_inner);
-        let kept = read.get(&(root.to_path_buf(), path.to_owned()))?;
+    fn routes_of(&self, root: &Path, path: &str, digest: &str) -> Option<Vec<Written>> {
+        let routes = locked(&self.routes);
+        let kept = routes.get(&(root.to_path_buf(), path.to_owned()))?;
         (kept.digest == digest).then(|| kept.routes.clone())
     }
 
-    fn keep(&self, root: &Path, path: &str, digest: String, routes: Vec<Written>) {
-        // A poisoned lock means a thread panicked while reading or
-        // replacing one entry; the others are whole.
-        let mut read = self.read.lock().unwrap_or_else(PoisonError::into_inner);
+    fn keep_routes(&self, root: &Path, path: &str, digest: String, routes: Vec<Written>) {
         let key = (root.to_path_buf(), path.to_owned());
-        read.insert(key, ReadRoutes { digest, routes });
+        locked(&self.routes).insert(key, ReadRoutes { digest, routes });
+    }
+
+    /// The documents kept for `service` of the repository at `root`, if
+    /// they were made from texts with this digest.
+    fn documents_of(
+        &self,
+        root: &Path,
+        service: &str,
+        made_from: &str,
+    ) -> Option<Arc<Vec<serde_json::Value>>> {
+        let documents = locked(&self.documents);
+        let kept = documents.get(&(root.to_path_buf(), service.to_owned()))?;
+        (kept.made_from == made_from).then(|| Arc::clone(&kept.documents))
+    }
+
+    fn keep_documents(&self, root: &Path, service: &str, laid: LaidDocuments) {
+        let key = (root.to_path_buf(), service.to_owned());
+        locked(&self.documents).insert(key, laid);
     }
 }
 
+/// A poisoned lock means a thread panicked while reading or replacing one
+/// entry; the others are whole.
+fn locked<T>(kept: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    kept.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// How a service's files are read for routes: a parser for each thread,
-/// and the routes kept from earlier reads, if any are.
+/// and what is kept from earlier builds, if anything is.
 #[derive(Clone, Copy)]
 struct RouteReading<'a> {
     extractors: &'a ExtractorPool,
-    kept: Option<&'a KeptRoutes>,
+    kept: Option<&'a Kept>,
 }
 
 /// Every local service's exports in `file`, read from the repository at
 /// `root` as it is on disk, and the links `file` declares. `from_code`
 /// holds, by service, the documents adapters generated from the code (see
-/// [`crate::adapters`]); `kept` holds the routes earlier calls read.
+/// [`crate::adapters`]); `kept` holds what earlier calls read.
 pub fn exports(
     file: &LemmaFile,
     root: &Path,
     symbols: &IndexedSymbols<'_>,
     from_code: &BTreeMap<String, adapters::Generated>,
-    kept: Option<&KeptRoutes>,
+    kept: Option<&Kept>,
 ) -> Result<(Vec<Export>, Vec<ExportLink>), GraphError> {
     let mut found = Vec::new();
     let extractors = ExtractorPool::new();
@@ -197,8 +226,10 @@ fn endpoints(
     if service.exports.openapi.is_empty() && input.from_code.is_none() {
         return Ok(Vec::new());
     }
-    let (written, mut texts) = routes(service, root, reading)?;
-    let documents = service_documents(input, root)?;
+    let (written, mut texts) = timed(input.name, "routes", || routes(service, root, reading))?;
+    let documents = timed(input.name, "documents", || {
+        service_documents(input, root, reading.kept)
+    })?;
     let registered: BTreeMap<(String, String), (String, u32)> =
         documents.iter().flat_map(adapters::handler_sites).collect();
     read_missing(&mut texts, registered.values().map(|(file, _)| file), root)?;
@@ -245,6 +276,18 @@ fn endpoints(
     Ok(found)
 }
 
+/// Runs `read`, logging how long reading `what` of `service` took: after an
+/// edit these reads are most of the wait for the next query.
+fn timed<T>(service: &str, what: &str, read: impl FnOnce() -> T) -> T {
+    let started = std::time::Instant::now();
+    let done = read();
+    log::debug!(
+        "exports of {service}: read its {what} in {:.0?}",
+        started.elapsed()
+    );
+    done
+}
+
 /// Adds to `texts` each of `files` it lacks, as on disk under `root`: the
 /// files registrations are in, which need not write a path themselves.
 fn read_missing<'a>(
@@ -266,12 +309,54 @@ fn read_missing<'a>(
 }
 
 /// The documents a service's endpoints come from: its committed ones, with
-/// the operations its adapter read from the code laid over them.
+/// the operations its adapter read from the code laid over them. Those
+/// `kept` holds are used while the texts they were made from are the same.
 fn service_documents(
     input: &ServiceInput<'_>,
     root: &Path,
+    kept: Option<&Kept>,
+) -> Result<Arc<Vec<serde_json::Value>>, GraphError> {
+    let texts = document_texts(input.service, root)?;
+    let Some(kept) = kept else {
+        return laid_documents(input, &texts).map(Arc::new);
+    };
+    let made_from = documents_digest(&texts, input.from_code);
+    if let Some(documents) = kept.documents_of(root, input.name, &made_from) {
+        return Ok(documents);
+    }
+    let documents = Arc::new(laid_documents(input, &texts)?);
+    let laid = LaidDocuments {
+        made_from,
+        documents: Arc::clone(&documents),
+    };
+    kept.keep_documents(root, input.name, laid);
+    Ok(documents)
+}
+
+/// A digest of what a service's documents are made from: each committed
+/// document's name and text, and the document generated from the code.
+fn documents_digest(texts: &[(String, String)], from_code: Option<&adapters::Generated>) -> String {
+    let mut made_from = String::new();
+    for (name, text) in texts {
+        made_from.push_str(name);
+        made_from.push('\0');
+        made_from.push_str(&lemma_model::content_hash(text.as_bytes()));
+        made_from.push('\n');
+    }
+    made_from.push_str(from_code.map_or("no document from code", |generated| &generated.digest));
+    lemma_model::content_hash(made_from.as_bytes())
+}
+
+/// The committed documents with these `texts`, parsed, with the operations
+/// the service's adapter read from the code laid over them.
+fn laid_documents(
+    input: &ServiceInput<'_>,
+    texts: &[(String, String)],
 ) -> Result<Vec<serde_json::Value>, GraphError> {
-    let committed = read_documents(input.service, root)?;
+    let committed = texts
+        .iter()
+        .map(|(name, text)| Ok((name.clone(), adapters::parse_document(name, text)?)))
+        .collect::<Result<Vec<_>, GraphError>>()?;
     let Some(generated) = input.from_code else {
         return Ok(committed
             .into_iter()
@@ -292,21 +377,18 @@ fn service_documents(
         .collect())
 }
 
-/// The committed `OpenAPI` documents of a service, by name.
-fn read_documents(
-    service: &Service,
-    root: &Path,
-) -> Result<Vec<(String, serde_json::Value)>, GraphError> {
-    let mut documents = Vec::new();
+/// The committed `OpenAPI` documents of a service that exist, by name, as
+/// text.
+fn document_texts(service: &Service, root: &Path) -> Result<Vec<(String, String)>, GraphError> {
+    let mut texts = Vec::new();
     for document in &service.exports.openapi {
-        let Some(text) = lemma_http::read_file(root, None, document)
-            .map_err(|source| GraphError::Source { source })?
-        else {
-            continue;
-        };
-        documents.push((document.clone(), adapters::parse_document(document, &text)?));
+        let read = lemma_http::read_file(root, None, document)
+            .map_err(|source| GraphError::Source { source })?;
+        if let Some(text) = read {
+            texts.push((document.clone(), text));
+        }
     }
-    Ok(documents)
+    Ok(texts)
 }
 
 /// A name for an operation its document gives no `operationId`, from its
@@ -409,11 +491,11 @@ fn written_routes(
         return parsed_routes(file, reading.extractors);
     };
     let digest = lemma_model::content_hash(file.contents.as_bytes());
-    if let Some(routes) = kept.of(root, &file.path, &digest) {
+    if let Some(routes) = kept.routes_of(root, &file.path, &digest) {
         return Ok(routes);
     }
     let routes = parsed_routes(file, reading.extractors)?;
-    kept.keep(root, &file.path, digest, routes.clone());
+    kept.keep_routes(root, &file.path, digest, routes.clone());
     Ok(routes)
 }
 
@@ -626,7 +708,7 @@ mod tests {
     #[test]
     fn kept_routes_are_those_of_the_contents_last_read() {
         let extractors = ExtractorPool::new();
-        let kept = KeptRoutes::default();
+        let kept = Kept::default();
         let reading = RouteReading {
             extractors: &extractors,
             kept: Some(&kept),
@@ -637,13 +719,44 @@ mod tests {
             |file: &lemma_http::SourceFile| lemma_model::content_hash(file.contents.as_bytes());
 
         let read = written_routes(&first, root, reading).unwrap();
-        let kept_after_first = kept.of(root, &first.path, &digest(&first));
+        let kept_after_first = kept.routes_of(root, &first.path, &digest(&first));
         let after_edit = written_routes(&edited, root, reading).unwrap();
 
         assert_eq!(read, parsed_routes(&first, &extractors).unwrap());
         assert_eq!(kept_after_first, Some(read.clone()));
         assert_eq!(after_edit, parsed_routes(&edited, &extractors).unwrap());
         assert_ne!(after_edit, read);
-        assert_eq!(kept.of(root, &first.path, &digest(&first)), None);
+        assert_eq!(kept.routes_of(root, &first.path, &digest(&first)), None);
+    }
+
+    fn document(path: &str) -> String {
+        format!(
+            r#"{{ "openapi": "3.0.0", "info": {{ "title": "B", "version": "1" }}, "paths": {{ "{path}": {{ "post": {{ "operationId": "create", "responses": {{ "200": {{ "description": "ok" }} }} }} }} }} }}"#
+        )
+    }
+
+    #[test]
+    fn kept_documents_are_parsed_again_only_when_a_text_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let written = root.path().join("openapi.json");
+        std::fs::write(&written, document("/v1/charges")).unwrap();
+        let mut service = Service::default();
+        service.exports.openapi = vec!["openapi.json".to_owned()];
+        let input = ServiceInput {
+            name: "api",
+            service: &service,
+            from_code: None,
+        };
+        let kept = Kept::default();
+
+        let first = service_documents(&input, root.path(), Some(&kept)).unwrap();
+        let again = service_documents(&input, root.path(), Some(&kept)).unwrap();
+        std::fs::write(&written, document("/v1/refunds")).unwrap();
+        let after_edit = service_documents(&input, root.path(), Some(&kept)).unwrap();
+        let read_afresh = service_documents(&input, root.path(), None).unwrap();
+
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_ne!(after_edit, first);
+        assert_eq!(after_edit, read_afresh);
     }
 }

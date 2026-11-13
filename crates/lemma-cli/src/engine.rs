@@ -91,9 +91,9 @@ pub(crate) struct Engine {
     /// watched so the next trace reads only what changed since. `None` for
     /// one that could not be watched.
     traced_workspaces: HashMap<PathBuf, Option<crate::trace::TracedWorkspace>>,
-    /// The routes read from services' files, so exports built again after
-    /// an edit parse only the files that changed.
-    kept_routes: lemma_graph::exports::KeptRoutes,
+    /// What building exports read, so building them again after an edit
+    /// parses only what changed.
+    kept_for_exports: lemma_graph::exports::Kept,
 }
 
 /// The parts of a command that decide which language servers it can use.
@@ -150,7 +150,7 @@ impl Engine {
             searches: HashMap::new(),
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
-            kept_routes: lemma_graph::exports::KeptRoutes::default(),
+            kept_for_exports: lemma_graph::exports::Kept::default(),
         }
     }
 
@@ -164,7 +164,7 @@ impl Engine {
             searches: HashMap::new(),
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
-            kept_routes: lemma_graph::exports::KeptRoutes::default(),
+            kept_for_exports: lemma_graph::exports::Kept::default(),
         }
     }
 
@@ -353,7 +353,7 @@ impl Engine {
         let exports = match source {
             Some(source) => {
                 // Only a process that stays reads the same files twice.
-                let kept = self.warms_up_after_index.then_some(&self.kept_routes);
+                let kept = self.warms_up_after_index.then_some(&self.kept_for_exports);
                 let reading = ExportReading { states, kept };
                 update_exports(store, &summary, (source, root), reading)?
             }
@@ -1486,8 +1486,8 @@ fn clear_exports(
 struct ExportReading<'a> {
     /// The working directory's state, of a watched repository.
     states: Option<&'a lemma_graph::adapters::States>,
-    /// The routes read from the repository's files before.
-    kept: Option<&'a lemma_graph::exports::KeptRoutes>,
+    /// What building the repository's exports read before.
+    kept: Option<&'a lemma_graph::exports::Kept>,
 }
 
 /// Rebuilds the snapshot's exports and links unless they were built from
@@ -1539,6 +1539,7 @@ fn update_exports(
             lemma_graph::exports::exports(source, root, &symbols, &from_code, reading.kept)?
         };
         store.replace_exports(snapshot_id, &fingerprint, &exports, &links)?;
+        log::debug!("exports of {}: built again", root.display());
     }
     let exports = store.exports(snapshot_id)?;
     let count =
