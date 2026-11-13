@@ -106,6 +106,7 @@ fn warnings(workspace: &Path) -> Vec<String> {
             select: None,
             warm: None,
             environment: None,
+            runtime: None,
         };
         let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
         let mut found: Vec<String> = report
@@ -246,6 +247,7 @@ fn not_in_spec(workspace: &Path) -> Vec<(String, bool)> {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
     let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
     let mut found: Vec<(String, bool)> = report

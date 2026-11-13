@@ -27,14 +27,23 @@ else:
 print(json.dumps(schema))
 "#;
 
-/// The schema of `symbol` in `file` (relative to `root`), using `python`.
-/// `env` is the service's; its `PYTHONPATH` (the repository root if unset)
-/// says where imports start.
-pub fn type_schema(
+/// Runtimes kept warm that a type's schema may be read in, with what names
+/// the interpreter's version and installed packages: part of the key of
+/// the runtime that can read it.
+pub(crate) struct Warm<'a> {
+    pub(crate) runtime: &'a crate::runtime::Runtime,
+    pub(crate) interpreter: String,
+}
+
+/// The schema of `symbol` in `file` (relative to `root`), using `python`,
+/// in a warm runtime when one of `warm` reads it. `env` is the service's;
+/// its `PYTHONPATH` (the repository root if unset) says where imports
+/// start.
+pub(crate) fn type_schema(
     root: &Path,
     python: &str,
     (file, symbol): (&str, &str),
-    environment: repos::Environment<'_>,
+    (environment, warm): (repos::Environment<'_>, Option<&Warm<'_>>),
 ) -> Result<Value, GraphError> {
     let mut env = environment.added.clone();
     let python_path = env
@@ -42,6 +51,23 @@ pub fn type_schema(
         .or_insert_with(|| ".".to_owned())
         .clone();
     let module = module_name(file, &python_path);
+    let environment = repos::Environment {
+        base: environment.base,
+        added: &env,
+    };
+    // A warm runtime answers only with a read that ended cleanly; any
+    // other, it is read here, and a failure is this run's to report.
+    let warmed = warm.and_then(|warm| {
+        let whole = crate::runtime::whole_environment(environment);
+        warm.runtime.0.run(&crate::runtime::PythonRun {
+            python: python.to_owned(),
+            key: crate::runtime::key(python, &warm.interpreter, &env, &whole),
+            code: crate::runtime::PythonCode::Code(SCRIPT.to_owned()),
+            arguments: vec![module.clone(), symbol.to_owned()],
+            directory: root.to_owned(),
+            environment: whole,
+        })
+    });
     let command = format!(
         "{} -c {} {} {}",
         quote(python),
@@ -49,14 +75,10 @@ pub fn type_schema(
         quote(&module),
         quote(symbol)
     );
-    let output = repos::run(
-        root,
-        &command,
-        repos::Environment {
-            base: environment.base,
-            added: &env,
-        },
-    )?;
+    let output = match warmed {
+        Some(output) => output,
+        None => repos::run(root, &command, environment)?,
+    };
     serde_json::from_str(output.trim()).map_err(|source| GraphError::ResolverOutput {
         command: format!("{python} (schema of {file}#{symbol})"),
         source,

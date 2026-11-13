@@ -132,6 +132,7 @@ fn run_check(workspace: &Path, base: &str, head: Option<&str>) -> Report {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
     check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap()
 }

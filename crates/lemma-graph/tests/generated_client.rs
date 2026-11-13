@@ -103,6 +103,7 @@ fn errors(workspace: &Path, evaluation: Evaluation) -> Vec<String> {
         select: None,
         warm: None,
         environment: None,
+        runtime: None,
     };
     let report = check(&workspace.join("mod.lm"), &options, &ReferenceEngine, None).unwrap();
     report

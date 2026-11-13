@@ -374,6 +374,7 @@ impl Worker {
             select: None,
             warm: None,
             environment: None,
+            runtime: None,
         };
         let spelled = lemma_graph::repository_roots(&manifest, &options)?;
         let roots: Vec<PathBuf> = spelled
