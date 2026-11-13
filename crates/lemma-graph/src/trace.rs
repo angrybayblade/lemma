@@ -8,7 +8,7 @@
 //! `lemma check` traces what a break affects.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lemma_logic::Engine;
@@ -163,68 +163,146 @@ pub fn trace_through_system<E: Engine>(
     caches: &TraceCaches<'_>,
     engine: &E,
 ) -> Result<SystemTrace, GraphError> {
-    let options = trace_options(caches);
-    let repos = check::load(workspace, &options)?;
-    let Some((repository, offset)) = owning_repository(&repos, index_root) else {
-        let note = format!(
-            "{} is not inside any repository {} composes",
-            index_root.display(),
-            workspace.display()
-        );
-        return Ok(SystemTrace {
-            notes: vec![note],
-            ..SystemTrace::default()
-        });
-    };
-    // Calls fetched as the trace goes share inference's reads, and a
-    // long-lived process's traces share them with each other.
-    let warm = caches.warm.map_or_else(Arc::default, |warm| warm.verify());
-    let listings = warm.listings();
-    let reads = check::VerificationReads {
-        facts: caches.facts,
-        listings: &listings,
-        warm: Some(&warm),
-    };
-    let walkable = current_inference(&repos, engine, &reads)?;
-    let routes = affects::read_routes(&walkable.routes, &repos)?;
-    let in_repository = |file: &str| join(&offset, file);
-    let start = Start::Reached {
-        repository: repository.clone(),
-        functions: reached
-            .iter()
-            .map(|function| (in_repository(&function.file), function.line))
-            .collect(),
-    };
-    let reading = affects::CodeReading {
-        facts: caches.facts,
-        listings: &listings,
-    };
-    let mut code = Code::new(&repos, &reading);
-    let mut functions = |name: &str| code.functions(name);
-    let mut fetch = |operations: &BTreeSet<String>| {
-        check::fetch_calls(walkable.partial.as_ref(), operations, engine, &reads)
-    };
-    let mut source = affects::CallSource {
-        walkable: &walkable,
-        fetch: &mut fetch,
-    };
-    let mut known = affects::KnownCalls::default();
-    let mut calls = |operations: &BTreeSet<String>| known.of(operations, &mut source);
-    let mut tracing = impact::Tracing::default();
-    let (_, links) = impact::trace_links(&mut tracing, &start, &mut functions, &routes, &mut calls);
-    if let Some(error) = known.failure.take().or_else(|| code.into_failure()) {
-        return Err(error);
-    }
-    let reached_ids: BTreeMap<(String, u32), &str> = reached
-        .iter()
-        .map(|function| {
-            (
-                (in_repository(&function.file), function.line),
-                function.node.as_str(),
-            )
+    TracedSystem::read(workspace, caches, engine)?.trace(index_root, reached, caches, engine)
+}
+
+/// A system as traces read it: its repositories, what inference found in
+/// them, and the functions and calls traces have fetched so far. Traces
+/// from different symbols share all of it, so a long-lived process keeps
+/// one for as long as nothing the system is made of changes, and reads it
+/// again when something does.
+pub struct TracedSystem {
+    workspace: PathBuf,
+    repos: BTreeMap<String, Repo>,
+    walkable: Walkable,
+    routes: Vec<impact::Route>,
+    /// Calls fetched for the operations traces reached.
+    known: affects::KnownCalls,
+    /// The functions of the repositories traces reached, indexed.
+    tracing: impact::Tracing,
+}
+
+impl TracedSystem {
+    /// Reads the system `workspace` composes, at the head: its
+    /// descriptions, and the routes and operations inference finds.
+    pub fn read<E: Engine>(
+        workspace: &Path,
+        caches: &TraceCaches<'_>,
+        engine: &E,
+    ) -> Result<Self, GraphError> {
+        let repos = check::load(workspace, &trace_options(caches))?;
+        let warm = verification_reads(caches);
+        let listings = warm.listings();
+        let reads = check::VerificationReads {
+            facts: caches.facts,
+            listings: &listings,
+            warm: Some(&warm),
+        };
+        let walkable = current_inference(&repos, engine, &reads)?;
+        let routes = affects::read_routes(&walkable.routes, &repos)?;
+        Ok(Self {
+            workspace: workspace.to_path_buf(),
+            repos,
+            walkable,
+            routes,
+            known: affects::KnownCalls::default(),
+            tracing: impact::Tracing::default(),
         })
-        .collect();
-    Ok(to_graph(&links, &reached_ids, &offset))
+    }
+
+    /// Traces from `reached`, functions in the repository indexed at
+    /// `index_root`. What it fetches stays for the next trace. After an
+    /// error the system holds what the failed read left, and must be read
+    /// again rather than traced further.
+    pub fn trace<E: Engine>(
+        &mut self,
+        index_root: &Path,
+        reached: &[Reached],
+        caches: &TraceCaches<'_>,
+        engine: &E,
+    ) -> Result<SystemTrace, GraphError> {
+        let Some((repository, offset)) = owning_repository(&self.repos, index_root) else {
+            let note = format!(
+                "{} is not inside any repository {} composes",
+                index_root.display(),
+                self.workspace.display()
+            );
+            return Ok(SystemTrace {
+                notes: vec![note],
+                ..SystemTrace::default()
+            });
+        };
+        let in_repository = |file: &str| join(&offset, file);
+        let start = Start::Reached {
+            repository,
+            functions: reached
+                .iter()
+                .map(|function| (in_repository(&function.file), function.line))
+                .collect(),
+        };
+        let links = self.links_from(&start, caches, engine)?;
+        let reached_ids: BTreeMap<(String, u32), &str> = reached
+            .iter()
+            .map(|function| {
+                (
+                    (in_repository(&function.file), function.line),
+                    function.node.as_str(),
+                )
+            })
+            .collect();
+        Ok(to_graph(&links, &reached_ids, &offset))
+    }
+
+    /// The links a trace from `start` follows, fetching the functions and
+    /// calls no earlier trace did.
+    fn links_from<E: Engine>(
+        &mut self,
+        start: &Start,
+        caches: &TraceCaches<'_>,
+        engine: &E,
+    ) -> Result<Vec<Link>, GraphError> {
+        // Calls fetched as the trace goes share inference's reads.
+        let warm = verification_reads(caches);
+        let listings = warm.listings();
+        let reads = check::VerificationReads {
+            facts: caches.facts,
+            listings: &listings,
+            warm: Some(&warm),
+        };
+        let reading = affects::CodeReading {
+            facts: caches.facts,
+            listings: &listings,
+        };
+        let walkable = &self.walkable;
+        let mut code = Code::new(&self.repos, &reading);
+        let mut functions = |name: &str| code.functions(name);
+        let mut fetch = |operations: &BTreeSet<String>| {
+            check::fetch_calls(walkable.partial.as_ref(), operations, engine, &reads)
+        };
+        let mut source = affects::CallSource {
+            walkable,
+            fetch: &mut fetch,
+        };
+        let known = &mut self.known;
+        let mut calls = |operations: &BTreeSet<String>| known.of(operations, &mut source);
+        let (_, links) = impact::trace_links(
+            &mut self.tracing,
+            start,
+            &mut functions,
+            &self.routes,
+            &mut calls,
+        );
+        if let Some(error) = self.known.failure.take().or_else(|| code.into_failure()) {
+            return Err(error);
+        }
+        Ok(links)
+    }
+}
+
+/// What verification keeps of its reads: a long-lived process's, shared by
+/// its traces, or a new one for this trace's inference and fetches alone.
+fn verification_reads(caches: &TraceCaches<'_>) -> Arc<lemma_verify::Warm> {
+    caches.warm.map_or_else(Arc::default, |warm| warm.verify())
 }
 
 /// The repository whose clone contains `index_root`, and where the index
