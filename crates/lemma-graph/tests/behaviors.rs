@@ -290,6 +290,56 @@ fn kept_evidence_is_reused_until_the_code_changes_and_is_then_stale_without_runn
 }
 
 /// The platform with an allowance appended to its module, committed.
+/// [`REPLAY`], begun only once the other case's run has begun too: each
+/// run leaves a file named by its flag where `MEETING` says and waits for
+/// the other's, giving up after a while if runs come one at a time.
+fn replay_that_waits_for_the_other_case() -> String {
+    let meet = r#"import os
+import sys
+import time
+
+flag = json.load(open(os.environ["LEMMA_INPUT"]))["arguments"]["upstream_retriable"]
+meeting = os.environ["MEETING"]
+os.makedirs(meeting, exist_ok=True)
+open(os.path.join(meeting, str(flag)), "w").close()
+waited = 0
+while not os.path.exists(os.path.join(meeting, str(not flag))):
+    if waited > 2000:
+        sys.exit("the other case's run never began")
+    time.sleep(0.01)
+    waited += 1
+"#;
+    format!("import json\n{meet}{REPLAY}")
+}
+
+#[test]
+fn a_checker_whose_runs_may_overlap_runs_its_cases_at_once() {
+    let workspace = system(FORWARDING_HANDLER);
+    let platform = workspace.path().join("platform");
+    let meeting = workspace.path().join("meeting");
+    let concurrent = format!(
+        "    timeout_ms: 60000\n    concurrent: true\n    env: {{ MEETING: \"{}\" }}\n",
+        meeting.display()
+    );
+    write(
+        &platform.join("mod.lm"),
+        &PLATFORM.replace("    timeout_ms: 60000\n", &concurrent),
+    );
+    write(
+        &platform.join("tools/replay.py"),
+        &replay_that_waits_for_the_other_case(),
+    );
+    git(&platform, &["commit", "-q", "-am", "cases at once"]);
+
+    let report = run(workspace.path(), Level::Check, true);
+
+    assert_eq!(behavior_findings(&report), []);
+    let behavior = &report.behaviors[0];
+    assert_eq!(behavior.outcome, "satisfied", "{behavior:?}");
+    let reused: Vec<bool> = behavior.evidence.iter().map(|one| one.reused).collect();
+    assert_eq!(reused, [false, false], "evidence that ran is not reused");
+}
+
 fn allowing(handler: &str, allowance: &str) -> tempfile::TempDir {
     let workspace = system(handler);
     let platform = workspace.path().join("platform");

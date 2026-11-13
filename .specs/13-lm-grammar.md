@@ -659,6 +659,7 @@ export checker replay_setup_error(
 | `env` | Environment variables, part of the evidence key |
 | `timeout_ms` | After this the evidence is unavailable |
 | `cache` | `false` for a command that depends on anything else, such as a network service. Its evidence is never reused |
+| `concurrent` | `true` for a command whose runs may overlap. A check then runs its cases at once |
 
 **Protocol.** It mirrors [adapters](../docs/adapters.md).
 - **Running:** Lemma runs `command` in `directory` of the checker's repository at the snapshot: the clone itself for a working directory, a worktree for a commit. `setup` runs first, once per state of that repository's code. `timeout_ms` defaults to ten minutes, `setup`'s to twenty.
@@ -666,6 +667,7 @@ export checker replay_setup_error(
 - **Inputs:** `LEMMA_INPUT` names a JSON file (below).
 - **Output:** the command writes to `LEMMA_OUTPUT` either `{ "observed": <T>, "artifacts": [...], "toolchain": {...}, "coverage": {...} }` or `{ "unavailable": "<reason>" }`.
 - **Failure:** a non-zero exit, a timeout, no output, or output that is not a `T` makes the evidence unavailable, with the reason.
+- **One run at a time, unless `concurrent`.** A check runs a checker's cases one after another, in the order its behaviors reach them. With `concurrent: true` it first evaluates the behaviors without running anything, to learn which runs they demand, runs those at once, as many as the machine has processors, and then evaluates with their evidence. A demand whose arguments rest on other evidence is first made in that second evaluation and runs there. The outcome is the same either way. A checker may say `concurrent` only if two of its runs can share its directory: one that writes a file at a fixed path, or listens on a fixed port, cannot. `setup` still runs once, before any of them.
 
 The input:
 

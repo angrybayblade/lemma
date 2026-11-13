@@ -22,7 +22,7 @@ use lemma_lang::syntax::ast::Snapshot;
 use lemma_lang::types::Address;
 
 use self::encode::Encoder;
-use self::evidence::{Place, Request, Store};
+use self::evidence::{Place, RecordedDemand, Request, Store};
 use crate::GraphError;
 use crate::check::{BASE, CheckOptions, Finding, HEAD, Repo, SELF, Severity};
 use crate::config::Level;
@@ -329,6 +329,32 @@ impl Program {
         reach: Option<&crate::reach::ChangeReach>,
     ) -> Result<Vec<BehaviorResult>, GraphError> {
         let model = &self.checked.model;
+        let main = selected_check(&self.checked, selected)?;
+        let mut world = self.world(store, other, reach);
+        // Checkers whose runs may overlap run at once: one evaluation
+        // records what they are asked, without running any, and the
+        // evaluation that counts finds their evidence ready. A demand
+        // whose arguments rest on other evidence is first made in that
+        // second evaluation, and runs there.
+        let runs_at_once = store.may_run() && model.checkers.iter().any(|one| one.is_concurrent);
+        if runs_at_once {
+            world.recorded = Some(Vec::new());
+            eval::run_check(model, main.as_ref(), &mut world);
+            let recorded = world.recorded.take().unwrap_or_default();
+            world = self.world(store, other, reach);
+            world.ran_ahead = store.demand_at_once(recorded);
+        }
+        Ok(eval::run_check(model, main.as_ref(), &mut world))
+    }
+
+    /// Where the program's behaviors get facts and evidence.
+    fn world<'w>(
+        &'w self,
+        store: &'w Store,
+        other: Option<&'w Model>,
+        reach: Option<&'w crate::reach::ChangeReach>,
+    ) -> CheckWorld<'w> {
+        let model = &self.checked.model;
         let repositories = self
             .checked
             .loaded
@@ -336,16 +362,16 @@ impl Program {
             .values()
             .map(|module| (module.name.clone(), module.repository.clone()))
             .collect();
-        let mut world = CheckWorld {
+        CheckWorld {
             facts: StatedFacts::new(model, other),
             encoder: Encoder::new(model, repositories),
             store,
             checkouts: &self.checkouts,
             places: BTreeMap::new(),
             reach,
-        };
-        let main = selected_check(&self.checked, selected)?;
-        Ok(eval::run_check(model, main.as_ref(), &mut world))
+            recorded: None,
+            ran_ahead: BTreeMap::new(),
+        }
     }
 }
 
@@ -361,6 +387,11 @@ struct CheckWorld<'w> {
     places: BTreeMap<String, Place>,
     /// What the change reaches, by name, in the repository it changed.
     reach: Option<&'w crate::reach::ChangeReach>,
+    /// In the evaluation that only records: the demands on checkers whose
+    /// runs may overlap that have no evidence kept.
+    recorded: Option<Vec<RecordedDemand>>,
+    /// The evidence of the demands recorded and run at once, by key.
+    ran_ahead: BTreeMap<String, eval::Evidence>,
 }
 
 impl CheckWorld<'_> {
@@ -487,22 +518,34 @@ impl World for CheckWorld<'_> {
             place: &place,
             roots: &none,
         };
+        // Before what is kept: evidence that ran for this check was kept
+        // too, and would be reported as reused.
+        if let Some(ran) = self.ran_ahead.get(&probe.key()) {
+            return ran.clone();
+        }
         if let Some(kept) = self.store.reusable(&probe) {
             return kept;
+        }
+        if self.recorded.is_some() && !checker.is_concurrent {
+            return eval::Evidence::Unavailable("runs in the evaluation that follows".to_owned());
         }
         let roots = match self.roots(&read, &checker.repository) {
             Ok(roots) => roots,
             Err(why) => return eval::Evidence::Unavailable(why),
         };
-
-        self.store.demand(&Request {
+        let request = Request {
             checker,
             case: demand.case,
             arguments: serde_json::Value::Object(arguments),
             reads,
             place: &place,
             roots: &roots,
-        })
+        };
+        if let Some(recorded) = &mut self.recorded {
+            recorded.push(RecordedDemand::of(&request));
+            return eval::Evidence::Unavailable("runs beside the check's other cases".to_owned());
+        }
+        self.store.demand(&request)
     }
 }
 

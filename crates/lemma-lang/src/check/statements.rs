@@ -114,6 +114,7 @@ impl Checker<'_> {
             optional("env", Type::Json),
             optional("timeout_ms", Type::Int),
             optional("cache", Type::Bool),
+            optional("concurrent", Type::Bool),
         ];
         let fields: Vec<&ast::Field> = checker.fields.iter().collect();
         let values = self.check_fields(&context, &fields, &schema, "a checker");
@@ -217,6 +218,7 @@ impl Checker<'_> {
                 _ => None,
             },
             is_cached: !matches!(values.get("cache"), Some(Value::Bool(false))),
+            is_concurrent: matches!(values.get("concurrent"), Some(Value::Bool(true))),
             text: self.source_text(module, checker.span),
         });
     }
