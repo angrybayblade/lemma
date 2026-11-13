@@ -25,6 +25,7 @@ mod sentry;
 #[cfg(unix)]
 mod service;
 mod verify;
+mod watched;
 
 use std::io::Write;
 use std::process::ExitCode;
