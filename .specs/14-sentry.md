@@ -80,7 +80,7 @@ Inputs are set as they change, and results are computed only when asked for. Thi
 
 | Input | A fresh check | Sentry keeps | Refreshed when |
 | --- | --- | --- | --- |
-| Each repository's state: its Git tree and the digests of changed paths | runs `git rev-parse HEAD^{tree}` and `git status --untracked-files=all` in every repository with resolvers | the state, updated from batches | a batch touches the repository, or HEAD moves |
+| Each repository's state: its Git tree and the digests of changed paths | runs `git rev-parse HEAD^{tree}` and `git status --untracked-files=all` once in every repository an adapter, a resolver or a checker reads | the state, asked of Git again after a batch | a batch touches the repository, files no check reads included, or HEAD moves |
 | Manifests (`lemma.yaml`, `mod.lm`) and their composition | parsed and composed | parsed and composed | one changes (slow batch) |
 | Documents (OpenAPI, JSON Schema) | read and parsed | parsed | one changes (slow batch) |
 | Code facts per file | lists every file, hashes it, decodes kept unit records, parses misses | decoded facts by content hash, in memory | a batch reports the file |

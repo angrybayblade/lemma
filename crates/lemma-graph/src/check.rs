@@ -875,6 +875,7 @@ fn infer_at_head<E: Engine>(
             listings: shared.listings,
             evaluation: lemma_verify::Evaluation::Full,
             warm: options.warm.as_ref().map(|warm| warm.verify()),
+            states: states_of(options),
             environment: options.environment.clone(),
             explain: false,
             relations: &options.relations,
@@ -1048,6 +1049,7 @@ fn check_declared(
         findings: Vec::new(),
         has_change: options.change.is_some(),
         environment: options.environment.clone(),
+        states: states_of(options),
         unread: BTreeMap::new(),
     };
     let links_read = links.iter().try_for_each(|link| checker.check_link(link));
@@ -1106,6 +1108,9 @@ struct Inference<'a> {
     evaluation: lemma_verify::Evaluation,
     /// What verification keeps between checks, in a long-lived process.
     warm: Option<Arc<lemma_verify::Warm>>,
+    /// The state of working directories' code, which adapters' documents
+    /// are kept by.
+    states: Arc<adapters::States>,
     /// The environment adapters start from, when not this process's own.
     environment: Option<Arc<BTreeMap<String, String>>>,
     explain: bool,
@@ -1163,6 +1168,15 @@ impl<'a> Shared<'a> {
     }
 }
 
+/// What says the state of working directories' code in a check with
+/// `options`: what the check keeps, so each repository's is asked once.
+fn states_of(options: &CheckOptions) -> Arc<adapters::States> {
+    options
+        .warm
+        .as_ref()
+        .map_or_else(Arc::default, |warm| warm.states())
+}
+
 /// The built-in grammar's requirement `selected` names, bare
 /// (`operation_without_consumer`) or with its module
 /// (`lemma.http.operation_without_consumer`): a description with no
@@ -1210,6 +1224,7 @@ fn infer_change<E: Engine>(
         listings,
         evaluation: evaluation_of(options),
         warm: options.warm.as_ref().map(|warm| warm.verify()),
+        states: states_of(options),
         environment: options.environment.clone(),
         explain: options.explain,
         relations: &options.relations,
@@ -1258,6 +1273,7 @@ fn infer_drift<E: Engine>(
             listings,
             evaluation: options.evaluation,
             warm: options.warm.as_ref().map(|warm| warm.verify()),
+            states: states_of(options),
             environment: options.environment.clone(),
             explain: options.explain,
             relations: &options.relations,
@@ -1454,7 +1470,11 @@ fn apply_adapters(
 ) -> bool {
     let jobs = adapter_jobs(inferred, repos, run);
     let operations = run.facts_cache.map(lemma_verify::FactsCache::documents);
-    let results = run_adapter_jobs(&jobs, run.cache, operations.as_deref());
+    let keeping = adapters::Keeping {
+        cache: run.cache,
+        states: &run.states,
+    };
+    let results = run_adapter_jobs(&jobs, keeping, operations.as_deref());
     let mut has_drift = false;
     for (job, result) in jobs.iter().zip(results) {
         let Some(repository) = inferred.manifest.repositories.get_mut(&job.entry) else {
@@ -1567,7 +1587,11 @@ fn prefetch_adapters(repos: &BTreeMap<String, Repo>, options: &CheckOptions) {
         .facts_cache
         .as_ref()
         .map(lemma_verify::FactsCache::documents);
-    let ran = run_adapter_jobs(&jobs, &options.cache, operations.as_deref());
+    let keeping = adapters::Keeping {
+        cache: &options.cache,
+        states: &states_of(options),
+    };
+    let ran = run_adapter_jobs(&jobs, keeping, operations.as_deref());
     log::debug!(
         "adapter: {} runs prefetched in {:.0?}",
         ran.len(),
@@ -1644,7 +1668,7 @@ fn runtime_for<'r>(
 /// `operations` is where verification keeps documents' operations.
 fn run_adapter_jobs(
     jobs: &[AdapterJob<'_>],
-    cache: &Path,
+    keeping: adapters::Keeping<'_>,
     operations: Option<&Path>,
 ) -> Vec<Result<Option<adapters::Contract>, GraphError>> {
     let mut by_repository: BTreeMap<&Path, Vec<usize>> = BTreeMap::new();
@@ -1663,7 +1687,7 @@ fn run_adapter_jobs(
                 scope.spawn(move || {
                     indices
                         .iter()
-                        .map(|&index| (index, adapter_contract(&jobs[index], cache, operations)))
+                        .map(|&index| (index, adapter_contract(&jobs[index], keeping, operations)))
                         .collect::<Vec<_>>()
                 })
             })
@@ -1691,16 +1715,17 @@ fn run_adapter_jobs(
 
 fn adapter_contract(
     job: &AdapterJob<'_>,
-    cache: &Path,
+    keeping: adapters::Keeping<'_>,
     operations: Option<&Path>,
 ) -> Result<Option<adapters::Contract>, GraphError> {
+    let cache = keeping.cache;
     log::info!(
         "adapter: reading the operations of {} ({}) from its code",
         job.entry,
         job.role
     );
     let Some(generated) =
-        adapters::generate(job.from, &job.runtime, job.checkout, cache, job.build)?
+        adapters::generate(job.from, &job.runtime, job.checkout, keeping, job.build)?
     else {
         return Ok(None);
     };
@@ -2484,6 +2509,9 @@ struct Checker<'a> {
     has_change: bool,
     /// The environment commands start from instead of this process's own.
     environment: Option<Arc<BTreeMap<String, String>>>,
+    /// The state of working directories' code, which resolvers' outputs
+    /// are kept by.
+    states: Arc<adapters::States>,
     /// Schemas a resolver could not produce, by its command and directory:
     /// one resolver that cannot run here leaves every schema it serves
     /// unread, and that is one thing to fix, so one warning.
@@ -2744,6 +2772,7 @@ impl Checker<'_> {
             cache: self.cache,
             outputs: &mut self.outputs,
             reads: &mut self.reads,
+            states: &self.states,
             environment: self.environment.as_deref(),
         };
         match schema::resolve(&source, &mut context) {

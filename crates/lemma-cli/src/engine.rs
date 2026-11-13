@@ -1466,7 +1466,11 @@ fn documents_from_code(
 ) -> BTreeMap<String, lemma_graph::adapters::Generated> {
     let cache = lemma_graph::repos::cache_directory();
     let mut from_code = BTreeMap::new();
-    for (service, generated) in lemma_graph::adapters::from_working_directory(file, root, &cache) {
+    let keeping = lemma_graph::adapters::Keeping {
+        cache: &cache,
+        states: &lemma_graph::adapters::States::default(),
+    };
+    for (service, generated) in lemma_graph::adapters::from_working_directory(file, root, keeping) {
         match generated {
             Ok(generated) => {
                 warnings.extend(unread_warning(&service, &generated.unread));

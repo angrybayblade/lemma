@@ -215,6 +215,8 @@ impl Watched {
                 .iter()
                 .any(|path| warm.can_depend_on(&self.root, path));
         if is_unread {
+            // No check reads them, but the repository's state counts them.
+            warm.forget_state(&self.root);
             self.unread_generation += 1;
             return None;
         }

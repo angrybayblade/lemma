@@ -27,6 +27,7 @@ const DOCUMENTS_KEPT: usize = 64;
 #[derive(Default)]
 pub struct Warm {
     verify: Arc<lemma_verify::Warm>,
+    states: Arc<crate::adapters::States>,
     kept: Mutex<Option<(schema::Reads, Outputs)>>,
     /// The operations of documents, by name and contents: never stale.
     documented: Mutex<BTreeMap<(String, String), Documented>>,
@@ -53,10 +54,25 @@ impl Warm {
         Arc::clone(&self.verify)
     }
 
+    /// The state of working directories' code, asked once per repository
+    /// by everything a check keys by it.
+    pub(crate) fn states(&self) -> Arc<crate::adapters::States> {
+        Arc::clone(&self.states)
+    }
+
+    /// Forgets the state of the working directory of the repository at
+    /// `repository` alone, after files no check reads changed there: what
+    /// checks read of it stays, but a checker's evidence is kept by every
+    /// file of the repositories it reads.
+    pub fn forget_state(&self, repository: &Path) {
+        self.states.forget(repository);
+    }
+
     /// Drops what was read from the working directory of the repository at
     /// `repository`, after its files or its Git state changed.
     pub fn forget_working(&self, repository: &Path) {
         self.verify.forget_working(repository);
+        self.states.forget(repository);
         if let Some((reads, outputs)) = self.lock().as_mut() {
             reads.forget_working(repository);
             outputs.retain(|(root, commit, _), _| {
@@ -70,6 +86,7 @@ impl Warm {
     /// what else a check read may be ignored by Git and so never reported.
     pub fn forget_paths(&self, repository: &Path, changed: &[String]) {
         self.verify.forget_paths(repository, changed);
+        self.states.forget(repository);
         if let Some((reads, outputs)) = self.lock().as_mut() {
             reads.forget_working(repository);
             outputs.retain(|(root, commit, _), _| {

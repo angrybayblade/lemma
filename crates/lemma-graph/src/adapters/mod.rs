@@ -15,7 +15,8 @@ mod cache;
 pub mod overlay;
 mod registry;
 
-pub(crate) use cache::{commit_state, working_state};
+pub use cache::States;
+pub(crate) use cache::commit_state;
 mod lazy;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -168,16 +169,26 @@ pub fn generate(
     from: &OperationsFrom,
     runtime: &Runtime,
     checkout: &Checkout,
-    cache: &Path,
+    keeping: Keeping<'_>,
     build: Build,
 ) -> Result<Option<Generated>, GraphError> {
     let Some(commit) = &checkout.commit else {
-        return in_working_directory(from, runtime, &checkout.root, cache).map(Some);
+        return in_working_directory(from, runtime, &checkout.root, keeping).map(Some);
     };
-    let store = cache.join("adapters");
+    let store = keeping.cache.join("adapters");
     create_directory(&store)?;
-    let adapter = Adapter::new(from, runtime, &store)?;
-    adapter.at_commit(&checkout.root, commit, cache, build)
+    let adapter = Adapter::new(from, runtime, &store, keeping.states)?;
+    adapter.at_commit(&checkout.root, commit, keeping.cache, build)
+}
+
+/// Where adapters keep their documents, and what says the state of the
+/// code a document is kept by.
+#[derive(Clone, Copy)]
+pub struct Keeping<'a> {
+    /// Lemma's cache directory.
+    pub cache: &'a Path,
+    /// The state of working directories' code.
+    pub states: &'a States,
 }
 
 /// The document `from` generates from the code in the working directory at
@@ -186,11 +197,11 @@ pub fn in_working_directory(
     from: &OperationsFrom,
     runtime: &Runtime,
     root: &Path,
-    cache: &Path,
+    keeping: Keeping<'_>,
 ) -> Result<Generated, GraphError> {
-    let store = cache.join("adapters");
+    let store = keeping.cache.join("adapters");
     create_directory(&store)?;
-    Adapter::new(from, runtime, &store)?.in_working_directory(root)
+    Adapter::new(from, runtime, &store, keeping.states)?.in_working_directory(root)
 }
 
 /// An adapter ready to run: its configuration, its command, and where its
@@ -199,6 +210,7 @@ struct Adapter<'a> {
     from: &'a OperationsFrom,
     runtime: &'a Runtime,
     store: &'a Path,
+    states: &'a States,
     script: Script<'a>,
     key: String,
 }
@@ -208,6 +220,7 @@ impl<'a> Adapter<'a> {
         from: &'a OperationsFrom,
         runtime: &'a Runtime,
         store: &'a Path,
+        states: &'a States,
     ) -> Result<Self, GraphError> {
         let script = registry::script(from)?;
         if let Script::BuiltIn(built_in) = &script {
@@ -218,6 +231,7 @@ impl<'a> Adapter<'a> {
             from,
             runtime,
             store,
+            states,
             script,
             key,
         })
@@ -230,7 +244,7 @@ impl<'a> Adapter<'a> {
 
     /// The document of the code in the working directory at `root`.
     fn in_working_directory(&self, root: &Path) -> Result<Generated, GraphError> {
-        let Some(working) = cache::working_changes(root)? else {
+        let Some(working) = self.states.working(root)? else {
             log::info!(
                 "adapter: reading {} in its working directory (not kept: not a Git repository)",
                 root.display()
@@ -239,7 +253,7 @@ impl<'a> Adapter<'a> {
             self.run(root, root, &output)?;
             return read_generated(&output);
         };
-        let output = self.output(&working.state(root));
+        let output = self.output(&working.state);
         if output.exists() {
             log::info!(
                 "adapter: {} working directory unchanged since last read; kept document",
@@ -321,7 +335,7 @@ impl<'a> Adapter<'a> {
             log::info!("adapter: {} at {short}: kept document", root.display());
             return read_generated(&output).map(Some);
         }
-        if cache::working_state(root)?.as_deref() == Some(state.as_str()) {
+        if self.states.working_state(root)?.as_deref() == Some(state.as_str()) {
             log::info!(
                 "adapter: {} at {short}: working directory is that commit; reading it there",
                 root.display()
@@ -704,7 +718,7 @@ fn reading_of(document: &Value) -> (Vec<String>, Reading) {
 pub fn from_working_directory(
     file: &LemmaFile,
     root: &Path,
-    cache: &Path,
+    keeping: Keeping<'_>,
 ) -> BTreeMap<String, Result<Generated, GraphError>> {
     let mut documents = BTreeMap::new();
     for (name, service) in &file.services {
@@ -714,7 +728,7 @@ pub fn from_working_directory(
         if name.starts_with('#') {
             continue;
         }
-        let generated = in_working_directory(from, &service.runtime, root, cache);
+        let generated = in_working_directory(from, &service.runtime, root, keeping);
         documents.insert(name.clone(), generated);
     }
     documents

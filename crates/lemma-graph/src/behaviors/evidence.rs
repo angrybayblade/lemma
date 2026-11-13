@@ -39,6 +39,8 @@ pub(crate) struct Store {
     /// The environment checkers start from instead of this process's own,
     /// for a check answered on behalf of another process.
     environment: Option<Arc<BTreeMap<String, String>>>,
+    /// The state of working directories' code, which evidence is kept by.
+    states: Arc<crate::adapters::States>,
 }
 
 /// Where a repository's code is read, and the state of that code: `None`
@@ -51,12 +53,10 @@ pub(crate) struct Place {
 
 impl Place {
     /// The checkout and the state of its code.
-    pub(crate) fn of(checkout: &Checkout) -> Place {
+    fn of(checkout: &Checkout, states: &crate::adapters::States) -> Place {
         let state = match &checkout.commit {
             Some(commit) => crate::adapters::commit_state(&checkout.root, commit).ok(),
-            None => crate::adapters::working_state(&checkout.root)
-                .ok()
-                .flatten(),
+            None => states.working_state(&checkout.root).ok().flatten(),
         };
         Place {
             checkout: checkout.clone(),
@@ -88,7 +88,20 @@ impl Store {
             cache: cache.to_path_buf(),
             may_run,
             environment: None,
+            states: Arc::default(),
         }
+    }
+
+    /// The store, asking `states` for the state of working directories'
+    /// code, as the rest of a check does.
+    pub(crate) fn with_states(mut self, states: Arc<crate::adapters::States>) -> Self {
+        self.states = states;
+        self
+    }
+
+    /// Where `checkout`'s code is read, and its state.
+    pub(crate) fn place(&self, checkout: &Checkout) -> Place {
+        Place::of(checkout, &self.states)
     }
 
     /// The store, with checkers run from `environment` rather than this
