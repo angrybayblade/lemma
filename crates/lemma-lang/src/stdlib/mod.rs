@@ -64,11 +64,23 @@ pub const ADAPTERS: [&str; 5] = [
 ];
 
 /// A problem with a built-in function's known arguments, beyond their
-/// types: an adapter name Lemma does not have.
+/// types: an `http.openapi` with neither a document nor a command, or an
+/// adapter name Lemma does not have.
 pub fn argument_problem(
     function: &str,
     arguments: &[(String, crate::types::Value)],
 ) -> Option<String> {
+    let has = |name: &str| arguments.iter().any(|(parameter, _)| parameter == name);
+    if function == "lemma.http.openapi" && !has("document") && !has("command") {
+        return Some(
+            "`http.openapi` needs a document, a command that generates one, or both".to_owned(),
+        );
+    }
+    if GENERATORS.contains(&function) {
+        if let Some(problem) = inputs_problem(arguments) {
+            return Some(problem);
+        }
+    }
     if function != "lemma.http.adapter" {
         return None;
     }
@@ -85,10 +97,66 @@ pub fn argument_problem(
     ))
 }
 
+/// Built-in functions returning a [`GENERATOR`]: a command Lemma runs to
+/// write an `OpenAPI` document, by its function's full name.
+pub const GENERATORS: [&str; 4] = [
+    "command",
+    "lemma.http.adapter",
+    "lemma.hono.app",
+    "lemma.fastapi.app",
+];
+
+/// An input that is not a path inside the repository: a pattern, an
+/// absolute path or one leaving the repository. Lemma names an input by the
+/// object at its path in a commit, so such an input would name nothing at
+/// every commit, and a document generated at one would be reused at all.
+fn inputs_problem(arguments: &[(String, crate::types::Value)]) -> Option<String> {
+    let (_, crate::types::Value::List(inputs)) = arguments
+        .iter()
+        .find(|(parameter, _)| parameter == "inputs")?
+    else {
+        return None;
+    };
+    let is_path = |input: &str| {
+        !input.starts_with('/')
+            && !input.contains(['*', '?', '['])
+            && !input.split('/').any(|part| part == "..")
+    };
+    let wrong = inputs
+        .iter()
+        .filter_map(crate::types::Value::as_text)
+        .find(|input| !is_path(input))?;
+    Some(format!(
+        "`inputs` are paths inside the repository, not patterns or paths outside it: `{wrong}`"
+    ))
+}
+
+/// Something worth a warning in a built-in function's known arguments: a
+/// generator without `inputs`, which any change in its repository runs
+/// again.
+pub fn argument_warning(
+    function: &str,
+    arguments: &[(String, crate::types::Value)],
+) -> Option<String> {
+    if !GENERATORS.contains(&function) {
+        return None;
+    }
+    if arguments.iter().any(|(parameter, _)| parameter == "inputs") {
+        return None;
+    }
+    Some(
+        "this command has no `inputs`, so any change in its repository runs it again; \
+         list the files and directories it reads"
+            .to_owned(),
+    )
+}
+
 /// The type of a command: a shell string or an argument list.
 pub const COMMAND: Type = Type::Builtin("Command");
 /// Operations a provider discovers.
 pub const OPERATIONS: Type = Type::Builtin("Operations");
+/// A command Lemma runs to write an `OpenAPI` document, kept by its inputs.
+pub const GENERATOR: Type = Type::Builtin("Generator");
 /// A schema's source.
 pub const SCHEMA: Type = Type::Builtin("Schema");
 /// A source file to resolve symbols and types in.
@@ -144,13 +212,19 @@ fn builtin(
 }
 
 fn adapter_parameters() -> Vec<Parameter> {
+    [vec![required("entry", texts())], run_parameters()].concat()
+}
+
+/// What every generator takes beyond what it runs: where, how, and the
+/// files its document depends on.
+fn run_parameters() -> Vec<Parameter> {
     vec![
-        required("entry", texts()),
         optional("directory", Type::Text),
         optional("setup", COMMAND),
         optional("env", Type::Json),
         optional("exclude", texts()),
         optional("timeout_ms", Type::Int),
+        optional("inputs", texts()),
     ]
 }
 
@@ -180,6 +254,17 @@ fn prelude() -> Vec<Builtin> {
             REPOSITORY_SOURCE,
             "A repository cloned from `url`, read at `rev` (a commit, preferably).",
         ),
+        builtin(
+            "",
+            "command",
+            [
+                vec![required("command", COMMAND), optional("entry", texts())],
+                run_parameters(),
+            ]
+            .concat(),
+            GENERATOR,
+            "A command writing an OpenAPI document to `$LEMMA_OUTPUT`, run again only when its `inputs` change.",
+        ),
     ]
 }
 
@@ -188,9 +273,12 @@ fn http() -> Vec<Builtin> {
         builtin(
             "lemma.http",
             "openapi",
-            vec![required("document", Type::Text)],
+            vec![
+                optional("document", Type::Text),
+                optional("command", GENERATOR),
+            ],
             OPERATIONS,
-            "The operations an OpenAPI document in the repository describes.",
+            "The operations an OpenAPI document describes: one in the repository, one a command generates, or the committed one with the command's laid over it.",
         ),
         builtin(
             "lemma.http",
@@ -207,15 +295,8 @@ fn http() -> Vec<Builtin> {
             "lemma.http",
             "adapter",
             [vec![required("name", Type::Text)], adapter_parameters()].concat(),
-            OPERATIONS,
-            "Operations one of Lemma's built-in adapters reads from the service's code, by its name.",
-        ),
-        builtin(
-            "lemma.http",
-            "adapter_command",
-            [vec![required("command", COMMAND)], adapter_parameters()].concat(),
-            OPERATIONS,
-            "Operations a command reads from the service's code, following docs/adapters.md.",
+            GENERATOR,
+            "One of Lemma's built-in adapters, by its name, reading the service's operations from its code.",
         ),
         builtin(
             "lemma.http",
@@ -233,14 +314,14 @@ fn adapters() -> Vec<Builtin> {
             "lemma.hono",
             "app",
             adapter_parameters(),
-            OPERATIONS,
+            GENERATOR,
             "Operations a Hono app built with @hono/zod-openapi registers.",
         ),
         builtin(
             "lemma.fastapi",
             "app",
             adapter_parameters(),
-            OPERATIONS,
+            GENERATOR,
             "Operations a FastAPI app registers.",
         ),
     ]
@@ -446,6 +527,7 @@ pub fn type_named(name: &str) -> Option<Type> {
         "Symbol" => Type::Symbol,
         "Site" => Type::Site,
         "Operations" => OPERATIONS,
+        "Generator" => GENERATOR,
         "Schema" => SCHEMA,
         "SourceFile" => SOURCE_FILE,
         "Document" => DOCUMENT,

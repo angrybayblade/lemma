@@ -93,6 +93,8 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 - **One store file.** `.lemma/index.ls` replaces the SQLite index and `lemma check`'s separate cache: files, symbols, cached answers and what checks keep between runs, in one append-only file. An index from an earlier release is replaced the first time it is opened, and indexing again rebuilds it; nothing needs migrating.
 - **Symbol ids** are 128-bit hashes of a symbol's identity, shown as 16 hexadecimal digits (`#8bce55e22bc817fe`), and stay the same while a symbol keeps its path, name, kind and position among same-named symbols.
 - **One parse per file in a check.** Each file is parsed once per check, for its code facts and for tracing together, rather than three times.
+- **Generated documents.** `http.openapi("openapi.json", command: ...)` names the command that generates a document, so a handler edit is checked against consumers before the document is regenerated; a command's `inputs` decide when it runs again (see [Read operations from code](adapters.md)). `http.adapter_command(...)` is removed: write `command(...)`.
+- **Adapters outside TypeScript run on every change.** A change to a Python or Go handler under an adapter, or to code a command reads, used to reuse the base commit's document. Documents kept that way are dropped the first time rc2 runs.
 
 ## New in rc1
 

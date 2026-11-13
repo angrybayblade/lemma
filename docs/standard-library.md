@@ -6,6 +6,7 @@ Every module can use the standard library's modules: `import * as http from lemm
 
 - `local(path: Text, rev?: Text): Repository`: A repository's clone, relative to the declaring file: its working tree, or the commit `rev`.
 - `git(url: Text, rev?: Text): Repository`: A repository cloned from `url`, read at `rev` (a commit, preferably).
+- `command(command: Command, entry?: List<Text>, directory?: Text, setup?: Command, env?: Json, exclude?: List<Text>, timeout_ms?: Int, inputs?: List<Text>): Generator`: A command writing an OpenAPI document to `$LEMMA_OUTPUT`, run again only when its `inputs` change.
 
 ### Methods
 
@@ -21,10 +22,9 @@ HTTP contracts between services, their generated clients and consumers.
 
 ### Functions
 
-- `openapi(document: Text): Operations`: The operations an OpenAPI document in the repository describes.
+- `openapi(document?: Text, command?: Generator): Operations`: The operations an OpenAPI document describes: one in the repository, one a command generates, or the committed one with the command's laid over it.
 - `generated_client(generated_from: List<Text>, specs?: List<Text>, call_names?: List<Text>): Client`: A client generated from OpenAPI documents, one function per operation.
-- `adapter(name: Text, entry: List<Text>, directory?: Text, setup?: Command, env?: Json, exclude?: List<Text>, timeout_ms?: Int): Operations`: Operations one of Lemma's built-in adapters reads from the service's code, by its name.
-- `adapter_command(command: Command, entry: List<Text>, directory?: Text, setup?: Command, env?: Json, exclude?: List<Text>, timeout_ms?: Int): Operations`: Operations a command reads from the service's code, following docs/adapters.md.
+- `adapter(name: Text, entry: List<Text>, directory?: Text, setup?: Command, env?: Json, exclude?: List<Text>, timeout_ms?: Int, inputs?: List<Text>): Generator`: One of Lemma's built-in adapters, by its name, reading the service's operations from its code.
 - `inferred_links(services?: List<Service>): Facts`: The links Lemma infers from calls in code to documented operations.
 
 ### Declarations
@@ -173,7 +173,7 @@ Reads a service's operations from its code with Lemma's built-in `hono` adapter:
 
 ### Functions
 
-- `app(entry: List<Text>, directory?: Text, setup?: Command, env?: Json, exclude?: List<Text>, timeout_ms?: Int): Operations`: Operations a Hono app built with @hono/zod-openapi registers.
+- `app(entry: List<Text>, directory?: Text, setup?: Command, env?: Json, exclude?: List<Text>, timeout_ms?: Int, inputs?: List<Text>): Generator`: Operations a Hono app built with @hono/zod-openapi registers.
 
 
 ## `lemma.fastapi`
@@ -182,5 +182,5 @@ Reads a service's operations from its code with Lemma's built-in `fastapi` adapt
 
 ### Functions
 
-- `app(entry: List<Text>, directory?: Text, setup?: Command, env?: Json, exclude?: List<Text>, timeout_ms?: Int): Operations`: Operations a FastAPI app registers.
+- `app(entry: List<Text>, directory?: Text, setup?: Command, env?: Json, exclude?: List<Text>, timeout_ms?: Int, inputs?: List<Text>): Generator`: Operations a FastAPI app registers.
 

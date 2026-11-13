@@ -171,6 +171,93 @@ export service sdk {
 }
 
 #[test]
+fn an_openapi_documents_command_lowers_to_the_services_generator_and_its_inputs() {
+    let text = r#"module api
+
+import * as http from lemma.http
+
+let spec = command("go run ./cmd/openapi", directory: "apps/api", inputs: ["apps/api"])
+
+export service api {
+    operations: http.openapi("apps/api/openapi.json", command: spec)
+}
+"#;
+
+    let file = lowered(text, "api", &[]);
+
+    let exports = &file.services["api"].exports;
+    assert_eq!(exports.openapi, ["apps/api/openapi.json"]);
+    let from = exports.operations_from.as_ref().unwrap();
+    assert_eq!(from.adapter, None);
+    assert_eq!(from.command.as_deref(), Some("go run ./cmd/openapi"));
+    assert_eq!(from.directory.as_deref(), Some("apps/api"));
+    assert_eq!(from.inputs, ["apps/api"]);
+}
+
+#[test]
+fn one_command_named_by_several_documents_is_one_generator() {
+    let text = r#"module api
+
+import * as http from lemma.http
+
+let spec = command("make spec", inputs: ["src"])
+
+export service api {
+    operations: [http.openapi("v1.json", command: spec), http.openapi("v2.json", command: spec)]
+}
+"#;
+
+    let file = lowered(text, "api", &[]);
+
+    let exports = &file.services["api"].exports;
+    assert_eq!(exports.openapi, ["v1.json", "v2.json"]);
+    assert_eq!(
+        exports.operations_from.as_ref().unwrap().command.as_deref(),
+        Some("make spec")
+    );
+}
+
+#[test]
+fn an_openapi_with_only_a_command_has_no_committed_document() {
+    let text = r#"module api
+
+import * as http from lemma.http
+
+export service api {
+    operations: http.openapi(command: command("make spec", inputs: ["src"]))
+}
+"#;
+
+    let file = lowered(text, "api", &[]);
+
+    let exports = &file.services["api"].exports;
+    assert_eq!(exports.openapi, Vec::<String>::new());
+    assert!(exports.operations_from.is_some());
+}
+
+#[test]
+fn two_different_commands_in_one_service_cannot_be_checked_yet() {
+    let text = r#"module api
+
+import * as http from lemma.http
+
+export service api {
+    operations: [
+        http.openapi("v1.json", command: command("make v1", inputs: ["v1"])),
+        http.openapi("v2.json", command: command("make v2", inputs: ["v2"])),
+    ]
+}
+"#;
+    let mut files = BTreeMap::new();
+    files.insert((String::new(), "mod.lm".to_owned()), text.to_owned());
+    let checked = check_program(&mut Memory(files), "mod.lm");
+
+    let lowered = repository_file(&checked, "api");
+
+    assert!(matches!(lowered, Err(LowerError::Unsupported { .. })));
+}
+
+#[test]
 fn the_languages_adapters_are_the_registrys() {
     let mut registry: Vec<&str> = crate::adapters::built_in_names().collect();
     let mut language = lemma_lang::stdlib::ADAPTERS.to_vec();

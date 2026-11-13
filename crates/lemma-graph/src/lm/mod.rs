@@ -213,7 +213,9 @@ fn runtime(value: &Value, what: &str) -> Result<Runtime, LowerError> {
     })
 }
 
-/// A service's operation providers, laid into its exports.
+/// A service's operation providers, laid into its exports. A generator,
+/// alone or as an `http.openapi` document's `command`, reads operations
+/// from code; one generator may serve several documents, and runs once.
 fn providers(exports: &mut Exports, value: &Value, what: &str) -> Result<(), LowerError> {
     let Value::List(providers) = value else {
         return Err(shape(what, "list of providers"));
@@ -223,22 +225,44 @@ fn providers(exports: &mut Exports, value: &Value, what: &str) -> Result<(), Low
             return Err(shape(what, "provider"));
         };
         match function.as_str() {
-            "lemma.http.openapi" => exports
-                .openapi
-                .push(text_argument(provider, "document", what)?),
-            "lemma.hono.app"
-            | "lemma.fastapi.app"
-            | "lemma.http.adapter"
-            | "lemma.http.adapter_command" => {
-                if exports.operations_from.is_some() {
-                    return Err(unsupported(&format!("more than one adapter in {what}")));
-                }
-                exports.operations_from = Some(operations_from(provider, function, what)?);
+            "lemma.http.openapi" => openapi(exports, provider, what)?,
+            name if lemma_lang::stdlib::GENERATORS.contains(&name) => {
+                set_generator(exports, provider, what)?;
             }
             other => return Err(unsupported(&format!("the provider `{other}` in {what}"))),
         }
     }
     Ok(())
+}
+
+/// An `http.openapi` provider: its committed document, if it names one,
+/// and the command generating one, if it has one.
+fn openapi(exports: &mut Exports, provider: &Value, what: &str) -> Result<(), LowerError> {
+    if let Some(document) = provider.argument("document") {
+        let document = document.as_text().ok_or_else(|| shape(what, "text"))?;
+        exports.openapi.push(document.to_owned());
+    }
+    if let Some(generator) = provider.argument("command") {
+        set_generator(exports, generator, what)?;
+    }
+    Ok(())
+}
+
+/// Sets a service's generator; the same one named again is the same run.
+fn set_generator(exports: &mut Exports, generator: &Value, what: &str) -> Result<(), LowerError> {
+    let Value::Request { function, .. } = generator else {
+        return Err(shape(what, "command"));
+    };
+    let lowered = operations_from(generator, function, what)?;
+    match &exports.operations_from {
+        Some(existing) if existing != &lowered => {
+            Err(unsupported(&format!("more than one command in {what}")))
+        }
+        _ => {
+            exports.operations_from = Some(lowered);
+            Ok(())
+        }
+    }
 }
 
 fn operations_from(
@@ -252,13 +276,13 @@ fn operations_from(
         "lemma.http.adapter" => Some(text_argument(provider, "name", what)?),
         _ => None,
     };
-    let adapter_command = provider
+    let generator_command = provider
         .argument("command")
         .map(|value| command(value, what))
         .transpose()?;
     Ok(OperationsFrom {
         adapter,
-        command: adapter_command,
+        command: generator_command,
         entry: optional_texts(provider.argument("entry"), what)?,
         directory: provider
             .argument("directory")
@@ -274,6 +298,7 @@ fn operations_from(
             Some(Value::Int(milliseconds)) => u64::try_from(*milliseconds).ok(),
             _ => None,
         },
+        inputs: optional_texts(provider.argument("inputs"), what)?,
     })
 }
 

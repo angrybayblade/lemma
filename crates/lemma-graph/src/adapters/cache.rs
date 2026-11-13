@@ -3,7 +3,9 @@
 //! this version of Lemma) and on the code it reads. Code is named by its
 //! Git tree, so a commit and a clean working directory at that commit share
 //! one document, and a rebase that leaves the files alone keeps it; a
-//! working directory with changes adds a digest of the changed files.
+//! working directory with changes adds a digest of the changed files. An
+//! adapter with `inputs` names its code by those paths alone, so a change
+//! elsewhere in the repository keeps its document.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -38,16 +40,103 @@ pub(crate) fn commit_state(root: &Path, commit: &str) -> Result<String, GraphErr
     Ok(format!("tree {}", tree.trim()))
 }
 
+/// The state of a commit's code at `inputs`: each path's object, or its
+/// absence; the whole tree when `inputs` is empty or names nothing there.
+pub(crate) fn inputs_commit_state(
+    root: &Path,
+    commit: &str,
+    inputs: &[String],
+) -> Result<String, GraphError> {
+    match input_objects(root, commit, inputs) {
+        Some(objects) => Ok(objects_state(&objects)),
+        None => commit_state(root, commit),
+    }
+}
+
+/// Each input's object at `commit`, by its path; `None` for the whole
+/// repository, when there are no inputs or none of them exists there.
+/// Inputs naming nothing (a typo, or a directory not yet created) would
+/// give every commit the same state, and a document generated at one
+/// commit would be reused at all of them; the whole tree is safe.
+fn input_objects(root: &Path, commit: &str, inputs: &[String]) -> Option<Vec<(String, String)>> {
+    let paths = scoped(inputs);
+    if paths.is_empty() {
+        return None;
+    }
+    let mut objects = Vec::new();
+    for path in paths {
+        let object = repos::git(
+            root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{commit}:{path}"),
+            ],
+        )
+        .map_or_else(|_| "absent".to_owned(), |found| found.trim().to_owned());
+        objects.push((path, object));
+    }
+    if objects.iter().all(|(_, object)| object == "absent") {
+        log::warn!(
+            "adapter: no input of {} exists at {commit}; keeping its document by the whole repository",
+            inputs.join(", ")
+        );
+        return None;
+    }
+    Some(objects)
+}
+
+/// The state inputs' objects make.
+fn objects_state(objects: &[(String, String)]) -> String {
+    let mut state = String::from("inputs");
+    for (path, object) in objects {
+        state.push('\n');
+        state.push_str(path);
+        state.push('\t');
+        state.push_str(object);
+    }
+    state
+}
+
+/// Inputs as repository paths, sorted and without duplicates; empty, for
+/// the whole repository, when one of them is the root.
+fn scoped(inputs: &[String]) -> Vec<String> {
+    let mut paths = Vec::new();
+    for input in inputs {
+        let path = input.trim_start_matches("./").trim_end_matches('/');
+        if path.is_empty() || path == "." {
+            return Vec::new();
+        }
+        paths.push(path.to_owned());
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// Whether `path` is one of `inputs` or inside one.
+fn is_under(path: &str, inputs: &[String]) -> bool {
+    inputs.iter().any(|input| {
+        path == input
+            || path
+                .strip_prefix(input.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
 /// Lemma's own index and caches, which change on every query: counted in
 /// the state, an unignored `.lemma/` would make every key new.
 const LEMMA_FILES: &str = ":(exclude,glob)**/.lemma/**";
 
-/// A working directory against the commit it is on: the commit, its tree,
-/// the files that differ from it, untracked ones included, sorted, and the
-/// state those make.
+/// A working directory against the commit it is on: the commit, the state
+/// of its code, the files that differ from it, untracked ones included,
+/// sorted, and the state those make. [`WorkingChanges::scoped`] narrows it
+/// to an adapter's inputs.
+#[derive(Clone)]
 pub(crate) struct WorkingChanges {
     pub(crate) commit: String,
-    tree: String,
+    commit_state: String,
     pub(crate) changed: Vec<String>,
     /// The state of the code: the commit's tree, and a digest of every
     /// file that differs from it.
@@ -80,27 +169,53 @@ pub(crate) fn working_changes(root: &Path) -> Result<Option<WorkingChanges>, Gra
         ],
     )?;
     let changed = changed_paths(&status);
-    let state = state_of(root, tree, &changed);
+    let commit_state = format!("tree {tree}");
+    let state = state_of(root, &commit_state, &changed);
     Ok(Some(WorkingChanges {
         commit: commit.to_owned(),
-        tree: tree.to_owned(),
+        commit_state,
         changed,
         state,
     }))
 }
 
 impl WorkingChanges {
-    /// The state of the commit's code: its tree, as [`commit_state`] gives.
+    /// The state of the commit's code: its tree, as [`commit_state`] gives,
+    /// or its inputs' objects once [`scoped`](Self::scoped).
     pub(crate) fn commit_state(&self) -> String {
-        format!("tree {}", self.tree)
+        self.commit_state.clone()
+    }
+
+    /// The same working directory seen through `inputs`: the commit's state
+    /// at them, and only the changed files under them. Read from what Git
+    /// already said, so it asks only for the inputs' objects.
+    pub(crate) fn scoped(&self, root: &Path, inputs: &[String]) -> Self {
+        let Some(objects) = input_objects(root, &self.commit, inputs) else {
+            return self.clone();
+        };
+        let paths: Vec<String> = objects.iter().map(|(path, _)| path.clone()).collect();
+        let changed: Vec<String> = self
+            .changed
+            .iter()
+            .filter(|path| is_under(path, &paths))
+            .cloned()
+            .collect();
+        let commit_state = objects_state(&objects);
+        let state = state_of(root, &commit_state, &changed);
+        Self {
+            commit: self.commit.clone(),
+            commit_state,
+            changed,
+            state,
+        }
     }
 }
 
 /// The state of the code in the working directory at `root`, on a commit
-/// with `tree`, where `changed` differ from it: the tree, and a digest of
-/// each of those files.
-fn state_of(root: &Path, tree: &str, changed: &[String]) -> String {
-    let tree = format!("tree {tree}");
+/// whose code's state is `commit_state`, where `changed` differ from it:
+/// that state, and a digest of each of those files.
+fn state_of(root: &Path, commit_state: &str, changed: &[String]) -> String {
+    let tree = commit_state.to_owned();
     if changed.is_empty() {
         return tree;
     }
@@ -284,6 +399,110 @@ mod tests {
         let working = States::default().working_state(root).expect("state");
 
         assert_eq!(working, Some(commit_state(root, "HEAD").expect("state")));
+    }
+
+    /// The state of the working directory at `root` through `inputs`.
+    fn inputs_working_state(root: &Path, inputs: &[String]) -> Result<Option<String>, GraphError> {
+        let Some(working) = working_changes(root)? else {
+            return Ok(None);
+        };
+        Ok(Some(working.scoped(root, inputs).state))
+    }
+
+    fn commit_all(root: &Path) {
+        run_git(root, &["add", "."]);
+        run_git(
+            root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "c",
+            ],
+        );
+    }
+
+    fn repository_with(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let root = directory.path();
+        run_git(root, &["init", "-q"]);
+        for (path, text) in files {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("creates");
+            std::fs::write(path, text).expect("writes");
+        }
+        commit_all(root);
+        directory
+    }
+
+    #[test]
+    fn a_change_outside_the_inputs_keeps_their_state() {
+        let directory = repository_with(&[("api/main.go", "package main\n"), ("web/a.ts", "1\n")]);
+        let root = directory.path();
+        let inputs = ["api".to_owned()];
+        let before = inputs_working_state(root, &inputs).expect("state");
+
+        std::fs::write(root.join("web/a.ts"), "2\n").expect("writes");
+        let uncommitted = inputs_working_state(root, &inputs).expect("state");
+        commit_all(root);
+        let committed = inputs_working_state(root, &inputs).expect("state");
+
+        assert_eq!(before, uncommitted);
+        assert_eq!(before, committed);
+    }
+
+    #[test]
+    fn a_change_inside_the_inputs_changes_their_state() {
+        let directory = repository_with(&[("api/main.go", "package main\n"), ("web/a.ts", "1\n")]);
+        let root = directory.path();
+        let inputs = ["api/".to_owned()];
+        let before = inputs_working_state(root, &inputs).expect("state");
+
+        std::fs::write(root.join("api/main.go"), "package main // edited\n").expect("writes");
+        let uncommitted = inputs_working_state(root, &inputs).expect("state");
+        commit_all(root);
+        let committed = inputs_working_state(root, &inputs).expect("state");
+
+        assert_ne!(before, uncommitted);
+        assert_ne!(before, committed);
+        assert_ne!(uncommitted, committed);
+    }
+
+    #[test]
+    fn the_root_as_an_input_is_the_whole_repository() {
+        let directory = repository_with(&[("api/main.go", "package main\n")]);
+        let root = directory.path();
+
+        let whole = working_state(root).expect("state");
+        let rooted = inputs_working_state(root, &["./".to_owned()]).expect("state");
+
+        assert_eq!(whole, rooted);
+    }
+
+    #[test]
+    fn a_missing_input_is_part_of_the_state_as_absent() {
+        let directory = repository_with(&[("api/main.go", "package main\n")]);
+        let root = directory.path();
+        let inputs = ["api".to_owned(), "gone".to_owned()];
+
+        let state = inputs_commit_state(root, "HEAD", &inputs).expect("state");
+
+        assert!(state.ends_with("gone\tabsent"), "{state}");
+    }
+
+    #[test]
+    fn inputs_naming_nothing_are_the_whole_repository() {
+        let directory = repository_with(&[("api/main.go", "package main\n")]);
+        let root = directory.path();
+
+        let named = inputs_commit_state(root, "HEAD", &["typo".to_owned()]).expect("state");
+        let whole = commit_state(root, "HEAD").expect("state");
+
+        assert_eq!(named, whole);
     }
 
     #[test]

@@ -253,6 +253,7 @@ impl<'a> Adapter<'a> {
             self.run(root, root, &output)?;
             return read_generated(&output);
         };
+        let working = working.scoped(root, &self.from.inputs);
         let output = self.output(&working.state);
         if output.exists() {
             log::info!(
@@ -335,14 +336,18 @@ impl<'a> Adapter<'a> {
         cache: &Path,
         build: Build,
     ) -> Result<Option<Generated>, GraphError> {
-        let state = cache::commit_state(root, commit)?;
+        let state = cache::inputs_commit_state(root, commit, &self.from.inputs)?;
         let output = self.output(&state);
         let short = short_commit(commit);
         if output.exists() {
             log::info!("adapter: {} at {short}: kept document", root.display());
             return read_generated(&output).map(Some);
         }
-        if self.states.working_state(root)?.as_deref() == Some(state.as_str()) {
+        let working_state = self
+            .states
+            .working(root)?
+            .map(|working| working.scoped(root, &self.from.inputs).state);
+        if working_state.as_deref() == Some(state.as_str()) {
             log::info!(
                 "adapter: {} at {short}: working directory is that commit; reading it there",
                 root.display()

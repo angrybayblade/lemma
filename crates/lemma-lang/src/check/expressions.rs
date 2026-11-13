@@ -818,6 +818,12 @@ impl Checker<'_> {
         {
             self.error(context.module, call.span, problem);
         }
+        if let Some(warning) = values
+            .as_ref()
+            .and_then(|known| stdlib::argument_warning(&function, known))
+        {
+            self.warning(context.module, call.span, warning);
+        }
         let value = values.and_then(|mut arguments| {
             match receiver {
                 Receiver::None => {}
