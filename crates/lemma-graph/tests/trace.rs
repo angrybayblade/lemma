@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
-use lemma_graph::{Reached, SystemTrace, TraceCaches, Warm, trace_through_system};
+use lemma_graph::{Reached, SystemTrace, TraceCaches, TracedSystem, Warm, trace_through_system};
 use lemma_logic::ReferenceEngine;
 
 fn git(directory: &Path, args: &[&str]) {
@@ -75,13 +75,18 @@ fn caller(name: &str) -> String {
     )
 }
 
-/// The trace from billing's handler, reading through `warm`.
-fn trace(workspace: &Path, warm: Option<&Arc<Warm>>) -> SystemTrace {
-    let reached = [Reached {
+/// Billing's handler, as a graph that reached it names it.
+fn handler() -> [Reached; 1] {
+    [Reached {
         node: "symbol:handler".to_owned(),
         file: "src/server.ts".to_owned(),
         line: 3,
-    }];
+    }]
+}
+
+/// The trace from billing's handler, reading through `warm`.
+fn trace(workspace: &Path, warm: Option<&Arc<Warm>>) -> SystemTrace {
+    let reached = handler();
     let clones = workspace.join("cache");
     let caches = TraceCaches {
         clones: &clones,
@@ -137,4 +142,33 @@ fn a_trace_sees_a_change_once_what_is_kept_of_its_repository_is_forgotten() {
     assert_eq!(labels(&before), ["POST /v1/charges", "charge"]);
     assert_eq!(labels(&after), ["POST /v1/charges", "charge", "refund"]);
     assert_eq!(after, trace(workspace.path(), None));
+}
+
+#[test]
+fn a_system_read_once_gives_every_trace_what_reading_it_again_would() {
+    let workspace = shop();
+    let clones = workspace.path().join("cache");
+    let caches = TraceCaches {
+        clones: &clones,
+        facts: None,
+        warm: None,
+    };
+    let manifest = workspace.path().join("mod.lm");
+    let billing = workspace.path().join("billing");
+    let nothing_reached: [Reached; 0] = [];
+    let mut system = TracedSystem::read(&manifest, &caches, &ReferenceEngine).unwrap();
+
+    let first = system
+        .trace(&billing, &handler(), &caches, &ReferenceEngine)
+        .unwrap();
+    let from_nothing = system
+        .trace(&billing, &nothing_reached, &caches, &ReferenceEngine)
+        .unwrap();
+    let again = system
+        .trace(&billing, &handler(), &caches, &ReferenceEngine)
+        .unwrap();
+
+    assert_eq!(first, trace(workspace.path(), None));
+    assert_eq!(again, first);
+    assert_eq!(from_nothing, SystemTrace::default());
 }

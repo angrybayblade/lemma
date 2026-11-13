@@ -41,7 +41,7 @@ pub use check::{
     Change, CheckOptions, Finding, Impact, InferredLink, LinkList, NotChecked, Report,
     ResolvedRepository, Severity, check, repository_roots,
 };
-pub use trace::{Reached, SystemTrace, TraceCaches, trace_through_system};
+pub use trace::{Reached, SystemTrace, TraceCaches, TracedSystem, trace_through_system};
 pub use warm::Warm;
 
 /// Why a check could not run.
