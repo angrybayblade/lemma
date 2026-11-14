@@ -92,8 +92,18 @@ pub(crate) struct Engine {
     /// one that could not be watched.
     traced_workspaces: HashMap<PathBuf, Option<crate::trace::TracedWorkspace>>,
     /// What building exports read, so building them again after an edit
-    /// parses only what changed.
-    kept_for_exports: lemma_graph::exports::Kept,
+    /// parses only what changed. Made when exports are first built: routes
+    /// are kept on disk too, in a directory found then.
+    kept_for_exports: Option<lemma_graph::exports::Kept>,
+}
+
+/// What building exports keeps: in this process, and each file's routes
+/// also on disk beside this build's facts, when those have a place.
+fn kept_for_exports() -> lemma_graph::exports::Kept {
+    match crate::verify::facts_cache() {
+        Some(facts) => lemma_graph::exports::Kept::stored_in(facts.directory.join("routes")),
+        None => lemma_graph::exports::Kept::default(),
+    }
 }
 
 /// The parts of a command that decide which language servers it can use.
@@ -150,7 +160,7 @@ impl Engine {
             searches: HashMap::new(),
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
-            kept_for_exports: lemma_graph::exports::Kept::default(),
+            kept_for_exports: None,
         }
     }
 
@@ -164,7 +174,7 @@ impl Engine {
             searches: HashMap::new(),
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
-            kept_for_exports: lemma_graph::exports::Kept::default(),
+            kept_for_exports: None,
         }
     }
 
@@ -352,9 +362,11 @@ impl Engine {
         let store = store_for_writing(&mut self.stores, db_path)?;
         let exports = match source {
             Some(source) => {
-                // Only a process that stays reads the same files twice.
-                let kept = self.warms_up_after_index.then_some(&self.kept_for_exports);
-                let reading = ExportReading { states, kept };
+                let kept = self.kept_for_exports.get_or_insert_with(kept_for_exports);
+                let reading = ExportReading {
+                    states,
+                    kept: Some(kept),
+                };
                 update_exports(store, &summary, (source, root), reading)?
             }
             None => clear_exports(store, &summary)?,
