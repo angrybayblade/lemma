@@ -91,6 +91,9 @@ pub(crate) struct Engine {
     /// watched so the next trace reads only what changed since. `None` for
     /// one that could not be watched.
     traced_workspaces: HashMap<PathBuf, Option<crate::trace::TracedWorkspace>>,
+    /// How many watches those workspaces may take between them, where each
+    /// directory takes one. `None` sets no limit.
+    graph_watches: Option<usize>,
     /// What building exports read, so building them again after an edit
     /// parses only what changed. Made when exports are first built: routes
     /// are kept on disk too, in a directory found then.
@@ -160,6 +163,7 @@ impl Engine {
             searches: HashMap::new(),
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
+            graph_watches: None,
             kept_for_exports: None,
         }
     }
@@ -174,8 +178,21 @@ impl Engine {
             searches: HashMap::new(),
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
+            graph_watches: None,
             kept_for_exports: None,
         }
+    }
+
+    /// Sets how many watches the workspaces graphs are traced through may
+    /// take between them (`None` for no limit). A change lets go of the
+    /// workspaces watched so far: each is watched again, within the new
+    /// number, when a graph is next traced through it.
+    pub fn set_graph_watches(&mut self, watches: Option<usize>) {
+        if self.graph_watches == watches {
+            return;
+        }
+        self.graph_watches = watches;
+        self.traced_workspaces.clear();
     }
 
     /// Stops every language server.
@@ -191,6 +208,9 @@ impl Engine {
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
         let request = Request::new(&cli, invocation);
+        for traced in self.traced_workspaces.values_mut().flatten() {
+            traced.begin_ask();
+        }
         match cli.command {
             Command::Index {
                 path,
@@ -920,10 +940,17 @@ impl Engine {
         let manifest = workspace
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
+        let taken: usize = self
+            .traced_workspaces
+            .values()
+            .flatten()
+            .map(crate::trace::TracedWorkspace::watches)
+            .sum();
+        let left = self.graph_watches.map(|most| most.saturating_sub(taken));
         self.traced_workspaces
             .entry(manifest)
             .or_insert_with_key(|manifest| {
-                crate::trace::TracedWorkspace::start(manifest)
+                crate::trace::TracedWorkspace::start(manifest, left)
                     .inspect_err(|error| {
                         log::warn!("not watching {}: {error:#}", manifest.display());
                     })
@@ -1265,11 +1292,19 @@ impl Engine {
             .collect();
         workspaces.sort_by_key(|(manifest, _)| *manifest);
         let mut text = String::new();
-        for (manifest, traced) in workspaces {
+        let mut taken = 0;
+        for (manifest, traced) in &workspaces {
             let _ = writeln!(text, "graphs traced through {}:", manifest.display());
             for line in traced.status_lines() {
                 let _ = writeln!(text, "  {line}");
             }
+            taken += traced.watches();
+        }
+        if !workspaces.is_empty() {
+            let most = self
+                .graph_watches
+                .map_or_else(|| "no limit".to_owned(), |most| format!("{most} allowed"));
+            let _ = writeln!(text, "  watches taken for graphs: {taken} ({most})");
         }
         text
     }
@@ -2638,6 +2673,40 @@ mod tests {
 
         assert_eq!(after_one_vanished, [kept_manifest]);
         assert!(engine.traced_workspaces.is_empty());
+    }
+
+    #[test]
+    fn workspaces_traced_share_the_watches_graphs_may_take() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let first_manifest = workspace_of_one(first.path());
+        let second_manifest = workspace_of_one(second.path());
+        let mut engine = Engine::long_lived();
+        let unlimited = engine.traced_workspace(&first_manifest).unwrap().watches();
+
+        engine.set_graph_watches(Some(unlimited));
+        let within = engine.traced_workspace(&first_manifest).unwrap().watches();
+        let with_none_left = engine.traced_workspace(&second_manifest).unwrap().watches();
+
+        assert_eq!(within, unlimited);
+        assert_eq!(with_none_left, 0);
+    }
+
+    #[test]
+    fn changing_the_watches_graphs_may_take_lets_go_of_the_workspaces_watched() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = workspace_of_one(root.path());
+        let mut engine = Engine::long_lived();
+        assert!(engine.traced_workspace(&manifest).is_some());
+
+        engine.set_graph_watches(None);
+        let after_the_same = engine.traced_workspaces.len();
+        engine.set_graph_watches(Some(0));
+        let after_another = engine.traced_workspaces.len();
+
+        assert_eq!(after_the_same, 1);
+        assert_eq!(after_another, 0);
+        assert_eq!(engine.traced_workspace(&manifest).unwrap().watches(), 0);
     }
 
     #[test]
