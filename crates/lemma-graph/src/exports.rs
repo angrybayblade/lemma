@@ -37,17 +37,29 @@ pub struct IndexedSymbols<'a> {
     pub top_level: &'a dyn Fn(&str) -> Vec<String>,
 }
 
-/// What a process that stays keeps between builds of exports, which
-/// happen after every edit: each file's routes, so a file is parsed again
-/// only when its contents change, and each service's documents, so they
-/// are parsed and laid over each other again only when one of them does.
+/// What is kept between builds of exports, which happen after every edit:
+/// each file's routes, so a file is parsed again only when its contents
+/// change, and each service's documents, so they are parsed and laid over
+/// each other again only when one of them does. Routes can be kept on disk
+/// too ([`Kept::stored_in`]), for the first build of a later process.
 #[derive(Default)]
 pub struct Kept {
     /// By repository and path.
     routes: Mutex<HashMap<(PathBuf, String), ReadRoutes>>,
     /// By repository and service.
     documents: Mutex<HashMap<(PathBuf, String), LaidDocuments>>,
+    /// Where each repository's routes are kept across processes, if they
+    /// are.
+    directory: Option<PathBuf>,
+    /// The repositories whose routes on disk have been read, each with
+    /// whether a file's routes were read from its code since they were
+    /// last written there.
+    stored: Mutex<HashMap<PathBuf, bool>>,
 }
+
+/// A repository's routes as kept on disk: by path, the digest of the
+/// contents they were read from, and the routes.
+type StoredRoutes = BTreeMap<String, (String, Vec<Written>)>;
 
 /// One file's routes, and the contents they were read from.
 struct ReadRoutes {
@@ -62,6 +74,84 @@ struct LaidDocuments {
 }
 
 impl Kept {
+    /// What is kept, with each repository's routes kept in `directory` as
+    /// well, for later processes. The directory must be one build of
+    /// Lemma's alone: a file's routes are whatever that build's reading of
+    /// code finds in it.
+    pub fn stored_in(directory: PathBuf) -> Self {
+        Self {
+            directory: Some(directory),
+            ..Self::default()
+        }
+    }
+
+    /// Where the routes of the repository at `root` are kept on disk.
+    fn routes_file(&self, root: &Path) -> Option<PathBuf> {
+        let name = lemma_model::content_hash(root.as_os_str().as_encoded_bytes());
+        Some(
+            self.directory
+                .as_ref()?
+                .join(format!("{}.json", &name[..32])),
+        )
+    }
+
+    /// Takes in the routes kept on disk for the repository at `root`, the
+    /// first time it is asked for. A file that cannot be read keeps
+    /// nothing: every file is then parsed, as with none.
+    fn load_routes(&self, root: &Path) {
+        let Some(file) = self.routes_file(root) else {
+            return;
+        };
+        if locked(&self.stored)
+            .insert(root.to_path_buf(), false)
+            .is_some()
+        {
+            return;
+        }
+        let read: Option<StoredRoutes> = std::fs::read(&file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let mut routes = locked(&self.routes);
+        for (path, (digest, written)) in read.unwrap_or_default() {
+            let kept = ReadRoutes {
+                digest,
+                routes: written,
+            };
+            routes.entry((root.to_path_buf(), path)).or_insert(kept);
+        }
+    }
+
+    /// Writes the routes kept for the repository at `root` to disk, if any
+    /// file's were read from its code since they were last written.
+    /// Keeping them is best effort: a failure costs the next process a
+    /// parse, and nothing else.
+    fn store_routes(&self, root: &Path) {
+        let Some(file) = self.routes_file(root) else {
+            return;
+        };
+        let is_changed = locked(&self.stored).insert(root.to_path_buf(), false);
+        if is_changed != Some(true) {
+            return;
+        }
+        let stored: StoredRoutes = locked(&self.routes)
+            .iter()
+            .filter(|((repository, _), _)| repository == root)
+            .map(|((_, path), kept)| (path.clone(), (kept.digest.clone(), kept.routes.clone())))
+            .collect();
+        let Ok(text) = serde_json::to_vec(&stored) else {
+            return;
+        };
+        // Written beside and moved into place, so a reader finds the old
+        // routes or the new, never half of either.
+        let beside = file.with_extension(format!("{}.tmp", std::process::id()));
+        let written = std::fs::create_dir_all(file.parent().unwrap_or(&file))
+            .and_then(|()| std::fs::write(&beside, text))
+            .and_then(|()| std::fs::rename(&beside, &file));
+        if let Err(error) = written {
+            log::debug!("routes of {} not kept on disk: {error}", root.display());
+        }
+    }
+
     /// The routes kept for the file at `path` of the repository at `root`,
     /// if they were read from contents with this `digest`.
     fn routes_of(&self, root: &Path, path: &str, digest: &str) -> Option<Vec<Written>> {
@@ -73,6 +163,9 @@ impl Kept {
     fn keep_routes(&self, root: &Path, path: &str, digest: String, routes: Vec<Written>) {
         let key = (root.to_path_buf(), path.to_owned());
         locked(&self.routes).insert(key, ReadRoutes { digest, routes });
+        if let Some(is_changed) = locked(&self.stored).get_mut(root) {
+            *is_changed = true;
+        }
     }
 
     /// The documents kept for `service` of the repository at `root`, if
@@ -125,6 +218,9 @@ pub fn exports(
         extractors: &extractors,
         kept,
     };
+    if let Some(kept) = kept {
+        kept.load_routes(root);
+    }
     for (name, service) in file
         .services
         .iter()
@@ -152,6 +248,9 @@ pub fn exports(
                     }),
             );
         }
+    }
+    if let Some(kept) = kept {
+        kept.store_routes(root);
     }
     found.sort();
     found.dedup();
@@ -197,7 +296,7 @@ fn operations(name: &str, service: &Service) -> Vec<Export> {
 }
 
 /// A route declared in a service's code: where its path is written.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Route {
     file: String,
     line: u32,
@@ -727,6 +826,35 @@ mod tests {
         assert_eq!(after_edit, parsed_routes(&edited, &extractors).unwrap());
         assert_ne!(after_edit, read);
         assert_eq!(kept.routes_of(root, &first.path, &digest(&first)), None);
+    }
+
+    #[test]
+    fn routes_kept_on_disk_are_there_for_the_next_process() {
+        let directory = tempfile::tempdir().unwrap();
+        let extractors = ExtractorPool::new();
+        let root = Path::new("/repo");
+        let file = server("/v1/charges");
+        let digest = lemma_model::content_hash(file.contents.as_bytes());
+        let first = Kept::stored_in(directory.path().to_path_buf());
+        first.load_routes(root);
+        let reading = RouteReading {
+            extractors: &extractors,
+            kept: Some(&first),
+        };
+        let read = written_routes(&file, root, reading).unwrap();
+        first.store_routes(root);
+
+        let next = Kept::stored_in(directory.path().to_path_buf());
+        let before_loading = next.routes_of(root, &file.path, &digest);
+        next.load_routes(root);
+
+        assert_eq!(before_loading, None);
+        assert_eq!(next.routes_of(root, &file.path, &digest), Some(read));
+        assert_eq!(next.routes_of(root, &file.path, "other contents"), None);
+        assert_eq!(
+            next.routes_of(Path::new("/other"), &file.path, &digest),
+            None
+        );
     }
 
     fn document(path: &str) -> String {

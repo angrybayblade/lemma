@@ -284,6 +284,8 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 
    **Without a daemon (2026-11-14).** A trace has rounds: the inference, then each fetch of callers. In a process that does not stay, each round listed the repositories through Git and read the services' documents and the generated clients again, 0.3 s of a 1.5 s ask. One trace now reads through a `Warm` of its own, dropped with it (`trace_once`). With `--no-daemon`, three asks that cross repositories went from 1.5–1.65 s to 1.1–1.2 s and one from 0.92 s to 0.72 s; two that stay in one repository took 0.65 s before and after.
 
+   **Routes on disk (2026-11-14).** The routes kept per file lived in the daemon, so the first edit after a daemon started, and every edit without one, parsed every file of the edited repository again. Each repository's are now also written beside the build's facts (`exports::Kept::stored_in`: one file per repository, by path and the digest of the contents read), taken in when a process first builds that repository's exports and written again when a file's routes were read from its code. A build of Lemma reads only its own. Without a daemon the first graph after an edit went from 4.0–4.2 s to 3.2–3.3 s, the trace's kept rounds included; what is left there is the language server starting (1.1 s), the trace (0.85 s) and the edited repository's documents parsed again (0.3 s).
+
 **Later:**
 
 - Lookups that know the working copy.
