@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub use activity::Readiness;
-pub use client::{LaunchConfig, LspClient, ServerDetails};
+pub use client::{Interrupt, LaunchConfig, LspClient, ServerDetails};
 pub use encoding::{PositionEncoding, line_text};
 pub use transport::{read_message, write_message};
 
@@ -68,6 +68,14 @@ pub enum LspError {
         method: &'static str,
         /// How long the client waited.
         timeout: Duration,
+    },
+    /// The caller stopped waiting for the answer, as it was told to (see
+    /// [`LspClient::interrupt_when`]). The server still works on the
+    /// request, so what it learns is there for the next one.
+    #[error("stopped waiting for {method}")]
+    Interrupted {
+        /// The request method.
+        method: &'static str,
     },
     /// The server answered with an error.
     #[error("{method} failed: {message} (code {code})")]

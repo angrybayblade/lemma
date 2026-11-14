@@ -229,6 +229,16 @@ impl LspClient {
         self.connection.notify::<N>(params)
     }
 
+    /// Has requests stop waiting for their answers, with
+    /// [`LspError::Interrupted`], once `interrupt` says so: for requests
+    /// made ahead of anyone asking. The server is not told, and the same
+    /// request made again, before the server hears of a change, waits for
+    /// the answer already on its way. `None` has requests wait as long as
+    /// the timeout again.
+    pub fn interrupt_when(&self, interrupt: Option<Interrupt>) {
+        *lock(&self.connection.interrupt) = interrupt;
+    }
+
     /// Waits until the server looks ready to answer about a document opened
     /// at `opened_at`: it published diagnostics for it, or it went quiet for
     /// `quiet_period` with no work in progress. Gives up after the request
@@ -381,6 +391,22 @@ impl Drop for ServerProcess {
 
 type PendingRequests = HashMap<i64, Sender<Result<Value, ResponseError>>>;
 
+/// A request sent: its id, and where its answer arrives.
+type Asked = (i64, mpsc::Receiver<Result<Value, ResponseError>>);
+
+/// Whether a notification tells the server that a document or a file
+/// changed, opened or closed, as `textDocument/didChange` and
+/// `workspace/didChangeWatchedFiles` do.
+fn tells_of_a_change(method: &str) -> bool {
+    method.starts_with("textDocument/did") || method.starts_with("workspace/did")
+}
+
+/// Says whether to stop waiting for a server's answer.
+pub type Interrupt = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// How often a wait for an answer asks whether to stop.
+const INTERRUPT_CHECK: Duration = Duration::from_millis(10);
+
 /// The shared half of a client: used by callers to send, and by the reader
 /// thread to deliver answers and respond to the server.
 struct Connection {
@@ -389,6 +415,12 @@ struct Connection {
     next_id: AtomicI64,
     activity: Mutex<Activity>,
     activity_changed: Condvar,
+    /// Asked while waiting for an answer: see [`LspClient::interrupt_when`].
+    interrupt: Mutex<Option<Interrupt>>,
+    /// Requests whose caller stopped waiting, by method and parameters,
+    /// until the server is told of a change: the same question asked again
+    /// waits for the answer already on its way.
+    left_unanswered: Mutex<HashMap<String, Asked>>,
 }
 
 impl Connection {
@@ -399,6 +431,8 @@ impl Connection {
             next_id: AtomicI64::new(1),
             activity: Mutex::new(Activity::new(Instant::now(), ready_messages)),
             activity_changed: Condvar::new(),
+            interrupt: Mutex::new(None),
+            left_unanswered: Mutex::new(HashMap::new()),
         }
     }
 
@@ -408,17 +442,22 @@ impl Connection {
         timeout: Duration,
     ) -> Result<R::Result, LspError> {
         let params = to_params(R::METHOD, params)?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (sender, receiver) = mpsc::channel();
-        lock(&self.pending).insert(id, sender);
+        let question = format!("{} {params}", R::METHOD);
+        let unanswered = lock(&self.left_unanswered).remove(&question);
+        let (id, receiver) = match unanswered {
+            // Asked before, and the answer is still on its way.
+            Some(asked) => asked,
+            None => self.ask(R::METHOD, &params)?,
+        };
 
-        let message = json!({ "jsonrpc": "2.0", "id": id, "method": R::METHOD, "params": params });
-        if let Err(error) = self.send(&message) {
-            lock(&self.pending).remove(&id);
-            return Err(error);
-        }
-
-        match receiver.recv_timeout(timeout) {
+        let interrupt = lock(&self.interrupt).clone();
+        let Some(answer) = wait_for(&receiver, timeout, interrupt.as_ref()) else {
+            // Not cancelled: the server goes on, and its answer is there
+            // for whoever asks the same again before anything changes.
+            lock(&self.left_unanswered).insert(question, (id, receiver));
+            return Err(LspError::Interrupted { method: R::METHOD });
+        };
+        match answer {
             Ok(Ok(result)) => {
                 serde_json::from_value(result).map_err(|source| LspError::InvalidResponse {
                     method: R::METHOD,
@@ -445,8 +484,26 @@ impl Connection {
         }
     }
 
+    /// Sends the request, and gives its id and where its answer arrives.
+    fn ask(&self, method: &'static str, params: &Value) -> Result<Asked, LspError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (sender, receiver) = mpsc::channel();
+        lock(&self.pending).insert(id, sender);
+        let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        if let Err(error) = self.send(&message) {
+            lock(&self.pending).remove(&id);
+            return Err(error);
+        }
+        Ok((id, receiver))
+    }
+
     fn notify<N: Notification>(&self, params: N::Params) -> Result<(), LspError> {
         let params = to_params(N::METHOD, params)?;
+        // What the server is told may change its answers: those still on
+        // their way were to questions about what it knew before.
+        if tells_of_a_change(N::METHOD) {
+            lock(&self.left_unanswered).clear();
+        }
         self.send(&json!({ "jsonrpc": "2.0", "method": N::METHOD, "params": params }))
     }
 
@@ -502,6 +559,31 @@ impl Connection {
     /// Drops every waiting sender so blocked callers see the connection close.
     fn close(&self) {
         lock(&self.pending).clear();
+        lock(&self.left_unanswered).clear();
+    }
+}
+
+/// Waits up to `timeout` for what `receiver` is sent; `None` when
+/// `interrupt` says to stop waiting first.
+fn wait_for<T>(
+    receiver: &mpsc::Receiver<T>,
+    timeout: Duration,
+    interrupt: Option<&Interrupt>,
+) -> Option<Result<T, RecvTimeoutError>> {
+    let Some(interrupt) = interrupt else {
+        return Some(receiver.recv_timeout(timeout));
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        if interrupt() {
+            return None;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let sent = receiver.recv_timeout(remaining.min(INTERRUPT_CHECK));
+        let is_waiting_on = matches!(sent, Err(RecvTimeoutError::Timeout));
+        if !is_waiting_on || remaining <= INTERRUPT_CHECK {
+            return Some(sent);
+        }
     }
 }
 
@@ -648,6 +730,38 @@ mod tests {
             );
         };
         assert_eq!(said, "/usr/bin/env: 'node': No such file or directory");
+    }
+
+    #[test]
+    fn only_notifications_of_a_change_retire_answers_on_their_way() {
+        assert!(tells_of_a_change("textDocument/didChange"));
+        assert!(tells_of_a_change("textDocument/didClose"));
+        assert!(tells_of_a_change("workspace/didChangeWatchedFiles"));
+        assert!(!tells_of_a_change("$/cancelRequest"));
+        assert!(!tells_of_a_change("initialized"));
+    }
+
+    #[test]
+    fn a_wait_told_to_stop_ends_before_the_answer_or_the_timeout() {
+        let (_sender, receiver) = mpsc::channel::<u8>();
+        let stop: Interrupt = Arc::new(|| true);
+
+        let waited = wait_for(&receiver, Duration::from_secs(3600), Some(&stop));
+
+        assert!(waited.is_none());
+    }
+
+    #[test]
+    fn a_wait_not_told_to_stop_gets_the_answer_or_times_out() {
+        let (sender, receiver) = mpsc::channel::<u8>();
+        let go_on: Interrupt = Arc::new(|| false);
+        sender.send(7).unwrap();
+
+        let answered = wait_for(&receiver, Duration::from_secs(3600), Some(&go_on));
+        let timed_out = wait_for(&receiver, Duration::ZERO, Some(&go_on));
+
+        assert_eq!(answered, Some(Ok(7)));
+        assert_eq!(timed_out, Some(Err(RecvTimeoutError::Timeout)));
     }
 
     #[test]
