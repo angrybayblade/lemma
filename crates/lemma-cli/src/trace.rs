@@ -59,17 +59,41 @@ pub(crate) struct TracedWorkspace {
     system: Option<(u64, TracedSystem)>,
     /// When a trace last went through it, or it started being watched.
     last_traced: Instant,
+    /// Whether the ask being answered has already had the changes
+    /// collected: Git is asked about unwatched repositories once per ask.
+    is_collected: bool,
 }
 
 impl TracedWorkspace {
     /// Starts watching the workspace whose description is `manifest`,
-    /// before any trace reads it.
-    pub(crate) fn start(manifest: &Path) -> anyhow::Result<Self> {
+    /// before any trace reads it, taking at most `watches` watches (`None`
+    /// for no limit).
+    pub(crate) fn start(manifest: &Path, watches: Option<usize>) -> anyhow::Result<Self> {
         Ok(Self {
-            watched: WatchedWorkspace::start(manifest)?,
+            watched: WatchedWorkspace::start_within(manifest, watches)?,
             system: None,
             last_traced: Instant::now(),
+            is_collected: false,
         })
+    }
+
+    /// How many watches it holds, where each directory takes one.
+    pub(crate) fn watches(&self) -> usize {
+        self.watched.watches()
+    }
+
+    /// Tells it another ask is being answered: what changed is collected
+    /// anew for it.
+    pub(crate) fn begin_ask(&mut self) {
+        self.is_collected = false;
+    }
+
+    /// What is kept, as of the start of the ask being answered or later.
+    fn current(&mut self) -> Arc<lemma_graph::Warm> {
+        if std::mem::replace(&mut self.is_collected, true) {
+            return self.watched.current_again();
+        }
+        self.watched.current()
     }
 
     /// How long ago, at `now`, a trace last went through it.
@@ -89,7 +113,7 @@ impl TracedWorkspace {
     /// gave it when last asked since the repository changed.
     pub(crate) fn working_states(&mut self) -> WorkingStates {
         WorkingStates {
-            states: self.watched.current().states(),
+            states: self.current().states(),
             watched: self.watched.reported_roots(),
         }
     }
@@ -98,7 +122,7 @@ impl TracedWorkspace {
     /// has changed since, and otherwise read again from what is kept.
     pub(crate) fn trace(&mut self, start: &Start<'_>) -> Result<SystemTrace, GraphError> {
         self.last_traced = Instant::now();
-        let warm = self.watched.current();
+        let warm = self.current();
         let state = self.watched.state();
         let kept = self
             .system
@@ -263,7 +287,7 @@ mod tests {
             index_root: &billing,
             reached: &reached,
         };
-        let mut traced = TracedWorkspace::start(&manifest).unwrap();
+        let mut traced = TracedWorkspace::start(&manifest, None).unwrap();
 
         let before = traced.trace(&start).unwrap();
         let again = traced.trace(&start).unwrap();
@@ -291,7 +315,7 @@ mod tests {
             index_root: &billing,
             reached: &reached,
         };
-        let mut traced = TracedWorkspace::start(&manifest).unwrap();
+        let mut traced = TracedWorkspace::start(&manifest, None).unwrap();
 
         let before = traced.trace(&start).unwrap();
         write(
@@ -305,12 +329,61 @@ mod tests {
         assert_eq!(after, trace_once(&start).unwrap());
     }
 
+    /// Where a trace from billing's handler starts.
+    fn from_handler<'a>(
+        manifest: &'a Path,
+        billing: &'a Path,
+        reached: &'a [Reached],
+    ) -> Start<'a> {
+        Start {
+            workspace: manifest,
+            index_root: billing,
+            reached,
+        }
+    }
+
+    fn handler() -> [Reached; 1] {
+        [Reached {
+            node: "symbol:handler".to_owned(),
+            file: "src/server.ts".to_owned(),
+            line: 3,
+        }]
+    }
+
+    #[test]
+    fn with_no_watches_the_system_is_kept_until_git_says_a_file_changed() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = shop(root.path());
+        let billing = root.path().join("billing");
+        let reached = handler();
+        let start = from_handler(&manifest, &billing, &reached);
+        let mut traced = TracedWorkspace::start(&manifest, Some(0)).unwrap();
+
+        let before = traced.trace(&start).unwrap();
+        traced.begin_ask();
+        traced.trace(&start).unwrap();
+        let read_at = traced.watched.state();
+        traced.begin_ask();
+        let again = traced.trace(&start).unwrap();
+        let still_read_at = traced.watched.state();
+        write(&root.path().join("web/src/refund.ts"), &caller("refund"));
+        traced.begin_ask();
+        let after = traced.trace(&start).unwrap();
+
+        assert_eq!(traced.watches(), 0);
+        assert_eq!(labels(&before), ["POST /v1/charges", "charge"]);
+        assert_eq!(again, before);
+        assert_eq!(still_read_at, read_at);
+        assert_eq!(labels(&after), ["POST /v1/charges", "charge", "refund"]);
+        assert_eq!(after, trace_once(&start).unwrap());
+    }
+
     #[test]
     fn working_states_are_kept_for_watched_repositories_only() {
         let root = tempfile::tempdir().unwrap();
         let manifest = shop(root.path());
         let elsewhere = tempfile::tempdir().unwrap();
-        let mut traced = TracedWorkspace::start(&manifest).unwrap();
+        let mut traced = TracedWorkspace::start(&manifest, None).unwrap();
 
         let states = traced.working_states();
 

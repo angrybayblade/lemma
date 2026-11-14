@@ -27,6 +27,22 @@ pub(crate) struct Config {
     /// Attach sentry to a workspace on its first `lemma check` while the
     /// daemon runs. Off unless the user turns it on.
     pub sentry_auto_attach: bool,
+    /// How many watches the workspaces graphs are traced through may take
+    /// between them, where each directory takes one. `None` sets no limit;
+    /// `Some(0)` watches nothing.
+    pub graph_watches: Option<usize>,
+}
+
+/// The share of the system's limit on watches that graphs may take unless
+/// the user says: the rest is left to the indexes, whose lookups need
+/// theirs more, and to the user's other programs, an editor among them.
+const GRAPH_SHARE_OF_WATCHES: usize = 4;
+
+/// How many watches graphs may take when the config does not say: a
+/// quarter of `limit`, the system's limit on watches, or no limit where
+/// the system has none.
+fn default_graph_watches(limit: Option<usize>) -> Option<usize> {
+    limit.map(|limit| limit / GRAPH_SHARE_OF_WATCHES)
 }
 
 impl Default for Config {
@@ -40,6 +56,7 @@ impl Default for Config {
             },
             warms_up_on_activity: true,
             sentry_auto_attach: false,
+            graph_watches: default_graph_watches(lemma_index::watch_limit()),
         }
     }
 }
@@ -57,6 +74,34 @@ struct ConfigFile {
     repositories: RepositoriesSection,
     #[serde(default)]
     runtime: RuntimeSection,
+    #[serde(default)]
+    graph: GraphSection,
+}
+
+/// What the daemon may take to keep graphs across a workspace quick. The
+/// watches are a point between graphs that ask Git about every repository
+/// each time (`watches = 0`) and graphs that are told of every change.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct GraphSection {
+    watches: Option<Watches>,
+}
+
+/// A number of watches, or `"none"` for no limit.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Watches {
+    Count(usize),
+    Words(String),
+}
+
+/// How many watches `watches` allows: `None` for no limit.
+fn parse_watches(watches: &Watches) -> anyhow::Result<Option<usize>> {
+    match watches {
+        Watches::Count(count) => Ok(Some(*count)),
+        Watches::Words(words) if words.trim() == "none" => Ok(None),
+        Watches::Words(words) => bail!("watches is a number or \"none\", not \"{words}\""),
+    }
 }
 
 /// What warm runtimes may use: how much memory they may hold, and how long
@@ -253,6 +298,10 @@ fn parse(text: &str) -> anyhow::Result<Config> {
             .sentry
             .auto_attach
             .unwrap_or(defaults.sentry_auto_attach),
+        graph_watches: match &file.graph.watches {
+            Some(watches) => parse_watches(watches)?,
+            None => defaults.graph_watches,
+        },
     })
 }
 
@@ -321,6 +370,22 @@ mod tests {
         assert_eq!(parse_memory("64MB").unwrap(), 64 * 1024 * 1024);
         assert_eq!(parse_memory("none").unwrap(), u64::MAX);
         assert!(parse_memory("lots").is_err());
+    }
+
+    #[test]
+    fn the_watches_graphs_may_take_are_a_number_or_none() {
+        let watches = |text: &str| parse(text).map(|config| config.graph_watches);
+
+        assert_eq!(watches("[graph]\nwatches = 0\n").unwrap(), Some(0));
+        assert_eq!(watches("[graph]\nwatches = 5000\n").unwrap(), Some(5000));
+        assert_eq!(watches("[graph]\nwatches = \"none\"\n").unwrap(), None);
+        assert!(watches("[graph]\nwatches = \"many\"\n").is_err());
+    }
+
+    #[test]
+    fn unless_set_graphs_may_take_a_quarter_of_the_systems_watches() {
+        assert_eq!(default_graph_watches(Some(8192)), Some(2048));
+        assert_eq!(default_graph_watches(None), None);
     }
 
     #[test]
