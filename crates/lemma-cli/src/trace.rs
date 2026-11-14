@@ -109,10 +109,13 @@ impl TracedWorkspace {
 
     /// Whether files changed, as reported so far, and have settled as of
     /// `now` with nobody having asked since: what there is to get ready
-    /// for. Drops what is kept of what changed, as an ask would.
+    /// for. Drops what is kept of what changed, as an ask would. A
+    /// repository without a watcher reports nothing, so Git is asked about
+    /// those now and then, and a change it shows counts as settled.
     pub(crate) fn has_settled_changes(&mut self, now: Instant) -> bool {
         self.watched.collect(false);
-        !self.watched.take_settled(now).is_empty()
+        let has_settled = !self.watched.take_settled(now).is_empty();
+        self.watched.look_at_unwatched(now) || has_settled
     }
 
     /// How long ago, at `now`, a trace last went through it.
@@ -429,6 +432,30 @@ mod tests {
         assert!(!is_left);
         assert_eq!(labels(&after), ["POST /v1/charges", "charge", "refund"]);
         assert_eq!(after, trace_once(&start).unwrap());
+    }
+
+    #[test]
+    fn a_change_in_a_repository_without_a_watcher_is_there_to_get_ready_for_once() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = shop(root.path());
+        let billing = root.path().join("billing");
+        let reached = handler();
+        let start = from_handler(&manifest, &billing, &reached);
+        let mut traced = TracedWorkspace::start(&manifest, Some(0)).unwrap();
+        traced.trace(&start).unwrap();
+        let now = Instant::now();
+        let later = |seconds: u64| now + Duration::from_secs(seconds);
+
+        let is_changed_before = traced.has_settled_changes(later(60));
+        write(&root.path().join("web/src/refund.ts"), &caller("refund"));
+        let is_seen_too_soon = traced.has_settled_changes(later(61));
+        let is_seen = traced.has_settled_changes(later(120));
+        let is_left = traced.has_settled_changes(later(180));
+
+        assert!(!is_changed_before);
+        assert!(!is_seen_too_soon);
+        assert!(is_seen);
+        assert!(!is_left);
     }
 
     #[test]
