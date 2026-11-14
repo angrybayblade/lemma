@@ -268,6 +268,18 @@ impl Reads {
         })
     }
 
+    /// The files whose text or document a run read from the working
+    /// directory of the repository at `repository`.
+    pub(crate) fn working_files(&self, repository: &Path) -> Vec<String> {
+        let texts = self.texts.keys();
+        let documents = self.documents.keys();
+        texts
+            .chain(documents)
+            .filter(|(root, commit, _)| commit.is_none() && same_path(root, repository))
+            .map(|(_, _, file)| file.clone())
+            .collect()
+    }
+
     /// Each interpreter asked, with the stamp it had when last asked.
     pub(crate) fn interpreter_stamps(&self) -> BTreeMap<String, String> {
         self.interpreters
