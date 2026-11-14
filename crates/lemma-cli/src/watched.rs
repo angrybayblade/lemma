@@ -5,6 +5,10 @@
 //! trace through a workspace reads through it. Nothing is evaluated here:
 //! a change only drops what was kept of the files it touched, so whoever
 //! reads next reads those again and nothing else.
+//!
+//! A repository that is not watched, because the watches allowed are used
+//! up or the system refuses one, is checked instead: Git says, when an ask
+//! comes, whether its working directory is as it was at the last one.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashSet};
@@ -31,6 +35,10 @@ pub(crate) struct WatchedWorkspace {
     warm: Arc<lemma_graph::Warm>,
 }
 
+/// Why a repository that would take more watches than are left is not
+/// watched.
+const OVER_BUDGET: &str = "the watches graphs may take are used up ([graph] watches)";
+
 /// The paths that changed together in one repository.
 pub(crate) struct Batch {
     /// The repository's directory.
@@ -52,11 +60,24 @@ impl WatchedWorkspace {
     /// is `manifest`, before anything is read from them, so no change made
     /// after a read goes unseen.
     pub(crate) fn start(manifest: &Path) -> anyhow::Result<Self> {
+        Self::start_within(manifest, None)
+    }
+
+    /// [`WatchedWorkspace::start`], taking at most `watches` watches where
+    /// each directory takes one (`None` for no limit): the repositories
+    /// that fit are watched, the largest first (see [`chosen_to_watch`]),
+    /// and the others are checked at each ask.
+    pub(crate) fn start_within(manifest: &Path, watches: Option<usize>) -> anyhow::Result<Self> {
         Ok(Self {
             manifest: manifest.to_path_buf(),
-            watched: watch_repositories(manifest)?,
+            watched: watch_repositories(manifest, watches)?,
             warm: Arc::default(),
         })
+    }
+
+    /// How many watches its watchers hold, where each directory takes one.
+    pub(crate) fn watches(&self) -> usize {
+        self.watched.iter().map(Watched::watches).sum()
     }
 
     /// A number that changes whenever a file a check can depend on may
@@ -84,11 +105,12 @@ impl WatchedWorkspace {
     }
 
     /// The directories, canonical, of the repositories whose changes are
-    /// reported: what is kept of any other is dropped on every collection.
+    /// known, from a watcher or from Git: what is kept of any other is
+    /// dropped on every collection that confirms.
     pub(crate) fn reported_roots(&self) -> Vec<PathBuf> {
         self.watched
             .iter()
-            .filter(|watched| watched.watch.is_some())
+            .filter(|watched| watched.watch.is_some() || watched.seen_as.is_some())
             .map(|watched| watched.root.clone())
             .collect()
     }
@@ -97,14 +119,58 @@ impl WatchedWorkspace {
     /// by repository. `confirming` waits for every watcher's barrier, so a
     /// change made just before the call counts, and leaves nothing to
     /// prepare, since whoever asks reads what it needs; without it only
-    /// repositories with reported changes are looked at.
+    /// repositories with reported changes are looked at. Git is asked
+    /// about the unwatched ones only when confirming.
     pub(crate) fn collect(&mut self, confirming: bool) -> Vec<Batch> {
+        if confirming {
+            self.ask_git();
+        }
+        self.collect_reported(confirming)
+    }
+
+    /// Asks Git, about all unwatched repositories at once, whether each is
+    /// as it was when last asked, and drops what is kept of those that are
+    /// not, or that Git cannot speak for.
+    fn ask_git(&mut self) {
+        let warm = &self.warm;
+        let unwatched: Vec<&mut Watched> = self
+            .watched
+            .iter_mut()
+            .filter(|watched| watched.watch.is_none())
+            .collect();
+        let places: Vec<Place<'_>> = unwatched
+            .iter()
+            .map(|watched| Place {
+                root: &watched.root,
+                spelled: &watched.spelled,
+                inner: &watched.inner,
+            })
+            .collect();
+        let seen: Vec<Option<u64>> = std::thread::scope(|scope| {
+            let asking: Vec<_> = places
+                .iter()
+                .map(|place| scope.spawn(|| seen_unwatched(warm, place)))
+                .collect();
+            asking
+                .into_iter()
+                .map(|asked| asked.join().unwrap_or(None))
+                .collect()
+        });
+        for (watched, seen) in unwatched.into_iter().zip(seen) {
+            if seen.is_some() && seen == watched.seen_as {
+                continue;
+            }
+            warm.forget_working(&watched.root);
+            watched.seen_as = seen;
+            watched.generation += 1;
+        }
+    }
+
+    /// The watched repositories' part of [`WatchedWorkspace::collect`].
+    fn collect_reported(&mut self, confirming: bool) -> Vec<Batch> {
         let mut batches = Vec::new();
         for watched in &mut self.watched {
             if watched.watch.is_none() {
-                // Unwatched: anything may have changed.
-                self.warm.forget_working(&watched.root);
-                watched.generation += 1;
                 continue;
             }
             if let Some(paths) = watched.take_changes(&self.warm, confirming) {
@@ -127,6 +193,14 @@ impl WatchedWorkspace {
         Arc::clone(&self.warm)
     }
 
+    /// [`WatchedWorkspace::current`] for whoever called it already while
+    /// answering the same ask: Git, asked then about the unwatched
+    /// repositories, is not asked again.
+    pub(crate) fn current_again(&mut self) -> Arc<lemma_graph::Warm> {
+        self.collect_reported(true);
+        Arc::clone(&self.warm)
+    }
+
     /// Takes the changes whose repositories have settled as of `now` and
     /// that Git has let go of.
     pub(crate) fn take_settled(&mut self, now: Instant) -> Vec<Settled> {
@@ -143,9 +217,71 @@ impl WatchedWorkspace {
     }
 }
 
+/// An unwatched repository, as checking it needs it.
+struct Place<'a> {
+    /// Its directory, canonical.
+    root: &'a Path,
+    /// Its directory as checks name it.
+    spelled: &'a Path,
+    /// The repositories inside its directory, each checked on its own.
+    inner: &'a [PathBuf],
+}
+
+/// What the working directory at `place` looks like without a watcher, as
+/// one number that changes when a file a check reads may have; `None`
+/// when nothing can say. Git speaks for every file it lists. A file it
+/// ignores is kept only by name, so each of those is looked at for its
+/// size and time. A directory outside Git, such as one that only holds a
+/// workspace's description and its repositories, gives checks nothing but
+/// its `.lm` files, which are looked at the same way.
+fn seen_unwatched(warm: &lemma_graph::Warm, place: &Place<'_>) -> Option<u64> {
+    // Named before Git is asked: a file read after this ask's answer from
+    // Git is first counted at the next, where a new name is a change.
+    let named = warm.files_read_by_name(place.spelled);
+    let mut hasher = DefaultHasher::new();
+    match warm.working_state_now(place.spelled) {
+        Some(state) => state.hash(&mut hasher),
+        // Git knows the directory and cannot say, as before a first commit.
+        None if place.root.join(".git").exists() => return None,
+        None => description_files(place.root, place.inner).hash(&mut hasher),
+    }
+    for file in named {
+        file_stamp(&place.root.join(&file)).hash(&mut hasher);
+        file.hash(&mut hasher);
+    }
+    Some(hasher.finish())
+}
+
+/// The `.lm` files under `directory`, sorted, each with its size and time,
+/// leaving out the directories `inner`, those whose names start with a
+/// dot, and any other repository's: its modules are its own.
+fn description_files(directory: &Path, inner: &[PathBuf]) -> Vec<(PathBuf, (u64, u128))> {
+    let mut found = Vec::new();
+    let mut directories = vec![directory.to_path_buf()];
+    while let Some(next) = directories.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_hidden = entry.file_name().to_string_lossy().starts_with('.');
+            let is_directory = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            let is_entered =
+                is_directory && !is_hidden && !inner.contains(&path) && !path.join(".git").exists();
+            if is_entered {
+                directories.push(path);
+            } else if !is_directory && path.extension().is_some_and(|ext| ext == "lm") {
+                found.push((path.clone(), file_stamp(&path)));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 /// A watcher on each repository of the workspace whose description is
-/// `manifest`.
-fn watch_repositories(manifest: &Path) -> anyhow::Result<Vec<Watched>> {
+/// `manifest`, while they fit in `watches` (`None` for no limit).
+fn watch_repositories(manifest: &Path, watches: Option<usize>) -> anyhow::Result<Vec<Watched>> {
     let options = lemma_graph::CheckOptions {
         change: None,
         level: None,
@@ -168,21 +304,57 @@ fn watch_repositories(manifest: &Path) -> anyhow::Result<Vec<Watched>> {
         .iter()
         .map(|root| root.canonicalize().unwrap_or_else(|_| root.clone()))
         .collect();
-    let watched = roots
+    // A workspace's directory holds its repositories, each watched on
+    // its own.
+    let inner_of = |root: &PathBuf| -> Vec<PathBuf> {
+        roots
+            .iter()
+            .filter(|other| *other != root && other.starts_with(root))
+            .cloned()
+            .collect()
+    };
+    let selection = lemma_index::Selection::everything_git_lists();
+    let needed: Vec<usize> = match watches {
+        // Nothing to fit them in: not counted.
+        None | Some(0) => vec![0; roots.len()],
+        Some(_) => roots
+            .iter()
+            .map(|root| lemma_index::watches_needed(root, &selection, &inner_of(root)))
+            .collect(),
+    };
+    let chosen = chosen_to_watch(&needed, watches);
+    let repositories = roots
         .iter()
         .zip(spelled)
-        .map(|(root, spelled)| {
-            // A workspace's directory holds its repositories, each
-            // watched on its own.
-            let inner: Vec<PathBuf> = roots
-                .iter()
-                .filter(|other| *other != root && other.starts_with(root))
-                .cloned()
-                .collect();
-            watch(root.clone(), spelled, &inner)
-        })
+        .zip(chosen)
+        .map(|((root, spelled), is_chosen)| watch(root.clone(), spelled, inner_of(root), is_chosen))
         .collect();
-    Ok(watched)
+    Ok(repositories)
+}
+
+/// Which repositories to watch, when they need `needed` watches each and
+/// `watches` may be taken (`None` for no limit, and none at all for
+/// nothing): the largest that fits first, then the largest that fits in
+/// what is left, and so on. The repositories left out are checked at the
+/// same time when an ask comes, which then waits for the slowest of them,
+/// and Git takes longest over the largest.
+fn chosen_to_watch(needed: &[usize], watches: Option<usize>) -> Vec<bool> {
+    let Some(mut left) = watches else {
+        return vec![true; needed.len()];
+    };
+    let mut chosen = vec![false; needed.len()];
+    if left == 0 {
+        return chosen;
+    }
+    let mut largest_first: Vec<usize> = (0..needed.len()).collect();
+    largest_first.sort_by_key(|index| std::cmp::Reverse(needed[*index]));
+    for index in largest_first {
+        if needed[index] <= left {
+            left -= needed[index];
+            chosen[index] = true;
+        }
+    }
+    chosen
 }
 
 /// The size and modification time of the workspace's own description
@@ -190,7 +362,13 @@ fn watch_repositories(manifest: &Path) -> anyhow::Result<Vec<Watched>> {
 /// repositories watched.
 fn manifest_stamp(manifest: &Path) -> (u64, u128) {
     let directory = manifest.parent().unwrap_or(manifest);
-    std::fs::metadata(directory.join("mod.lm")).map_or((0, 0), |metadata| {
+    file_stamp(&directory.join("mod.lm"))
+}
+
+/// The size and modification time of the file at `path`; zeros when it
+/// cannot be read.
+fn file_stamp(path: &Path) -> (u64, u128) {
+    std::fs::metadata(path).map_or((0, 0), |metadata| {
         let modified = metadata
             .modified()
             .ok()
@@ -205,9 +383,14 @@ pub(crate) struct Watched {
     root: PathBuf,
     /// The root as a check names it, which is how reads are kept.
     spelled: PathBuf,
+    /// The repositories inside its directory, each watched on its own.
+    inner: Vec<PathBuf>,
     watch: Option<lemma_index::Watch>,
-    /// Why it is not watched, when watching failed.
+    /// Why it is not watched, when it is not.
     failure: Option<String>,
+    /// Unwatched: what it looked like when last checked (see
+    /// [`seen_unwatched`]). `None` before that, and when nothing can say.
+    seen_as: Option<u64>,
     /// Bumped whenever a file a check can depend on may have changed.
     generation: u64,
     /// Bumped when only files no check reads changed. Those matter only to
@@ -238,6 +421,11 @@ impl Watched {
         self.unread_generation
     }
 
+    /// How many watches its watcher holds, where each directory takes one.
+    fn watches(&self) -> usize {
+        self.watch.as_ref().map_or(0, watches_of)
+    }
+
     /// Whether it is watched, and how, in a line for status.
     pub(crate) fn status_line(&self) -> String {
         let root = self.root.display();
@@ -254,7 +442,7 @@ impl Watched {
                 }
             },
             (None, failure) => format!(
-                "not watching {root}: {}",
+                "not watching {root}: {}; checked at each ask",
                 failure.as_deref().unwrap_or("unknown")
             ),
         }
@@ -336,25 +524,49 @@ fn relative_paths(root: &Path, paths: &HashSet<PathBuf>) -> Vec<String> {
 }
 
 /// A watcher for the repository at `root` (canonical), named `spelled` by
-/// checks, leaving out the repositories `inner` to it, or why there is none.
-fn watch(root: PathBuf, spelled: PathBuf, inner: &[PathBuf]) -> Watched {
-    let selection = lemma_index::Selection::everything_git_lists();
-    let started = lemma_index::Watch::start_without(&root, &selection, inner);
-    let (watch, failure) = match started {
+/// checks, leaving out the repositories `inner` to it, or why there is
+/// none: it was not chosen to be watched, or the system refused.
+fn watch(root: PathBuf, spelled: PathBuf, inner: Vec<PathBuf>, is_chosen: bool) -> Watched {
+    let (watch, failure) = match start_watch(&root, &inner, is_chosen) {
         Ok(watch) => (Some(watch), None),
         Err(reason) => {
-            log::warn!("not watching {}: {reason}", root.display());
+            log::info!("not watching {}: {reason}", root.display());
             (None, Some(reason))
         }
     };
     Watched {
         root,
         spelled,
+        inner,
         watch,
         failure,
+        seen_as: None,
         generation: 0,
         unread_generation: 0,
         unprepared: None,
+    }
+}
+
+/// Starts watching the repository at `root`, if it was chosen to be.
+fn start_watch(
+    root: &Path,
+    inner: &[PathBuf],
+    is_chosen: bool,
+) -> Result<lemma_index::Watch, String> {
+    if !is_chosen {
+        return Err(OVER_BUDGET.to_owned());
+    }
+    let selection = lemma_index::Selection::everything_git_lists();
+    lemma_index::Watch::start_without(root, &selection, inner)
+}
+
+/// How many watches `watch` holds, where each directory takes one.
+fn watches_of(watch: &lemma_index::Watch) -> usize {
+    match watch.report() {
+        lemma_index::WatchReport::Watching {
+            directories: Some(count),
+        } => count,
+        _ => 0,
     }
 }
 
@@ -430,6 +642,117 @@ mod tests {
 
         assert_eq!(before, Vec::<String>::new());
         assert_eq!(after, ["src/refund.ts"]);
+    }
+
+    #[test]
+    fn with_no_watches_git_says_what_changed_and_the_rest_is_kept() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = workspace(root.path());
+        let mut watched = WatchedWorkspace::start_within(&manifest, Some(0)).unwrap();
+
+        let warm = watched.current();
+        let before = untracked(&watched, &warm, "web");
+        let at_first = watched.state();
+        watched.current();
+        let with_nothing_changed = watched.state();
+        write(&root.path().join("web/src/refund.ts"), "export {};\n");
+        let warm = watched.current();
+        let after = untracked(&watched, &warm, "web");
+
+        assert_eq!(watched.watches(), 0);
+        assert_eq!(before, Vec::<String>::new());
+        assert_eq!(with_nothing_changed, at_first);
+        assert_eq!(after, ["src/refund.ts"]);
+        assert_ne!(watched.state(), at_first);
+    }
+
+    #[test]
+    fn a_change_to_a_file_already_changed_is_seen_without_watches() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = workspace(root.path());
+        let mut watched = WatchedWorkspace::start_within(&manifest, Some(0)).unwrap();
+        write(
+            &root.path().join("web/src/charge.ts"),
+            "export const charge = 2;\n",
+        );
+        watched.current();
+        let after_one_edit = watched.state();
+
+        write(
+            &root.path().join("web/src/charge.ts"),
+            "export const charge = 3;\n",
+        );
+        watched.current();
+
+        assert_ne!(watched.state(), after_one_edit);
+    }
+
+    #[test]
+    fn git_is_asked_about_an_unwatched_repository_once_per_ask() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = workspace(root.path());
+        let mut watched = WatchedWorkspace::start_within(&manifest, Some(0)).unwrap();
+        watched.current();
+        let asked = watched.state();
+
+        write(&root.path().join("web/src/refund.ts"), "export {};\n");
+        watched.current_again();
+        let within_the_ask = watched.state();
+        watched.current();
+
+        assert_eq!(within_the_ask, asked);
+        assert_ne!(watched.state(), asked);
+    }
+
+    #[test]
+    fn a_repository_is_watched_only_if_it_fits_the_watches_left() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = workspace(root.path());
+        let unlimited = WatchedWorkspace::start(&manifest).unwrap();
+        let needed = unlimited.watches();
+        drop(unlimited);
+
+        let lines = |watched: &WatchedWorkspace| -> Vec<String> {
+            let repositories = watched.repositories().iter();
+            repositories.map(Watched::status_line).collect()
+        };
+        let fitting = WatchedWorkspace::start_within(&manifest, Some(needed)).unwrap();
+
+        assert_eq!(fitting.watches(), needed);
+        assert!(
+            lines(&fitting)
+                .iter()
+                .all(|line| line.starts_with("watching "))
+        );
+        // Where a watcher takes a watch per directory, one too few leaves
+        // a repository to be checked at each ask.
+        if needed > 0 {
+            let short = WatchedWorkspace::start_within(&manifest, Some(needed - 1)).unwrap();
+            assert!(short.watches() < needed);
+            assert!(
+                lines(&short)
+                    .iter()
+                    .any(|line| line.ends_with("checked at each ask")),
+                "{:?}",
+                lines(&short)
+            );
+        }
+    }
+
+    #[test]
+    fn the_largest_repositories_that_fit_are_the_ones_watched() {
+        let needed = [5, 100, 20];
+
+        assert_eq!(chosen_to_watch(&needed, None), [true, true, true]);
+        assert_eq!(chosen_to_watch(&needed, Some(125)), [true, true, true]);
+        assert_eq!(chosen_to_watch(&needed, Some(110)), [true, true, false]);
+        assert_eq!(chosen_to_watch(&needed, Some(30)), [true, false, true]);
+        assert_eq!(chosen_to_watch(&needed, Some(4)), [false, false, false]);
+        assert_eq!(chosen_to_watch(&needed, Some(0)), [false, false, false]);
+        // Where watching a tree takes no watch per directory, any number
+        // but none watches everything.
+        assert_eq!(chosen_to_watch(&[0, 0], Some(1)), [true, true]);
+        assert_eq!(chosen_to_watch(&[0, 0], Some(0)), [false, false]);
     }
 
     #[test]
