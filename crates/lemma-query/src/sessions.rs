@@ -24,7 +24,12 @@ pub(crate) enum PoolError {
     Store(StoreError),
     /// The files of a root that is not indexed could not be listed.
     Files(FilesError),
+    /// The lookup was told to stop: see [`SessionPool::interrupt_when`].
+    Interrupted,
 }
+
+/// Says whether lookups nobody is waiting for should stop.
+pub type Interrupt = lemma_providers::Interrupt;
 
 /// Why the files of a root that is not indexed could not be listed.
 pub type FilesError = Box<dyn std::error::Error + Send + Sync>;
@@ -45,6 +50,8 @@ pub struct SessionPool {
     failed_warm_ups: HashMap<SessionKey, ProviderError>,
     arrivals: Sender<Arrival>,
     arrivals_inbox: Receiver<Arrival>,
+    /// Asked before a server is: see [`SessionPool::interrupt_when`].
+    interrupt: Option<Interrupt>,
 }
 
 /// A server to start ahead of the first lookup, so it is ready by then.
@@ -119,7 +126,28 @@ impl SessionPool {
             failed_warm_ups: HashMap::new(),
             arrivals,
             arrivals_inbox,
+            interrupt: None,
         }
+    }
+
+    /// Has every lookup stop with [`QueryError::Interrupted`] instead of
+    /// asking a server, or waiting longer for one asked, from when
+    /// `is_wanted_elsewhere` first says so: for lookups made ahead of
+    /// anyone asking, which give way to a command that arrives. A server
+    /// goes on with what it was asked, so it is not asked in vain. `None`
+    /// lets lookups run to their end again.
+    ///
+    /// [`QueryError::Interrupted`]: crate::QueryError::Interrupted
+    pub fn interrupt_when(&mut self, is_wanted_elsewhere: Option<Interrupt>) {
+        for pooled in self.sessions.values() {
+            pooled.session.interrupt_when(is_wanted_elsewhere.clone());
+        }
+        self.interrupt = is_wanted_elsewhere;
+    }
+
+    /// Whether lookups are being stopped: see [`SessionPool::interrupt_when`].
+    pub fn is_interrupted(&self) -> bool {
+        self.interrupt.as_ref().is_some_and(|interrupt| interrupt())
     }
 
     /// Starts a server in the background, trying the providers in order,
@@ -395,6 +423,10 @@ impl SessionPool {
         provider: &InstalledProvider,
         request_timeout: Duration,
     ) -> Result<&mut ProviderSession, PoolError> {
+        // Before waiting for a server that is starting, or asking one.
+        if self.is_interrupted() {
+            return Err(PoolError::Interrupted);
+        }
         let key = root_key(view.root, provider);
         self.collect_arrivals(Some(&key));
         if let Some(error) = self.failed_warm_ups.remove(&key) {
@@ -426,6 +458,7 @@ impl SessionPool {
                 );
                 let started = Instant::now();
                 let pooled = start(view, files, provider, request_timeout, self.is_long_lived)?;
+                pooled.session.interrupt_when(self.interrupt.clone());
                 log::info!(
                     "{} started in {:.1}s",
                     provider.definition.id,
@@ -563,7 +596,9 @@ fn warm_session(
     let mut pooled = match started {
         Ok(pooled) => pooled,
         Err(PoolError::Start(error)) => return WarmUpOutcome::StartFailed(error),
-        Err(PoolError::Store(_) | PoolError::Files(_)) => return WarmUpOutcome::Abandoned,
+        Err(PoolError::Store(_) | PoolError::Files(_) | PoolError::Interrupted) => {
+            return WarmUpOutcome::Abandoned;
+        }
     };
     let files = store.files(warm_up.snapshot.id).unwrap_or_default();
     let paths = files
@@ -750,6 +785,37 @@ mod tests {
         let chosen = representative_file(paths.into_iter());
 
         assert_eq!(chosen.as_deref(), Some("apps/api/src/one.ts"));
+    }
+
+    #[test]
+    fn a_pool_told_to_stop_asks_no_server() {
+        let registry = lemma_providers::ProviderRegistry::builtin().unwrap();
+        let provider = InstalledProvider {
+            definition: registry.definitions()[0].clone(),
+            executable: PathBuf::from("/bin/server-that-is-not-there"),
+            search_path: None,
+        };
+        let view = RootView {
+            root: Path::new("/nowhere"),
+            fingerprint: "files",
+        };
+        let mut files = || Ok(FileHashes::new());
+        let mut pool = SessionPool::long_lived();
+        pool.interrupt_when(Some(std::sync::Arc::new(|| true)));
+
+        let timeout = Duration::from_secs(1);
+        let is_stopped = matches!(
+            pool.session_at(&view, &mut files, &provider, timeout),
+            Err(PoolError::Interrupted)
+        );
+        pool.interrupt_when(None);
+        let is_asked = matches!(
+            pool.session_at(&view, &mut files, &provider, timeout),
+            Err(PoolError::Start(_))
+        );
+
+        assert!(is_stopped);
+        assert!(is_asked);
     }
 
     #[test]
