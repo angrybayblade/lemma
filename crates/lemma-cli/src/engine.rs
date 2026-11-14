@@ -111,6 +111,9 @@ pub(crate) struct Engine {
     /// Says whether a command is waiting for this engine: getting ready
     /// for a graph gives way to it.
     is_command_waiting: Option<CommandWaiting>,
+    /// How often and for how long this process got ready for graphs
+    /// through each workspace, for status: what being ready costs.
+    got_ready: HashMap<PathBuf, GotReady>,
     /// The workspace the graph being answered was traced through, if it
     /// was traced through one this process keeps.
     traced_through: Option<PathBuf>,
@@ -118,6 +121,17 @@ pub(crate) struct Engine {
     /// parses only what changed. Made when exports are first built: routes
     /// are kept on disk too, in a directory found then.
     kept_for_exports: Option<lemma_graph::exports::Kept>,
+}
+
+/// What getting ready for graphs through one workspace has taken.
+#[derive(Default)]
+struct GotReady {
+    /// How many times files changed and settled.
+    changes: u32,
+    /// How long getting ready took in all.
+    took: Duration,
+    /// How many times it stopped for a command.
+    gave_way: u32,
 }
 
 /// Says whether a command is waiting to be served.
@@ -222,6 +236,7 @@ impl Engine {
             graphs_kept_ready: 1,
             unprepared: HashMap::new(),
             is_command_waiting: None,
+            got_ready: HashMap::new(),
             traced_through: None,
             kept_for_exports: None,
         }
@@ -242,6 +257,7 @@ impl Engine {
             graphs_kept_ready: 1,
             unprepared: HashMap::new(),
             is_command_waiting: None,
+            got_ready: HashMap::new(),
             traced_through: None,
             kept_for_exports: None,
         }
@@ -259,6 +275,7 @@ impl Engine {
         self.traced_workspaces.clear();
         self.graph_asks.clear();
         self.unprepared.clear();
+        self.got_ready.clear();
     }
 
     /// Sets how many of the graphs last asked through a workspace are kept
@@ -310,6 +327,7 @@ impl Engine {
             // an earlier change.
             let asks = self.graph_asks.get(manifest).cloned().unwrap_or_default();
             self.unprepared.insert(manifest.clone(), asks.into());
+            self.got_ready.entry(manifest.clone()).or_default().changes += 1;
         }
         let mut manifests: Vec<PathBuf> = self.unprepared.keys().cloned().collect();
         manifests.sort();
@@ -370,7 +388,10 @@ impl Engine {
             "got ready for graphs through {} for {took:.0?}; {left} left",
             manifest.display()
         );
+        let got_ready = self.got_ready.entry(manifest.to_path_buf()).or_default();
+        got_ready.took += took;
         if !asks.is_empty() {
+            got_ready.gave_way += 1;
             self.unprepared.insert(manifest.to_path_buf(), asks);
         }
     }
@@ -1421,6 +1442,8 @@ impl Engine {
             .retain(|manifest, _| traced.contains_key(manifest));
         self.unprepared
             .retain(|manifest, _| traced.contains_key(manifest));
+        self.got_ready
+            .retain(|manifest, _| traced.contains_key(manifest));
         if !warms_up_on_activity {
             return;
         }
@@ -1541,6 +1564,15 @@ impl Engine {
                     .map(|ask| ask.args.target.symbol.as_str())
                     .collect();
                 let _ = writeln!(text, "  kept ready for: graph {}", symbols.join(", graph "));
+            }
+            if let Some(got_ready) = self.got_ready.get(*manifest) {
+                let _ = writeln!(
+                    text,
+                    "  got ready after {} changes, in {:.1} s in all; gave way to a command {} times",
+                    got_ready.changes,
+                    got_ready.took.as_secs_f64(),
+                    got_ready.gave_way
+                );
             }
             taken += traced.watches();
         }
