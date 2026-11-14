@@ -282,6 +282,8 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 
    **What it costs, and when it is let go.** After the same 33 asks the daemon held 188 MB where it held 761 MB before (it no longer reads megabyte documents on every ask), and 11,003 inotify watches where the index's own took 1,841: a watch per directory Git lists in every repository of the workspace. A workspace no graph has been traced through for the servers' `stop_after`, or whose description is gone, is let go with its watches (`Engine::maintain`), and `lemma daemon status` lists what is watched.
 
+   **Without a daemon (2026-11-14).** A trace has rounds: the inference, then each fetch of callers. In a process that does not stay, each round listed the repositories through Git and read the services' documents and the generated clients again, 0.3 s of a 1.5 s ask. One trace now reads through a `Warm` of its own, dropped with it (`trace_once`). With `--no-daemon`, three asks that cross repositories went from 1.5–1.65 s to 1.1–1.2 s and one from 0.92 s to 0.72 s; two that stay in one repository took 0.65 s before and after.
+
 **Later:**
 
 - Lookups that know the working copy.
