@@ -60,6 +60,30 @@ impl Warm {
         Arc::clone(&self.states)
     }
 
+    /// The state of the code in the working directory of the repository at
+    /// `repository`, asked of Git now and kept for whoever asks next:
+    /// Git's own account of whether a repository nobody watches changed.
+    /// `None` outside a Git repository, before its first commit, or when
+    /// Git fails.
+    pub fn working_state_now(&self, repository: &Path) -> Option<String> {
+        self.states.forget(repository);
+        self.states.working_state(repository).ok().flatten()
+    }
+
+    /// The files kept reads hold by name from the working directory of the
+    /// repository at `repository`, sorted: documents a description names
+    /// and files resolvers read. Git may ignore any of them, and then its
+    /// state does not say whether one changed.
+    pub fn files_read_by_name(&self, repository: &Path) -> Vec<String> {
+        let mut files = self.verify.documents_read(repository);
+        if let Some((reads, _)) = self.lock().as_ref() {
+            files.extend(reads.working_files(repository));
+        }
+        files.sort();
+        files.dedup();
+        files
+    }
+
     /// Forgets the state of the working directory of the repository at
     /// `repository` alone, after files no check reads changed there: what
     /// checks read of it stays, but a checker's evidence is kept by every

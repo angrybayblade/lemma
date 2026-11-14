@@ -801,6 +801,19 @@ impl Memo {
         });
     }
 
+    /// The documents read from the working directory of the repository at
+    /// `repository`, as the description names them.
+    pub(crate) fn documents_read(&self, repository: &Path) -> Vec<String> {
+        self.specs
+            .keys()
+            .filter(|(path, commit, other, _)| {
+                crate::warm::same_path(path, repository)
+                    && (commit.is_none() || matches!(other, Some(None)))
+            })
+            .map(|(_, _, _, file)| file.clone())
+            .collect()
+    }
+
     /// Whether the last run read `file` from the working directory of the
     /// repository at `repository`.
     pub(crate) fn has_read(&self, repository: &Path, file: &str) -> bool {

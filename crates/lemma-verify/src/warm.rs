@@ -70,6 +70,16 @@ impl Warm {
             .is_some_and(|memo| memo.has_read(repository, file))
     }
 
+    /// The documents the last run read from the working directory of the
+    /// repository at `repository`, as the description names them. Git may
+    /// ignore one, as it does a document a build writes.
+    pub fn documents_read(&self, repository: &Path) -> Vec<String> {
+        self.lock()
+            .as_ref()
+            .map(|memo| memo.documents_read(repository))
+            .unwrap_or_default()
+    }
+
     /// Gets the repository at `repository` ready for the next run, after
     /// `changed` changed: lists its working directory and parses the code
     /// among `changed` as the last run read it. Nothing is evaluated. How
