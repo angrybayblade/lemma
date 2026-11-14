@@ -294,6 +294,24 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 
    Not done: the watches are not shared. A workspace with sentry attached and graphs traced through it is watched twice, and a member's indexed directories are watched by its live index and by the trace. Rollout step 0's one watcher per daemon would end both.
 
+   **Ready before the ask (2026-11-14).** The first graph after an edit read what changed when asked: the edited repository's index and exports, an adapter's document, the traced system, and the language server's references when the edited file holds the asked symbol. All of it can be read as soon as the edit settles. The engine keeps the graph last asked through each traced workspace (`GraphAsk`: its arguments and where it was asked from), and a second timer in the daemon (`send_prepare_ticks`, every 0.25 s while a workspace is kept ready and every 2 s otherwise) has it look for changes that have settled (`TracedWorkspace::has_settled_changes`, by the rules sentry prepares by: 0.2 s after the last change or 2 s after the first, and not while Git holds the index lock). For each such workspace it does ahead what that graph would do if asked now (`Engine::prepare_graphs`), as far as `[graph] prepare` says: `index` brings the index up to date as the ask did, `graph` also answers the ask again with nothing shown, `off` does nothing. The default is `graph`.
+
+   It runs in the daemon's one loop, like every command, so nothing is read by two threads; a command that arrives meanwhile waits, and an ask for the same graph would have done the same work itself. An ask that arrives before the change settles reads what changed, and leaves nothing to prepare. Getting ready does not count as being asked: the workspace is let go, and no longer kept ready (after the servers' `pause_after`), by when a graph was last asked for. A repository checked with Git rather than watched is not prepared, since nothing reports its changes between asks.
+
+   This also closes the gap of the missing base document: a repository whose working directory is at its commit when it is prepared, as it is right after a commit, gets its adapter's document for that commit, which later edits are patched from. Before, someone who only asked for graphs, and first asked with files already edited, ran the adapter for every edit (3 s on the workspace measured).
+
+   Measured on the workspace of six repositories, the first graph after an edit, asked 6 s after it (median of six edits, each asked three or four times):
+
+   | `prepare` | The graph last asked | Another graph asked last |
+   | --- | --- | --- |
+   | `off` | 1.33 s | 1.25 s |
+   | `index` | 1.11 s | 1.14 s |
+   | `graph` | 0.08 s | 0.39 s |
+
+   `index` saves little, because most of an ask after an edit is reading the traced system again and, when the edited file holds the symbol, the language server's references (3.8 to 4.4 s for a TypeScript or Python symbol). `graph` has both ready for the graph it answered (0.05 and 0.13 s for those two), and for another graph the traced system and the index but not that symbol's references (3.0 to 3.5 s). That is why `graph` is the default, chosen by the user on these numbers on 2026-11-14: it is the one point with a large gain, and what it costs is work after every settled change (what the ask would have taken, 0.4 to 4.4 s here) during which other commands wait. Asked right after the edit, before it settles, a graph took 1.7 to 1.9 s at every setting. Every answer was the one `--no-daemon` gives, at `index` and `graph`, asked at once and after 6 s. A repeated graph took 55 to 59 ms as before, and the timer took 0.08 s of processor time a minute while a workspace was kept ready and nothing changed. A scratch repository whose adapter is a command showed the base document: after a commit with nothing asked, the adapter ran once more at `index` and not at `off`.
+
+   Not done: only the graph last asked is answered ahead, so an agent that asks about a different symbol after each edit gets the smaller gain; a command that arrives during a prepare waits rather than interrupting it.
+
 **Later:**
 
 - Lookups that know the working copy.

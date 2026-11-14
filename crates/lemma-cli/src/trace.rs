@@ -96,6 +96,25 @@ impl TracedWorkspace {
         self.watched.current()
     }
 
+    /// When a trace last went through it.
+    pub(crate) fn traced_at(&self) -> Instant {
+        self.last_traced
+    }
+
+    /// Sets when a trace last went through it: a trace nobody asked for,
+    /// run to be ready for the next, does not count as one.
+    pub(crate) fn set_traced_at(&mut self, at: Instant) {
+        self.last_traced = at;
+    }
+
+    /// Whether files changed, as reported so far, and have settled as of
+    /// `now` with nobody having asked since: what there is to get ready
+    /// for. Drops what is kept of what changed, as an ask would.
+    pub(crate) fn has_settled_changes(&mut self, now: Instant) -> bool {
+        self.watched.collect(false);
+        !self.watched.take_settled(now).is_empty()
+    }
+
     /// How long ago, at `now`, a trace last went through it.
     pub(crate) fn idle_for(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.last_traced)
@@ -376,6 +395,77 @@ mod tests {
         assert_eq!(still_read_at, read_at);
         assert_eq!(labels(&after), ["POST /v1/charges", "charge", "refund"]);
         assert_eq!(after, trace_once(&start).unwrap());
+    }
+
+    /// Waits, for a few seconds at most, until changes made to the
+    /// workspace are reported and count as settled: a watcher reports in
+    /// its own time, and only an ask waits for it.
+    fn settles(traced: &mut TracedWorkspace) -> bool {
+        let long_after = Instant::now() + Duration::from_secs(60);
+        (0..500).any(|_| {
+            std::thread::sleep(Duration::from_millis(10));
+            traced.has_settled_changes(long_after)
+        })
+    }
+
+    #[test]
+    fn a_change_nobody_asked_about_is_there_to_get_ready_for_once() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = shop(root.path());
+        let billing = root.path().join("billing");
+        let reached = handler();
+        let start = from_handler(&manifest, &billing, &reached);
+        let mut traced = TracedWorkspace::start(&manifest, None).unwrap();
+        traced.trace(&start).unwrap();
+
+        write(&root.path().join("web/src/refund.ts"), &caller("refund"));
+        let has_settled = settles(&mut traced);
+        let long_after = Instant::now() + Duration::from_secs(60);
+        let is_left = traced.has_settled_changes(long_after);
+        traced.begin_ask();
+        let after = traced.trace(&start).unwrap();
+
+        assert!(has_settled);
+        assert!(!is_left);
+        assert_eq!(labels(&after), ["POST /v1/charges", "charge", "refund"]);
+        assert_eq!(after, trace_once(&start).unwrap());
+    }
+
+    #[test]
+    fn a_commit_is_a_change_to_get_ready_for() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = shop(root.path());
+        let web = root.path().join("web");
+        let mut traced = TracedWorkspace::start(&manifest, None).unwrap();
+        write(&web.join("src/refund.ts"), &caller("refund"));
+        let has_settled_after_the_edit = settles(&mut traced);
+        // Whatever the edit still had to report is taken before the commit.
+        std::thread::sleep(Duration::from_millis(300));
+        traced.has_settled_changes(Instant::now() + Duration::from_secs(60));
+
+        git(&web, &["add", "."]);
+        git(&web, &["commit", "-q", "-m", "refunds"]);
+
+        assert!(has_settled_after_the_edit);
+        assert!(settles(&mut traced));
+    }
+
+    #[test]
+    fn a_change_an_ask_has_read_leaves_nothing_to_get_ready_for() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = shop(root.path());
+        let billing = root.path().join("billing");
+        let reached = handler();
+        let start = from_handler(&manifest, &billing, &reached);
+        let mut traced = TracedWorkspace::start(&manifest, None).unwrap();
+        traced.trace(&start).unwrap();
+
+        write(&root.path().join("web/src/refund.ts"), &caller("refund"));
+        traced.begin_ask();
+        traced.trace(&start).unwrap();
+        let long_after = Instant::now() + Duration::from_secs(60);
+
+        assert!(!traced.has_settled_changes(long_after));
     }
 
     #[test]
