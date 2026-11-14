@@ -31,6 +31,28 @@ pub(crate) struct Config {
     /// between them, where each directory takes one. `None` sets no limit;
     /// `Some(0)` watches nothing.
     pub graph_watches: Option<usize>,
+    /// How far the daemon gets ready for the next graph through a
+    /// workspace once its files change.
+    pub graph_prepare: Prepare,
+}
+
+/// How far the daemon gets ready for the next graph through a workspace
+/// once its files have changed and settled: a point between graphs that
+/// read what changed when asked and graphs that find it read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Prepare {
+    /// Not at all.
+    Off,
+    /// Brings the index up to date as the last graph asked did: the
+    /// changed files, the exports and the adapters' documents.
+    Index,
+    /// Also answers the last graph asked again, keeping what that reads:
+    /// the traced system, the callers fetched and the language servers'
+    /// answers. The default: it is the point where the next graph costs
+    /// what a repeated one does.
+    #[default]
+    Graph,
 }
 
 /// The share of the system's limit on watches that graphs may take unless
@@ -57,6 +79,7 @@ impl Default for Config {
             warms_up_on_activity: true,
             sentry_auto_attach: false,
             graph_watches: default_graph_watches(lemma_index::watch_limit()),
+            graph_prepare: Prepare::default(),
         }
     }
 }
@@ -85,6 +108,7 @@ struct ConfigFile {
 #[serde(deny_unknown_fields)]
 struct GraphSection {
     watches: Option<Watches>,
+    prepare: Option<Prepare>,
 }
 
 /// A number of watches, or `"none"` for no limit.
@@ -302,6 +326,7 @@ fn parse(text: &str) -> anyhow::Result<Config> {
             Some(watches) => parse_watches(watches)?,
             None => defaults.graph_watches,
         },
+        graph_prepare: file.graph.prepare.unwrap_or(defaults.graph_prepare),
     })
 }
 
@@ -380,6 +405,26 @@ mod tests {
         assert_eq!(watches("[graph]\nwatches = 5000\n").unwrap(), Some(5000));
         assert_eq!(watches("[graph]\nwatches = \"none\"\n").unwrap(), None);
         assert!(watches("[graph]\nwatches = \"many\"\n").is_err());
+    }
+
+    #[test]
+    fn how_far_graphs_are_prepared_is_one_of_three_points() {
+        let prepare = |text: &str| parse(text).map(|config| config.graph_prepare);
+
+        assert_eq!(prepare("").unwrap(), Prepare::Graph);
+        assert_eq!(
+            prepare("[graph]\nprepare = \"index\"\n").unwrap(),
+            Prepare::Index
+        );
+        assert_eq!(
+            prepare("[graph]\nprepare = \"off\"\n").unwrap(),
+            Prepare::Off
+        );
+        assert_eq!(
+            prepare("[graph]\nprepare = \"graph\"\n").unwrap(),
+            Prepare::Graph
+        );
+        assert!(prepare("[graph]\nprepare = \"everything\"\n").is_err());
     }
 
     #[test]

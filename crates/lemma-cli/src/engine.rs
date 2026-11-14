@@ -39,6 +39,7 @@ use crate::cli::{
     GraphDrawing, GraphSourceArg, LookupArgs, RefsArgs, SymbolLookupArgs, SymbolTarget,
     SymbolsArgs,
 };
+use crate::config::Prepare;
 use crate::output::{self, Format};
 use crate::selection;
 
@@ -56,6 +57,7 @@ pub(crate) const EXIT_NO_ANSWER: u8 = 3;
 const WARM_UP_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Where a command was started from.
+#[derive(Clone)]
 pub(crate) struct Invocation {
     /// The caller's working directory, for relative paths.
     pub cwd: PathBuf,
@@ -94,10 +96,28 @@ pub(crate) struct Engine {
     /// How many watches those workspaces may take between them, where each
     /// directory takes one. `None` sets no limit.
     graph_watches: Option<usize>,
+    /// The graph last asked through each of those workspaces, by
+    /// description: what to be ready for when its files change.
+    graph_asks: HashMap<PathBuf, GraphAsk>,
+    /// The workspace the graph being answered was traced through, if it
+    /// was traced through one this process keeps.
+    traced_through: Option<PathBuf>,
     /// What building exports read, so building them again after an edit
     /// parses only what changed. Made when exports are first built: routes
     /// are kept on disk too, in a directory found then.
     kept_for_exports: Option<lemma_graph::exports::Kept>,
+}
+
+/// A graph asked through a workspace this process keeps: enough to do
+/// again, unasked, what answering it did.
+#[derive(Clone)]
+struct GraphAsk {
+    invocation: Invocation,
+    db: Option<PathBuf>,
+    providers_file: Option<PathBuf>,
+    args: GraphArgs,
+    /// How the index was brought up to date for it.
+    indexing: Indexing,
 }
 
 /// What building exports keeps: in this process, and each file's routes
@@ -164,6 +184,8 @@ impl Engine {
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
             graph_watches: None,
+            graph_asks: HashMap::new(),
+            traced_through: None,
             kept_for_exports: None,
         }
     }
@@ -179,6 +201,8 @@ impl Engine {
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
             graph_watches: None,
+            graph_asks: HashMap::new(),
+            traced_through: None,
             kept_for_exports: None,
         }
     }
@@ -193,6 +217,89 @@ impl Engine {
         }
         self.graph_watches = watches;
         self.traced_workspaces.clear();
+        self.graph_asks.clear();
+    }
+
+    /// Gets ready for the next graph through each workspace whose files
+    /// changed and have settled, as far as `prepare` says, by doing ahead
+    /// what the graph last asked through it would do when asked again. A
+    /// workspace no graph was asked through within `asked_within` (`None`
+    /// for however long ago) is left alone. Whether any workspace is being
+    /// kept ready, so the caller knows to look again soon.
+    pub fn prepare_graphs(
+        &mut self,
+        prepare: Prepare,
+        asked_within: Option<Duration>,
+        now: Instant,
+    ) -> bool {
+        if prepare == Prepare::Off {
+            return false;
+        }
+        let mut is_any_kept_ready = false;
+        let mut changed = Vec::new();
+        for (manifest, traced) in &mut self.traced_workspaces {
+            let Some(traced) = traced else {
+                continue;
+            };
+            if asked_within.is_some_and(|within| traced.idle_for(now) >= within) {
+                continue;
+            }
+            is_any_kept_ready = true;
+            if traced.has_settled_changes(now) {
+                changed.push(manifest.clone());
+            }
+        }
+        for manifest in changed {
+            self.prepare_graph(&manifest, prepare);
+        }
+        is_any_kept_ready
+    }
+
+    /// Does ahead what the graph last asked through the workspace described
+    /// at `manifest` would do if asked now: bring the index up to date,
+    /// and, when `prepare` says so, answer it, for what that reads and
+    /// keeps. Nothing is shown, and a failure is left for the ask to meet.
+    fn prepare_graph(&mut self, manifest: &Path, prepare: Prepare) {
+        let Some(ask) = self.graph_asks.get(manifest).cloned() else {
+            return;
+        };
+        let traced_at = self.traced_at(manifest);
+        let started = Instant::now();
+        for traced in self.traced_workspaces.values_mut().flatten() {
+            traced.begin_ask();
+        }
+        let request = Request {
+            invocation: &ask.invocation,
+            db: ask.db.clone(),
+            providers_file: ask.providers_file.clone(),
+            format: Format::Text,
+        };
+        let mut prepared = self
+            .refresh_index(&request, ask.indexing, &mut io::sink())
+            .map_err(anyhow::Error::from);
+        if prepare == Prepare::Graph && prepared.is_ok() {
+            let answered = self.graph(&request, ask.args.clone(), &mut io::sink());
+            prepared = answered.map(drop);
+        }
+        // Getting ready is not being asked: the workspace is let go, and
+        // no longer kept ready, by when a graph was last asked for.
+        let traced = self.traced_workspaces.get_mut(manifest);
+        if let (Some(at), Some(traced)) = (traced_at, traced.and_then(Option::as_mut)) {
+            traced.set_traced_at(at);
+        }
+        let took = started.elapsed();
+        let manifest = manifest.display();
+        match prepared {
+            Ok(()) => log::debug!("ready for the next graph through {manifest} in {took:.0?}"),
+            Err(error) => log::debug!("not ready for a graph through {manifest}: {error:#}"),
+        }
+    }
+
+    /// When a graph was last traced through the workspace described at
+    /// `manifest`, if this process keeps it.
+    fn traced_at(&self, manifest: &Path) -> Option<Instant> {
+        let traced = self.traced_workspaces.get(manifest)?.as_ref()?;
+        Some(traced.traced_at())
     }
 
     /// Stops every language server.
@@ -246,21 +353,7 @@ impl Engine {
                 self.refresh_index(&request, refresh_for(&args.target), out)?;
                 self.signature(&request, args, out)
             }
-            Command::Graph(args) => {
-                // Callers read the exports only as `refs` does, for what
-                // links to the symbol; callees follow every export's links.
-                let indexing = match args.direction {
-                    GraphDirection::Callers => refresh_for(&args.target),
-                    _ => Indexing::Refresh,
-                };
-                // A drawing is piped to a renderer, which a warning would break.
-                if matches!(args.format, GraphDrawing::Tree) {
-                    self.refresh_index(&request, indexing, out)?;
-                } else {
-                    self.refresh_index(&request, indexing, &mut io::sink())?;
-                }
-                self.graph(&request, args, out)
-            }
+            Command::Graph(args) => self.asked_graph(&request, args, out),
             Command::Providers => self.providers(&request, out),
             Command::Daemon(DaemonArgs {
                 action: Some(DaemonAction::Lsp(args)),
@@ -270,6 +363,42 @@ impl Engine {
                 bail!("this command runs in its own process, not in the daemon")
             }
         }
+    }
+
+    /// Answers a graph asked for, after bringing the index up to date for
+    /// it, and, in a process that stays, keeps the ask by the workspace it
+    /// was traced through: what to be ready for once files change there.
+    fn asked_graph(
+        &mut self,
+        request: &Request<'_>,
+        args: GraphArgs,
+        out: &mut dyn Write,
+    ) -> anyhow::Result<u8> {
+        // Callers read the exports only as `refs` does, for what links to
+        // the symbol; callees follow every export's links.
+        let indexing = match args.direction {
+            GraphDirection::Callers => refresh_for(&args.target),
+            _ => Indexing::Refresh,
+        };
+        // A drawing is piped to a renderer, which a warning would break.
+        if matches!(args.format, GraphDrawing::Tree) {
+            self.refresh_index(request, indexing, out)?;
+        } else {
+            self.refresh_index(request, indexing, &mut io::sink())?;
+        }
+        let ask = self.warms_up_after_index.then(|| GraphAsk {
+            invocation: request.invocation.clone(),
+            db: request.db.clone(),
+            providers_file: request.providers_file.clone(),
+            args: args.clone(),
+            indexing,
+        });
+        self.traced_through = None;
+        let answered = self.graph(request, args, out);
+        if let (Some(ask), Some(manifest)) = (ask, self.traced_through.take()) {
+            self.graph_asks.insert(manifest, ask);
+        }
+        answered
     }
 
     /// Brings the index a query reads up to date with its files first, so a
@@ -947,6 +1076,7 @@ impl Engine {
             .map(crate::trace::TracedWorkspace::watches)
             .sum();
         let left = self.graph_watches.map(|most| most.saturating_sub(taken));
+        self.traced_through = Some(manifest.clone());
         self.traced_workspaces
             .entry(manifest)
             .or_insert_with_key(|manifest| {
@@ -1184,6 +1314,9 @@ impl Engine {
         self.forget_vanished();
         self.pool.maintain(policy, Instant::now());
         self.forget_untraced(policy, Instant::now());
+        let traced = &self.traced_workspaces;
+        self.graph_asks
+            .retain(|manifest, _| traced.contains_key(manifest));
         if !warms_up_on_activity {
             return;
         }
@@ -1297,6 +1430,10 @@ impl Engine {
             let _ = writeln!(text, "graphs traced through {}:", manifest.display());
             for line in traced.status_lines() {
                 let _ = writeln!(text, "  {line}");
+            }
+            if let Some(ask) = self.graph_asks.get(*manifest) {
+                let symbol = &ask.args.target.symbol;
+                let _ = writeln!(text, "  last asked: graph {symbol}");
             }
             taken += traced.watches();
         }
