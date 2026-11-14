@@ -26,6 +26,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 
 use lemma_query::UsesAnswer;
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use crate::anchors::UsesRequest;
 use crate::cli::Cli;
@@ -265,6 +266,9 @@ pub(crate) fn serve(
     let mut settings = Settings::load(config::config_path().as_deref())?;
     let mut engine = Engine::long_lived();
     engine.set_graph_watches(settings.config.graph_watches);
+    if let Ok(waited_on) = listener.try_clone() {
+        engine.give_way_when(Arc::new(move || has_caller_waiting(&waited_on)));
+    }
     let last_request = Arc::new(Mutex::new(Instant::now()));
     let idle_limit = idle_override.or(settings.config.idle_exit);
     if let Some(idle_limit) = idle_limit {
@@ -314,6 +318,18 @@ pub(crate) fn serve(
     // the moment `lemma daemon stop` waits for.
     std::mem::forget(lock);
     Ok(())
+}
+
+/// Whether a caller has connected to `listener` and not been accepted
+/// yet: a command, or one of the daemon's own timers, waiting for what is
+/// being served to finish. False when the system cannot say.
+fn has_caller_waiting(listener: &UnixListener) -> bool {
+    let mut waited_on = [PollFd::new(listener, PollFlags::IN)];
+    let at_once = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    matches!(poll(&mut waited_on, Some(&at_once)), Ok(ready) if ready > 0)
 }
 
 /// The daemon's warm runtimes, listening for checks beside `socket`. One

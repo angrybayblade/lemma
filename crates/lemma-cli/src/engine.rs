@@ -6,7 +6,7 @@
 //! the process environment, because the daemon serves commands started from
 //! many directories and shells.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
@@ -57,7 +57,7 @@ pub(crate) const EXIT_NO_ANSWER: u8 = 3;
 const WARM_UP_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Where a command was started from.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct Invocation {
     /// The caller's working directory, for relative paths.
     pub cwd: PathBuf,
@@ -96,9 +96,17 @@ pub(crate) struct Engine {
     /// How many watches those workspaces may take between them, where each
     /// directory takes one. `None` sets no limit.
     graph_watches: Option<usize>,
-    /// The graph last asked through each of those workspaces, by
-    /// description: what to be ready for when its files change.
-    graph_asks: HashMap<PathBuf, GraphAsk>,
+    /// The graphs last asked through each of those workspaces, by
+    /// description, the latest first and no more than
+    /// [`GRAPH_ASKS_KEPT`]: what to be ready for when its files change.
+    graph_asks: HashMap<PathBuf, Vec<GraphAsk>>,
+    /// The asks still to get ready for, by workspace, after its files
+    /// changed: all of them until each is done, and those left when a
+    /// command arrived meanwhile.
+    unprepared: HashMap<PathBuf, VecDeque<GraphAsk>>,
+    /// Says whether a command is waiting for this engine: getting ready
+    /// for a graph gives way to it.
+    is_command_waiting: Option<CommandWaiting>,
     /// The workspace the graph being answered was traced through, if it
     /// was traced through one this process keeps.
     traced_through: Option<PathBuf>,
@@ -107,6 +115,16 @@ pub(crate) struct Engine {
     /// are kept on disk too, in a directory found then.
     kept_for_exports: Option<lemma_graph::exports::Kept>,
 }
+
+/// How many of the graphs last asked through a workspace are kept, to be
+/// answered ahead once its files change. An edit retires every answer the
+/// edited repository's language servers gave, so each graph kept is one
+/// more that costs nothing when asked next, and one more to answer after
+/// every change.
+const GRAPH_ASKS_KEPT: usize = 4;
+
+/// Says whether a command is waiting to be served.
+pub(crate) type CommandWaiting = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// A graph asked through a workspace this process keeps: enough to do
 /// again, unasked, what answering it did.
@@ -118,6 +136,26 @@ struct GraphAsk {
     args: GraphArgs,
     /// How the index was brought up to date for it.
     indexing: Indexing,
+}
+
+impl GraphAsk {
+    /// Whether `other` asks the same graph from the same place: how its
+    /// index was brought up to date follows from that.
+    fn is_same_as(&self, other: &Self) -> bool {
+        self.invocation == other.invocation
+            && self.db == other.db
+            && self.providers_file == other.providers_file
+            && self.args == other.args
+    }
+}
+
+/// Puts `ask` first among `asks`, the graphs last asked, in place of the
+/// same graph asked earlier, and lets go of those past
+/// [`GRAPH_ASKS_KEPT`].
+fn keep_ask(asks: &mut Vec<GraphAsk>, ask: GraphAsk) {
+    asks.retain(|kept| !kept.is_same_as(&ask));
+    asks.insert(0, ask);
+    asks.truncate(GRAPH_ASKS_KEPT);
 }
 
 /// What building exports keeps: in this process, and each file's routes
@@ -185,6 +223,8 @@ impl Engine {
             traced_workspaces: HashMap::new(),
             graph_watches: None,
             graph_asks: HashMap::new(),
+            unprepared: HashMap::new(),
+            is_command_waiting: None,
             traced_through: None,
             kept_for_exports: None,
         }
@@ -202,6 +242,8 @@ impl Engine {
             traced_workspaces: HashMap::new(),
             graph_watches: None,
             graph_asks: HashMap::new(),
+            unprepared: HashMap::new(),
+            is_command_waiting: None,
             traced_through: None,
             kept_for_exports: None,
         }
@@ -218,14 +260,23 @@ impl Engine {
         self.graph_watches = watches;
         self.traced_workspaces.clear();
         self.graph_asks.clear();
+        self.unprepared.clear();
+    }
+
+    /// Has getting ready for graphs give way to commands: `is_waiting`
+    /// says whether one is waiting to be served.
+    pub fn give_way_when(&mut self, is_waiting: CommandWaiting) {
+        self.is_command_waiting = Some(is_waiting);
     }
 
     /// Gets ready for the next graph through each workspace whose files
     /// changed and have settled, as far as `prepare` says, by doing ahead
-    /// what the graph last asked through it would do when asked again. A
+    /// what the graphs last asked through it would do when asked again. A
     /// workspace no graph was asked through within `asked_within` (`None`
-    /// for however long ago) is left alone. Whether any workspace is being
-    /// kept ready, so the caller knows to look again soon.
+    /// for however long ago) is left alone. It stops when a command is
+    /// waiting, and goes on from there when next called. Whether any
+    /// workspace is being kept ready, so the caller knows to look again
+    /// soon.
     pub fn prepare_graphs(
         &mut self,
         prepare: Prepare,
@@ -236,7 +287,6 @@ impl Engine {
             return false;
         }
         let mut is_any_kept_ready = false;
-        let mut changed = Vec::new();
         for (manifest, traced) in &mut self.traced_workspaces {
             let Some(traced) = traced else {
                 continue;
@@ -245,22 +295,38 @@ impl Engine {
                 continue;
             }
             is_any_kept_ready = true;
-            if traced.has_settled_changes(now) {
-                changed.push(manifest.clone());
+            if !traced.has_settled_changes(now) {
+                continue;
             }
+            // Every ask kept is to be answered again, whatever was left of
+            // an earlier change.
+            let asks = self.graph_asks.get(manifest).cloned().unwrap_or_default();
+            self.unprepared.insert(manifest.clone(), asks.into());
         }
-        for manifest in changed {
+        let mut manifests: Vec<PathBuf> = self.unprepared.keys().cloned().collect();
+        manifests.sort();
+        for manifest in manifests {
             self.prepare_graph(&manifest, prepare);
         }
         is_any_kept_ready
     }
 
-    /// Does ahead what the graph last asked through the workspace described
-    /// at `manifest` would do if asked now: bring the index up to date,
-    /// and, when `prepare` says so, answer it, for what that reads and
-    /// keeps. Nothing is shown, and a failure is left for the ask to meet.
+    /// Whether a command is waiting for this engine.
+    fn is_command_waiting(&self) -> bool {
+        self.is_command_waiting
+            .as_ref()
+            .is_some_and(|is_waiting| is_waiting())
+    }
+
+    /// Does ahead what the graphs last asked through the workspace
+    /// described at `manifest`, and not yet got ready for, would do if
+    /// asked now, the latest first: bring the index up to date, and, when
+    /// `prepare` says so, answer them, for what that reads and keeps.
+    /// Nothing is shown, and a failure is left for the ask to meet. A
+    /// command that arrives stops it before the next language server is
+    /// asked, and the asks not done are kept for the next call.
     fn prepare_graph(&mut self, manifest: &Path, prepare: Prepare) {
-        let Some(ask) = self.graph_asks.get(manifest).cloned() else {
+        let Some(mut asks) = self.unprepared.remove(manifest) else {
             return;
         };
         let traced_at = self.traced_at(manifest);
@@ -268,19 +334,22 @@ impl Engine {
         for traced in self.traced_workspaces.values_mut().flatten() {
             traced.begin_ask();
         }
-        let request = Request {
-            invocation: &ask.invocation,
-            db: ask.db.clone(),
-            providers_file: ask.providers_file.clone(),
-            format: Format::Text,
-        };
-        let mut prepared = self
-            .refresh_index(&request, ask.indexing, &mut io::sink())
-            .map_err(anyhow::Error::from);
-        if prepare == Prepare::Graph && prepared.is_ok() {
-            let answered = self.graph(&request, ask.args.clone(), &mut io::sink());
-            prepared = answered.map(drop);
+        self.pool.interrupt_when(self.is_command_waiting.clone());
+        while let Some(ask) = asks.front() {
+            if self.is_command_waiting() {
+                break;
+            }
+            let prepared = self.prepare_ask(ask, prepare);
+            if self.is_command_waiting() {
+                break;
+            }
+            let symbol = &ask.args.target.symbol;
+            if let Err(error) = prepared {
+                log::debug!("not ready for graph {symbol}: {error:#}");
+            }
+            asks.pop_front();
         }
+        self.pool.interrupt_when(None);
         // Getting ready is not being asked: the workspace is let go, and
         // no longer kept ready, by when a graph was last asked for.
         let traced = self.traced_workspaces.get_mut(manifest);
@@ -288,11 +357,30 @@ impl Engine {
             traced.set_traced_at(at);
         }
         let took = started.elapsed();
-        let manifest = manifest.display();
-        match prepared {
-            Ok(()) => log::debug!("ready for the next graph through {manifest} in {took:.0?}"),
-            Err(error) => log::debug!("not ready for a graph through {manifest}: {error:#}"),
+        let left = asks.len();
+        log::debug!(
+            "got ready for graphs through {} for {took:.0?}; {left} left",
+            manifest.display()
+        );
+        if !asks.is_empty() {
+            self.unprepared.insert(manifest.to_path_buf(), asks);
         }
+    }
+
+    /// Does ahead what answering `ask` would do now, as far as `prepare`
+    /// says, showing nothing.
+    fn prepare_ask(&mut self, ask: &GraphAsk, prepare: Prepare) -> anyhow::Result<()> {
+        let request = Request {
+            invocation: &ask.invocation,
+            db: ask.db.clone(),
+            providers_file: ask.providers_file.clone(),
+            format: Format::Text,
+        };
+        self.refresh_index(&request, ask.indexing, &mut io::sink())?;
+        if prepare == Prepare::Graph {
+            self.graph(&request, ask.args.clone(), &mut io::sink())?;
+        }
+        Ok(())
     }
 
     /// When a graph was last traced through the workspace described at
@@ -396,7 +484,7 @@ impl Engine {
         self.traced_through = None;
         let answered = self.graph(request, args, out);
         if let (Some(ask), Some(manifest)) = (ask, self.traced_through.take()) {
-            self.graph_asks.insert(manifest, ask);
+            keep_ask(self.graph_asks.entry(manifest).or_default(), ask);
         }
         answered
     }
@@ -1033,6 +1121,11 @@ impl Engine {
             calls: args.across,
         };
         let root = PathBuf::from(&snapshot.snapshot.root);
+        // A graph answered ahead of being asked stops here too, before
+        // the system is read, when a command is waiting.
+        if self.pool.is_interrupted() {
+            return Err(lemma_query::QueryError::Interrupted.into());
+        }
         let is_trace_skipped = match &workspace {
             Some(workspace) => {
                 let tracing = self.tracing(workspace, &root);
@@ -1317,6 +1410,8 @@ impl Engine {
         let traced = &self.traced_workspaces;
         self.graph_asks
             .retain(|manifest, _| traced.contains_key(manifest));
+        self.unprepared
+            .retain(|manifest, _| traced.contains_key(manifest));
         if !warms_up_on_activity {
             return;
         }
@@ -1431,9 +1526,12 @@ impl Engine {
             for line in traced.status_lines() {
                 let _ = writeln!(text, "  {line}");
             }
-            if let Some(ask) = self.graph_asks.get(*manifest) {
-                let symbol = &ask.args.target.symbol;
-                let _ = writeln!(text, "  last asked: graph {symbol}");
+            if let Some(asks) = self.graph_asks.get(*manifest) {
+                let symbols: Vec<&str> = asks
+                    .iter()
+                    .map(|ask| ask.args.target.symbol.as_str())
+                    .collect();
+                let _ = writeln!(text, "  kept ready for: graph {}", symbols.join(", graph "));
             }
             taken += traced.watches();
         }
@@ -2827,6 +2925,64 @@ mod tests {
 
         assert_eq!(within, unlimited);
         assert_eq!(with_none_left, 0);
+    }
+
+    /// The graph of `symbol`, asked from `cwd`.
+    fn graph_ask(cwd: &Path, symbol: &str) -> GraphAsk {
+        let cli = <Cli as clap::Parser>::try_parse_from(["lemma", "graph", symbol]).unwrap();
+        let Command::Graph(args) = cli.command else {
+            panic!("not a graph");
+        };
+        GraphAsk {
+            invocation: Invocation {
+                cwd: cwd.to_path_buf(),
+                path_env: None,
+            },
+            db: None,
+            providers_file: None,
+            args,
+            indexing: Indexing::Refresh,
+        }
+    }
+
+    fn symbols_of(asks: &[GraphAsk]) -> Vec<&str> {
+        let symbols = asks.iter().map(|ask| ask.args.target.symbol.as_str());
+        symbols.collect()
+    }
+
+    #[test]
+    fn the_graphs_kept_are_the_last_asked_each_once_and_the_latest_first() {
+        let cwd = Path::new("/shop");
+        let mut asks = Vec::new();
+
+        for symbol in ["a", "b", "a", "c", "d", "e"] {
+            keep_ask(&mut asks, graph_ask(cwd, symbol));
+        }
+
+        assert_eq!(symbols_of(&asks), ["e", "d", "c", "a"]);
+    }
+
+    #[test]
+    fn getting_ready_gives_way_to_a_command_and_goes_on_after_it() {
+        let root = tempfile::tempdir().unwrap();
+        let manifest = workspace_of_one(root.path());
+        let mut engine = Engine::long_lived();
+        assert!(engine.traced_workspace(&manifest).is_some());
+        let asks = [graph_ask(root.path(), "a"), graph_ask(root.path(), "b")];
+        engine.unprepared.insert(manifest.clone(), asks.into());
+        let is_waiting = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let waiting = Arc::clone(&is_waiting);
+        engine.give_way_when(Arc::new(move || {
+            waiting.load(std::sync::atomic::Ordering::Relaxed)
+        }));
+
+        engine.prepare_graphs(Prepare::Graph, None, Instant::now());
+        let left_while_waited_on = engine.unprepared.get(&manifest).map_or(0, VecDeque::len);
+        is_waiting.store(false, std::sync::atomic::Ordering::Relaxed);
+        engine.prepare_graphs(Prepare::Graph, None, Instant::now());
+
+        assert_eq!(left_while_waited_on, 2);
+        assert!(!engine.unprepared.contains_key(&manifest));
     }
 
     #[test]

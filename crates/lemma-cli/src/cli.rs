@@ -339,7 +339,7 @@ pub(crate) struct RefsArgs {
     pub lookup: LookupArgs,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args, Clone, PartialEq)]
 pub(crate) struct GraphArgs {
     #[command(flatten)]
     pub target: SymbolTarget,
@@ -429,7 +429,7 @@ pub(crate) struct DefinitionArgs {
 }
 
 /// Which symbol a command is about.
-#[derive(Args, Clone)]
+#[derive(Args, Clone, PartialEq)]
 pub(crate) struct SymbolTarget {
     /// A name, a qualified name such as `Router.delete`, `#<id>` from
     /// `lemma symbols`, or an export's address from a description, such as
@@ -440,7 +440,7 @@ pub(crate) struct SymbolTarget {
 }
 
 /// How to ask a provider.
-#[derive(Args, Clone)]
+#[derive(Args, Clone, PartialEq)]
 pub(crate) struct LookupArgs {
     /// Ask the provider again instead of using a stored answer.
     #[arg(long)]
@@ -451,7 +451,7 @@ pub(crate) struct LookupArgs {
 }
 
 /// Narrows which symbols a name refers to.
-#[derive(Args, Clone)]
+#[derive(Args, Clone, PartialEq)]
 pub(crate) struct Filters {
     /// Only symbols of this kind, such as `function` or `method`.
     #[arg(long)]
