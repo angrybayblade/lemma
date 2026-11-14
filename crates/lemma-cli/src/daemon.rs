@@ -83,6 +83,9 @@ enum Request {
     },
     /// Apply the idle policy; sent by the daemon's own timer.
     Maintain,
+    /// Get ready for the next graph through the workspaces whose files
+    /// changed; sent by the daemon's own timer.
+    Prepare,
     /// Report the running language servers.
     Status,
     Shutdown,
@@ -129,6 +132,11 @@ enum Reply {
     NotServed,
     /// Sentry took the check; its answer follows on the same connection.
     Accepted,
+    /// The answer to a `Prepare` request: whether any workspace is being
+    /// kept ready for graphs, and so worth looking at again soon.
+    Prepared {
+        is_any_kept_ready: bool,
+    },
 }
 
 /// What a forwarded command printed and returned.
@@ -181,7 +189,8 @@ pub(crate) fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
         | Reply::Restart
         | Reply::Stopping
         | Reply::NotServed
-        | Reply::Accepted => None,
+        | Reply::Accepted
+        | Reply::Prepared { .. } => None,
     }
 }
 
@@ -204,7 +213,8 @@ pub(crate) fn uses(question: &UsesRequest) -> Option<UsesAnswer> {
         | Reply::Restart
         | Reply::Stopping
         | Reply::NotServed
-        | Reply::Accepted => None,
+        | Reply::Accepted
+        | Reply::Prepared { .. } => None,
     }
 }
 
@@ -221,7 +231,8 @@ pub(crate) fn status() -> anyhow::Result<Option<String>> {
         | Reply::Restart
         | Reply::Stopping
         | Reply::NotServed
-        | Reply::Accepted => Ok(None),
+        | Reply::Accepted
+        | Reply::Prepared { .. } => Ok(None),
     }
 }
 
@@ -260,6 +271,7 @@ pub(crate) fn serve(
         watch_for_idleness(socket.clone(), Arc::clone(&last_request), idle_limit);
     }
     send_maintenance_ticks(socket.clone());
+    send_prepare_ticks(socket.clone());
     let mut sentry: Option<Sentry> = None;
     let runtimes = start_runtimes(&socket);
 
@@ -626,6 +638,19 @@ fn reply_to(
             engine.maintain(&config.idle_policy, config.warms_up_on_activity);
             done(String::new())
         }
+        Request::Prepare => {
+            let config = &settings.config;
+            // A workspace is kept ready for as long as an idle language
+            // server is kept running: both are for work in progress.
+            let asked_within = config.idle_policy.pause_after;
+            Reply::Prepared {
+                is_any_kept_ready: engine.prepare_graphs(
+                    config.graph_prepare,
+                    asked_within,
+                    Instant::now(),
+                ),
+            }
+        }
         Request::Status => done(engine.status()),
         Request::Run { ref build, .. } | Request::Uses { ref build, .. }
             if *build != build_id() =>
@@ -723,6 +748,36 @@ fn send_maintenance_ticks(socket: PathBuf) {
                 return;
             }
             let _ = receive::<Reply>(&mut stream);
+        }
+    });
+}
+
+/// How often the daemon looks for changes to get ready for while a
+/// workspace is being kept ready for graphs, and how often it looks
+/// whether one is when none was.
+const PREPARE_INTERVAL: Duration = Duration::from_millis(250);
+const PREPARE_IDLE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Asks the daemon, by sending itself a request as the maintenance timer
+/// does, to get ready for the next graph through each workspace whose
+/// files changed: often while one is being kept ready, seldom otherwise.
+fn send_prepare_ticks(socket: PathBuf) {
+    thread::spawn(move || {
+        let mut interval = PREPARE_IDLE_INTERVAL;
+        loop {
+            thread::sleep(interval);
+            let Ok(mut stream) = UnixStream::connect(&socket) else {
+                return;
+            };
+            if send(&mut stream, &Request::Prepare).is_err() {
+                return;
+            }
+            interval = match receive::<Reply>(&mut stream) {
+                Ok(Reply::Prepared {
+                    is_any_kept_ready: true,
+                }) => PREPARE_INTERVAL,
+                _ => PREPARE_IDLE_INTERVAL,
+            };
         }
     });
 }
