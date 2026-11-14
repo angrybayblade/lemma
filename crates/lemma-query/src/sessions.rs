@@ -28,6 +28,11 @@ pub(crate) enum PoolError {
     Interrupted,
 }
 
+/// How long a pool that stays leaves a server that could not start
+/// before starting it again: long enough that one command's lookups try
+/// it once, short enough that fixing what was wrong shows within a minute.
+const START_AGAIN_AFTER: Duration = Duration::from_secs(60);
+
 /// Says whether lookups nobody is waiting for should stop.
 pub type Interrupt = lemma_providers::Interrupt;
 
@@ -48,6 +53,10 @@ pub struct SessionPool {
     warming: HashSet<SessionKey>,
     /// Warm-ups whose server failed to start, kept to report on first use.
     failed_warm_ups: HashMap<SessionKey, ProviderError>,
+    /// Servers that could not start for a lookup, with when and why: a
+    /// graph asks dozens of questions, and each would start the server
+    /// again only to fall back to the next one.
+    failed_starts: HashMap<SessionKey, (Instant, String)>,
     arrivals: Sender<Arrival>,
     arrivals_inbox: Receiver<Arrival>,
     /// Asked before a server is: see [`SessionPool::interrupt_when`].
@@ -124,6 +133,7 @@ impl SessionPool {
             is_long_lived,
             warming: HashSet::new(),
             failed_warm_ups: HashMap::new(),
+            failed_starts: HashMap::new(),
             arrivals,
             arrivals_inbox,
             interrupt: None,
@@ -349,6 +359,7 @@ impl SessionPool {
             .cloned()
             .collect();
         self.failed_warm_ups.retain(|key, _| key.root.exists());
+        self.failed_starts.retain(|key, _| key.root.exists());
         for key in vanished {
             self.stop(&key);
         }
@@ -432,6 +443,12 @@ impl SessionPool {
         if let Some(error) = self.failed_warm_ups.remove(&key) {
             return Err(PoolError::Start(error));
         }
+        // One started since, as `lemma daemon lsp start` may have, serves.
+        if !self.sessions.contains_key(&key)
+            && let Some(message) = self.failed_start(&key)
+        {
+            return Err(PoolError::Start(ProviderError::CouldNotStart { message }));
+        }
         // A paused server cannot read what sync sends it, so resume first.
         if let Some(pooled) = self.sessions.get_mut(&key) {
             pooled.wake();
@@ -457,7 +474,13 @@ impl SessionPool {
                     view.root.display()
                 );
                 let started = Instant::now();
-                let pooled = start(view, files, provider, request_timeout, self.is_long_lived)?;
+                let started_session =
+                    start(view, files, provider, request_timeout, self.is_long_lived);
+                if let Err(PoolError::Start(error)) = &started_session {
+                    let failed = (Instant::now(), crate::lookup::describe(error));
+                    self.failed_starts.insert(entry.key().clone(), failed);
+                }
+                let pooled = started_session?;
                 pooled.session.interrupt_when(self.interrupt.clone());
                 log::info!(
                     "{} started in {:.1}s",
@@ -467,6 +490,18 @@ impl SessionPool {
                 Ok(&mut entry.insert(pooled).session)
             }
         }
+    }
+
+    /// Why the server for `key` could not start, if it failed recently
+    /// enough not to be tried again: within [`START_AGAIN_AFTER`] in a
+    /// pool that stays, at any time in a pool for one lookup.
+    fn failed_start(&mut self, key: &SessionKey) -> Option<String> {
+        let (failed_at, message) = self.failed_starts.get(key)?;
+        if self.is_long_lived && failed_at.elapsed() >= START_AGAIN_AFTER {
+            self.failed_starts.remove(key);
+            return None;
+        }
+        Some(message.clone())
     }
 
     /// Stops and forgets the provider's session, so the next lookup starts a
@@ -785,6 +820,37 @@ mod tests {
         let chosen = representative_file(paths.into_iter());
 
         assert_eq!(chosen.as_deref(), Some("apps/api/src/one.ts"));
+    }
+
+    #[test]
+    fn a_server_that_could_not_start_is_not_started_again_at_once() {
+        let registry = lemma_providers::ProviderRegistry::builtin().unwrap();
+        let provider = InstalledProvider {
+            definition: registry.definitions()[0].clone(),
+            executable: PathBuf::from("/bin/server-that-is-not-there"),
+            search_path: None,
+        };
+        let view = RootView {
+            root: Path::new("/nowhere"),
+            fingerprint: "files",
+        };
+        let mut files = || Ok(FileHashes::new());
+        let mut pool = SessionPool::long_lived();
+        let timeout = Duration::from_secs(1);
+        let said = |started: Result<&mut ProviderSession, PoolError>| match started {
+            Err(PoolError::Start(error)) => {
+                let is_remembered = matches!(error, ProviderError::CouldNotStart { .. });
+                (is_remembered, crate::lookup::describe(&error))
+            }
+            _ => panic!("the server is not there"),
+        };
+
+        let first = said(pool.session_at(&view, &mut files, &provider, timeout));
+        let second = said(pool.session_at(&view, &mut files, &provider, timeout));
+
+        assert!(!first.0);
+        assert!(second.0);
+        assert_eq!(second.1, first.1);
     }
 
     #[test]
