@@ -47,6 +47,55 @@ pub struct Observed {
 /// watcher (inotify) has no recursive watch of its own.
 const WATCHES_EACH_DIRECTORY: bool = cfg!(any(target_os = "linux", target_os = "android"));
 
+/// How many directories this user's processes may watch at once, where the
+/// system sets such a limit (inotify's `fs.inotify.max_user_watches`): a
+/// watcher on a directory tree takes one for each directory. `None` where
+/// watching a tree takes a single watch, or the limit cannot be read.
+pub fn watch_limit() -> Option<usize> {
+    if !WATCHES_EACH_DIRECTORY {
+        return None;
+    }
+    let text = fs::read_to_string("/proc/sys/fs/inotify/max_user_watches").ok()?;
+    text.trim().parse().ok()
+}
+
+/// How many watches [`Watch::start_without`] would take for `root`: one
+/// for each directory it would watch, or none where watching a tree takes
+/// a single watch. For choosing what to watch within a number of watches
+/// before taking any.
+pub fn watches_needed(root: &Path, selection: &Selection, excluded: &[PathBuf]) -> usize {
+    if !WATCHES_EACH_DIRECTORY {
+        return 0;
+    }
+    let mut directories: HashSet<PathBuf> =
+        discover::directories_under(root, root, selection, excluded)
+            .into_iter()
+            .collect();
+    directories.extend(git_metadata_directories(root));
+    directories.len()
+}
+
+/// The directories of the repository at `root` whose files say where its
+/// branches and its index are: `.git` itself, and `.git/refs` with
+/// everything below it. None outside a repository's top directory.
+fn git_metadata_directories(root: &Path) -> Vec<PathBuf> {
+    let git = root.join(".git");
+    if !git.is_dir() {
+        return Vec::new();
+    }
+    let mut found = vec![git.clone()];
+    let mut pending = vec![git.join("refs")];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        let children = entries.filter_map(Result::ok).map(|entry| entry.path());
+        pending.extend(children.filter(|path| path.is_dir()));
+        found.push(directory);
+    }
+    found
+}
+
 /// A running watcher on one directory.
 pub struct Watch {
     watcher: RecommendedWatcher,
@@ -172,24 +221,10 @@ impl Watch {
     /// (`HEAD`, the index, packed refs) and the directories of loose refs.
     /// Best effort: a commit Lemma misses is asked of Git on a full walk.
     fn watch_git_metadata(&mut self) {
-        let git = self.root.join(".git");
-        if !git.is_dir() {
-            return;
-        }
-        let mut pending = vec![git.clone(), git.join("refs")];
-        while let Some(directory) = pending.pop() {
-            if self.add(&directory, RecursiveMode::NonRecursive).is_err() {
-                continue;
+        for directory in git_metadata_directories(&self.root) {
+            if self.add(&directory, RecursiveMode::NonRecursive).is_ok() {
+                self.watched.insert(directory);
             }
-            self.watched.insert(directory.clone());
-            if directory == git {
-                continue;
-            }
-            let Ok(entries) = fs::read_dir(&directory) else {
-                continue;
-            };
-            let children = entries.filter_map(Result::ok).map(|entry| entry.path());
-            pending.extend(children.filter(|path| path.is_dir()));
         }
     }
 

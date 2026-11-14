@@ -23,7 +23,7 @@ use lemma_store::{FactStore, NewSnapshot, SnapshotUpdate, Store, StoreError, Sto
 use lemma_syntax::{EXTRACTOR_VERSION, ExtractorPool, SyntaxError};
 
 pub use crate::selection::{InvalidPattern, RuleSpec, Selection};
-pub use crate::watch::{Observed, Watch, WatchReport};
+pub use crate::watch::{Observed, Watch, WatchReport, watch_limit, watches_needed};
 
 use crate::scan::ReusePolicy;
 use crate::scope::{DirtyScope, WalkScope};
