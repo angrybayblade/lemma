@@ -33,7 +33,18 @@ pub(crate) struct WatchedWorkspace {
     manifest: PathBuf,
     watched: Vec<Watched>,
     warm: Arc<lemma_graph::Warm>,
+    /// When Git may next be asked about the unwatched repositories with
+    /// nobody asking: see [`WatchedWorkspace::look_at_unwatched`].
+    looks_again_at: Option<Instant>,
 }
+
+/// How seldom Git is asked about unwatched repositories between asks: no
+/// more often than every [`LOOK_INTERVAL`], and with this many times what
+/// asking took between one look and the next, so looking takes a fiftieth
+/// of the time at most however slow the repositories are to ask about.
+const LOOK_SHARE: u32 = 50;
+/// The shortest time between two looks at the unwatched repositories.
+const LOOK_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Why a repository that would take more watches than are left is not
 /// watched.
@@ -72,6 +83,7 @@ impl WatchedWorkspace {
             manifest: manifest.to_path_buf(),
             watched: watch_repositories(manifest, watches)?,
             warm: Arc::default(),
+            looks_again_at: None,
         })
     }
 
@@ -128,10 +140,30 @@ impl WatchedWorkspace {
         self.collect_reported(confirming)
     }
 
+    /// Asks Git about the unwatched repositories with nobody asking, if it
+    /// has not for long enough as of `now` (see [`LOOK_SHARE`]); whether
+    /// one of them changed since Git was last asked, which is what there
+    /// is to get ready for there. A repository Git cannot speak for is not
+    /// one: it would count as changed at every look.
+    pub(crate) fn look_at_unwatched(&mut self, now: Instant) -> bool {
+        if self.watched.iter().all(|watched| watched.watch.is_some()) {
+            return false;
+        }
+        if self.looks_again_at.is_some_and(|at| now < at) {
+            return false;
+        }
+        let started = Instant::now();
+        let has_changed = self.ask_git();
+        let rest = (started.elapsed() * LOOK_SHARE).max(LOOK_INTERVAL);
+        self.looks_again_at = Some(now + rest);
+        has_changed
+    }
+
     /// Asks Git, about all unwatched repositories at once, whether each is
     /// as it was when last asked, and drops what is kept of those that are
-    /// not, or that Git cannot speak for.
-    fn ask_git(&mut self) {
+    /// not, or that Git cannot speak for. Whether one Git spoke for both
+    /// times is not as it was.
+    fn ask_git(&mut self) -> bool {
         let warm = &self.warm;
         let unwatched: Vec<&mut Watched> = self
             .watched
@@ -156,14 +188,17 @@ impl WatchedWorkspace {
                 .map(|asked| asked.join().unwrap_or(None))
                 .collect()
         });
+        let mut has_changed = false;
         for (watched, seen) in unwatched.into_iter().zip(seen) {
             if seen.is_some() && seen == watched.seen_as {
                 continue;
             }
+            has_changed |= seen.is_some() && watched.seen_as.is_some();
             warm.forget_working(&watched.root);
             watched.seen_as = seen;
             watched.generation += 1;
         }
+        has_changed
     }
 
     /// The watched repositories' part of [`WatchedWorkspace::collect`].
