@@ -34,7 +34,16 @@ pub(crate) struct Config {
     /// How far the daemon gets ready for the next graph through a
     /// workspace once its files change.
     pub graph_prepare: Prepare,
+    /// How many of the graphs last asked through a workspace are answered
+    /// ahead once its files change, where graphs are answered ahead.
+    pub graphs_kept_ready: usize,
 }
+
+/// How many of the graphs last asked are kept ready unless the user says.
+/// An edit retires every answer the edited repository's language servers
+/// gave, so each graph kept is one more that costs nothing when asked
+/// next, and one more to answer after every change.
+const GRAPHS_KEPT_READY: usize = 4;
 
 /// How far the daemon gets ready for the next graph through a workspace
 /// once its files have changed and settled: a point between graphs that
@@ -80,6 +89,7 @@ impl Default for Config {
             sentry_auto_attach: false,
             graph_watches: default_graph_watches(lemma_index::watch_limit()),
             graph_prepare: Prepare::default(),
+            graphs_kept_ready: GRAPHS_KEPT_READY,
         }
     }
 }
@@ -109,6 +119,7 @@ struct ConfigFile {
 struct GraphSection {
     watches: Option<Watches>,
     prepare: Option<Prepare>,
+    kept_ready: Option<usize>,
 }
 
 /// A number of watches, or `"none"` for no limit.
@@ -327,6 +338,7 @@ fn parse(text: &str) -> anyhow::Result<Config> {
             None => defaults.graph_watches,
         },
         graph_prepare: file.graph.prepare.unwrap_or(defaults.graph_prepare),
+        graphs_kept_ready: file.graph.kept_ready.unwrap_or(defaults.graphs_kept_ready),
     })
 }
 
@@ -405,6 +417,16 @@ mod tests {
         assert_eq!(watches("[graph]\nwatches = 5000\n").unwrap(), Some(5000));
         assert_eq!(watches("[graph]\nwatches = \"none\"\n").unwrap(), None);
         assert!(watches("[graph]\nwatches = \"many\"\n").is_err());
+    }
+
+    #[test]
+    fn four_graphs_are_kept_ready_unless_the_user_says() {
+        let kept_ready = |text: &str| parse(text).map(|config| config.graphs_kept_ready);
+
+        assert_eq!(kept_ready("").unwrap(), 4);
+        assert_eq!(kept_ready("[graph]\nkept_ready = 1\n").unwrap(), 1);
+        assert_eq!(kept_ready("[graph]\nkept_ready = 0\n").unwrap(), 0);
+        assert!(kept_ready("[graph]\nkept_ready = \"all\"\n").is_err());
     }
 
     #[test]

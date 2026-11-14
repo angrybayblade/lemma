@@ -98,8 +98,12 @@ pub(crate) struct Engine {
     graph_watches: Option<usize>,
     /// The graphs last asked through each of those workspaces, by
     /// description, the latest first and no more than
-    /// [`GRAPH_ASKS_KEPT`]: what to be ready for when its files change.
+    /// `graphs_kept_ready`: what to be ready for when its files change.
     graph_asks: HashMap<PathBuf, Vec<GraphAsk>>,
+    /// How many of those graphs are kept, and answered ahead where graphs
+    /// are: one is kept even at none, for what bringing its index up to
+    /// date gets ready.
+    graphs_kept_ready: usize,
     /// The asks still to get ready for, by workspace, after its files
     /// changed: all of them until each is done, and those left when a
     /// command arrived meanwhile.
@@ -115,13 +119,6 @@ pub(crate) struct Engine {
     /// are kept on disk too, in a directory found then.
     kept_for_exports: Option<lemma_graph::exports::Kept>,
 }
-
-/// How many of the graphs last asked through a workspace are kept, to be
-/// answered ahead once its files change. An edit retires every answer the
-/// edited repository's language servers gave, so each graph kept is one
-/// more that costs nothing when asked next, and one more to answer after
-/// every change.
-const GRAPH_ASKS_KEPT: usize = 4;
 
 /// Says whether a command is waiting to be served.
 pub(crate) type CommandWaiting = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -150,12 +147,11 @@ impl GraphAsk {
 }
 
 /// Puts `ask` first among `asks`, the graphs last asked, in place of the
-/// same graph asked earlier, and lets go of those past
-/// [`GRAPH_ASKS_KEPT`].
-fn keep_ask(asks: &mut Vec<GraphAsk>, ask: GraphAsk) {
+/// same graph asked earlier, and lets go of those past the `most` kept.
+fn keep_ask(asks: &mut Vec<GraphAsk>, ask: GraphAsk, most: usize) {
     asks.retain(|kept| !kept.is_same_as(&ask));
     asks.insert(0, ask);
-    asks.truncate(GRAPH_ASKS_KEPT);
+    asks.truncate(most);
 }
 
 /// What building exports keeps: in this process, and each file's routes
@@ -223,6 +219,7 @@ impl Engine {
             traced_workspaces: HashMap::new(),
             graph_watches: None,
             graph_asks: HashMap::new(),
+            graphs_kept_ready: 1,
             unprepared: HashMap::new(),
             is_command_waiting: None,
             traced_through: None,
@@ -242,6 +239,7 @@ impl Engine {
             traced_workspaces: HashMap::new(),
             graph_watches: None,
             graph_asks: HashMap::new(),
+            graphs_kept_ready: 1,
             unprepared: HashMap::new(),
             is_command_waiting: None,
             traced_through: None,
@@ -261,6 +259,16 @@ impl Engine {
         self.traced_workspaces.clear();
         self.graph_asks.clear();
         self.unprepared.clear();
+    }
+
+    /// Sets how many of the graphs last asked through a workspace are kept
+    /// and, where graphs are answered ahead, answered once its files
+    /// change. Fewer lets go of the oldest kept now.
+    pub fn set_graphs_kept_ready(&mut self, kept_ready: usize) {
+        self.graphs_kept_ready = kept_ready;
+        for asks in self.graph_asks.values_mut() {
+            asks.truncate(kept_ready.max(1));
+        }
     }
 
     /// Has getting ready for graphs give way to commands: `is_waiting`
@@ -377,7 +385,7 @@ impl Engine {
             format: Format::Text,
         };
         self.refresh_index(&request, ask.indexing, &mut io::sink())?;
-        if prepare == Prepare::Graph {
+        if prepare == Prepare::Graph && self.graphs_kept_ready > 0 {
             self.graph(&request, ask.args.clone(), &mut io::sink())?;
         }
         Ok(())
@@ -484,7 +492,8 @@ impl Engine {
         self.traced_through = None;
         let answered = self.graph(request, args, out);
         if let (Some(ask), Some(manifest)) = (ask, self.traced_through.take()) {
-            keep_ask(self.graph_asks.entry(manifest).or_default(), ask);
+            let most = self.graphs_kept_ready.max(1);
+            keep_ask(self.graph_asks.entry(manifest).or_default(), ask, most);
         }
         answered
     }
@@ -2956,7 +2965,7 @@ mod tests {
         let mut asks = Vec::new();
 
         for symbol in ["a", "b", "a", "c", "d", "e"] {
-            keep_ask(&mut asks, graph_ask(cwd, symbol));
+            keep_ask(&mut asks, graph_ask(cwd, symbol), 4);
         }
 
         assert_eq!(symbols_of(&asks), ["e", "d", "c", "a"]);

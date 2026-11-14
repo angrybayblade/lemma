@@ -266,6 +266,7 @@ pub(crate) fn serve(
     let mut settings = Settings::load(config::config_path().as_deref())?;
     let mut engine = Engine::long_lived();
     engine.set_graph_watches(settings.config.graph_watches);
+    engine.set_graphs_kept_ready(settings.config.graphs_kept_ready);
     if let Ok(waited_on) = listener.try_clone() {
         engine.give_way_when(Arc::new(move || has_caller_waiting(&waited_on)));
     }
@@ -651,6 +652,7 @@ fn reply_to(
             settings.reload_if_changed(config::config_path().as_deref());
             let config = &settings.config;
             engine.set_graph_watches(config.graph_watches);
+            engine.set_graphs_kept_ready(config.graphs_kept_ready);
             engine.maintain(&config.idle_policy, config.warms_up_on_activity);
             done(String::new())
         }
