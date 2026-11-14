@@ -296,7 +296,11 @@ fn log_answer_without_provider(question: &str, path: &str, from_cache: bool) {
 /// next one is tried.
 fn skipped_provider(definition: &ProviderDefinition, error: &ProviderError) -> String {
     let skipped = format!("{}: {}", definition.id, describe(error));
-    log::warn!("could not start {skipped}; trying the next server");
+    if matches!(error, ProviderError::CouldNotStart { .. }) {
+        log::debug!("{skipped} a moment ago; trying the next server");
+    } else {
+        log::warn!("could not start {skipped}; trying the next server");
+    }
     skipped
 }
 

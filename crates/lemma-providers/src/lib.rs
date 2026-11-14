@@ -61,6 +61,13 @@ pub enum ProviderError {
         #[source]
         source: lemma_lsp::LspError,
     },
+    /// The provider could not start a moment ago and was not started
+    /// again: what was wrong then, in the words it was reported in.
+    #[error("{message}")]
+    CouldNotStart {
+        /// The earlier failure and its causes.
+        message: String,
+    },
 }
 
 impl ProviderError {
