@@ -185,6 +185,12 @@ impl ProviderSession {
         self.client.resume()
     }
 
+    /// Has the server's requests stop waiting once `interrupt` says so:
+    /// see [`LspClient::interrupt_when`].
+    pub fn interrupt_when(&self, interrupt: Option<lemma_lsp::Interrupt>) {
+        self.client.interrupt_when(interrupt);
+    }
+
     /// The version the server reported, if any.
     pub fn provider_version(&self) -> Option<String> {
         self.client

@@ -11,6 +11,7 @@ mod session;
 
 use std::path::PathBuf;
 
+pub use lemma_lsp::Interrupt;
 pub use registry::{InstalledProvider, ProviderDefinition, ProviderRegistry};
 pub use semantic::{SemanticProvider, SourcePoint};
 pub use session::{FileChange, ProviderSession};
@@ -60,4 +61,18 @@ pub enum ProviderError {
         #[source]
         source: lemma_lsp::LspError,
     },
+}
+
+impl ProviderError {
+    /// Whether a request was given up on because the caller was told to
+    /// stop waiting, rather than because the server failed.
+    pub fn is_interrupted(&self) -> bool {
+        matches!(
+            self,
+            Self::Server {
+                source: lemma_lsp::LspError::Interrupted { .. },
+                ..
+            }
+        )
+    }
 }

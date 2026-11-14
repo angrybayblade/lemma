@@ -236,6 +236,7 @@ pub(crate) fn ask_providers<A: Ask>(
             Ok(session) => session,
             Err(PoolError::Store(error)) => return Err(error.into()),
             Err(PoolError::Files(source)) => return Err(QueryError::Files { source }),
+            Err(PoolError::Interrupted) => return Err(QueryError::Interrupted),
             Err(PoolError::Start(error)) => {
                 start_failures.push(skipped_provider(definition, &error));
                 continue;
@@ -258,6 +259,8 @@ pub(crate) fn ask_providers<A: Ask>(
                 asking.save(store, &key, provider_version.as_deref(), &answer)?;
                 Outcome::from(answer)
             }
+            // Told to stop waiting: the server is well, and still answering.
+            Err(error) if error.is_interrupted() => return Err(QueryError::Interrupted),
             Err(error) => {
                 // The server may be wedged or gone; start a fresh one next time.
                 pool.discard(snapshot, &provider);

@@ -23,7 +23,9 @@ pub use navigation::{
 pub use references::{ReferenceReport, SymbolReport, ask_references, find_references};
 pub use resolve::{SymbolResolution, SymbolSelector, resolve_symbol, symbols_in_file};
 pub use search::SymbolSearch;
-pub use sessions::{FilesError, IdlePolicy, ServerState, SessionPool, SessionStatus, WarmUp};
+pub use sessions::{
+    FilesError, IdlePolicy, Interrupt, ServerState, SessionPool, SessionStatus, WarmUp,
+};
 pub use signature::{SignatureReport, signature_of};
 pub use uses::{UnindexedRoot, UsesAnswer, find_uses};
 
@@ -49,4 +51,9 @@ pub enum QueryError {
         #[source]
         source: FilesError,
     },
+    /// The lookup was made ahead of anyone asking and was told to stop
+    /// (see [`SessionPool::interrupt_when`]); what it had been answered is
+    /// kept.
+    #[error("stopped for a command that is waiting")]
+    Interrupted,
 }

@@ -10,6 +10,7 @@ use std::time::Duration;
 use lemma_model::{Language, Location, LocationQuery, ProviderAnswer};
 use lemma_providers::{ProviderRegistry, SemanticProvider, SourcePoint};
 
+use crate::QueryError;
 use crate::lookup::{describe, identifier_at, same_family};
 use crate::sessions::{FileHashes, FilesError, PoolError, RootView, SessionPool};
 
@@ -84,6 +85,10 @@ pub fn find_uses(
             }
             Err(PoolError::Store(error)) => {
                 let message = describe(&error);
+                return UsesAnswer::Failed { message };
+            }
+            Err(PoolError::Interrupted) => {
+                let message = QueryError::Interrupted.to_string();
                 return UsesAnswer::Failed { message };
             }
         };
