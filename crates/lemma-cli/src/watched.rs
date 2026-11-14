@@ -716,7 +716,9 @@ mod tests {
             let repositories = watched.repositories().iter();
             repositories.map(Watched::status_line).collect()
         };
-        let fitting = WatchedWorkspace::start_within(&manifest, Some(needed)).unwrap();
+        // Where a watcher takes no watch per directory, none are needed,
+        // and allowing none at all would ask for no watcher.
+        let fitting = WatchedWorkspace::start_within(&manifest, Some(needed.max(1))).unwrap();
 
         assert_eq!(fitting.watches(), needed);
         assert!(
