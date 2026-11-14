@@ -27,9 +27,11 @@ pub(crate) struct Start<'a> {
 }
 
 /// The trace from `start`, reading everything it needs: what a process
-/// that does not stay, or cannot watch the workspace, does.
+/// that does not stay, or cannot watch the workspace, does. What one
+/// round of the trace reads is kept for its later rounds, and no longer.
 pub(crate) fn trace_once(start: &Start<'_>) -> Result<SystemTrace, GraphError> {
-    with_engine(None, |caches, engine| match engine {
+    let read: Arc<lemma_graph::Warm> = Arc::default();
+    with_engine(Some(&read), |caches, engine| match engine {
         Evaluating::Souffle(souffle) => trace_reading_all(start, caches, souffle),
         Evaluating::Reference(reference) => trace_reading_all(start, caches, reference),
     })
