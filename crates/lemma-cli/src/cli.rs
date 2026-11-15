@@ -117,7 +117,7 @@ pub(crate) enum Command {
     Daemon(DaemonArgs),
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent command-line flags"
@@ -185,6 +185,13 @@ pub(crate) struct CheckArgs {
     /// Show why each inferred finding holds.
     #[arg(long)]
     pub explain: bool,
+    /// Serve findings to an editor as Language Server Protocol diagnostics,
+    /// over standard input and output: each repository is checked as with
+    /// `--change` whenever its saved files change, and what the change
+    /// introduced is shown on the code it names, in any repository.
+    /// Experimental.
+    #[arg(long, conflicts_with_all = ["change", "base", "head", "since", "evaluation"])]
+    pub lsp: bool,
 }
 
 #[derive(Args)]
