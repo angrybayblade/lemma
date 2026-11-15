@@ -503,3 +503,88 @@ pub(crate) struct Filters {
     #[arg(skip)]
     pub prefers_implementable: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::Cli;
+
+    /// The command reference, which every command and option must be in.
+    const REFERENCE: &str = include_str!("../../../docs/commands.md");
+    /// The MCP tools `lemma mcp` serves, which the reference lists too.
+    const MCP_TOOLS: &str = include_str!("mcp_tools.json");
+
+    /// Each subcommand under `command` (named `path`) and each long option
+    /// of it and below that the reference does not mention.
+    fn unmentioned(command: &clap::Command, path: &str, missing: &mut Vec<String>) {
+        for argument in command.get_arguments() {
+            let Some(long) = argument.get_long().filter(|_| !argument.is_hide_set()) else {
+                continue;
+            };
+            let option = format!("--{long}");
+            if !["--help", "--version"].contains(&option.as_str()) && !REFERENCE.contains(&option) {
+                missing.push(format!("{path} {option}"));
+            }
+        }
+        for subcommand in command.get_subcommands() {
+            if subcommand.is_hide_set() || subcommand.get_name() == "help" {
+                continue;
+            }
+            let named = format!("{path} {}", subcommand.get_name());
+            if !REFERENCE.contains(&named) {
+                missing.push(named.clone());
+            }
+            unmentioned(subcommand, &named, missing);
+        }
+    }
+
+    #[test]
+    fn every_command_and_option_is_in_the_command_reference() {
+        let mut missing = Vec::new();
+
+        unmentioned(&Cli::command(), "lemma", &mut missing);
+
+        assert_eq!(
+            missing,
+            Vec::<String>::new(),
+            "missing from docs/commands.md"
+        );
+    }
+
+    /// The arguments of the MCP tool `tool` that its reference `row` does
+    /// not name.
+    fn unlisted_arguments<'a>(
+        tool: &'a serde_json::Value,
+        row: &'a str,
+    ) -> impl Iterator<Item = &'a String> + 'a {
+        tool["inputSchema"]["properties"]
+            .as_object()
+            .into_iter()
+            .flat_map(serde_json::Map::keys)
+            .filter(move |argument| !row.contains(&format!("`{argument}`")))
+    }
+
+    #[test]
+    fn every_mcp_tool_and_argument_is_in_the_command_reference() {
+        let tools: serde_json::Value = serde_json::from_str(MCP_TOOLS).unwrap();
+        let mut missing = Vec::new();
+
+        for tool in tools.as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap();
+            let row_start = format!("| `{name}` |");
+            let Some(row) = REFERENCE.lines().find(|line| line.starts_with(&row_start)) else {
+                missing.push(name.to_owned());
+                continue;
+            };
+            let unlisted = unlisted_arguments(tool, row);
+            missing.extend(unlisted.map(|argument| format!("{name}.{argument}")));
+        }
+
+        assert_eq!(
+            missing,
+            Vec::<String>::new(),
+            "missing from docs/commands.md"
+        );
+    }
+}
