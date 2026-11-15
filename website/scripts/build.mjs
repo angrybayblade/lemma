@@ -163,5 +163,5 @@ writeFileSync(path.join(output, 'index.html'), html);
 cpSync(path.join(root, 'assets'), path.join(output, 'assets'), {recursive: true});
 // TODO: bring the design system up to date, then track it and link its page from the site again.
 cpSync(path.join(root, 'design-system'), path.join(output, 'design-system'), {recursive: true});
-buildDocs({root,output});
+buildDocs({root,output,landing:html});
 console.log(`Built static site: ${output}`);

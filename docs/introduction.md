@@ -14,6 +14,8 @@ Lemma gives a coding agent what an IDE gives a person, without an editor open. I
 
 Agents reach all of it as MCP tools (`lemma mcp`), and the [agent skills](../skills/README.md) teach them when to use which.
 
+<!-- diagram: task -->
+
 ## What `lemma check` checks
 
 In a system of several repositories, one repository's change breaks code in another. A service makes a request field required, renames a response field, or removes an operation. Its own tests pass, the type checker sees only its own repository, and the client that breaks lives somewhere else. Lemma reads every repository of the system, the changed one at its commits before and after the change and the others where you pin them, and reports what the change breaks, where, and what depends on that code further up.

@@ -474,7 +474,7 @@ function createVerificationMeshes() {
 
 // The closing section's loop: the hero's four stages, told for one task,
 // "implement support for payment failure retries". Same material and timing as the hero.
-const TASK_SIZE=[640,594];
+export const TASK_SIZE=[640,594];
 const TASK_STAGES=[[130,212],[490,212],[490,398],[130,398]];
 const TASK_MARK=[310,305];
 
@@ -547,7 +547,7 @@ function taskReplay(mesh,[x,y],phase,isFixed) {
   });
 }
 
-function createTaskLoopMesh() {
+export function createTaskLoopMesh() {
   const mesh=createBuilder();
   taskContract(mesh,TASK_STAGES[0]);
   taskCallers(mesh,TASK_STAGES[1]);
@@ -570,7 +570,7 @@ function createTaskLoopMesh() {
   return vertices;
 }
 
-function createStoryEntries() {
+export function createStoryEntries() {
   const workflow=createWorkflowMeshes(),verification=createVerificationMeshes();
   return {
     hero:{mesh:createHeroMesh(),mode:0,size:[680,566],layer:'hero'},
@@ -583,7 +583,7 @@ function createStoryEntries() {
   };
 }
 
-function initStory(figure,entries) {
+export function initStory(figure,entries) {
   const canvas=figure.querySelector('.diagram-webgl');
   const artwork=figure.querySelector('.story-art');
   const layers=Object.fromEntries([...figure.querySelectorAll('[data-layer]')].map(layer=>[layer.dataset.layer,layer]));
@@ -773,7 +773,8 @@ function prepareChapterSwitch(figure,scene) {
   replay.inert=false;
 }
 
-function mountChapterDiagram(slot,source,entries) {
+// The docs mount these too, from a template of this page's figure (`src/docs/diagrams.js`).
+export function mountChapterDiagram(slot,source,entries) {
   const scene=slot.dataset.chapterScene;
   const figure=source.cloneNode(true);
   makeIdsUnique(figure,scene);

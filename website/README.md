@@ -10,6 +10,7 @@ The approved landing page and a design-system-compatible documentation site shar
 - `src/docs/docs.css` uses the existing design-system tokens and fonts. It is separate from landing-page styles. Reading surfaces stay clear, with muted code backgrounds and restrained copper navigation marks.
 - `src/docs/docs.js` handles local search, keyboard shortcuts, native mobile navigation, active page outlines, and exact code copying. Article content and links render without JavaScript.
 - `content/` is a generated source snapshot used to reproduce the Site build outside the Rust repository. Build from the root checkout to refresh it. `content/source.json` records the latest revision affecting the canonical documentation, so unrelated website commits do not change the generated source links.
+- A line `<!-- diagram: <scene> -->` in a docs page shows the landing page's figure for that scene there: `task`, `setup`, `impact`, `model`, `dropped` or `verification`. GitHub hides the comment; the build fails on a scene the landing page does not have. The build carries the landing's figures and captions as templates, `src/docs/diagrams.js` mounts them with the landing's WebGL code and a pause control, and `diagrams.css` is generated from `src/styles.css`: the rules for what the figures contain, while `docs.css` places them in an article.
 - `vendor/marked/` pins Marked 18.1.3 and its MIT license. The parser runs only at build time; the docs have no runtime dependency or external search service.
 
 Build and check from the Lemma repository:

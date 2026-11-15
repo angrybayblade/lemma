@@ -134,6 +134,8 @@ $ lemma check
 0 errors, 0 warnings, 0 informational
 ```
 
+<!-- diagram: setup -->
+
 ## 4. Break the contract
 
 Make billing require `currency` and stop returning `receipt_url`. Replace `billing/openapi.json` with:
@@ -186,6 +188,8 @@ warning #web:web:src/charge.ts::charge calls POST /v1/charges and names `receipt
 ```
 
 Lemma read billing's document at both commits and found what changed: a newly required field and a removed response field. It read web's code and found one call to that operation, the "1 inferred" in the first line, from `charge` in `src/charge.ts`. Each finding names the requirement that found it, in brackets, and says whether the change introduced it.
+
+<!-- diagram: impact -->
 
 The error fails the check: the command exits with 4. Gate merges on that exit code. At level `check` a newly required field is an error and a removed field a warning, because code that reads a field may cope without it.
 
