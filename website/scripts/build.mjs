@@ -137,24 +137,29 @@ const agentTabs = agents.map((agent, index) => `<button type="button" role="tab"
 const agentPanels = agents.map((agent, index) => `<div role="tabpanel" id="agent-panel-${agent.id}" aria-labelledby="agent-tab-${agent.id}"${index === 0 ? '' : ' hidden'}>${renderAgentSteps(agent)}</div>`).join('');
 html = html.replace('<!-- SETUP_AGENT_TABS -->', `<div class="example-switch setup-agents" role="tablist" aria-label="Coding agent">${agentTabs}</div>`);
 html = html.replace('<!-- SETUP_AGENT_PANELS -->', agentPanels);
-// What the hero's button copies, for a person to paste into their coding agent. It hands off to the
-// lemma-onboarding skill, so keep the install step in line with skills/lemma-onboarding/SKILL.md.
-const agentPrompt = `Help me set up Lemma (https://lemma.systems) in my codebase.
+// What the hero's button copies, for a person to paste into their coding agent. It describes Lemma
+// by building it up: each step has the agent do something on the person's own code, then says what
+// that shows, one step at a time. Step 4 hands off to the lemma-onboarding skill, so keep the install
+// step and the instruction line in line with skills/lemma-onboarding/SKILL.md.
+const agentPrompt = `Set up Lemma (https://lemma.systems) in this codebase and walk me through it on our own code. Do one step, show me the result and what it shows, then wait for me to say go on. Lemma is pre-release, so expect some misses: https://lemma.systems/docs/pre-release/ lists what it does not do yet.
 
-Lemma gives coding agents contract checks, cross-repo impact analysis and behavior simulations for connected systems. It reads code through language servers and answers where things are used. Each repository gets a short \`mod.lm\` file naming its services, Lemma infers the calls between them from OpenAPI documents and code, and \`lemma check\` reports what a change breaks in the other repositories. It is pre-release: https://lemma.systems/docs/pre-release/ lists what it does not do yet.
+Ask me three times: before installing anything, to confirm which repositories make up the system, and before writing to them (a \`mod.lm\`, the throwaway edit, the stop gate or the agent instructions). Do not commit or push.
 
-Work in this order:
-
-1. In two or three sentences, tell me what Lemma does and what you are about to install. Wait for my go-ahead.
-2. Install the \`lemma\` and \`lm\` binaries into ~/.local/bin and the agent skills into ~/.claude/skills:
+1. Install. Run:
 
    curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | LEMMA_SKILLS=1 sh
 
-   If you load skills from somewhere else, set LEMMA_SKILLS_DIR to that directory. Make sure ~/.local/bin is on PATH.
-3. Run \`lemma --version\` and \`lemma providers\`, and tell me what they report.
-4. Read the lemma-onboarding skill and offer to start. If I agree, follow it one step at a time.
+   Make sure ~/.local/bin is on PATH. If you load skills from somewhere other than ~/.claude/skills, set LEMMA_SKILLS_DIR. Then run \`lemma providers\`, install the language servers this codebase needs, and add \`lemma mcp\` as an MCP server for yourself. A background daemon runs those servers and watches the code: what an IDE knows, without an editor open.
 
-Ask before anything that changes my machine or repositories: installing language servers, writing a \`mod.lm\`, editing \`.gitignore\` or agent instructions, adding the MCP server, or touching CI. Ask me which repositories make up the system rather than guessing. Do not commit or push unless I say so.`;
+2. Find code. Pick a function with a common name and put Lemma's references next to grep's. Lemma's come from the language server, so they skip other symbols with the same name and mentions in comments and strings, and follow imports and aliases. Point out what grep got wrong.
+
+3. Time it. Run \`time lemma graph <function>\` twice on a central function and show me its callers and callees, each with file:line, and both measured times. The first run may start the servers; the second is the warm path, fast enough to use on every step.
+
+4. Catch a break. Describe the system with the lemma-onboarding skill: a short \`mod.lm\` per repository saying what it offers and what it calls. Then make a throwaway edit that would break a caller, run \`lemma check --change <repository>\`, show me the report, and undo the edit. With several repositories, break a caller in another one; with one, break a caller across an HTTP call or a generated client. Either way, the compiler cannot see that break. The check reads only what the change reaches, so it takes seconds and fits in the loop.
+
+5. Gate the work. Run \`lemma check --change <repository>\` as if you were finishing: the stop gate runs this when an agent tries to finish, and sends it back if its change introduced errors. Behaviors (beta) add checks that run the real code. Turn the gate on with the lemma-verify skill; it may only apply from the next session.
+
+6. Sum up, in two or three sentences, what this means for me on long tasks, and for a team whose services and repositories depend on each other. Then add this line to the instructions file this project already uses (CLAUDE.md, AGENTS.md or similar; create one only if there is none): "Lemma is your IDE here: use it for symbols, references, callers and implementations, and text search for strings and configuration. Run \`lemma check --change <repository>\` before calling a change done."`;
 html = html.replace('<!-- AGENT_PROMPT -->', escape(agentPrompt).replaceAll('\n', '&#10;'));
 for (const [marker, file] of [['HERO_ART','hero.svg'],['WORKFLOW_ART','workflow.svg'],['VERIFY_ART','verify.svg'],['DROPPED_ART','dropped.svg'],['TASK_LOOP_ART','task-loop.svg']]) {
   html = html.replace(`<!-- ${marker} -->`, readFileSync(path.join(root, 'src', file), 'utf8'));
