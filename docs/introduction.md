@@ -1,14 +1,22 @@
 # Introduction
 
-Lemma checks the contracts between your services before a change merges, and answers questions about code for the people and agents changing it.
+Lemma gives a coding agent what an IDE gives a person, without an editor open. It finds code through language servers, shows how code connects, and catches what a change breaks in the code that depends on it, including code in other repositories. Answers come fast enough to ask on every step of a task, not once at the end.
 
-## The problem
+- **On your own,** your agent stays precise and trustworthy on long tasks: it looks code up instead of guessing from text search, and checks its work before it calls the work done.
+- **In a team,** services, repositories and teams move fast without breaking each other: every change is checked against the code that depends on it, wherever that code lives.
 
-In a system of several repositories, one repository's change breaks code in another. A service makes a request field required, renames a response field, or removes an operation. Its own tests pass, the type checker sees only its own repository, and the client that breaks lives somewhere else. The break shows up in staging, or in production.
+## What an agent does with it
 
-Lemma reads every repository of the system, the changed one at its commits before and after the change and the others where you pin them, and reports what the change breaks, where, and what depends on that code further up.
+1. **Find code.** `lemma refs`, `lemma definition` and `lemma implementations` answer from the language server, so they skip other symbols with the same name and mentions in comments and strings, and follow imports and aliases. A cached answer takes 1 to 3 ms and a symbol's first lookup tens of milliseconds ([performance](performance.md)).
+2. **Trace it.** `lemma graph <symbol>` shows what calls a function and what it calls, each with its file and line, across the repositories of a workspace.
+3. **Catch a break.** `lemma check --change <repository>` reports what a change breaks in the code that depends on it: a response field a client still reads, a parameter now required that a caller never sends, an operation that no longer exists. Those breaks cross HTTP calls and generated clients, where the compiler cannot see them. A check reads only the code the change can reach, so it fits in the loop.
+4. **Gate the work.** A stop gate runs the check when the agent tries to finish, and sends it back if its change introduced errors (the [`lemma-verify`](../skills/lemma-verify/SKILL.md) skill). [Behaviors](tutorials/4-behaviors.md) (beta) add checks that run the real code.
 
-## What Lemma checks
+Agents reach all of it as MCP tools (`lemma mcp`), and the [agent skills](../skills/README.md) teach them when to use which.
+
+## What `lemma check` checks
+
+In a system of several repositories, one repository's change breaks code in another. A service makes a request field required, renames a response field, or removes an operation. Its own tests pass, the type checker sees only its own repository, and the client that breaks lives somewhere else. Lemma reads every repository of the system, the changed one at its commits before and after the change and the others where you pin them, and reports what the change breaks, where, and what depends on that code further up.
 
 - **Calls found in code.** Lemma reads the services' OpenAPI documents and the code of the clients that call them, and reports a call the change breaks: an operation that no longer exists, a parameter or request field now required that the client never sends, a response field the client reads that is gone. Describing which repositories serve and call what is all it needs.
 - **Links you declare.** A link names an operation that calls and the operation it calls. Lemma checks that both still exist, that their code anchors still resolve, and that the caller's types and the provider's schemas still agree, in both directions.
@@ -50,7 +58,7 @@ Modules are typed. Lemma checks them before anything runs and reports a misspell
 | Command | For |
 | --- | --- |
 | `lm` | Writing modules: `lm check` checks them, `lm fmt` formats them, and `lm lsp` serves them to editors. |
-| `lemma` | Checking systems: `lemma check` checks a workspace and a change, and `lemma verify` checks that a description still matches the code. It also navigates code with language servers (`lemma refs`, `lemma definition` and more) and serves agents over MCP. |
+| `lemma` | Working on code: `lemma refs`, `lemma definition`, `lemma graph` and more find code with language servers; `lemma check` checks a change against the code that depends on it, and `lemma verify` checks that a description still matches the code. `lemma mcp` serves all of it to agents. |
 
 ## Terms
 
@@ -66,7 +74,9 @@ Modules are typed. Lemma checks them before anything runs and reports a misspell
 
 ## Next steps
 
+- [Getting started](getting-started.md): install Lemma, connect your agent, and look up your first references, in about five minutes.
 - [Quickstart](quickstart.md): two repositories, a breaking change, and Lemma catching it, in about ten minutes.
+- [Onboarding](onboarding.md): set Lemma up for a team's repositories, from code navigation to checks in CI.
 - [Tutorials](tutorials/README.md): links, your own requirements, allowances, behaviors, and editor setup.
 - Reference: [the `.lm` language](language.md), [commands](commands.md), [the standard library](standard-library.md), and [spec 13](../.specs/13-lm-grammar.md) for the design.
 

@@ -1,6 +1,6 @@
 # Quickstart
 
-Describe two repositories, break the contract between them, and run `lemma check` to catch the break. Allow about ten minutes.
+Catch a break the compiler cannot see: describe two repositories, change one so that it breaks the other, and run `lemma check`. This is the check an agent runs before it calls a change done. Allow about ten minutes.
 
 Prerequisites: Git, and Lemma [installed](getting-started.md#1-install). Verify that both commands print a version:
 

@@ -1,8 +1,10 @@
 # Lemma
 
-Lemma checks the contracts between your services before a change merges: it reads every repository of a system at the right commits and reports what a change breaks, where, and what depends on that code. It also answers questions about code (where a symbol is used or defined, what implements it) through language servers, for TypeScript, Python, Go and Rust, and serves both to agents over MCP.
+Lemma gives a coding agent what an IDE gives a person, without an editor open. It finds code through language servers (where a symbol is used or defined, what implements it, what calls what) for TypeScript, Python, Go and Rust, and catches what a change breaks in the code that depends on it, across repositories and HTTP calls the compiler cannot see. Answers come fast enough to ask on every step, and agents reach them over MCP.
 
-**Start here:** [Introduction](docs/introduction.md) · [Quickstart](docs/quickstart.md) · [Tutorials](docs/tutorials/README.md)
+On your own, that keeps your agent precise and trustworthy on long tasks. In a team, it lets services, repositories and teams move fast without breaking each other.
+
+**Start here:** [Introduction](docs/introduction.md) · [Getting started](docs/getting-started.md) · [Quickstart](docs/quickstart.md) · [Tutorials](docs/tutorials/README.md)
 
 Lemma is in release candidates; see the [pre-release checklist](docs/pre-release.md) for what is ready and what is not.
 
