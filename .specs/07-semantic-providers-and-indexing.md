@@ -47,6 +47,8 @@ Use Tree-sitter for:
 
 Tree-sitter does not independently establish type identity, runtime dispatch, full import resolution, or complete call graphs. Parsed annotations are not inferred types. Pattern recognition is not evidence of a resolved service dependency.
 
+**What a caller is defined inside (2026-11-15).** A use inside a nested function belongs to that function, the innermost definition around it. A caller graph adds the function or value that definition is written inside as a user of it, without a step of depth: what a function is written around is part of it. It is read from the file's symbols, with nothing asked. A type is not added for its members, which are not uses of one another. Without this a walk to depth 2 that met a nested function stopped one caller short. Of 109 sampled graphs in a workspace of six repositories, 8 changed: together they gained 581 nodes and lost 39, the 39 in one graph that gained 411.
+
 Initially store extracted records and source spans rather than entire syntax trees. Retrieve snippets from source after confirming the content hash. Trees may be retained in memory for active editing without becoming the durable storage contract.
 
 ## Semantic provider layer
