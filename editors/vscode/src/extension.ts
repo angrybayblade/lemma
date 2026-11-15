@@ -2,7 +2,7 @@
 // TextMate grammar in syntaxes/; everything else about them comes from the
 // language server that `lm lsp` runs over stdio.
 //
-// With `lemma.checkOnChange.enabled`, a second server, `lemma check --lsp`,
+// With `lemma.checkOnChange.enabled`, a second server, `lemma lsp`,
 // checks each repository of the workspace as its saved files change and
 // publishes what the change breaks as diagnostics on any file, in any
 // repository. It is experimental and off by default, since it runs checks
@@ -80,7 +80,7 @@ function checkServer(): ServerDescription {
     name: 'Lemma Check',
     binary,
     setting: 'lemmaPath',
-    server: { command: binary, args: ['check', '--lsp'] },
+    server: { command: binary, args: ['lsp'] },
     client: {
       // Diagnostics arrive for any file, open or not; the server reads
       // files from disk and needs no document from the editor.

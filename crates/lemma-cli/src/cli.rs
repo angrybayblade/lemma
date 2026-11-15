@@ -101,6 +101,15 @@ pub(crate) enum Command {
     /// Run it from the project directory; tool calls go through the
     /// daemon like any other command.
     Mcp,
+    /// Show an editor what saved changes break, in every repository of the
+    /// workspace, as Language Server Protocol diagnostics over stdin and
+    /// stdout. Experimental.
+    ///
+    /// Each repository is watched; when its saved files change, it is
+    /// checked as `lemma check --change` would, and each finding the change
+    /// introduced is shown on the line of code it names, in whichever
+    /// repository that is. `lm lsp` serves `.lm` modules instead.
+    Lsp(LanguageServerArgs),
     /// Check that a description still matches the code: its configuration
     /// and its links, at one snapshot. Exits 4 if a finding is an error.
     Verify(VerifyArgs),
@@ -117,7 +126,7 @@ pub(crate) enum Command {
     Daemon(DaemonArgs),
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent command-line flags"
@@ -185,13 +194,27 @@ pub(crate) struct CheckArgs {
     /// Show why each inferred finding holds.
     #[arg(long)]
     pub explain: bool,
-    /// Serve findings to an editor as Language Server Protocol diagnostics,
-    /// over standard input and output: each repository is checked as with
-    /// `--change` whenever its saved files change, and what the change
-    /// introduced is shown on the code it names, in any repository.
-    /// Experimental.
-    #[arg(long, conflicts_with_all = ["change", "base", "head", "since", "evaluation"])]
-    pub lsp: bool,
+}
+
+#[derive(Args)]
+pub(crate) struct LanguageServerArgs {
+    /// The workspace's entry module. Default: the editor's `manifest`
+    /// initialization option, or else the nearest `mod.lm` above the
+    /// editor's folder that declares a workspace.
+    pub manifest: Option<PathBuf>,
+    /// `audit` reports differences as warnings; `check` fails on them and
+    /// on violated behaviors; `strict` also fails on behaviors whose
+    /// outcome is unknown. Overrides the graph's level.
+    #[arg(long, value_parser = ["audit", "check", "strict"])]
+    pub level: Option<String>,
+    /// Run no checkers: behaviors use the evidence already kept, and are
+    /// unknown, or stale when their inputs changed, without it.
+    #[arg(long)]
+    pub no_run: bool,
+    /// The rule engine for inferred links: `souffle` or `reference`.
+    /// Default: Soufflé if it is installed, otherwise the reference engine.
+    #[arg(long)]
+    pub engine: Option<String>,
 }
 
 #[derive(Args)]

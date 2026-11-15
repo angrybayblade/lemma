@@ -247,7 +247,6 @@ Checks a change against every repository the entry module composes: declared lin
 | `--all` | List informational findings too, not just their count. |
 | `--select <name>` | Run this check of a parent `mod.lm` instead of its `check main`; or, when no check has the name, just the behavior or requirement it names, by address (`checks::retries`, `lemma.http.operation_without_consumer`) or by name alone when only one thing has it. A behavior that takes arguments runs only from a check. From a description with no program, it names one requirement of the built-in HTTP checks and lists only its findings. |
 | `--since <token>` | With the daemon's sentry attached to the workspace: list only the findings that came and went since the answer the token names (the `sentry token:` line under an earlier answer with the same options), then the counts. A token sentry no longer keeps gets the whole report, saying so. |
-| `--lsp` | Experimental. Serve findings to an editor as Language Server Protocol diagnostics, over standard input and output. Every repository of the workspace is watched; when a repository's saved files change, it is checked as with `--change`, and each finding the change introduced is shown on the line of code it names, in whichever repository that is, with a summary on the changed files. The workspace is the description given, or the nearest `mod.lm` above the editor's folder that declares one. The VS Code extension runs it with `lemma.checkOnChange.enabled`. |
 | `--no-run` | Run no checkers: behaviors use the evidence already kept in Lemma's cache. A case whose inputs changed since is `stale`; one never run is `unknown`. |
 | `--run-base` | With `--change`, also run checkers at the base, so a case that ended violated before the change and holds after it is reported as fixed: the behavior's line ends with `N fixed by this change`, and each fixed case follows with how it ended at the base, its operands' values there included. Without it, the base uses kept evidence only and a fix is reported only when that evidence was kept. Doubles the checkers' runs when nothing is kept. |
 | `--engine <name>` | The rule engine for inferred links: `souffle` or `reference`. Default: Soufflé if installed. |
@@ -260,6 +259,20 @@ Prints each behavior as `behavior <identity>: <outcome> (<held> of <cases> cases
 An operation a link still names that the change removed is a `link` finding (introduced, exit 4), and the other repositories are still checked. The command reports a change that deletes a document a service exports, or leaves an `include` matching nothing (`document_missing`, `include_matches_nothing`).
 
 Exits with 0 when no finding is an error, 4 when one is, 5 when it finished but a `git(...)` repository was not cloned, and 1 on failure.
+
+## `lemma lsp [mod.lm]`
+
+Experimental. A language server for editors that shows what saved changes break, in every repository of the workspace. It speaks the Language Server Protocol over stdin and stdout; an editor starts it, and `lm lsp` serves `.lm` modules instead.
+
+Every repository of the workspace is watched. When a repository's saved files change, it is checked as `lemma check --change` would, and each finding the change introduced becomes a diagnostic on the line of code it names, in whichever repository that is. Each file the working directory changed gets a summary linking to those lines. Findings that were there before the change are not shown. It reads files from disk, so it follows saves, by an editor or anything else, not typing.
+
+The workspace is the module given, or else the editor's `manifest` initialization option, or else the nearest `mod.lm` above the editor's folder that declares a workspace. The VS Code extension runs it with `lemma.checkOnChange.enabled`.
+
+| Option | Meaning |
+| --- | --- |
+| `--level <level>` | `audit`, `check` or `strict`, as for `lemma check`. |
+| `--no-run` | Run no checkers, as for `lemma check`. |
+| `--engine <name>` | `souffle` or `reference`, as for `lemma check`. |
 
 ## `lemma daemon`
 

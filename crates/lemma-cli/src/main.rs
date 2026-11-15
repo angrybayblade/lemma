@@ -58,11 +58,9 @@ fn main() -> ExitCode {
     }
     // Before asking about cloning: an editor's server reads its messages
     // from standard input, and never clones.
-    if let Command::Check(args) = &cli.command {
-        if args.lsp {
-            log::info!("serving check diagnostics over LSP on stdin and stdout");
-            return check_server::run(args);
-        }
+    if let Command::Lsp(args) = &cli.command {
+        log::info!("serving check diagnostics over LSP on stdin and stdout");
+        return check_server::run(args);
     }
     let declined_cloning = cloning::ask_before_cloning(&mut cli);
     if let Command::Verify(args) = &cli.command {

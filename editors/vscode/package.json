@@ -50,12 +50,12 @@
           "type": "string",
           "default": "lemma",
           "scope": "machine-overridable",
-          "markdownDescription": "The `lemma` binary. With `lemma.checkOnChange.enabled`, the extension runs `lemma check --lsp` and talks to it over stdio."
+          "markdownDescription": "The `lemma` binary. With `lemma.checkOnChange.enabled`, the extension runs `lemma lsp` and talks to it over stdio."
         },
         "lemma.checkOnChange.enabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Experimental. Runs `lemma check --lsp`, which watches every repository of the workspace and, when a repository's saved files change, checks it as `lemma check --change` would. What the change breaks is shown as problems on the code it breaks, in any repository, and summarized on the changed files."
+          "markdownDescription": "Experimental. Runs `lemma lsp`, which watches every repository of the workspace and, when a repository's saved files change, checks it as `lemma check --change` would. What the change breaks is shown as problems on the code it breaks, in any repository, and summarized on the changed files."
         },
         "lemma.checkOnChange.manifest": {
           "type": "string",
