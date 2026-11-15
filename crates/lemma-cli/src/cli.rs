@@ -196,7 +196,7 @@ pub(crate) struct CheckArgs {
     pub explain: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub(crate) struct LanguageServerArgs {
     /// The workspace's entry module. Default: the editor's `manifest`
     /// initialization option, or else the nearest `mod.lm` above the

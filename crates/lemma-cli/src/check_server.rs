@@ -2,28 +2,27 @@
 //! repository's uncommitted changes break, in that repository and in the
 //! others of its workspace.
 //!
-//! It watches the workspace's repositories as sentry does
-//! (`.specs/14-sentry.md`) and keeps what it read between checks. When a
-//! repository's changes settle, it checks that repository as `lemma check
-//! --change` would and publishes the findings the change introduced: each
-//! on the line of the code it names, whichever repository that is in, and
-//! a summary on each file the change touched that links to all of them.
-//! See [`diagnostics`].
+//! Checks come from the daemon's sentry, shared with `lemma check` and MCP,
+//! or from the server's own watched workspace when sentry cannot serve it
+//! (see [`source`]). When a repository's changes settle, it is checked as
+//! `lemma check --change` would, and the findings the change introduced are
+//! published: each on the line of the code it names, whichever repository
+//! that is in, and a summary on the changed line each comes from. See
+//! [`diagnostics`].
 //!
 //! Checks read files from disk, so it follows saved edits, made by an
 //! editor or by anything else, not unsaved ones.
 
 mod diagnostics;
+mod source;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use lemma_graph::Report;
 use lemma_lsp::lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, InitializeParams,
     InitializeResult, Location, MessageType, NumberOrString, Position, PositionEncodingKind,
@@ -32,10 +31,10 @@ use lemma_lsp::lsp_types::{
 use lemma_lsp::{PositionEncoding, line_text, read_message, write_message};
 use serde_json::{Value, json};
 
-use crate::check::Served;
-use crate::cli::{CheckArgs, LanguageServerArgs};
-use crate::watched::{BATCH_INTERVAL, WatchedWorkspace};
-use diagnostics::{ChangedFile, ChangedLine, FileDiagnostics, LineDiagnostic};
+use crate::cli::LanguageServerArgs;
+use crate::watched::BATCH_INTERVAL;
+use diagnostics::{ChangedFile, ChangedLine, CheckedChange, FileDiagnostics, LineDiagnostic};
+use source::{CheckFailure, Source};
 
 /// A repository's or workspace's root module.
 const ROOT_MODULE: &str = "mod.lm";
@@ -101,8 +100,10 @@ struct Server<'a> {
     reports_progress: bool,
     /// The workspace's description, absolute, once known.
     manifest: Option<PathBuf>,
-    workspace: Option<WatchedWorkspace>,
-    /// Each watched repository's directory, as a check names it.
+    source: Option<Box<dyn Source>>,
+    /// Whether to ask sentry for checks: until it goes away.
+    asks_sentry: bool,
+    /// Each repository's directory, as a check names it.
     repositories: Vec<PathBuf>,
     /// Repositories, by the directory a check names them by, whose changes
     /// settled and wait for a check.
@@ -127,7 +128,8 @@ impl<'a> Server<'a> {
             encoding: PositionEncoding::Utf16,
             reports_progress: false,
             manifest: None,
-            workspace: None,
+            source: None,
+            asks_sentry: true,
             repositories: Vec::new(),
             pending: BTreeSet::new(),
             at_start: VecDeque::new(),
@@ -157,6 +159,7 @@ impl<'a> Server<'a> {
                 return Ok(());
             }
             self.collect_settled();
+            self.replace_lost_source(output)?;
             self.check_pending(messages, output)?;
         }
     }
@@ -226,9 +229,9 @@ impl<'a> Server<'a> {
         serde_json::to_value(result).unwrap_or(Value::Null)
     }
 
-    /// Watches the workspace's repositories, and checks at once each that
-    /// has uncommitted changes, so an editor opened on work in progress
-    /// shows what it breaks.
+    /// Opens a source of checks for the workspace, and checks at once each
+    /// repository that has uncommitted changes, so an editor opened on work
+    /// in progress shows what it breaks.
     fn start_watching(&mut self, output: &mut impl Write) -> io::Result<()> {
         let Some(manifest) = self.manifest.clone() else {
             return show(
@@ -238,20 +241,18 @@ impl<'a> Server<'a> {
                  Set lemma.checkManifest to the workspace's mod.lm.",
             );
         };
-        let mut workspace = match WatchedWorkspace::start(&manifest) {
-            Ok(workspace) => workspace,
+        let opened = crate::watched::repository_directories(&manifest).and_then(|repositories| {
+            let source = source::open(self.args, &manifest, &repositories, self.asks_sentry)?;
+            Ok((repositories, source))
+        });
+        let (repositories, source) = match opened {
+            Ok(opened) => opened,
             Err(error) => {
                 let message = format!("Lemma: cannot watch {}: {error:#}", manifest.display());
                 return show(output, MessageType::ERROR, &message);
             }
         };
-        // Takes what the watchers report as they start, which is no edit.
-        workspace.collect(true);
-        self.repositories = workspace
-            .repositories()
-            .iter()
-            .map(|watched| watched.spelled().to_path_buf())
-            .collect();
+        self.repositories = repositories;
         self.at_start = self
             .repositories
             .iter()
@@ -259,37 +260,37 @@ impl<'a> Server<'a> {
             .cloned()
             .collect();
         let message = format!(
-            "watching {} repositories of {}",
+            "watching {} repositories of {}; {}",
             self.repositories.len(),
-            manifest.display()
+            manifest.display(),
+            source.describe()
         );
-        self.workspace = Some(workspace);
+        self.source = Some(source);
         log(output, MessageType::INFO, &message)
     }
 
-    /// Notes each repository whose changes have settled, leaving out
-    /// changes to the repositories inside it, which are watched on their
-    /// own: a workspace's directory holds its repositories.
+    /// Replaces a source that can no longer serve with this process's own.
+    fn replace_lost_source(&mut self, output: &mut impl Write) -> io::Result<()> {
+        let is_lost = self.source.as_ref().is_some_and(|source| source.is_lost());
+        if !is_lost {
+            return Ok(());
+        }
+        self.source = None;
+        self.asks_sentry = false;
+        log(
+            output,
+            MessageType::WARNING,
+            "sentry went away; checking in this process",
+        )?;
+        self.start_watching(output)
+    }
+
+    /// Notes each repository whose own changes have settled.
     fn collect_settled(&mut self) {
-        let Some(workspace) = self.workspace.as_mut() else {
+        let Some(source) = self.source.as_mut() else {
             return;
         };
-        workspace.collect(false);
-        for settled in workspace.take_settled(Instant::now()) {
-            let own = own_paths(&settled.repository, &settled.paths, &self.repositories);
-            log::debug!(
-                "changes settled in {}: {own:?} of {} paths{}",
-                settled.repository.display(),
-                settled.paths.len(),
-                if settled.is_bulk { ", in bulk" } else { "" }
-            );
-            // Nothing of its own changed: only Git's files, which a check's
-            // own `git status` rewrites, or files of a repository inside it.
-            if own.is_empty() && !settled.is_bulk {
-                continue;
-            }
-            self.pending.insert(settled.repository);
-        }
+        self.pending.extend(source.settled());
     }
 
     /// Checks each repository whose changes settled, publishing after each;
@@ -318,31 +319,32 @@ impl<'a> Server<'a> {
         messages: &Receiver<io::Result<Value>>,
         output: &mut impl Write,
     ) -> io::Result<()> {
-        let (Some(manifest), Some(workspace)) = (self.manifest.clone(), self.workspace.as_mut())
-        else {
+        let Some(manifest) = self.manifest.clone() else {
             return Ok(());
         };
-        // Drops what is kept of every change reported so far. This does not
-        // wait for the watchers' barrier, as an ask to sentry does, since
-        // that would forget which paths of other repositories changed: a
-        // change reported after this check gets a check of its own.
-        workspace.collect(false);
-        let warm = Arc::clone(workspace.warm());
         let name = change_name(repository, &manifest);
         let progress = self.begin_progress(&name, messages, output)?;
         let started = Instant::now();
-        let report = check_change(self.args, &manifest, &name, warm);
-        let seconds = started.elapsed().as_secs_f64();
+        let checked = match self.source.as_mut() {
+            Some(source) => source.check(&name),
+            None => return Ok(()),
+        };
+        let took = started.elapsed();
         if let Some(token) = progress {
             end_progress(output, &token)?;
         }
-        let report = match report {
-            Ok(report) => report,
-            Err(error) => {
-                let message = format!("could not check {name}: {error:#}");
+        let checked = match checked {
+            Ok(checked) => checked,
+            Err(CheckFailure::NotServed) => {
+                self.pending.insert(repository.to_path_buf());
+                return self.replace_lost_source(output);
+            }
+            Err(CheckFailure::Failed(error)) => {
+                let message = format!("could not check {name}: {error}");
                 return log(output, MessageType::ERROR, &message);
             }
         };
+        let report = checked.change;
         let changed = changed_lines(
             repository,
             base_of(&report, repository),
@@ -353,7 +355,7 @@ impl<'a> Server<'a> {
             .iter()
             .filter(|finding| finding.introduced)
             .count();
-        let message = format!("checked {name} in {seconds:.1}s: {introduced} findings introduced");
+        let message = checked_message(&name, took, checked.evaluation, introduced);
         self.diagnosed
             .insert(name, diagnostics::diagnose(&report, &changed));
         log(output, MessageType::INFO, &message)
@@ -458,40 +460,6 @@ impl<'a> Server<'a> {
     }
 }
 
-/// Checks the change to the repository named `name` as `lemma check
-/// --change` would, reading through `warm`.
-fn check_change(
-    args: &LanguageServerArgs,
-    manifest: &Path,
-    name: &str,
-    warm: Arc<lemma_graph::Warm>,
-) -> anyhow::Result<Report> {
-    let asked = CheckArgs {
-        manifest: manifest.to_path_buf(),
-        // An editor's server has no one to ask, and cloning behind its back
-        // would surprise.
-        no_clone: true,
-        change: Some(name.to_owned()),
-        base: None,
-        head: None,
-        level: args.level.clone(),
-        no_run: args.no_run,
-        run_base: false,
-        select: None,
-        since: None,
-        all: false,
-        engine: args.engine.clone(),
-        evaluation: None,
-        explain: false,
-    };
-    let served = Served {
-        manifest,
-        warm,
-        environment: Arc::new(std::env::vars().collect()),
-    };
-    crate::check::evaluate(&asked, Some(&served))
-}
-
 /// The description to check: the one given on the command line, the
 /// editor's `manifest` initialization option, or the nearest `mod.lm` above
 /// the editor's first folder that declares a workspace (else the nearest
@@ -580,9 +548,28 @@ fn own_paths<'p>(repository: &Path, paths: &'p [String], repositories: &[PathBuf
         .collect()
 }
 
+/// The log line for a check: how long it took, and of that how long the
+/// source spent evaluating, where it says, so the rest is the cost of
+/// asking.
+fn checked_message(
+    name: &str,
+    took: Duration,
+    evaluation: Option<Duration>,
+    introduced: usize,
+) -> String {
+    let seconds = took.as_secs_f64();
+    let message = format!("checked {name} in {seconds:.3}s: {introduced} findings introduced");
+    let Some(evaluation) = evaluation else {
+        return message;
+    };
+    let asking_ms = took.saturating_sub(evaluation).as_secs_f64() * 1000.0;
+    let evaluated = evaluation.as_secs_f64();
+    format!("{message} (sentry evaluated in {evaluated:.3}s; asking took {asking_ms:.1} ms)")
+}
+
 /// The commit the check compared the repository in `directory` against,
 /// as its report names it.
-fn base_of<'r>(report: &'r Report, directory: &Path) -> Option<&'r str> {
+fn base_of<'r>(report: &'r CheckedChange, directory: &Path) -> Option<&'r str> {
     let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let wanted = canonical(directory);
     report
