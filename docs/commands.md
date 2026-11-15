@@ -108,7 +108,7 @@ Each definition shows its location and, when it is an indexed symbol, its qualif
 
 ## `lemma implementations <symbol>`
 
-Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters work as for `refs`, and so do `--refresh` and `--timeout-secs`. When a name is ambiguous, only symbols that can have implementations count (interfaces, classes, structs, enums, type aliases and methods), so a field named after its type (`store Store`) does not make `Store` ambiguous. Implementations in the repository are listed before those in libraries.
+Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters (`--kind`, `--language`, `--path`) work as for `refs`, and so do `--refresh` and `--timeout-secs`. When a name is ambiguous, only symbols that can have implementations count (interfaces, classes, structs, enums, type aliases and methods), so a field named after its type (`store Store`) does not make `Store` ambiguous. Implementations in the repository are listed before those in libraries.
 
 Lemma indexes interface methods as symbols qualified by their interface (`Shape.area`), so `<symbol>` names them directly. Support varies by server: gopls, rust-analyzer and the TypeScript servers answer; pyright and ty say they do not support it (`does not support implementation lookup`), which is not the same as finding none.
 
@@ -119,7 +119,7 @@ Shows a symbol's declaration and what its language server says about it. These c
 - The **declaration** is the definition's header as written, without its body, such as `def delete(self, id: str) -> None:`. It comes from the index and needs no server. It is left out if the file changed since it was indexed.
 - The **description** is the server's hover text, usually Markdown: the signature with inferred types, and the documentation comment. It is display text; Lemma does not parse it into types.
 
-It exits with 0 if either part was found, and 3 if neither was.
+`<symbol>` and its filters (`--kind`, `--language`, `--path`) work as for `refs`, and so do `--refresh` and `--timeout-secs`, which apply to the description. It exits with 0 if either part was found, and 3 if neither was.
 
 ## `lemma graph <symbol>`
 
@@ -148,6 +148,7 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | `--only <kinds>` | Only symbols of these kinds besides the symbol itself, comma-separated: `--only function,method` shows the calls without the fields, types and constants a body uses. The top level of a file always counts as a caller. |
 | `--workspace <mod.lm>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations. See below. |
 | `--across <calls>` | Across a workspace, how many calls from other code to follow: `1` (the default) stops at the code calling the operations the handlers serve; each more goes on through that code to its own operations and their callers. |
+| `--kind`, `--language`, `--path` | Narrow an ambiguous `<symbol>`, as for `lemma refs`. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
 
 References from a file's top-level code appear as the file; imports are left out. A function defined inside another is a caller under its own name, and what it is defined inside comes next without counting as a use further away. A symbol implementing an export that a graph of `Link` links to another operation uses that operation, which appears by address (`linked operation`). The graph lists questions the server could not answer, such as a stale file or a missing server, as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
@@ -384,7 +385,7 @@ clone = "ask"              # "ask", "always" or "never"
 `.lm` modules have their own command, `lm`, installed beside `lemma`. It checks and formats modules and serves them to editors; `lemma check` and `lemma verify` use what they declare. Every `lm` command runs in its own process, without Lemma's daemon or index.
 
 ```text
-lm [--json] [-l <level>] <command>
+lm [--json] [--logging <level>] <command>
 ```
 
 See [The `.lm` language](language.md).

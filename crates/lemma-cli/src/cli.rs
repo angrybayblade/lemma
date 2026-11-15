@@ -515,15 +515,31 @@ mod tests {
     /// The MCP tools `lemma mcp` serves, which the reference lists too.
     const MCP_TOOLS: &str = include_str!("mcp_tools.json");
 
-    /// Each subcommand under `command` (named `path`) and each long option
-    /// of it and below that the reference does not mention.
-    fn unmentioned(command: &clap::Command, path: &str, missing: &mut Vec<String>) {
+    /// The reference's section under the heading that starts with
+    /// `heading`, up to the next heading of that level; empty when there is
+    /// no such heading.
+    fn section(heading: &str) -> &'static str {
+        let Some(start) = REFERENCE.find(heading) else {
+            return "";
+        };
+        let body = &REFERENCE[start + heading.len()..];
+        body.find("\n## ").map_or(body, |end| &body[..end])
+    }
+
+    /// Each long option of `command` (named `path`) that `section` does not
+    /// mention, and each subcommand below it that `section` does not name,
+    /// with its options. Options every command takes are left to the
+    /// section on global options.
+    fn unmentioned(command: &clap::Command, path: &str, section: &str, missing: &mut Vec<String>) {
         for argument in command.get_arguments() {
-            let Some(long) = argument.get_long().filter(|_| !argument.is_hide_set()) else {
+            if argument.is_hide_set() || argument.is_global_set() {
+                continue;
+            }
+            let Some(long) = argument.get_long() else {
                 continue;
             };
             let option = format!("--{long}");
-            if !["--help", "--version"].contains(&option.as_str()) && !REFERENCE.contains(&option) {
+            if !["--help", "--version"].contains(&option.as_str()) && !section.contains(&option) {
                 missing.push(format!("{path} {option}"));
             }
         }
@@ -532,18 +548,40 @@ mod tests {
                 continue;
             }
             let named = format!("{path} {}", subcommand.get_name());
-            if !REFERENCE.contains(&named) {
+            if !section.contains(&named) {
                 missing.push(named.clone());
             }
-            unmentioned(subcommand, &named, missing);
+            unmentioned(subcommand, &named, section, missing);
         }
     }
 
-    #[test]
-    fn every_command_and_option_is_in_the_command_reference() {
-        let mut missing = Vec::new();
+    /// The global options `section` does not mention.
+    fn unmentioned_global_options(command: &clap::Command, section: &str) -> Vec<String> {
+        command
+            .get_arguments()
+            .filter(|argument| argument.is_global_set() && !argument.is_hide_set())
+            .filter_map(clap::Arg::get_long)
+            .map(|long| format!("--{long}"))
+            .filter(|option| !section.contains(option))
+            .collect()
+    }
 
-        unmentioned(&Cli::command(), "lemma", &mut missing);
+    #[test]
+    fn every_command_and_option_is_in_its_section_of_the_command_reference() {
+        let cli = Cli::command();
+        let mut missing = unmentioned_global_options(&cli, section("## Global options"));
+
+        for command in cli.get_subcommands() {
+            if command.is_hide_set() || command.get_name() == "help" {
+                continue;
+            }
+            let named = format!("lemma {}", command.get_name());
+            let of_command = section(&format!("## `{named}"));
+            if of_command.is_empty() {
+                missing.push(format!("{named}: no section"));
+            }
+            unmentioned(command, &named, of_command, &mut missing);
+        }
 
         assert_eq!(
             missing,
