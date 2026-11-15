@@ -360,6 +360,12 @@ pub(crate) struct GraphArgs {
     /// The most nodes to include.
     #[arg(long, default_value_t = 200)]
     pub max_nodes: usize,
+    /// How many callers in files outside the snapshot to ask about in
+    /// turn. Each is named either way; asking one finds its own callers,
+    /// and is a lookup in a file the index does not hold, slow the first
+    /// time.
+    #[arg(long, default_value_t = 0, value_name = "CALLERS")]
+    pub outside: usize,
     /// Only symbols of these kinds besides the symbol itself, such as
     /// `function,method` for the calls without the fields and types used.
     #[arg(long, value_delimiter = ',', value_name = "KINDS")]

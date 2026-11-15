@@ -1106,6 +1106,7 @@ impl Engine {
         args: GraphArgs,
         out: &mut dyn Write,
     ) -> anyhow::Result<u8> {
+        let graph_options = graph_options(&args);
         let Some(located) = self.locate(request, args.target, out)? else {
             return Ok(EXIT_AMBIGUOUS);
         };
@@ -1125,13 +1126,6 @@ impl Engine {
             registry: &registry,
             options: &options,
         };
-        let graph_options = graph_options(
-            args.direction,
-            args.depth,
-            args.source,
-            args.max_nodes,
-            args.only.clone(),
-        );
         let mut graph =
             lemma_query::symbol_graph(store, &context, &target, &graph_options, &mut self.pool)?;
         addresses::add_root_links(&mut graph, &linked, graph_options.direction);
@@ -2558,26 +2552,21 @@ fn add_system_trace(
     Ok(())
 }
 
-fn graph_options(
-    direction: GraphDirection,
-    depth: usize,
-    source: GraphSourceArg,
-    max_nodes: usize,
-    only: Vec<SymbolKind>,
-) -> lemma_query::GraphOptions {
+fn graph_options(args: &GraphArgs) -> lemma_query::GraphOptions {
     lemma_query::GraphOptions {
-        direction: match direction {
+        direction: match args.direction {
             GraphDirection::Callers => lemma_query::Direction::Callers,
             GraphDirection::Callees => lemma_query::Direction::Callees,
             GraphDirection::Both => lemma_query::Direction::Both,
         },
-        depth,
-        source: match source {
+        depth: args.depth,
+        source: match args.source {
             GraphSourceArg::Lsp => lemma_query::GraphSource::Lsp,
             GraphSourceArg::Names => lemma_query::GraphSource::Names,
         },
-        max_nodes,
-        only,
+        max_nodes: args.max_nodes,
+        only: args.only.clone(),
+        outside: args.outside,
     }
 }
 
@@ -2585,6 +2574,7 @@ fn lookup_options(args: &LookupArgs) -> LookupOptions {
     LookupOptions {
         refresh: args.refresh,
         request_timeout: Duration::from_secs(args.timeout_secs),
+        reads_outside: false,
     }
 }
 

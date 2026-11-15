@@ -30,6 +30,11 @@ pub struct LookupOptions {
     pub refresh: bool,
     /// How long to wait for the provider to start and to answer.
     pub request_timeout: Duration,
+    /// Whether a position in a file the snapshot does not include may be
+    /// asked about. The position must then come from the file as it is
+    /// now, as a walk that has just parsed it has it: nothing indexed
+    /// says whether it is stale.
+    pub reads_outside: bool,
 }
 
 /// What every provider lookup in a snapshot shares.
@@ -219,7 +224,8 @@ pub(crate) fn ask_providers<A: Ask>(
     asking: &A,
 ) -> Result<Answered<A::Facts>, QueryError> {
     let question = asking.question().as_str();
-    if let Some(answered) = answer_without_provider(&*store, context, at, asking)? {
+    let basis = basis_of(&*store, context, at)?;
+    if let Some(answered) = answer_without_provider(&*store, context, at, asking, &basis)? {
         log_answer_without_provider(question, at.path, answered.from_cache);
         return Ok(answered);
     }
@@ -254,7 +260,7 @@ pub(crate) fn ask_providers<A: Ask>(
         );
         let outcome = match asked {
             Ok(answer) => {
-                let fingerprint = definition.fingerprint();
+                let fingerprint = basis.keyed(&definition.fingerprint());
                 let key = answer_key(snapshot, at, asking, definition, &fingerprint);
                 asking.save(store, &key, provider_version.as_deref(), &answer)?;
                 Outcome::from(answer)
@@ -381,14 +387,14 @@ fn answer_without_provider<A: Ask>(
     context: &LookupContext<'_>,
     at: SourcePoint<'_>,
     asking: &A,
+    basis: &Basis,
 ) -> Result<Option<Answered<A::Facts>>, QueryError> {
     let LookupContext {
         snapshot,
         registry,
         options,
     } = *context;
-    let root = Path::new(&snapshot.snapshot.root);
-    if is_stale(store, snapshot.id, root, at.path)? {
+    if matches!(basis, Basis::Stale) {
         return Ok(Some(Answered::without_provider(Outcome::Stale)));
     }
 
@@ -404,7 +410,7 @@ fn answer_without_provider<A: Ask>(
 
     for provider in &providers {
         let definition = &provider.definition;
-        let fingerprint = definition.fingerprint();
+        let fingerprint = basis.keyed(&definition.fingerprint());
         let key = answer_key(snapshot, at, asking, definition, &fingerprint);
         let Some(stored) = asking.load(store, &key)? else {
             continue;
@@ -417,6 +423,50 @@ fn answer_without_provider<A: Ask>(
         }));
     }
     Ok(None)
+}
+
+/// What says a position in a file is where the asker thinks it is.
+enum Basis {
+    /// The file is as it was indexed.
+    Indexed,
+    /// The file is outside the snapshot, and the asker read it just now:
+    /// the hash of its contents, which an answer about it is kept under.
+    Outside(String),
+    /// The file changed since it was indexed, or is not indexed and may
+    /// not be asked about: stored positions would point at the wrong code.
+    Stale,
+}
+
+impl Basis {
+    /// The provider configuration `fingerprint` an answer is kept under,
+    /// with what else it holds for: an answer about a file outside the
+    /// snapshot holds for that file's contents, which no snapshot records.
+    fn keyed(&self, fingerprint: &str) -> String {
+        match self {
+            Self::Outside(contents) => format!("{fingerprint} outside {contents}"),
+            Self::Indexed | Self::Stale => fingerprint.to_owned(),
+        }
+    }
+}
+
+/// What a lookup at `at` rests on: see [`Basis`].
+fn basis_of(
+    store: &dyn FactStore,
+    context: &LookupContext<'_>,
+    at: SourcePoint<'_>,
+) -> Result<Basis, QueryError> {
+    let snapshot = context.snapshot;
+    let root = Path::new(&snapshot.snapshot.root);
+    let Ok(contents) = fs::read(root.join(at.path)) else {
+        return Ok(Basis::Stale);
+    };
+    let now = content_hash(&contents);
+    let indexed = store.file_hash(snapshot.id, at.path)?;
+    Ok(match indexed {
+        Some(indexed) if indexed == now => Basis::Indexed,
+        None if context.options.reads_outside => Basis::Outside(now),
+        Some(_) | None => Basis::Stale,
+    })
 }
 
 /// Whether the file differs from what was indexed. Stored positions would
@@ -527,6 +577,73 @@ mod tests {
 
         fs::remove_dir_all(&directory).unwrap();
         assert_eq!(name.as_deref(), Some("$total_area"));
+    }
+
+    /// A directory with `inside.ts` as indexed, `edited.ts` changed since,
+    /// and `outside.ts` never indexed; with the store and its snapshot.
+    fn partly_indexed() -> (tempfile::TempDir, lemma_store::Store, StoredSnapshot) {
+        use lemma_store::{FileRecord, FileStamp, NewSnapshot, StampedFile, Store};
+        let directory = tempfile::tempdir().unwrap();
+        for (name, contents) in [("inside", "a"), ("edited", "b, edited"), ("outside", "c")] {
+            fs::write(directory.path().join(format!("{name}.ts")), contents).unwrap();
+        }
+        let snapshot = lemma_model::Snapshot {
+            root: directory.path().display().to_string(),
+            revision: None,
+            is_dirty: false,
+            fingerprint: "fp".to_owned(),
+        };
+        let indexed = |path: &str, contents: &str| StampedFile {
+            path: path.to_owned(),
+            record: FileRecord::from_symbols(contents, Language::TypeScript, false, Vec::new()),
+            stamp: FileStamp::default(),
+        };
+        let files = [indexed("inside.ts", "a"), indexed("edited.ts", "b")];
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .replace_snapshot(&NewSnapshot {
+                snapshot: &snapshot,
+                extractor_version: "1",
+                indexed_at_ns: 0,
+                files: &files,
+                uncommitted_paths: &[],
+            })
+            .unwrap();
+        let stored = store.snapshot_for_root(&snapshot.root).unwrap().unwrap();
+        (directory, store, stored)
+    }
+
+    #[test]
+    fn a_file_outside_the_snapshot_is_asked_about_only_when_the_asker_read_it() {
+        let (_directory, store, snapshot) = partly_indexed();
+        let registry = ProviderRegistry::builtin().unwrap();
+        // What an answer is kept under, or `None` where none may be asked for.
+        let kept_under = |path: &str, reads_outside: bool| {
+            let options = LookupOptions {
+                refresh: false,
+                request_timeout: Duration::from_secs(1),
+                reads_outside,
+            };
+            let context = LookupContext {
+                snapshot: &snapshot,
+                registry: &registry,
+                options: &options,
+            };
+            let at = SourcePoint {
+                path,
+                language: Language::TypeScript,
+                position: Position { line: 0, column: 0 },
+            };
+            let basis = basis_of(&store, &context, at).unwrap();
+            (!matches!(basis, Basis::Stale)).then(|| basis.keyed("server"))
+        };
+
+        assert_eq!(kept_under("inside.ts", false).as_deref(), Some("server"));
+        assert_eq!(kept_under("edited.ts", true), None);
+        assert_eq!(kept_under("outside.ts", false), None);
+        assert_eq!(kept_under("missing.ts", true), None);
+        let outside = kept_under("outside.ts", true).unwrap();
+        assert!(outside.starts_with("server outside "));
     }
 
     #[test]

@@ -14,7 +14,7 @@ Lemma answers code questions through each language's own server (references, def
 | Where is this symbol used? What breaks if I change it? | `lemma refs <symbol>` | Semantic references: no matches in comments, strings or unrelated same-named symbols |
 | Where is the thing used at this line defined? | `lemma definition <file>:<line>:<column>` | Follows imports and re-exports |
 | What implements this interface or overrides this method? | `lemma implementations <symbol>` | Text search cannot tell implementations from mentions |
-| What calls this, and what calls those? What does it depend on? | `lemma graph <symbol> --direction callers --depth 3` (or `callees`, `both`) | Follows references several levels; `--source names` answers instantly without a server, approximately; `--format mermaid` or `dot` to draw |
+| What calls this, and what calls those? What does it depend on? | `lemma graph <symbol> --direction callers --depth 3` (or `callees`, `both`) | Follows references several levels; `--source names` answers instantly without a server, approximately; a caller in a file the index leaves out is named `(outside the snapshot)` and followed only with `--outside <n>`; `--format mermaid` or `dot` to draw |
 | Which endpoints, services and other repositories reach this function? | `lemma graph <symbol> --direction callers --workspace <workspace mod.lm>` | Continues from route handlers to their operations and to callers in other repositories; takes as long as `lemma check` |
 | What is this symbol's declaration and documentation? | `lemma signature <symbol>` | Header and the server's hover text, without opening files |
 | What does this file define? | `lemma outline <file>` | Symbols in source order, nested |

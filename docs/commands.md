@@ -141,15 +141,31 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | --- | --- |
 | `--direction <way>` | `callers` (what uses it), `callees` (what it uses), or `both` (the default). |
 | `--depth <n>` | How many uses away to go. Default: 2. |
-| `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Lemma caches answers in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones, and files outside the snapshot, such as tests left out of `include`, are not read; an empty graph says so. With `lsp`, a caller in a file outside the snapshot is shown as `path (outside the snapshot)`. |
+| `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Lemma caches answers in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones, and files outside the snapshot, such as tests left out of `include`, are not read; an empty graph says so. |
 | `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`, and the `source` it was found by), `notes` and `truncated`. |
 | `--max-nodes <n>` | The most nodes to include. Default: 200. |
+| `--outside <n>` | How many callers in files outside the snapshot to follow. Default: 0. See below. |
 | `--only <kinds>` | Only symbols of these kinds besides the symbol itself, comma-separated: `--only function,method` shows the calls without the fields, types and constants a body uses. The top level of a file always counts as a caller. |
 | `--workspace <mod.lm>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations. See below. |
 | `--across <calls>` | Across a workspace, how many calls from other code to follow: `1` (the default) stops at the code calling the operations the handlers serve; each more goes on through that code to its own operations and their callers. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
 
 References from a file's top-level code appear as the file; imports are left out. A symbol implementing an export that a graph of `Link` links to another operation uses that operation, which appears by address (`linked operation`). The graph lists questions the server could not answer, such as a stale file or a missing server, as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
+
+The language server reads files the snapshot leaves out, such as tests and scripts outside `include`, so a caller can be in one. Lemma reads that file and names the definition the use sits in, marked `(outside the snapshot)`; a use at the file's top level appears as the file. The graph stops there unless `--outside <n>` says how many such callers to follow: each one followed is a lookup in a file the index does not hold, which takes seconds the first time, and most turn out to be tests and entry points that nothing calls. A note counts the callers left unfollowed.
+
+```text
+$ lemma graph charge --direction callers --depth 3 --outside 5
+charge  (function, src/billing/charge.ts:1)
+  used by
+  ├─ backfill (outside the snapshot)  (function, scripts/backfill.ts:2)
+  │  └─ nightly (outside the snapshot)  (function, scripts/nightly.ts:2)
+  │     └─ main (outside the snapshot)  (function, scripts/nightly.ts:3)
+  ├─ refund  (function, src/billing/charge.ts:10)
+  ├─ Ledger.post  (method, src/billing/charge.ts:13)
+  └─ tests/charge.test.ts (outside the snapshot)  (file, tests/charge.test.ts)
+7 nodes, 6 relationships (lsp)
+```
 
 ### Across repositories
 

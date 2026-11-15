@@ -378,6 +378,11 @@
           "minimum": 1,
           "description": "The most nodes to include. Default: 200."
         },
+        "outside": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many callers in files outside the index to ask for their own callers too. They are named either way; each asked is a slow lookup the first time. Default: none."
+        },
         "workspace": {
           "type": "string",
           "description": "A workspace mod.lm: follow callers out of the repository through the operations their handlers serve. Takes as long as a check."

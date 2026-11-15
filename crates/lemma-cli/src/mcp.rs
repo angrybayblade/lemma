@@ -351,6 +351,7 @@ fn push_graph_command(
     for (field, flag) in [
         ("depth", "--depth"),
         ("max_nodes", "--max-nodes"),
+        ("outside", "--outside"),
         ("across", "--across"),
     ] {
         if let Some(count) = optional_count(arguments, field)? {

@@ -12,11 +12,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use lemma_model::{GraphNode, Language, Outcome, Position, SymbolKind, Use, UseGraph};
-use lemma_store::{FactStore, NameMatch, StoredSymbol, SymbolFilter};
+use lemma_store::{FactStore, NameMatch, StoredSymbol, SymbolFilter, SymbolId};
 
 use crate::QueryError;
-use crate::lookup::LookupContext;
+use crate::lookup::{LookupContext, LookupOptions};
 use crate::navigation::find_definitions;
+use crate::outside::OutsideFiles;
 use crate::references::ask_references;
 use crate::sessions::SessionPool;
 
@@ -64,6 +65,10 @@ pub struct GraphOptions {
     /// The only kinds of symbol to include besides the root, such as
     /// functions and methods for the calls alone; empty for every kind.
     pub only: Vec<SymbolKind>,
+    /// The most callers outside the snapshot to ask about in turn. Each is
+    /// named either way; asking one finds its own callers, with a lookup
+    /// in a file the index does not hold.
+    pub outside: usize,
 }
 
 /// Symbols defined by more than this many symbols are not matched by name.
@@ -83,6 +88,16 @@ pub fn symbol_graph(
     match options.source {
         GraphSource::Lsp => {
             let catalog = Catalog::lazy(snapshot.id, &snapshot.snapshot.root);
+            // A caller in a file outside the snapshot is parsed when the
+            // walk meets it, so the walk can ask about it if it may.
+            let lookups = LookupOptions {
+                reads_outside: options.outside > 0,
+                ..*context.options
+            };
+            let context = &LookupContext {
+                options: &lookups,
+                ..*context
+            };
             let mut neighbours = ServerNeighbours {
                 store,
                 context,
@@ -135,7 +150,10 @@ enum Neighbour {
     Symbol(StoredSymbol),
     /// The top level of an indexed file.
     File(String),
-    /// A file the language server read but the snapshot does not include.
+    /// A definition in a file the language server read but the snapshot
+    /// does not include, read from the file when the walk met it.
+    Outside(StoredSymbol),
+    /// The top level of such a file, or one that could not be read.
     Unindexed(String),
 }
 
@@ -189,7 +207,7 @@ fn follow(
     let mut seen = BTreeSet::from([root.id]);
     let mut pending = VecDeque::from([(root.clone(), 0usize)]);
     while let Some((symbol, depth)) = pending.pop_front() {
-        if depth >= max_depth {
+        if depth >= max_depth || !graph.asks_about(&symbol) {
             continue;
         }
         let found = match way {
@@ -216,6 +234,12 @@ struct Builder {
     root: String,
     source: GraphSource,
     only: Vec<SymbolKind>,
+    /// The symbols added that are outside the snapshot.
+    outside: BTreeSet<SymbolId>,
+    /// How many more of them the walk may ask about, and how many it has
+    /// left unasked.
+    outside_left: usize,
+    outside_unasked: usize,
 }
 
 impl Builder {
@@ -230,6 +254,9 @@ impl Builder {
             root: node_id(root),
             source: options.source,
             only: options.only.clone(),
+            outside: BTreeSet::new(),
+            outside_left: options.outside,
+            outside_unasked: 0,
         };
         builder.add(&Neighbour::Symbol(root.clone()));
         builder
@@ -252,11 +279,27 @@ impl Builder {
         Some(id)
     }
 
+    /// Whether the walk asks what is next to `symbol`: always, unless it
+    /// is outside the snapshot and as many of those as the options allow
+    /// have been asked about. Asking about one is a lookup in a file the
+    /// index does not hold, which is slow the first time.
+    fn asks_about(&mut self, symbol: &StoredSymbol) -> bool {
+        if !self.outside.contains(&symbol.id) {
+            return true;
+        }
+        if self.outside_left == 0 {
+            self.outside_unasked += 1;
+            return false;
+        }
+        self.outside_left -= 1;
+        true
+    }
+
     /// Whether `neighbour` is of a kind the graph shows. The top level of a
     /// file is code that runs, so it counts as a caller of any kind.
     fn includes(&self, neighbour: &Neighbour) -> bool {
         match neighbour {
-            Neighbour::Symbol(symbol) => {
+            Neighbour::Symbol(symbol) | Neighbour::Outside(symbol) => {
                 self.only.is_empty() || self.only.contains(&symbol.symbol.kind)
             }
             Neighbour::File(_) | Neighbour::Unindexed(_) => true,
@@ -287,14 +330,26 @@ impl Builder {
                 to,
                 source: self.source.name().to_owned(),
             });
-            if let Neighbour::Symbol(symbol) = neighbour {
-                next.push(symbol);
+            match neighbour {
+                Neighbour::Symbol(symbol) => next.push(symbol),
+                Neighbour::Outside(symbol) => {
+                    self.outside.insert(symbol.id);
+                    next.push(symbol);
+                }
+                Neighbour::File(_) | Neighbour::Unindexed(_) => {}
             }
         }
         next
     }
 
-    fn finish(self) -> UseGraph {
+    fn finish(mut self) -> UseGraph {
+        if self.outside_unasked > 0 {
+            let unasked = self.outside_unasked;
+            let allowed = self.outside.len();
+            self.notes.push(format!(
+                "callers outside the snapshot not followed: {unasked}; `--outside {allowed}` follows them, a lookup each in a file the index does not hold"
+            ));
+        }
         UseGraph {
             nodes: self.nodes,
             relationships: self.relationships.into_iter().collect(),
@@ -315,6 +370,14 @@ fn graph_node(neighbour: &Neighbour) -> GraphNode {
         Neighbour::Symbol(symbol) => GraphNode {
             id: node_id(symbol),
             label: symbol.symbol.qualified_name.clone(),
+            kind: symbol.symbol.kind.as_str().to_owned(),
+            path: Some(symbol.path.clone()),
+            line: Some(symbol.symbol.span.start.line + 1),
+        },
+        // The id it would have if its file were indexed.
+        Neighbour::Outside(symbol) => GraphNode {
+            id: node_id(symbol),
+            label: format!("{} (outside the snapshot)", symbol.symbol.qualified_name),
             kind: symbol.symbol.kind.as_str().to_owned(),
             path: Some(symbol.path.clone()),
             line: Some(symbol.symbol.span.start.line + 1),
@@ -350,6 +413,8 @@ struct Catalog {
     /// The usable symbols bearing each name.
     by_name: BTreeMap<String, Vec<StoredSymbol>>,
     sources: BTreeMap<String, Option<String>>,
+    /// The files outside the snapshot the walk met uses in.
+    outside: OutsideFiles,
 }
 
 /// The most symbols of one name read to learn whether any is usable.
@@ -382,6 +447,7 @@ impl Catalog {
             by_file: BTreeMap::new(),
             by_name: BTreeMap::new(),
             sources: BTreeMap::new(),
+            outside: OutsideFiles::new(root, snapshot_id),
         }
     }
 
@@ -485,13 +551,7 @@ impl Catalog {
         let Some(symbols) = self.file(store, path)? else {
             return Ok(None);
         };
-        Ok(symbols
-            .iter()
-            .filter(|symbol| {
-                symbol.symbol.span.start <= position && position < symbol.symbol.span.end
-            })
-            .max_by_key(|symbol| symbol.symbol.span.start)
-            .cloned())
+        Ok(innermost_around(symbols, position))
     }
 
     /// The symbols a name may mean, if few enough share it.
@@ -501,6 +561,15 @@ impl Catalog {
             .filter(|symbols| symbols.len() <= MAX_DEFINITIONS)
             .map(Vec::as_slice)
     }
+}
+
+/// The innermost of `symbols` whose definition contains `position`.
+fn innermost_around(symbols: &[StoredSymbol], position: Position) -> Option<StoredSymbol> {
+    symbols
+        .iter()
+        .filter(|symbol| symbol.symbol.span.start <= position && position < symbol.symbol.span.end)
+        .max_by_key(|symbol| symbol.symbol.span.start)
+        .cloned()
 }
 
 /// Symbols a use can point at. Variables are left out: their names are too
@@ -550,7 +619,13 @@ impl Neighbours for ServerNeighbours<'_, '_> {
                     continue;
                 }
                 None if self.catalog.file(&*self.store, &reference.path)?.is_none() => {
-                    Neighbour::Unindexed(reference.path.clone())
+                    let position = reference.span.start;
+                    let outside = &mut self.catalog.outside;
+                    match outside.definition_at(&mut *self.store, &reference.path, position)? {
+                        Some(symbol) if symbol.id == of.id => continue,
+                        Some(symbol) => Neighbour::Outside(symbol),
+                        None => Neighbour::Unindexed(reference.path.clone()),
+                    }
                 }
                 None => Neighbour::File(reference.path.clone()),
             };
@@ -991,6 +1066,8 @@ mod tests {
     /// `send`.
     struct Fixed {
         symbols: Vec<StoredSymbol>,
+        /// The symbols that are in files outside the snapshot.
+        outside: Vec<u128>,
     }
 
     impl Neighbours for Fixed {
@@ -1015,13 +1092,21 @@ mod tests {
     }
 
     impl Fixed {
+        fn neighbour(&self, symbol: StoredSymbol) -> Neighbour {
+            let is_outside = |id: &u128| SymbolId::from(*id) == symbol.id;
+            if self.outside.iter().any(is_outside) {
+                return Neighbour::Outside(symbol);
+            }
+            Neighbour::Symbol(symbol)
+        }
+
         fn found(&self, ids: &[u128]) -> Found {
             let neighbours = self
                 .symbols
                 .iter()
                 .filter(|symbol| ids.iter().any(|id| SymbolId::from(*id) == symbol.id))
                 .cloned()
-                .map(Neighbour::Symbol)
+                .map(|symbol| self.neighbour(symbol))
                 .collect();
             Found {
                 neighbours,
@@ -1038,6 +1123,7 @@ mod tests {
                 symbol(3, "main", "app.py", (0, 3)),
                 symbol(4, "send", "mail.py", (0, 3)),
             ],
+            outside: Vec::new(),
         }
     }
 
@@ -1048,7 +1134,48 @@ mod tests {
             source: GraphSource::Names,
             max_nodes: 100,
             only: Vec::new(),
+            outside: 0,
         }
+    }
+
+    #[test]
+    fn a_caller_outside_the_snapshot_is_asked_about_only_when_allowed() {
+        let mut neighbours = fixed();
+        neighbours.outside = vec![2];
+        let root = neighbours.symbols[0].clone();
+        let mut allowed = options(Direction::Callers, 2);
+        allowed.outside = 1;
+
+        let named = walk(&root, &options(Direction::Callers, 2), &mut neighbours).unwrap();
+        let followed = walk(&root, &allowed, &mut neighbours).unwrap();
+
+        let labels = |graph: &UseGraph| -> Vec<String> {
+            graph.nodes.iter().map(|node| node.label.clone()).collect()
+        };
+        assert_eq!(
+            labels(&named),
+            ["charge", "checkout (outside the snapshot)"]
+        );
+        assert!(named.notes[0].starts_with(
+            "callers outside the snapshot not followed: 1; `--outside 1` follows them"
+        ));
+        assert_eq!(
+            labels(&followed),
+            ["charge", "checkout (outside the snapshot)", "main"]
+        );
+        assert_eq!(followed.notes, [] as [String; 0]);
+    }
+
+    #[test]
+    fn a_definition_outside_the_snapshot_is_labelled_so() {
+        let node = graph_node(&Neighbour::Outside(symbol(
+            2,
+            "backfill",
+            "scripts/backfill.py",
+            (1, 3),
+        )));
+
+        assert_eq!(node.label, "backfill (outside the snapshot)");
     }
 
     #[test]

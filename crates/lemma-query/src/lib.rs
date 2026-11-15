@@ -7,6 +7,7 @@
 mod graph;
 mod lookup;
 mod navigation;
+mod outside;
 mod references;
 mod resolve;
 mod search;
