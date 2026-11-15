@@ -293,6 +293,10 @@ impl Watch {
     /// now has been reported, without waiting for it: several watchers'
     /// markers can then be awaited together, which costs one watcher's
     /// latency rather than one each.
+    // TODO: a setting to keep watchers awake between asks with a heartbeat
+    // marker: an idle FSEvents stream takes 12 to 14 ms to deliver the
+    // marker's event and a busy one 5 to 7, traded against battery and disk
+    // (spec 14, rollout item 8).
     pub fn begin_barrier(&mut self) -> Barrier {
         self.next_barrier += 1;
         let number = self.next_barrier;

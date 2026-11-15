@@ -365,6 +365,12 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 - More than one workspace.
 - Incremental Datalog, if evaluation comes to dominate ([spec 10](10-native-datastore.md)).
 
+**Parked (2026-11-15),** settings rather than design, left as `TODO`s where each goes:
+
+- Keeping watchers awake between asks, to trade battery for the FSEvents wake-up a confirming ask waits for (`Watch::begin_barrier`).
+- Naming the variables answers are shared across, so an editor started with another `PATH` than the shell can share them when both find the same tools (`Worker::fingerprint`).
+- Taking a daemon's build identity once, when it starts, so a daemon whose binary a build replaced in place does not answer as the new build (`daemon::build_id`).
+
 ## Prior art
 
 | System | What it does | What sentry takes |

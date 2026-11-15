@@ -1114,6 +1114,9 @@ fn socket_path() -> anyhow::Result<PathBuf> {
 
 /// The running binary's path and modification time. Rebuilding or upgrading
 /// Lemma changes it, which retires daemons started by the old binary.
+// TODO: take the identity once, when the daemon starts: read at each
+// request, a daemon whose binary a build replaced in place takes the new
+// build's identity for its own and keeps answering with the old code.
 fn build_id() -> String {
     let executable = std::env::current_exe().unwrap_or_default();
     let modified = fs::metadata(&executable)
