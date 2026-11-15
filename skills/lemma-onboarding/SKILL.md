@@ -36,7 +36,7 @@ In each repository: install its dependencies, write a `mod.lm` with a service pe
 
 ## 3. Agents
 
-In each repository agents work in: `claude mcp add lemma -- lemma mcp` (Claude Code), or the same command in another MCP client. Add one line to the agent instructions (`CLAUDE.md`, `AGENTS.md`): "Use Lemma's tools for references, definitions, implementations and impact; use text search for strings and one-off lookups."
+In each repository agents work in: `claude mcp add lemma -- lemma mcp` (Claude Code), or the same command in another MCP client. Add one line to the agent instructions (`CLAUDE.md`, `AGENTS.md`): "Lemma is your IDE here: use it for symbols, references, callers and implementations, and text search for strings and configuration. Run `lemma check --change <repository>` before calling a change done."
 
 ## 4. Write the description
 
