@@ -149,7 +149,7 @@ Ask me three times: before installing anything, to confirm which repositories ma
 
    curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | LEMMA_SKILLS=1 sh
 
-   Make sure ~/.local/bin is on PATH. If you load skills from somewhere other than ~/.claude/skills, set LEMMA_SKILLS_DIR. Then run \`lemma providers\`, install the language servers this codebase needs, and add \`lemma mcp\` as an MCP server for yourself. A background daemon runs those servers and watches the code: what an IDE knows, without an editor open.
+   Make sure ~/.local/bin is on PATH. If you load skills from somewhere other than ~/.claude/skills, set LEMMA_SKILLS_DIR. Then run \`lemma providers\`, install the language servers this codebase needs, and run \`lemma index\` in the repository: lookups need its index. Add \`lemma mcp\` as an MCP server for yourself; its tools may only load from your next session, so use the \`lemma\` command in this one. A background daemon runs those servers and watches the code: what an IDE knows, without an editor open.
 
 2. Find code. Pick a function with a common name and put Lemma's references next to grep's. Lemma's come from the language server, so they skip other symbols with the same name and mentions in comments and strings, and follow imports and aliases. Point out what grep got wrong.
 
