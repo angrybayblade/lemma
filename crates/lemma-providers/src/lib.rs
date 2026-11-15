@@ -82,4 +82,48 @@ impl ProviderError {
             }
         )
     }
+
+    /// Whether the server was asked and did not answer in the time the
+    /// caller allowed: it may be well, and too slow for this question.
+    pub fn is_timeout(&self) -> bool {
+        matches!(
+            self,
+            Self::Server {
+                source: lemma_lsp::LspError::Timeout { .. },
+                ..
+            }
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use lemma_lsp::LspError;
+
+    use super::*;
+
+    fn failed(source: LspError) -> ProviderError {
+        ProviderError::Server {
+            provider: "pyright".to_owned(),
+            source,
+        }
+    }
+
+    #[test]
+    fn only_a_server_that_did_not_answer_in_time_timed_out() {
+        let slow = failed(LspError::Timeout {
+            method: "textDocument/references",
+            timeout: Duration::from_secs(60),
+        });
+        let gone = failed(LspError::Closed);
+        let told_to_stop = failed(LspError::Interrupted {
+            method: "textDocument/references",
+        });
+
+        assert!(slow.is_timeout());
+        assert!(!gone.is_timeout());
+        assert!(!told_to_stop.is_timeout());
+    }
 }

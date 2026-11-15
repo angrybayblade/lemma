@@ -15,7 +15,7 @@ use lemma_model::{GraphNode, Language, Outcome, Position, SymbolKind, Use, UseGr
 use lemma_store::{FactStore, NameMatch, StoredSymbol, SymbolFilter, SymbolId};
 
 use crate::QueryError;
-use crate::lookup::{LookupContext, LookupOptions};
+use crate::lookup::{Answered, LookupContext, LookupOptions};
 use crate::navigation::find_definitions;
 use crate::outside::OutsideFiles;
 use crate::references::ask_references;
@@ -103,8 +103,11 @@ pub fn symbol_graph(
                 context,
                 pool,
                 catalog,
+                gave_way: BTreeSet::new(),
             };
-            walk(root, options, &mut neighbours)
+            let mut graph = walk(root, options, &mut neighbours)?;
+            graph.notes.extend(neighbours.gave_way);
+            Ok(graph)
         }
         GraphSource::Names => {
             let catalog = Catalog::whole(&*store, snapshot.id, &snapshot.snapshot.root)?;
@@ -645,6 +648,9 @@ struct ServerNeighbours<'a, 'b> {
     context: &'a LookupContext<'b>,
     pool: &'a mut SessionPool,
     catalog: Catalog,
+    /// Which server answered in place of one that was too slow, for the
+    /// graph's notes: once each, however many symbols it was asked about.
+    gave_way: BTreeSet<String>,
 }
 
 impl Neighbours for ServerNeighbours<'_, '_> {
@@ -655,6 +661,7 @@ impl Neighbours for ServerNeighbours<'_, '_> {
 
     fn callers(&mut self, of: &StoredSymbol) -> Result<Found, QueryError> {
         let report = ask_references(&mut *self.store, self.context, of.clone(), false, self.pool)?;
+        note_gave_way(&mut self.gave_way, &report.answer);
         let references = match report.answer.outcome {
             Outcome::Found(references) => references,
             Outcome::Empty => return Ok(Found::default()),
@@ -763,6 +770,7 @@ impl ServerNeighbours<'_, '_> {
             position,
             self.pool,
         )?;
+        note_gave_way(&mut self.gave_way, &report.answer);
         Ok(match report.answer.outcome {
             Outcome::Found(targets) => Ok(targets
                 .into_iter()
@@ -771,6 +779,18 @@ impl ServerNeighbours<'_, '_> {
             Outcome::Empty => Ok(Vec::new()),
             other => Err(other.state().replace('_', " ")),
         })
+    }
+}
+
+/// Notes which server gave `answer` when it was not the first one asked,
+/// the first having been too slow.
+fn note_gave_way<T>(gave_way: &mut BTreeSet<String>, answer: &Answered<T>) {
+    let Some(provenance) = &answer.provenance else {
+        return;
+    };
+    for slow in &answer.slow_providers {
+        let answered = &provenance.provider_id;
+        gave_way.insert(format!("{answered} answered in place of {slow}"));
     }
 }
 

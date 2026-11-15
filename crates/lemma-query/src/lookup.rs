@@ -8,13 +8,14 @@
 use std::error::Error;
 use std::fs;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lemma_model::{
     Language, Location, LocationQuery, Outcome, Provenance, ProviderAnswer, content_hash,
 };
 use lemma_providers::{
-    ProviderDefinition, ProviderError, ProviderRegistry, SemanticProvider, SourcePoint,
+    InstalledProvider, ProviderDefinition, ProviderError, ProviderRegistry, SemanticProvider,
+    SourcePoint,
 };
 use lemma_store::{
     AnswerKey, FactStore, Question, StoreError, StoredAnswer, StoredFile, StoredSnapshot,
@@ -57,6 +58,10 @@ pub struct Answered<T> {
     pub provenance: Option<Provenance>,
     /// Whether the answer came from the store rather than a live provider.
     pub from_cache: bool,
+    /// Providers that did not answer in time, now or a while ago, so that
+    /// the next was asked, each with what happened. Empty unless lookups
+    /// ask the next server when one is slow.
+    pub slow_providers: Vec<String>,
     /// Providers tried before the one that answered, each with why it could
     /// not start.
     pub skipped_providers: Vec<String>,
@@ -70,6 +75,18 @@ impl<T> Answered<T> {
             provenance: None,
             from_cache: false,
             skipped_providers: Vec::new(),
+            slow_providers: Vec::new(),
+        }
+    }
+
+    /// The answer when every provider was too slow or could not start,
+    /// each with what happened. The slow ones were asked first, so they
+    /// are named first.
+    fn from_no_provider(slow: Vec<String>, start_failures: &[String]) -> Self {
+        let message = [slow.as_slice(), start_failures].concat().join("; ");
+        Self {
+            slow_providers: slow,
+            ..Self::without_provider(Outcome::ProviderFailed { message })
         }
     }
 
@@ -83,6 +100,7 @@ impl<T> Answered<T> {
             provenance: self.provenance,
             from_cache: self.from_cache,
             skipped_providers: self.skipped_providers,
+            slow_providers: self.slow_providers,
         })
     }
 }
@@ -215,7 +233,12 @@ impl Ask for Hover {
 /// Installed providers for the language are tried in order, through `pool`
 /// so a server already running for an earlier lookup is reused. One that
 /// fails to start is skipped; one that starts and then fails is reported,
-/// since silently switching would hide a real problem.
+/// since silently switching would hide a real problem. Where the pool asks
+/// the next server when one is slow ([`WhenSlow::Next`]), one that does not
+/// answer in time gives way to the next, the answer names it, and it is
+/// passed over on that root once another has answered.
+///
+/// [`WhenSlow::Next`]: crate::WhenSlow::Next
 pub(crate) fn ask_providers<A: Ask>(
     store: &mut dyn FactStore,
     context: &LookupContext<'_>,
@@ -235,57 +258,159 @@ pub(crate) fn ask_providers<A: Ask>(
         options,
     } = *context;
 
+    let give_way_after = pool.gives_way_after(options.request_timeout);
+    let root = Path::new(&snapshot.snapshot.root);
+    let installed = registry.installed(at.language);
+    let (providers, passed_over) = pool.askable(root, installed, Instant::now());
     let mut start_failures = Vec::new();
-    for provider in registry.installed(at.language) {
+    let mut slow: Vec<String> = passed_over.iter().map(passed_over_provider).collect();
+    let mut gave_way: Vec<InstalledProvider> = Vec::new();
+    let lookup = Lookup {
+        context,
+        at,
+        asking,
+        basis: &basis,
+    };
+    let mut providers = providers.into_iter().peekable();
+    while let Some(provider) = providers.next() {
         let definition = &provider.definition;
-        let session = match pool.session(&*store, snapshot, &provider, options.request_timeout) {
-            Ok(session) => session,
-            Err(PoolError::Store(error)) => return Err(error.into()),
-            Err(PoolError::Files(source)) => return Err(QueryError::Files { source }),
-            Err(PoolError::Interrupted) => return Err(QueryError::Interrupted),
-            Err(PoolError::Start(error)) => {
-                start_failures.push(skipped_provider(definition, &error));
+        let has_next = providers.peek().is_some();
+        let within = give_way_after.filter(|_| has_next);
+        let asked = ask_provider(store, pool, &lookup, &provider, within)?;
+        let (outcome, version) = match asked {
+            Asked::NotStarted(why) => {
+                start_failures.push(why);
                 continue;
             }
-        };
-        let provider_version = session.version();
-        let started = std::time::Instant::now();
-        let asked = open_projects(&*store, snapshot, at, asking, session)
-            .and_then(|()| asking.ask(session, at));
-        log::info!(
-            "{question} at {}: asked {} in {:.1}s",
-            at.path,
-            definition.id,
-            started.elapsed().as_secs_f64()
-        );
-        let outcome = match asked {
-            Ok(answer) => {
-                let fingerprint = basis.keyed(&definition.fingerprint());
-                let key = answer_key(snapshot, at, asking, definition, &fingerprint);
-                asking.save(store, &key, provider_version.as_deref(), &answer)?;
-                Outcome::from(answer)
-            }
-            // Told to stop waiting: the server is well, and still answering.
-            Err(error) if error.is_interrupted() => return Err(QueryError::Interrupted),
-            Err(error) => {
-                // The server may be wedged or gone; start a fresh one next time.
-                pool.discard(snapshot, &provider);
-                Outcome::ProviderFailed {
-                    message: describe(&error),
+            Asked::Answered { answer, version } => {
+                // Only now is passing the slow ones over known to help.
+                for too_slow in &gave_way {
+                    pool.pass_over(root, too_slow, Instant::now());
                 }
+                (Outcome::from(answer), version)
+            }
+            Asked::Failed { error, version } => {
+                if within.is_some() && error.is_timeout() {
+                    slow.push(slow_provider(definition, &error));
+                    gave_way.push(provider);
+                    continue;
+                }
+                let message = describe(&error);
+                (Outcome::ProviderFailed { message }, version)
             }
         };
         return Ok(Answered {
             outcome,
-            provenance: Some(provenance(definition, provider_version)),
+            provenance: Some(provenance(definition, version)),
             from_cache: false,
             skipped_providers: start_failures,
+            slow_providers: slow,
         });
     }
 
-    Ok(Answered::without_provider(Outcome::ProviderFailed {
-        message: start_failures.join("; "),
-    }))
+    Ok(Answered::from_no_provider(slow, &start_failures))
+}
+
+/// What asking one provider came to.
+enum Asked<Facts> {
+    /// It could not start, and why: the next provider may be tried.
+    NotStarted(String),
+    /// It answered, and the answer is stored.
+    Answered {
+        answer: ProviderAnswer<Facts>,
+        version: Option<String>,
+    },
+    /// It started and then failed: its session is gone, so that the next
+    /// lookup starts a fresh server in place of one wedged or gone.
+    Failed {
+        error: ProviderError,
+        version: Option<String>,
+    },
+}
+
+/// One question, as each provider in turn is asked it.
+struct Lookup<'a, 'b, A> {
+    context: &'a LookupContext<'b>,
+    at: SourcePoint<'a>,
+    asking: &'a A,
+    /// What says the position is where the asker thinks it is, which the
+    /// answer is stored under.
+    basis: &'a Basis,
+}
+
+/// Asks one provider, through `pool`, and stores what it answers. With
+/// `within`, the provider gets that long, however long the server it runs
+/// was started to wait: the caller has another to ask after it.
+fn ask_provider<A: Ask>(
+    store: &mut dyn FactStore,
+    pool: &mut SessionPool,
+    lookup: &Lookup<'_, '_, A>,
+    provider: &InstalledProvider,
+    within: Option<Duration>,
+) -> Result<Asked<A::Facts>, QueryError> {
+    let Lookup {
+        context,
+        at,
+        asking,
+        basis,
+    } = *lookup;
+    let LookupContext {
+        snapshot, options, ..
+    } = *context;
+    let definition = &provider.definition;
+    let session = match pool.session(&*store, snapshot, provider, options.request_timeout) {
+        Ok(session) => session,
+        Err(PoolError::Store(error)) => return Err(error.into()),
+        Err(PoolError::Files(source)) => return Err(QueryError::Files { source }),
+        Err(PoolError::Interrupted) => return Err(QueryError::Interrupted),
+        Err(PoolError::Start(error)) => {
+            return Ok(Asked::NotStarted(skipped_provider(definition, &error)));
+        }
+    };
+    let version = session.version();
+    let started = Instant::now();
+    session.answer_within(within);
+    let asked = open_projects(&*store, snapshot, at, asking, session)
+        .and_then(|()| asking.ask(session, at));
+    session.answer_within(None);
+    log::info!(
+        "{} at {}: asked {} in {:.1}s",
+        asking.question().as_str(),
+        at.path,
+        definition.id,
+        started.elapsed().as_secs_f64()
+    );
+    match asked {
+        Ok(answer) => {
+            let fingerprint = basis.keyed(&definition.fingerprint());
+            let key = answer_key(snapshot, at, asking, definition, &fingerprint);
+            asking.save(store, &key, version.as_deref(), &answer)?;
+            Ok(Asked::Answered { answer, version })
+        }
+        // Told to stop waiting: the server is well, and still answering.
+        Err(error) if error.is_interrupted() => Err(QueryError::Interrupted),
+        Err(error) => {
+            pool.discard(snapshot, provider);
+            Ok(Asked::Failed { error, version })
+        }
+    }
+}
+
+/// Names a provider that did not answer in time, for the answer the next
+/// one gives.
+fn slow_provider(definition: &ProviderDefinition, error: &ProviderError) -> String {
+    // What the server did, without the wrapper that names it again.
+    let what = error.source().map_or_else(|| describe(error), describe);
+    let slow = format!("{}: {what}", definition.id);
+    log::warn!("{slow}; asking the next server");
+    slow
+}
+
+/// Names a provider a lookup did not ask, since it was too slow earlier.
+fn passed_over_provider(provider: &InstalledProvider) -> String {
+    let id = &provider.definition.id;
+    log::debug!("{id} is passed over: it did not answer in time earlier");
+    format!("{id}: passed over, since it did not answer in time earlier")
 }
 
 /// Logs a question answered without asking a provider.
@@ -420,6 +545,7 @@ fn answer_without_provider<A: Ask>(
             provenance: Some(provenance(definition, stored.provider_version)),
             from_cache: true,
             skipped_providers: Vec::new(),
+            slow_providers: Vec::new(),
         }));
     }
     Ok(None)

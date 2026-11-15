@@ -142,7 +142,12 @@ impl Runner {
             cwd: self.cwd.clone(),
             path_env: std::env::var_os("PATH"),
         };
+        let when_slow = match crate::config::when_slow_for_one_process() {
+            Ok(when_slow) => when_slow,
+            Err(error) => return failure(format!("error: {error:#}")),
+        };
         let engine = self.engine.get_or_insert_with(Engine::long_lived);
+        engine.set_when_slow(when_slow);
         let mut stdout = Vec::new();
         match engine.execute(cli, &invocation, &mut stdout) {
             Ok(exit_code) => Finished {

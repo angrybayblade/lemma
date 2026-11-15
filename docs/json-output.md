@@ -79,6 +79,7 @@ An array of [symbols](#symbol), possibly empty.
   },
   "from_cache": false,
   "skipped_providers": [],
+  "slow_providers": [],
   "outcome": {
     "state": "found",
     "references": [
@@ -99,6 +100,7 @@ An array of [symbols](#symbol), possibly empty.
 | `provenance` | Which server answered. `null` when none did. `provider_version` is `null` if the server did not report one. |
 | `from_cache` | Whether this answer came from the cache. |
 | `skipped_providers` | Servers that failed to start before one did, as `"<id>: <reason>"`. |
+| `slow_providers` | Servers that did not answer in time, now or earlier, so that the next one was asked, as `"<id>: <what happened>"`. Empty unless `[servers] when_slow = "next"` is set (see [Language servers](providers.md#when-a-server-is-too-slow)), and for an answer read from the cache. |
 | `outcome.state` | One of the states below. |
 | `warnings` | Where the answer may be incomplete because the server does not read some indexed files: Go files behind custom build tags, or modules that tests and code name in `import()`, `vi.mock()` or `jest.mock()`. Empty when there are none. |
 
@@ -117,7 +119,7 @@ References are sorted by path and position. `enclosing_symbol` is the qualified 
 
 Treat only `found` and `empty` as answers. `empty` means the server found nothing it could see, not that the symbol is unused.
 
-Every command that asks a language server (`refs`, `definition`, `implementations`, and the `hover` part of `signature`) shares this shape: `provenance`, `from_cache`, `skipped_providers`, and an `outcome` whose `state` is one of those above. When the state is `found`, the answer is under a field named for it: `references`, `definitions`, `implementations`, or `text`.
+Every command that asks a language server (`refs`, `definition`, `implementations`, and the `hover` part of `signature`) shares this shape: `provenance`, `from_cache`, `skipped_providers`, `slow_providers`, and an `outcome` whose `state` is one of those above. When the state is `found`, the answer is under a field named for it: `references`, `definitions`, `implementations`, or `text`.
 
 ### Ambiguous names
 
@@ -142,6 +144,7 @@ Pick one and run `lemma --json refs '#f256e26e'`.
   "provenance": { "provider_id": "pyright", "...": "..." },
   "from_cache": false,
   "skipped_providers": [],
+  "slow_providers": [],
   "outcome": {
     "state": "found",
     "definitions": [
@@ -172,6 +175,7 @@ The same shape as `refs`, with `outcome.implementations` holding entries like `d
     "provenance": { "provider_id": "pyright", "...": "..." },
     "from_cache": false,
     "skipped_providers": [],
+    "slow_providers": [],
     "outcome": { "state": "found", "text": "```python\n(method) def area(self: Self@Square) -> float\n```" }
   }
 }

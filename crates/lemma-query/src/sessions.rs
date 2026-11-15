@@ -57,6 +57,11 @@ pub struct SessionPool {
     /// graph asks dozens of questions, and each would start the server
     /// again only to fall back to the next one.
     failed_starts: HashMap<SessionKey, (Instant, String)>,
+    /// What a lookup does about a server that does not answer in time.
+    when_slow: WhenSlow,
+    /// Servers that did not answer in time where the next one did, with
+    /// when: lookups pass them over for as long as `when_slow` says.
+    slow: HashMap<SessionKey, Instant>,
     arrivals: Sender<Arrival>,
     arrivals_inbox: Receiver<Arrival>,
     /// Asked before a server is: see [`SessionPool::interrupt_when`].
@@ -134,6 +139,8 @@ impl SessionPool {
             warming: HashSet::new(),
             failed_warm_ups: HashMap::new(),
             failed_starts: HashMap::new(),
+            when_slow: WhenSlow::default(),
+            slow: HashMap::new(),
             arrivals,
             arrivals_inbox,
             interrupt: None,
@@ -160,11 +167,92 @@ impl SessionPool {
         self.interrupt.as_ref().is_some_and(|interrupt| interrupt())
     }
 
+    /// Sets what a lookup does about a server that does not answer in
+    /// time. A change has every server passed over so far tried again.
+    pub fn set_when_slow(&mut self, when_slow: WhenSlow) {
+        if self.when_slow != when_slow {
+            self.slow.clear();
+        }
+        self.when_slow = when_slow;
+    }
+
+    /// How long a server with another after it may take over one question
+    /// of a lookup that waits `request_timeout` for any server, where the
+    /// next is asked when one is slow; `None` where a slow one is reported.
+    pub(crate) fn gives_way_after(&self, request_timeout: Duration) -> Option<Duration> {
+        match self.when_slow {
+            WhenSlow::Report => None,
+            WhenSlow::Next { give_way_after, .. } => {
+                Some(give_way_after.unwrap_or(request_timeout))
+            }
+        }
+    }
+
+    /// Has lookups on `root` pass `provider` over from `now`: it did not
+    /// answer in time where the next server did.
+    pub(crate) fn pass_over(&mut self, root: &Path, provider: &InstalledProvider, now: Instant) {
+        self.slow.insert(root_key(root, provider), now);
+    }
+
+    /// `providers` as a lookup on `root` tries them at `now`: those to
+    /// ask, in order, then those passed over. When every one is passed
+    /// over all are asked, the slowest answer being better than none.
+    pub(crate) fn askable(
+        &mut self,
+        root: &Path,
+        providers: Vec<InstalledProvider>,
+        now: Instant,
+    ) -> (Vec<InstalledProvider>, Vec<InstalledProvider>) {
+        let when_slow = self.when_slow;
+        self.slow
+            .retain(|_, since| when_slow.passes_over(now.saturating_duration_since(*since)));
+        let is_passed_over =
+            |provider: &InstalledProvider| self.slow.contains_key(&root_key(root, provider));
+        if providers.iter().all(is_passed_over) {
+            return (providers, Vec::new());
+        }
+        providers
+            .into_iter()
+            .partition(|provider| !is_passed_over(provider))
+    }
+
+    /// The servers lookups pass over at `now`, for status reports.
+    pub fn passed_over(&self, now: Instant) -> Vec<PassedOver> {
+        let WhenSlow::Next {
+            try_again_after, ..
+        } = self.when_slow
+        else {
+            return Vec::new();
+        };
+        let mut passed_over: Vec<PassedOver> = self
+            .slow
+            .iter()
+            .map(|(key, since)| (key, now.saturating_duration_since(*since)))
+            .filter(|(_, since)| self.when_slow.passes_over(*since))
+            .map(|(key, since)| PassedOver {
+                provider_id: key.provider_id.clone(),
+                root: key.root.clone(),
+                since,
+                tried_again_in: try_again_after.map(|after| after.saturating_sub(since)),
+            })
+            .collect();
+        passed_over.sort_by(|left, right| {
+            left.root
+                .cmp(&right.root)
+                .then(left.provider_id.cmp(&right.provider_id))
+        });
+        passed_over
+    }
+
     /// Starts a server in the background, trying the providers in order,
     /// unless one of them is running or starting already. A lookup that
-    /// needs one meanwhile waits for it instead of starting a second.
-    pub fn warm_up(&mut self, warm_up: WarmUp) {
+    /// needs one meanwhile waits for it instead of starting a second. A
+    /// server lookups pass over is not started: the one they ask is.
+    pub fn warm_up(&mut self, mut warm_up: WarmUp) {
         self.collect_arrivals(None);
+        let root = PathBuf::from(&warm_up.snapshot.snapshot.root);
+        let providers = std::mem::take(&mut warm_up.providers);
+        (warm_up.providers, _) = self.askable(&root, providers, Instant::now());
         let keys: Vec<SessionKey> = warm_up
             .providers
             .iter()
@@ -703,6 +791,55 @@ pub struct IdlePolicy {
     pub memory_budget_bytes: Option<u64>,
 }
 
+/// What a lookup does when a server does not answer in the time the lookup
+/// was given: a point between waiting for the first installed server
+/// every time and leaving it for the next one for good.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WhenSlow {
+    /// The lookup fails and says so: another server answering unasked
+    /// would hide that the first could not.
+    #[default]
+    Report,
+    /// The next installed server for the language is asked. Once one
+    /// answers, the slow server is passed over on that root until
+    /// `try_again_after` has gone by: zero tries it first every time,
+    /// `None` leaves it for as long as the pool lives.
+    Next {
+        /// How long a server with another after it may take over one
+        /// question, whoever started it; `None` for as long as the lookup
+        /// waits for any server.
+        give_way_after: Option<Duration>,
+        /// How long the slow server is passed over.
+        try_again_after: Option<Duration>,
+    },
+}
+
+impl WhenSlow {
+    /// Whether a server that was too slow `since` ago is still passed
+    /// over.
+    fn passes_over(self, since: Duration) -> bool {
+        match self {
+            Self::Report => false,
+            Self::Next {
+                try_again_after, ..
+            } => try_again_after.is_none_or(|after| since < after),
+        }
+    }
+}
+
+/// A server lookups pass over, for status reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PassedOver {
+    /// The provider passed over.
+    pub provider_id: String,
+    /// The workspace root it is passed over on.
+    pub root: PathBuf,
+    /// How long ago it did not answer in time.
+    pub since: Duration,
+    /// How long until a lookup tries it again; `None` when none will.
+    pub tried_again_in: Option<Duration>,
+}
+
 /// What a server in the pool is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerState {
@@ -851,6 +988,140 @@ mod tests {
         assert!(!first.0);
         assert!(second.0);
         assert_eq!(second.1, first.1);
+    }
+
+    /// Two providers of one language as a lookup would try them, and a
+    /// pool that asks the next when one is slow.
+    fn two_providers(try_again_after: Option<Duration>) -> (Vec<InstalledProvider>, SessionPool) {
+        let registry = lemma_providers::ProviderRegistry::builtin().unwrap();
+        let providers = registry.definitions()[..2]
+            .iter()
+            .map(|definition| InstalledProvider {
+                definition: definition.clone(),
+                executable: PathBuf::from("/bin/server"),
+                search_path: None,
+            })
+            .collect();
+        let mut pool = SessionPool::long_lived();
+        pool.set_when_slow(WhenSlow::Next {
+            give_way_after: None,
+            try_again_after,
+        });
+        (providers, pool)
+    }
+
+    fn ids(providers: &[InstalledProvider]) -> Vec<&str> {
+        providers
+            .iter()
+            .map(|provider| provider.definition.id.as_str())
+            .collect()
+    }
+
+    const MINUTE: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn a_slow_server_is_passed_over_until_it_is_to_be_tried_again() {
+        let (providers, mut pool) = two_providers(Some(30 * MINUTE));
+        let (first, second) = (providers[0].clone(), providers[1].clone());
+        let root = Path::new("/repository");
+        let slow_at = Instant::now();
+        pool.pass_over(root, &first, slow_at);
+
+        let soon = pool.askable(root, providers.clone(), slow_at + MINUTE);
+        let elsewhere = pool.askable(Path::new("/other"), providers.clone(), slow_at + MINUTE);
+        let later = pool.askable(root, providers.clone(), slow_at + 30 * MINUTE);
+
+        assert_eq!(ids(&soon.0), [second.definition.id.as_str()]);
+        assert_eq!(ids(&soon.1), [first.definition.id.as_str()]);
+        assert_eq!(ids(&elsewhere.0), ids(&providers));
+        assert_eq!(ids(&later.0), ids(&providers));
+        assert_eq!(ids(&later.1), [] as [&str; 0]);
+    }
+
+    #[test]
+    fn how_long_a_slow_server_is_passed_over_runs_from_never_to_for_good() {
+        let root = Path::new("/repository");
+        let slow_at = Instant::now();
+        let asked_first_after = |try_again_after: Option<Duration>, after: Duration| {
+            let (providers, mut pool) = two_providers(try_again_after);
+            pool.pass_over(root, &providers[0], slow_at);
+            let (asked, _) = pool.askable(root, providers.clone(), slow_at + after);
+            asked[0].definition.id == providers[0].definition.id
+        };
+
+        assert!(asked_first_after(Some(Duration::ZERO), Duration::ZERO));
+        assert!(!asked_first_after(Some(MINUTE), Duration::ZERO));
+        assert!(!asked_first_after(None, 24 * 60 * MINUTE));
+    }
+
+    #[test]
+    fn a_server_gives_way_after_the_lookups_wait_unless_a_time_is_set() {
+        let mut pool = SessionPool::long_lived();
+        let next = |give_way_after| WhenSlow::Next {
+            give_way_after,
+            try_again_after: None,
+        };
+
+        let reported = pool.gives_way_after(MINUTE);
+        pool.set_when_slow(next(None));
+        let unset = pool.gives_way_after(MINUTE);
+        pool.set_when_slow(next(Some(Duration::from_secs(20))));
+        let set = pool.gives_way_after(MINUTE);
+
+        assert_eq!(reported, None);
+        assert_eq!(unset, Some(MINUTE));
+        assert_eq!(set, Some(Duration::from_secs(20)));
+    }
+
+    #[test]
+    fn servers_all_passed_over_are_all_asked() {
+        let (providers, mut pool) = two_providers(None);
+        let root = Path::new("/repository");
+        let slow_at = Instant::now();
+        for provider in &providers {
+            pool.pass_over(root, provider, slow_at);
+        }
+
+        let (asked, passed_over) = pool.askable(root, providers.clone(), slow_at + MINUTE);
+
+        assert_eq!(ids(&asked), ids(&providers));
+        assert_eq!(ids(&passed_over), [] as [&str; 0]);
+    }
+
+    #[test]
+    fn a_change_of_setting_has_every_server_tried_again() {
+        let (providers, mut pool) = two_providers(None);
+        let root = Path::new("/repository");
+        let slow_at = Instant::now();
+        pool.pass_over(root, &providers[0], slow_at);
+
+        pool.set_when_slow(WhenSlow::Next {
+            give_way_after: None,
+            try_again_after: Some(MINUTE),
+        });
+        let (asked, _) = pool.askable(root, providers.clone(), slow_at);
+
+        assert_eq!(ids(&asked), ids(&providers));
+    }
+
+    #[test]
+    fn status_lists_a_server_passed_over_with_when_it_is_tried_again() {
+        let (providers, mut pool) = two_providers(Some(30 * MINUTE));
+        let slow_at = Instant::now();
+        pool.pass_over(Path::new("/repository"), &providers[0], slow_at);
+
+        let passed_over = pool.passed_over(slow_at + 10 * MINUTE);
+
+        assert_eq!(
+            passed_over,
+            [PassedOver {
+                provider_id: providers[0].definition.id.clone(),
+                root: PathBuf::from("/repository"),
+                since: 10 * MINUTE,
+                tried_again_in: Some(20 * MINUTE),
+            }]
+        );
+        assert_eq!(pool.passed_over(slow_at + 30 * MINUTE), []);
     }
 
     #[test]
