@@ -468,9 +468,16 @@ fn function_node(node: &Node, offset: &str) -> GraphNode {
         .and_then(|rest| rest.strip_prefix('/'))
         .filter(|_| !offset.is_empty())
         .unwrap_or(file);
+    // A file's top-level code has no name of its own: named as a symbol
+    // graph names a use at the top of a file.
+    let label = if kind.is_empty() {
+        format!("{relative} (top level)")
+    } else {
+        name.clone()
+    };
     GraphNode {
         id: format!("function:{file}:{line}"),
-        label: name.clone(),
+        label,
         kind: if kind.is_empty() { "code" } else { kind }.to_owned(),
         path: Some(relative.to_owned()),
         line: Some(*line),
@@ -629,6 +636,21 @@ mod tests {
         );
         assert_eq!(first.nodes.len(), 3);
         assert_eq!(froms(&second).len(), 6);
+    }
+
+    #[test]
+    fn the_top_level_code_of_a_file_is_labelled_by_the_file() {
+        let top_level = Node::Function {
+            file: "services/api/routes.ts".to_owned(),
+            line: 0,
+            name: String::new(),
+            kind: String::new(),
+        };
+
+        let node = function_node(&top_level, "services");
+
+        assert_eq!(node.label, "api/routes.ts (top level)");
+        assert_eq!(node.kind, "code");
     }
 
     #[test]
