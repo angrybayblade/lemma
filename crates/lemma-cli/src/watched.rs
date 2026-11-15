@@ -531,6 +531,13 @@ impl Watched {
             return None;
         }
         let all = relative_paths(&self.root, &observed.paths);
+        // Git rewrote its index or wrote objects, as every `git status`
+        // (a check's own among them) and `git add` do: neither moves HEAD
+        // nor changes a file, which is all a check reads of Git.
+        let is_git_bookkeeping = observed.paths.iter().all(|path| is_git_bookkeeping(path));
+        if !observed.needs_full_walk && all.is_empty() && is_git_bookkeeping {
+            return None;
+        }
         let changed = without_inner(&self.root, all.clone(), &self.inner);
         // Every path was in a repository inside it, whose own watcher reports
         // it: nothing of this one changed.
@@ -586,6 +593,26 @@ impl Watched {
         }
         self.unprepared.take()
     }
+}
+
+/// Whether `path` is Git's bookkeeping rather than its record of where
+/// HEAD and the branches are: an index or a lock file, or the object store,
+/// in any repository's Git directory (a superproject keeps its submodules'
+/// under `.git/modules`).
+fn is_git_bookkeeping(path: &Path) -> bool {
+    let names: Vec<&str> = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect();
+    let Some(git) = names.iter().position(|name| *name == ".git") else {
+        return false;
+    };
+    let inside = &names[git + 1..];
+    let file = inside.last().copied().unwrap_or_default();
+    let is_lock = Path::new(file)
+        .extension()
+        .is_some_and(|extension| extension == "lock");
+    inside.contains(&"objects") || file == "index" || is_lock
 }
 
 /// `relative` paths of the repository at `root` without those in the
@@ -665,6 +692,18 @@ fn watches_of(watch: &lemma_index::Watch) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_index_rewrite_is_git_bookkeeping_and_a_moved_head_is_not() {
+        let module = Path::new("/w/.git/modules/repos/ctx");
+
+        assert!(is_git_bookkeeping(&module.join("index")));
+        assert!(is_git_bookkeeping(&module.join("index.lock")));
+        assert!(is_git_bookkeeping(&module.join("objects/ab/cdef")));
+        assert!(!is_git_bookkeeping(&module.join("HEAD")));
+        assert!(!is_git_bookkeeping(&module.join("refs/heads/main")));
+        assert!(!is_git_bookkeeping(Path::new("/w/src/index")));
+    }
 
     fn git(directory: &Path, args: &[&str]) {
         let status = std::process::Command::new("git")
