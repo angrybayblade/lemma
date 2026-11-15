@@ -211,17 +211,22 @@ struct Kept {
     report: Result<Arc<Report>, String>,
     /// How long evaluating it took.
     evaluation: Duration,
+    /// A digest of the whole environment of the ask that evaluated it.
+    environment: u64,
 }
 
 impl Kept {
-    /// Whether it still holds, beyond the fingerprint it is held under.
-    fn holds(&self, unread_generations: u64) -> bool {
+    /// Whether it still holds, beyond the fingerprint it is held under. An
+    /// answer that ran a behavior holds only for the same files and the
+    /// same whole environment, since a checker can read any of them.
+    fn holds(&self, unread_generations: u64, environment: u64) -> bool {
         let ran_behavior = self
             .report
             .as_ref()
             .is_ok_and(|report| !report.behaviors.is_empty());
-        lemma_graph::Warm::stamps_hold(&self.interpreters)
-            && (!ran_behavior || self.unread_generations == unread_generations)
+        let behaviors_hold = !ran_behavior
+            || (self.unread_generations == unread_generations && self.environment == environment);
+        lemma_graph::Warm::stamps_hold(&self.interpreters) && behaviors_hold
     }
 }
 
@@ -360,7 +365,7 @@ impl Worker {
             self.collect(true);
         }
         let options = options_key(&question.raw);
-        let fingerprint = self.fingerprint(question, &options);
+        let fingerprint = self.fingerprint(question);
         let asked = Asked {
             question,
             options,
@@ -372,10 +377,11 @@ impl Worker {
             .iter()
             .map(Watched::unread_generation)
             .sum();
+        let environment = digest(&question.environment);
         let reused = self
             .held
             .get(&fingerprint)
-            .is_some_and(|kept| kept.holds(unread_generations));
+            .is_some_and(|kept| kept.holds(unread_generations, environment));
         if !reused {
             let evaluating = Instant::now();
             let report = self.evaluate(question).map(Arc::new);
@@ -389,6 +395,7 @@ impl Worker {
                     unread_generations,
                     report,
                     evaluation,
+                    environment,
                 },
             );
         }
@@ -543,16 +550,22 @@ impl Worker {
         crate::check::evaluate(&question.args, Some(&served)).map_err(|error| format!("{error:#}"))
     }
 
-    /// What an answer rests on besides the files watched: the command
-    /// (without `--since`), its directory and environment, each
-    /// repository's generation, the workspace's own manifests, and the
-    /// date (allowances expire).
-    fn fingerprint(&self, question: &Question, options: &str) -> u64 {
+    /// What an answer rests on besides the files watched: what the ask
+    /// evaluates (see [`evaluated`]), the variables that change how the
+    /// commands a check runs behave, each repository's generation, the
+    /// workspace's own manifests, and the date (allowances expire). How it
+    /// was asked, from which directory and printed how, is left out: those
+    /// change only the printing, done for each ask, so one client's answer
+    /// is given again to another asking the same.
+    fn fingerprint(&self, question: &Question) -> u64 {
         let mut hasher = DefaultHasher::new();
-        options.hash(&mut hasher);
-        question.json.hash(&mut hasher);
-        question.cwd.hash(&mut hasher);
-        question.environment.hash(&mut hasher);
+        evaluated(question).hash(&mut hasher);
+        let toolchain: Vec<(&String, &String)> = question
+            .environment
+            .iter()
+            .filter(|(name, _)| lemma_graph::adapters::is_toolchain_variable(name))
+            .collect();
+        toolchain.hash(&mut hasher);
         self.workspace.state().hash(&mut hasher);
         today().hash(&mut hasher);
         hasher.finish()
@@ -703,6 +716,38 @@ fn changes<'a>(earlier: &'a Report, now: &'a Report) -> (Vec<&'a Finding>, Vec<&
 
 /// The command line without `--since` and its token: answers to it with
 /// any token are one set of options.
+/// What an ask evaluates: its workspace, by the canonical path of its
+/// description, and the options that change which findings it has. Not
+/// `--json`, `--all` or `--since`, which change how they are printed, nor
+/// `--no-clone`: the repositories sentry watches are here, so nothing is
+/// cloned for them either way.
+fn evaluated(question: &Question) -> String {
+    let args = &question.args;
+    let manifest = crate::check::entry_manifest_in(&question.cwd, &args.manifest);
+    let manifest = manifest.canonicalize().unwrap_or(manifest);
+    format!(
+        "{}\n{:?}\n{:?}\n{:?}\n{:?}\n{}\n{}\n{:?}\n{:?}\n{:?}\n{}",
+        manifest.display(),
+        args.change,
+        args.base,
+        args.head,
+        args.level,
+        args.no_run,
+        args.run_base,
+        args.select,
+        args.engine,
+        args.evaluation,
+        args.explain,
+    )
+}
+
+/// A digest of an environment.
+fn digest(environment: &BTreeMap<String, String>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    environment.hash(&mut hasher);
+    hasher.finish()
+}
+
 fn options_key(raw: &[String]) -> String {
     let mut words = Vec::new();
     let mut skips_next = false;
@@ -1056,6 +1101,30 @@ mod tests {
 
         assert_eq!(again, first);
         assert_eq!((worker.counts.evaluated, worker.counts.reused), (2, 2));
+    }
+
+    #[test]
+    fn the_same_question_asked_another_way_is_answered_from_one_evaluation() {
+        let root = tempfile::tempdir().unwrap();
+        shop(root.path());
+        let mut worker =
+            Worker::start(&root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let text = question(root.path());
+        let mut json = question(&root.path().join("web"));
+        json.args.manifest = PathBuf::from("../mod.lm");
+        json.json = true;
+        json.raw = ["check", "../mod.lm", "--change", "billing", "--json"]
+            .map(str::to_owned)
+            .to_vec();
+        json.environment
+            .insert("TERM_PROGRAM".to_owned(), "an editor".to_owned());
+
+        worker.respond(&text);
+        let answered = worker.respond(&json);
+
+        let report: serde_json::Value = serde_json::from_str(&answered.stdout).unwrap();
+        assert_eq!(report["sentry"]["reused"], true);
+        assert_eq!((worker.counts.evaluated, worker.counts.reused), (1, 1));
     }
 
     #[test]
