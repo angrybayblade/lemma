@@ -264,7 +264,7 @@ Exits with 0 when no finding is an error, 4 when one is, 5 when it finished but 
 
 Experimental. A language server for editors that shows what saved changes break, in every repository of the workspace. It speaks the Language Server Protocol over stdin and stdout; an editor starts it, and `lm lsp` serves `.lm` modules instead.
 
-Every repository of the workspace is watched. When a repository's saved files change, it is checked as `lemma check --change` would, and each finding the change introduced becomes a diagnostic on the line of code it names, in whichever repository that is. Each file the working directory changed gets a summary linking to those lines. Findings that were there before the change are not shown. It reads files from disk, so it follows saves, by an editor or anything else, not typing.
+It asks the daemon's sentry, starting the daemon if none runs, so the editor, `lemma check` and the MCP `check` tool share one watched workspace and each other's answers; when sentry is attached to another workspace it watches the workspace itself. When a repository's saved files change, it is checked as `lemma check --change` would, and each finding the change introduced becomes a diagnostic on the line of code it names, in whichever repository that is. Each file the working directory changed gets a summary linking to those lines. Findings that were there before the change are not shown. It reads files from disk, so it follows saves, by an editor or anything else, not typing.
 
 The workspace is the module given, or else the editor's `manifest` initialization option, or else the nearest `mod.lm` above the editor's folder that declares a workspace. The VS Code extension runs it with `lemma.checkOnChange.enabled`.
 

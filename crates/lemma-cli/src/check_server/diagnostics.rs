@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use lemma_graph::{Finding, Report, Severity};
+use lemma_graph::{Report, Severity};
 
 /// How many places a summary links to before it only counts the rest.
 const RELATED_LIMIT: usize = 50;
@@ -32,6 +32,66 @@ pub(crate) struct Place {
     /// Counted from zero.
     pub line: u32,
     pub message: String,
+}
+
+/// What checking a change found, as the server reads it: from a report in
+/// this process, or from the JSON of one sentry answered.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct CheckedChange {
+    pub repositories: Vec<CheckedRepository>,
+    pub findings: Vec<CheckedFinding>,
+}
+
+/// A repository a check read.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct CheckedRepository {
+    /// As findings spell it: `#billing`, or `self`.
+    pub name: String,
+    pub root: String,
+    /// The commit the change was compared against, for the changed one.
+    pub base: Option<String>,
+}
+
+/// One finding of a check.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct CheckedFinding {
+    pub severity: Severity,
+    /// The requirement or check that found it.
+    pub check: String,
+    pub message: String,
+    pub introduced: bool,
+    /// The value of each variable its requirement binds.
+    #[serde(default)]
+    pub values: BTreeMap<String, String>,
+}
+
+impl From<&Report> for CheckedChange {
+    fn from(report: &Report) -> Self {
+        let repositories = report
+            .repositories
+            .iter()
+            .map(|repository| CheckedRepository {
+                name: repository.name.clone(),
+                root: repository.root.clone(),
+                base: repository.base.clone(),
+            })
+            .collect();
+        let findings = report
+            .findings
+            .iter()
+            .map(|finding| CheckedFinding {
+                severity: finding.severity,
+                check: finding.check.clone(),
+                message: finding.message.clone(),
+                introduced: finding.introduced,
+                values: finding.values.clone(),
+            })
+            .collect();
+        Self {
+            repositories,
+            findings,
+        }
+    }
 }
 
 /// Diagnostics by absolute file path, each file's sorted.
@@ -63,7 +123,7 @@ type Anchor = (PathBuf, u32);
 #[derive(Default)]
 struct Answerable<'a> {
     elsewhere: Vec<(&'a str, Severity, Place)>,
-    unlocated: Vec<&'a Finding>,
+    unlocated: Vec<&'a CheckedFinding>,
 }
 
 /// The diagnostics one repository's change gives: each finding the change
@@ -72,7 +132,7 @@ struct Answerable<'a> {
 /// outside the changed files, together with the introduced findings that
 /// name no line. Findings that were there before the change are left out:
 /// they are not the change's to fix.
-pub(crate) fn diagnose(report: &Report, changed: &[ChangedFile]) -> FileDiagnostics {
+pub(crate) fn diagnose(report: &CheckedChange, changed: &[ChangedFile]) -> FileDiagnostics {
     let roots = repository_roots(report);
     let introduced = report.findings.iter().filter(|finding| finding.introduced);
     let mut files = FileDiagnostics::new();
@@ -146,7 +206,7 @@ fn add_answers(files: &mut FileDiagnostics, answerable: BTreeMap<Anchor, Answera
 
 /// Each repository's name as findings spell it (`#billing`, `self`), with
 /// its directory.
-fn repository_roots(report: &Report) -> BTreeMap<&str, &Path> {
+fn repository_roots(report: &CheckedChange) -> BTreeMap<&str, &Path> {
     report
         .repositories
         .iter()
@@ -168,7 +228,7 @@ struct Location<'a> {
 /// as `#repository:service:path` with the path relative to the repository,
 /// and its line `l`, counted from one.
 fn finding_location<'a>(
-    finding: &Finding,
+    finding: &CheckedFinding,
     roots: &BTreeMap<&'a str, &Path>,
 ) -> Option<Location<'a>> {
     let file = finding.values.get("f")?;
@@ -187,7 +247,7 @@ fn finding_location<'a>(
 
 /// A finding's message without the `(file:line)` it ends with, which the
 /// diagnostic's place already says.
-fn short_message(finding: &Finding) -> String {
+fn short_message(finding: &CheckedFinding) -> String {
     let (Some(file), Some(line)) = (finding.values.get("f"), finding.values.get("l")) else {
         return finding.message.clone();
     };
@@ -206,7 +266,7 @@ fn short_message(finding: &Finding) -> String {
 /// finding that names nothing the change touched comes from the first
 /// changed line of each changed file; a file Git does not know, from its
 /// top.
-fn anchors(finding: &Finding, changed: &[ChangedFile]) -> Vec<Anchor> {
+fn anchors(finding: &CheckedFinding, changed: &[ChangedFile]) -> Vec<Anchor> {
     let mut names: Vec<&str> = finding
         .values
         .iter()
@@ -315,7 +375,7 @@ fn summary(line: u32, located: &[(&str, Severity, Place)]) -> LineDiagnostic {
 mod tests {
     use super::*;
     use lemma_graph::config::Level;
-    use lemma_graph::{ResolvedRepository, Severity};
+    use lemma_graph::{Finding, ResolvedRepository, Severity};
 
     fn repository(name: &str, root: &str) -> ResolvedRepository {
         ResolvedRepository {
@@ -368,7 +428,11 @@ mod tests {
         }
     }
 
-    fn report(findings: Vec<Finding>) -> Report {
+    fn report(findings: Vec<Finding>) -> CheckedChange {
+        CheckedChange::from(&whole_report(findings))
+    }
+
+    fn whole_report(findings: Vec<Finding>) -> Report {
         Report {
             level: Level::Check,
             links: 0,
@@ -384,6 +448,17 @@ mod tests {
             not_checked: Vec::new(),
             relations: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn a_report_read_back_from_its_json_is_the_one_checked_here() {
+        let located = finding(true, Some(("#client:sdk:src/api.ts", "12")), "names `url`");
+        let whole = whole_report(vec![binding(located, "leaf", "url")]);
+
+        let json = serde_json::to_string(&whole).unwrap();
+        let read: CheckedChange = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(read, CheckedChange::from(&whole));
     }
 
     #[test]

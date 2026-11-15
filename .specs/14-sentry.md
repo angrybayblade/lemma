@@ -57,7 +57,8 @@ Between asks, sentry listens to file changes and prepares the check's inputs in 
 | Decision | Status |
 | --- | --- |
 | Sentry runs inside the daemon, attached to one workspace at a time | decided |
-| It attaches only to a daemon that is already running; it never starts one | decided |
+| It attaches only to a daemon that is already running; it never starts one | decided; revised 2026-11-15: `lemma lsp` starts one, since turning it on in an editor is the user's opt-in. `lemma check` still never does |
+| Sentry is the one headless node for every client: `lemma check`, the MCP `check` tool and `lemma lsp` all ask it, and none keeps a workspace warm of its own while it serves | decided, 2026-11-15 |
 | Automatic attachment is opt-in, by the user | decided |
 | Sentry listens and prepares; asks evaluate. No rule evaluation, resolver or checker runs ahead of an ask | decided |
 | v1 serves checks only | decided |
@@ -323,6 +324,23 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
    **Where an ask right after an edit spends its time.** A graph asked before the change settles reads what changed itself, 1.4 to 1.6 s for a Go handler there, and nothing here changes that. Logged at `debug`, one such ask spent 0.39 s building the edited repository's exports again (0.16 s reading every file of its two services for routes, though one file changed, and 0.23 s finding the handlers of the first service's operations), 0.23 s asking the language server, and 0.9 s reading the system and tracing through it in three rounds, each reading the generated clients and the services again (40 to 110 ms) and running Soufflé (60 to 110 ms). No one step is a quarter of it. Left as they are: exports kept by service rather than by repository, a file's routes kept by its size and time rather than by reading it, and inference that takes a change rather than the whole system ("Incremental Datalog" below).
 
    Not done: the graphs kept are the ones asked, not the ones an edit touches, so a symbol never asked about is still read when asked; bringing the index up to date, adapters included, does not give way; a command for the same server waits for the answer on its way; and a server being started in the background is waited for to the end.
+
+8. **A headless node for every client (2026-11-15).** `lemma lsp` ([spec 5](05-lsp-and-integrations.md#change-diagnostics-experimental)) kept a watched workspace of its own, so an editor and an agent on the same workspace watched it, read it and checked it twice, and never shared an answer. It is now a client of sentry, as `lemma check` and the MCP tool are:
+
+   ```text
+   lemma_graph::Warm            kept reads
+          │
+   sentry (daemon)              watches, collects, prepares, answers asks, keeps answers and the journal
+          │
+     ┌────┼──────────┐
+    CLI  MCP     lemma lsp      each renders the same report its own way
+   ```
+
+   - `lemma lsp` attaches sentry to its workspace (`daemon::attach_sentry`), starting a daemon, or replacing one of another build, if none serves. Attaching is idempotent for the workspace already attached. It follows the journal with `events --wait` on a thread of its own, and checks a repository once its batches have been quiet for 0.3 s, by asking `check --change <repo> --json`, as `lemma check` would. When sentry is attached to another workspace, turned off, or goes away, it watches the workspace itself, as before; it never re-attaches by itself, so two builds cannot keep replacing each other's daemon.
+   - A batch says how many of the repository's own paths changed, and whether it was bulk. A workspace's directory no longer counts its repositories' files as its own (on macOS one recursive watch reports them), and a batch of Git's files alone, which a check's own `git status` rewrites in a superproject's `.git/modules`, counts none. A client then checks only what changed.
+   - The JSON report gives each finding's bound `values`, which say where its code is, and the `sentry` object says whether the answer was reused and how long evaluating it took (`evaluation_ms`). The rest of an ask's time is what asking costs, which `lemma lsp` logs with each check.
+
+   Measured on the fixture workspace of eleven repositories, before any work on the transport: an ask answered from a held answer took a median of 168 ms from `lemma check` (8 ms of it starting the process) and 166 ms from the MCP tool, which runs `lemma check` as a child. `lemma lsp` spent 88 to 262 ms asking per check. Nearly all of it is the barrier: an ask waits for each of the eleven watchers' markers in turn.
 
 **Later:**
 

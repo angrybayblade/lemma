@@ -173,7 +173,9 @@ pub struct InferredLink {
 }
 
 /// How serious a finding is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Fails the check (level `check`).
@@ -208,8 +210,9 @@ pub struct Finding {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed: Option<String>,
     /// A grammar requirement's finding: the value of each variable, which
-    /// allowances read.
-    #[serde(skip)]
+    /// allowances read, and which say where its code is (`f`, `l`) to a
+    /// client that places it, such as `lemma lsp`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub values: BTreeMap<String, String>,
     /// Why an inferred finding holds, when [`CheckOptions::explain`] asks.
     #[serde(skip_serializing_if = "Option::is_none")]

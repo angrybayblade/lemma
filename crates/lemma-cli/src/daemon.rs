@@ -517,6 +517,16 @@ fn control_sentry(build: &str, action: SentryAction, sentry: &mut Option<Sentry>
     };
     match action {
         SentryAction::Start { manifest } => {
+            let canonical = manifest.canonicalize().unwrap_or_else(|_| manifest.clone());
+            if let Some(attached) = sentry
+                .as_ref()
+                .filter(|attached| attached.manifest() == canonical)
+            {
+                return done(format!(
+                    "sentry (experimental) is attached to {}\n",
+                    attached.manifest().display()
+                ));
+            }
             if let Some(attached) = sentry.as_ref() {
                 return failed(format!(
                     "sentry is attached to {}; `lemma daemon sentry stop` first",
@@ -606,6 +616,39 @@ fn read_reply(reader: &mut BufReader<UnixStream>) -> Option<Reply> {
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;
     serde_json::from_str(&line).ok()
+}
+
+/// Attaches the daemon's sentry to the workspace whose manifest is
+/// `manifest` (absolute), starting a daemon, or replacing one of another
+/// build, if needed. For `lemma lsp`, whose editor setting is the person's
+/// opt-in; `lemma check` never starts a daemon for sentry. Whether sentry
+/// serves the workspace: not when it is attached to another.
+pub(crate) fn attach_sentry(manifest: &Path) -> anyhow::Result<bool> {
+    let socket = socket_path()?;
+    let request = Request::Sentry {
+        build: build_id(),
+        action: SentryAction::Start {
+            manifest: manifest.to_path_buf(),
+        },
+    };
+    let mut reply = exchange(&socket, &request)?;
+    if matches!(reply, Reply::Restart) {
+        log::info!("the running daemon is another build; replacing it");
+        wait_until_gone(&socket)?;
+        reply = exchange(&socket, &request)?;
+    }
+    match reply {
+        Reply::Done { exit_code: 0, .. } => Ok(true),
+        Reply::Done { stderr, .. } => {
+            log::info!(
+                "sentry does not serve {}: {}",
+                manifest.display(),
+                stderr.trim()
+            );
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
 }
 
 /// Sends `action` to the running daemon's sentry; `None` when no daemon

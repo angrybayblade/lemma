@@ -115,6 +115,10 @@ fn asked_arguments(args: &CheckArgs) -> Vec<String> {
 pub(crate) struct SentryNote<'a> {
     pub token: &'a str,
     pub delta: Option<Delta<'a>>,
+    /// Whether the answer was one already held.
+    pub reused: bool,
+    /// How long evaluating took for this answer: none when reused.
+    pub evaluation: std::time::Duration,
 }
 
 /// The findings that came and went since an earlier answer with the same
@@ -144,6 +148,7 @@ pub(crate) fn print(
             Some(SentryNote {
                 token,
                 delta: Some(delta),
+                ..
             }),
         ) if delta.changes.is_some() => print_delta(out, report, delta, args.all)
             .and_then(|()| writeln!(out, "sentry token: {token}")),
@@ -208,7 +213,11 @@ fn print_json_noted(
     note: &SentryNote<'_>,
 ) -> std::io::Result<()> {
     let mut value = serde_json::to_value(report).map_err(std::io::Error::other)?;
-    let mut sentry = serde_json::json!({ "token": note.token });
+    let mut sentry = serde_json::json!({
+        "token": note.token,
+        "reused": note.reused,
+        "evaluation_ms": note.evaluation.as_secs_f64() * 1000.0,
+    });
     if let Some(delta) = &note.delta {
         sentry["since"] = match &delta.changes {
             Some((new, gone)) => {

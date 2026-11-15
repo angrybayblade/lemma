@@ -178,7 +178,14 @@ struct Counts {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Event {
     /// A repository's files changed, so what was kept of it was dropped.
-    Batch { repository: String, paths: usize },
+    Batch {
+        repository: String,
+        /// How many of its own paths changed; none when only Git's files did.
+        paths: usize,
+        /// Whether anything in it may have changed: changes were lost or too
+        /// many to list.
+        bulk: bool,
+    },
     /// A check was answered.
     Answer {
         command: String,
@@ -199,6 +206,8 @@ struct Kept {
     interpreters: BTreeMap<String, String>,
     unread_generations: u64,
     report: Result<Arc<Report>, String>,
+    /// How long evaluating it took.
+    evaluation: Duration,
 }
 
 impl Kept {
@@ -314,6 +323,7 @@ impl Worker {
             self.record(Event::Batch {
                 repository: batch.repository,
                 paths: batch.paths,
+                bulk: batch.is_bulk,
             });
         }
     }
@@ -351,7 +361,9 @@ impl Worker {
             .get(&fingerprint)
             .is_some_and(|kept| kept.holds(unread_generations));
         if !reused {
+            let evaluating = Instant::now();
             let report = self.evaluate(question).map(Arc::new);
+            let evaluation = evaluating.elapsed();
             self.held.insert(
                 fingerprint,
                 Kept {
@@ -360,11 +372,12 @@ impl Worker {
                     interpreters: self.workspace.warm().interpreter_stamps(),
                     unread_generations,
                     report,
+                    evaluation,
                 },
             );
         }
         self.account(&asked, started.elapsed(), reused);
-        self.render(&asked)
+        self.render(&asked, reused)
     }
 
     /// Counts the answer and keeps it in the journal; a new answer's token
@@ -435,7 +448,7 @@ impl Worker {
 
     /// The answer held for `asked`, printed: with its token, and with what
     /// changed since the answer `--since` names.
-    fn render(&self, asked: &Asked<'_>) -> Answer {
+    fn render(&self, asked: &Asked<'_>, reused: bool) -> Answer {
         let Some(kept) = self.held.get(&asked.fingerprint) else {
             return failed("sentry has no answer");
         };
@@ -454,6 +467,12 @@ impl Worker {
         let note = SentryNote {
             token: &token,
             delta,
+            reused,
+            evaluation: if reused {
+                Duration::ZERO
+            } else {
+                kept.evaluation
+            },
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut streams = Streams {
@@ -689,7 +708,14 @@ fn options_key(raw: &[String]) -> String {
 
 fn describe(event: &Event) -> String {
     match event {
-        Event::Batch { repository, paths } => format!("changed {repository} ({paths} paths)"),
+        Event::Batch {
+            repository,
+            paths,
+            bulk,
+        } => {
+            let bulk = if *bulk { ", in bulk" } else { "" };
+            format!("changed {repository} ({paths} paths{bulk})")
+        }
         Event::Answer {
             command,
             errors,

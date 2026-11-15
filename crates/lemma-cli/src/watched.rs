@@ -54,8 +54,12 @@ const OVER_BUDGET: &str = "the watches graphs may take are used up ([graph] watc
 pub(crate) struct Batch {
     /// The repository's directory.
     pub repository: String,
-    /// How many paths changed.
+    /// How many of its own paths changed: not Git's files, and not those of
+    /// a repository inside it, which reports its own.
     pub paths: usize,
+    /// Whether changes were lost or too many to list, so that anything in it
+    /// may have changed.
+    pub is_bulk: bool,
 }
 
 /// Changes to one repository that have settled, for reading ahead.
@@ -212,10 +216,11 @@ impl WatchedWorkspace {
             if watched.watch.is_none() {
                 continue;
             }
-            if let Some(paths) = watched.take_changes(&self.warm, confirming) {
+            if let Some((paths, is_bulk)) = watched.take_changes(&self.warm, confirming) {
                 batches.push(Batch {
                     repository: watched.root.display().to_string(),
                     paths,
+                    is_bulk,
                 });
             }
             if confirming {
@@ -319,9 +324,9 @@ fn description_files(directory: &Path, inner: &[PathBuf]) -> Vec<(PathBuf, (u64,
     found
 }
 
-/// A watcher on each repository of the workspace whose description is
-/// `manifest`, while they fit in `watches` (`None` for no limit).
-fn watch_repositories(manifest: &Path, watches: Option<usize>) -> anyhow::Result<Vec<Watched>> {
+/// The directories of the repositories of the workspace whose description
+/// is `manifest`, as checks name them, the workspace's own among them.
+pub(crate) fn repository_directories(manifest: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let options = lemma_graph::CheckOptions {
         change: None,
         level: None,
@@ -339,7 +344,13 @@ fn watch_repositories(manifest: &Path, watches: Option<usize>) -> anyhow::Result
         environment: None,
         runtime: None,
     };
-    let spelled = lemma_graph::repository_roots(manifest, &options)?;
+    Ok(lemma_graph::repository_roots(manifest, &options)?)
+}
+
+/// A watcher on each repository of the workspace whose description is
+/// `manifest`, while they fit in `watches` (`None` for no limit).
+fn watch_repositories(manifest: &Path, watches: Option<usize>) -> anyhow::Result<Vec<Watched>> {
+    let spelled = repository_directories(manifest)?;
     let roots: Vec<PathBuf> = spelled
         .iter()
         .map(|root| root.canonicalize().unwrap_or_else(|_| root.clone()))
@@ -489,8 +500,13 @@ impl Watched {
     }
 
     /// Takes the reported changes, dropping what is kept of the paths they
-    /// touched; whether there were any, and how many paths.
-    fn take_changes(&mut self, warm: &lemma_graph::Warm, confirming: bool) -> Option<usize> {
+    /// touched; whether there were any, how many of its own paths changed,
+    /// and whether the change was a bulk one.
+    fn take_changes(
+        &mut self,
+        warm: &lemma_graph::Warm,
+        confirming: bool,
+    ) -> Option<(usize, bool)> {
         let watch = self.watch.as_mut()?;
         if !confirming && !watch.has_pending() {
             return None;
@@ -499,7 +515,13 @@ impl Watched {
         if !observed.needs_full_walk && observed.paths.is_empty() {
             return None;
         }
-        let changed = relative_paths(&self.root, &observed.paths);
+        let all = relative_paths(&self.root, &observed.paths);
+        let changed = without_inner(&self.root, all.clone(), &self.inner);
+        // Every path was in a repository inside it, whose own watcher reports
+        // it: nothing of this one changed.
+        if !observed.needs_full_walk && !all.is_empty() && changed.is_empty() {
+            return None;
+        }
         let is_unread = !observed.needs_full_walk
             && !changed.is_empty()
             && !changed
@@ -517,8 +539,9 @@ impl Watched {
             warm.forget_paths(&self.root, &changed);
         }
         self.generation += 1;
+        let own = changed.len();
         self.note_unprepared(changed, observed.needs_full_walk);
-        Some(observed.paths.len())
+        Some((own, observed.needs_full_walk))
     }
 
     fn note_unprepared(&mut self, changed: Vec<String>, is_lost: bool) {
@@ -548,6 +571,20 @@ impl Watched {
         }
         self.unprepared.take()
     }
+}
+
+/// `relative` paths of the repository at `root` without those in the
+/// repositories `inner` to it, whose own watchers report them. On macOS one
+/// recursive watch on a workspace's directory reports the repositories
+/// inside it too.
+fn without_inner(root: &Path, relative: Vec<String>, inner: &[PathBuf]) -> Vec<String> {
+    relative
+        .into_iter()
+        .filter(|path| {
+            let absolute = root.join(path);
+            !inner.iter().any(|other| absolute.starts_with(other))
+        })
+        .collect()
 }
 
 /// `paths` relative to `root`, with `/`, those outside it and in `.git`

@@ -10,7 +10,7 @@ This document concerns Lemma's **editor-facing** language server. The accepted s
 
 **What it does.**
 
-- It watches every repository of the workspace with the watcher sentry uses ([spec 14](14-sentry.md)) and keeps what it read between checks, in its own process. It does not need the daemon.
+- It is a client of the daemon's sentry ([spec 14](14-sentry.md), rollout item 8), shared with `lemma check` and the MCP tool: sentry watches the workspace and keeps what it read, and an answer one client asked for is given again to the next. `lemma lsp` starts the daemon if none runs. When sentry cannot serve the workspace, as when it is attached to another, the server watches the workspace itself.
 - When a repository's changes settle, it checks that repository as `lemma check --change` would, against the same default base, so a branch's commits and uncommitted work are checked together.
 - Each finding the change introduced becomes a diagnostic on the line of the code it names, in whichever repository that is. The changed line it comes from gets a summary linking to those lines outside the changed files, and each diagnostic links back to it. Findings the change did not introduce are not shown.
 - A repository that has uncommitted changes when the server starts is checked once, after any change that settles meanwhile.
@@ -23,7 +23,7 @@ This document concerns Lemma's **editor-facing** language server. The accepted s
 **What it does not do yet.**
 
 - Unsaved edits. Checks read files from disk, so it follows saves, by an editor or by an agent, not typing.
-- Unwatched repositories. It does not ask Git about a repository it could not watch, as an ask to sentry does.
+- Unwatched repositories, when it watches the workspace itself. It does not ask Git about a repository it could not watch, as an ask to sentry does.
 - Cancellation. A check runs to the end; a change made meanwhile gets a check of its own afterwards.
 
 **Found while building it.** An adapter's document was kept under the state the working directory was in when the adapter started. A file saved while the adapter read the code was then in a document kept for the state before it: for a clean working directory, the commit's own key. Later checks compared the change against that document and found nothing. Adapters now keep a document only if the working directory's state is unchanged after the run. Separately, the adapter cache is keyed by the runtime as checks served from a long-lived process describe it, which holds the caller's environment, so the editor's server and the command line do not share kept documents.
