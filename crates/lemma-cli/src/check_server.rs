@@ -35,7 +35,7 @@ use serde_json::{Value, json};
 use crate::check::Served;
 use crate::cli::{CheckArgs, LanguageServerArgs};
 use crate::watched::{BATCH_INTERVAL, WatchedWorkspace};
-use diagnostics::{FileDiagnostics, LineDiagnostic};
+use diagnostics::{ChangedFile, ChangedLine, FileDiagnostics, LineDiagnostic};
 
 /// A repository's or workspace's root module.
 const ROOT_MODULE: &str = "mod.lm";
@@ -343,7 +343,11 @@ impl<'a> Server<'a> {
                 return log(output, MessageType::ERROR, &message);
             }
         };
-        let touched = uncommitted_files(repository);
+        let changed = changed_lines(
+            repository,
+            base_of(&report, repository),
+            &uncommitted_files(repository),
+        );
         let introduced = report
             .findings
             .iter()
@@ -351,7 +355,7 @@ impl<'a> Server<'a> {
             .count();
         let message = format!("checked {name} in {seconds:.1}s: {introduced} findings introduced");
         self.diagnosed
-            .insert(name, diagnostics::diagnose(&report, &touched));
+            .insert(name, diagnostics::diagnose(&report, &changed));
         log(output, MessageType::INFO, &message)
     }
 
@@ -576,6 +580,130 @@ fn own_paths<'p>(repository: &Path, paths: &'p [String], repositories: &[PathBuf
         .collect()
 }
 
+/// The commit the check compared the repository in `directory` against,
+/// as its report names it.
+fn base_of<'r>(report: &'r Report, directory: &Path) -> Option<&'r str> {
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let wanted = canonical(directory);
+    report
+        .repositories
+        .iter()
+        .find(|repository| canonical(Path::new(&repository.root)) == wanted)?
+        .base
+        .as_deref()
+}
+
+/// Each of `files`, in the repository at `repository`, with the lines that
+/// differ from `base` (the checked-out commit when there is none), as
+/// `git diff` reports them. A file Git does not know has no changed lines.
+fn changed_lines(repository: &Path, base: Option<&str>, files: &[PathBuf]) -> Vec<ChangedFile> {
+    let relative: Vec<&Path> = files
+        .iter()
+        .filter_map(|file| file.strip_prefix(repository).ok())
+        .collect();
+    let diff = if relative.is_empty() {
+        String::new()
+    } else {
+        git_diff(repository, base.unwrap_or("HEAD"), &relative)
+    };
+    let mut by_path = parse_diff(&diff);
+    files
+        .iter()
+        .map(|file| {
+            let key = file
+                .strip_prefix(repository)
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            ChangedFile {
+                path: file.clone(),
+                lines: by_path.remove(&key).unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+/// `git diff` of `paths` against `base`, with no context; empty when Git
+/// cannot say.
+fn git_diff(repository: &Path, base: &str, paths: &[&Path]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(["-c", "core.quotePath=false", "diff", "--unified=0"])
+        .args(["--no-color", "--no-ext-diff", "--no-renames", base, "--"])
+        .args(paths)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        }
+        _ => String::new(),
+    }
+}
+
+/// The changed lines of each file in a `git diff --unified=0`, by the
+/// file's path in the repository. An added line is where it now is; a
+/// removed line is placed where it was removed from, on the line now
+/// following it.
+fn parse_diff(diff: &str) -> BTreeMap<String, Vec<ChangedLine>> {
+    let mut files: BTreeMap<String, Vec<ChangedLine>> = BTreeMap::new();
+    let mut path: Option<String> = None;
+    let mut in_hunk = false;
+    let mut next_added = 0;
+    let mut removed_at = 0;
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            path = None;
+            in_hunk = false;
+            continue;
+        }
+        if let Some(header) = line.strip_prefix("@@ ") {
+            let (start, count) = new_side(header);
+            next_added = start.saturating_sub(1);
+            // With nothing added, the hunk names the line before the removal.
+            removed_at = if count == 0 {
+                start
+            } else {
+                start.saturating_sub(1)
+            };
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk {
+            if let Some(name) = line.strip_prefix("+++ b/") {
+                path = Some(name.to_owned());
+            }
+            continue;
+        }
+        let Some(file) = path.as_ref() else {
+            continue;
+        };
+        let (at, text) = match line.split_at_checked(1) {
+            Some(("+", text)) => {
+                next_added += 1;
+                (next_added - 1, text)
+            }
+            Some(("-", text)) => (removed_at, text),
+            _ => continue,
+        };
+        files.entry(file.clone()).or_default().push(ChangedLine {
+            line: at,
+            text: text.to_owned(),
+        });
+    }
+    files
+}
+
+/// The first line, counted from one, and the line count of a hunk's new
+/// side, from its header after `@@ `: `-12,2 +11,0 @@` gives 11 and 0.
+fn new_side(header: &str) -> (u32, u32) {
+    let side = header
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix('+'))
+        .unwrap_or("0");
+    let (start, count) = side.split_once(',').unwrap_or((side, "1"));
+    (start.parse().unwrap_or(0), count.parse().unwrap_or(1))
+}
+
 /// The files Git says the working directory changed, added or left
 /// untracked, absolute and sorted; none when Git cannot say, or when the
 /// directory is not a repository's top, as a workspace's directory inside
@@ -721,6 +849,36 @@ mod tests {
         let paths = changed_paths(status);
 
         assert_eq!(paths, ["src/link.ts", "new.ts", "added.py"]);
+    }
+
+    #[test]
+    fn a_diff_places_added_lines_where_they_are_and_removals_where_they_were() {
+        let diff = "diff --git a/link.ts b/link.ts\n\
+                    --- a/link.ts\n\
+                    +++ b/link.ts\n\
+                    @@ -24,0 +25 @@ export const Request = z.object({\n\
+                    +  connection_slug: z.string(),\n\
+                    @@ -45 +45,0 @@ export const Response = z.object({\n\
+                    -  redirect_url: z.string(),\n\
+                    @@ -60 +59 @@\n\
+                    ---- a comment that starts with dashes\n\
+                    +++ a line that starts with pluses\n";
+
+        let files = parse_diff(diff);
+
+        let lines: Vec<(u32, &str)> = files["link.ts"]
+            .iter()
+            .map(|line| (line.line, line.text.as_str()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                (24, "  connection_slug: z.string(),"),
+                (45, "  redirect_url: z.string(),"),
+                (58, "--- a comment that starts with dashes"),
+                (58, "++ a line that starts with pluses"),
+            ]
+        );
     }
 
     #[test]
