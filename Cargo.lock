@@ -551,6 +551,7 @@ dependencies = [
  "lemma-lang",
  "lemma-lm",
  "lemma-logic",
+ "lemma-lsp",
  "lemma-model",
  "lemma-providers",
  "lemma-query",
