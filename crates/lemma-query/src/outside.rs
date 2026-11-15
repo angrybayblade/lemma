@@ -25,6 +25,8 @@ pub(crate) struct OutsideFiles {
     /// Each file met, as read; `None` for one that cannot be read or is in
     /// no language Lemma parses.
     files: BTreeMap<String, Option<OutsideFile>>,
+    /// The definitions found around the uses met, by file.
+    known: BTreeMap<String, Vec<StoredSymbol>>,
     /// The parser, made when the first file needs parsing.
     extractor: Option<Extractor>,
 }
@@ -53,6 +55,7 @@ impl OutsideFiles {
             root: PathBuf::from(root),
             snapshot_id,
             files: BTreeMap::new(),
+            known: BTreeMap::new(),
             extractor: None,
         }
     }
@@ -89,8 +92,21 @@ impl OutsideFiles {
             }
             around
         };
-        let innermost = around.into_iter().next_back();
-        Ok(innermost.map(|definition| stored(path, language, definition)))
+        let known = self.known.entry(path.to_owned()).or_default();
+        let mut innermost = None;
+        for definition in around {
+            let symbol = stored(path, language, definition);
+            if known.iter().all(|other| other.id != symbol.id) {
+                known.push(symbol.clone());
+            }
+            innermost = Some(symbol);
+        }
+        Ok(innermost)
+    }
+
+    /// The definitions found so far around uses in the file at `path`.
+    pub(crate) fn known(&self, path: &str) -> &[StoredSymbol] {
+        self.known.get(path).map_or(&[], Vec::as_slice)
     }
 
     fn file(&mut self, path: &str) -> Option<&mut OutsideFile> {
@@ -268,6 +284,7 @@ mod tests {
 
         assert_eq!(kept, first);
         assert!(again.extractor.is_none());
+        assert_eq!(again.known("scripts/backfill.ts"), [kept.unwrap()]);
     }
 
     #[test]

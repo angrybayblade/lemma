@@ -161,6 +161,8 @@ enum Neighbour {
 trait Neighbours {
     fn callers(&mut self, of: &StoredSymbol) -> Result<Found, QueryError>;
     fn callees(&mut self, of: &StoredSymbol) -> Result<Found, QueryError>;
+    /// The function or value `of` is defined inside, if it is inside one.
+    fn around(&mut self, of: &StoredSymbol) -> Result<Option<Neighbour>, QueryError>;
 }
 
 /// Follows uses breadth first from `root`, each way the options ask.
@@ -204,8 +206,12 @@ fn follow(
     neighbours: &mut dyn Neighbours,
     graph: &mut Builder,
 ) -> Result<(), QueryError> {
-    let mut seen = BTreeSet::from([root.id]);
-    let mut pending = VecDeque::from([(root.clone(), 0usize)]);
+    let mut seen = BTreeSet::new();
+    let mut pending = VecDeque::new();
+    for start in with_holders(way, root.clone(), neighbours, graph)? {
+        seen.insert(start.id);
+        pending.push_back((start, 0usize));
+    }
     while let Some((symbol, depth)) = pending.pop_front() {
         if depth >= max_depth || !graph.asks_about(&symbol) {
             continue;
@@ -214,13 +220,40 @@ fn follow(
             Way::Up => neighbours.callers(&symbol)?,
             Way::Down => neighbours.callees(&symbol)?,
         };
+        let mut reached = Vec::new();
         for next in graph.record(way, &symbol, found) {
-            if seen.insert(next.id) {
-                pending.push_back((next, depth + 1));
-            }
+            reached.extend(with_holders(way, next, neighbours, graph)?);
+        }
+        for next in reached.into_iter().filter(|next| seen.insert(next.id)) {
+            pending.push_back((next, depth + 1));
         }
     }
     Ok(())
+}
+
+/// `symbol`, and on the way up what it is defined inside, and what that is
+/// defined inside. What a function or a value is written around is part
+/// of it, so it uses that without being a step further away: a use in a
+/// function given to a local reaches as far as it would if the local were
+/// not a symbol. Read from the file's symbols, with nothing to ask.
+fn with_holders(
+    way: Way,
+    symbol: StoredSymbol,
+    neighbours: &mut dyn Neighbours,
+    graph: &mut Builder,
+) -> Result<Vec<StoredSymbol>, QueryError> {
+    let mut together = vec![symbol];
+    let mut inner = 0;
+    while way == Way::Up && inner < together.len() {
+        let around = Found {
+            neighbours: neighbours.around(&together[inner])?.into_iter().collect(),
+            note: None,
+        };
+        let holder = graph.record(way, &together[inner], around);
+        together.extend(holder);
+        inner += 1;
+    }
+    Ok(together)
 }
 
 /// A graph as it is built.
@@ -554,6 +587,15 @@ impl Catalog {
         Ok(innermost_around(symbols, position))
     }
 
+    /// The function or value `symbol` is defined inside, among the symbols
+    /// of its file read so far.
+    fn holder_around(&self, symbol: &StoredSymbol) -> Option<Neighbour> {
+        if let Some(indexed) = self.by_file.get(&symbol.path).and_then(Option::as_deref) {
+            return holder_around(indexed, symbol).map(Neighbour::Symbol);
+        }
+        holder_around(self.outside.known(&symbol.path), symbol).map(Neighbour::Outside)
+    }
+
     /// The symbols a name may mean, if few enough share it.
     fn defined(&self, name: &str) -> Option<&[StoredSymbol]> {
         self.by_name
@@ -570,6 +612,21 @@ fn innermost_around(symbols: &[StoredSymbol], position: Position) -> Option<Stor
         .filter(|symbol| symbol.symbol.span.start <= position && position < symbol.symbol.span.end)
         .max_by_key(|symbol| symbol.symbol.span.start)
         .cloned()
+}
+
+/// The function or value among `symbols` that `inner` is defined inside:
+/// the innermost symbol around it, unless that is a type, whose members
+/// are not uses of it.
+fn holder_around(symbols: &[StoredSymbol], inner: &StoredSymbol) -> Option<StoredSymbol> {
+    let innermost = symbols
+        .iter()
+        .filter(|outer| outer.symbol.span != inner.symbol.span && contains(outer, inner))
+        .max_by_key(|outer| outer.symbol.span.start)?;
+    let holds_code = matches!(
+        innermost.symbol.kind,
+        SymbolKind::Function | SymbolKind::Method | SymbolKind::Constant | SymbolKind::Variable
+    );
+    holds_code.then(|| innermost.clone())
 }
 
 /// Symbols a use can point at. Variables are left out: their names are too
@@ -591,6 +648,11 @@ struct ServerNeighbours<'a, 'b> {
 }
 
 impl Neighbours for ServerNeighbours<'_, '_> {
+    fn around(&mut self, of: &StoredSymbol) -> Result<Option<Neighbour>, QueryError> {
+        self.catalog.file(&*self.store, &of.path)?;
+        Ok(self.catalog.holder_around(of))
+    }
+
     fn callers(&mut self, of: &StoredSymbol) -> Result<Found, QueryError> {
         let report = ask_references(&mut *self.store, self.context, of.clone(), false, self.pool)?;
         let references = match report.answer.outcome {
@@ -778,6 +840,10 @@ impl NameNeighbours {
 }
 
 impl Neighbours for NameNeighbours {
+    fn around(&mut self, of: &StoredSymbol) -> Result<Option<Neighbour>, QueryError> {
+        Ok(self.catalog.holder_around(of))
+    }
+
     fn callers(&mut self, of: &StoredSymbol) -> Result<Found, QueryError> {
         let name = of.symbol.name.clone();
         let needs_call = is_callable(of);
@@ -1071,6 +1137,11 @@ mod tests {
     }
 
     impl Neighbours for Fixed {
+        fn around(&mut self, of: &StoredSymbol) -> Result<Option<Neighbour>, QueryError> {
+            let around = holder_around(&self.symbols, of);
+            Ok(around.map(|symbol| self.neighbour(symbol)))
+        }
+
         fn callers(&mut self, of: &StoredSymbol) -> Result<Found, QueryError> {
             let callers: &[u128] = if of.id == SymbolId::from(1) {
                 &[2]
@@ -1164,6 +1235,31 @@ mod tests {
             ["charge", "checkout (outside the snapshot)", "main"]
         );
         assert_eq!(followed.notes, [] as [String; 0]);
+    }
+
+    #[test]
+    fn what_a_caller_is_defined_inside_is_no_further_away_than_the_caller() {
+        let mut neighbours = fixed();
+        neighbours.symbols[1] = symbol(2, "main.checkout", "app.py", (1, 2));
+        let root = neighbours.symbols[0].clone();
+
+        let graph = walk(&root, &options(Direction::Callers, 1), &mut neighbours).unwrap();
+
+        let labels: Vec<&str> = graph.nodes.iter().map(|node| node.label.as_str()).collect();
+        assert_eq!(labels, ["charge", "main.checkout", "main"]);
+    }
+
+    #[test]
+    fn a_class_is_not_a_user_of_its_methods() {
+        let mut neighbours = fixed();
+        neighbours.symbols[1] = symbol(2, "Cart.checkout", "app.py", (1, 2));
+        neighbours.symbols[2].symbol.kind = SymbolKind::Class;
+        let root = neighbours.symbols[0].clone();
+
+        let graph = walk(&root, &options(Direction::Callers, 1), &mut neighbours).unwrap();
+
+        let labels: Vec<&str> = graph.nodes.iter().map(|node| node.label.as_str()).collect();
+        assert_eq!(labels, ["charge", "Cart.checkout"]);
     }
 
     #[test]
