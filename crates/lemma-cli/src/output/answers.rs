@@ -1,9 +1,9 @@
 //! Printing answers to semantic questions and file outlines.
 //!
 //! Every provider-backed answer shares one JSON shape: where it came from
-//! (`provenance`, `from_cache`, `skipped_providers`) and an `outcome` with
-//! a `state`. What a found answer holds sits under a field named for it,
-//! such as `references`.
+//! (`provenance`, `from_cache`, `skipped_providers`, `slow_providers`) and
+//! an `outcome` with a `state`. What a found answer holds sits under a
+//! field named for it, such as `references`.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -24,6 +24,7 @@ struct AnsweredView<'a> {
     provenance: Option<&'a Provenance>,
     from_cache: bool,
     skipped_providers: &'a [String],
+    slow_providers: &'a [String],
     outcome: Value,
 }
 
@@ -34,6 +35,7 @@ impl<'a> AnsweredView<'a> {
             provenance: answered.provenance.as_ref(),
             from_cache: answered.from_cache,
             skipped_providers: &answered.skipped_providers,
+            slow_providers: &answered.slow_providers,
             outcome: outcome_json(&answered.outcome, field, found),
         }
     }
@@ -395,6 +397,10 @@ fn write_provenance<T>(out: &mut dyn Write, answer: &Answered<T>) -> io::Result<
         let cached = if answer.from_cache { ", cached" } else { "" };
         writeln!(out, "via {}{version}{cached}", provenance.provider_id)?;
     }
+    // Why the server named above is not the one usually asked.
+    for slow in &answer.slow_providers {
+        writeln!(out, "in place of {slow}")?;
+    }
     // A provider tried before the one that answered matters only when the
     // answer holds nothing: the one skipped might have found something.
     // Otherwise its failure, repeated on every query, is noise.
@@ -582,10 +588,36 @@ mod tests {
             skipped_providers: vec![
                 "typescript-language-server: no TypeScript installation".to_owned(),
             ],
+            slow_providers: Vec::new(),
         };
         let mut out = Vec::new();
         write_provenance(&mut out, &answer).unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn a_server_that_answered_in_place_of_a_slow_one_is_named_with_it() {
+        let answer = Answered {
+            outcome: Outcome::Found(vec![1]),
+            provenance: Some(Provenance {
+                provider_id: "ty".to_owned(),
+                provider_version: Some("0.0.98".to_owned()),
+                config_fingerprint: "fingerprint".to_owned(),
+            }),
+            from_cache: false,
+            skipped_providers: Vec::new(),
+            slow_providers: vec![
+                "pyright: textDocument/references timed out after 60 seconds".to_owned(),
+            ],
+        };
+        let mut out = Vec::new();
+
+        write_provenance(&mut out, &answer).unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "via ty 0.0.98\nin place of pyright: textDocument/references timed out after 60 seconds\n"
+        );
     }
 
     #[test]

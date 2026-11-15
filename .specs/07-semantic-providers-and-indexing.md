@@ -143,6 +143,18 @@ The walk does not ask about such a definition unless `--outside <n>` allows it. 
 
 Naming without following is the default because of what was measured in a workspace of six repositories. Of 109 sampled graphs, 29 ended at files outside the snapshot, 692 such files in all, 634 of them not tests by their names. Naming left 9 graphs ending at 34 files, 31 of them the top-level code of tests, and named 775 definitions, with a repeated graph as fast as before (a median of 25 ms). Following every named definition, on a sample of 120, added 26 more outside the snapshot and 3 inside it, since 795 of 834 were tests and entry points nothing calls, and the first ask of one graph went from 0.15 s to over seven minutes: about two seconds for each of its 199 callers. So the graph says what is at the edge of what a description includes, and going past the edge is asked for by number.
 
+**A server too slow for a question (2026-11-15).** A provider that starts and then fails is reported, and the next is not asked, so that a real problem is not hidden. One failure is different in kind on a very large repository: the server is well and cannot answer one question in the time a lookup waits. In a Python repository of tens of thousands of files, pyright did not answer `textDocument/references` within 60 s for 11 of 120 sampled symbols, on every ask. Each failed after about 72 s, the session was thrown away as a failed one is, nothing was kept, and a graph had no callers under that symbol.
+
+What a lookup does then is a setting, `[servers] when_slow`, because the right answer depends on the repository and most are nowhere near that size. `"report"`, the default, is the behaviour above. `"next"` asks the next installed provider for the language when one times out, and names both in the answer (`slow_providers`, a line under `via`, one note on a graph). Only a timeout is handed on: an error or a crash is still reported. Only when a next provider is installed: the last one's timeout is reported as before.
+
+Asking the next one every time would wait the whole timeout for every such symbol, and start the slow server again each time. So once another provider has answered, the slow one is passed over on that root, in the pool: lookups there go straight to the next, and a warm-up starts the one lookups will ask. It is passed over only after another answered, so a machine too busy for any server keeps its order, and never when every installed provider would be. `try_again_after` says for how long, from `"0s"` (ask it first every time) through the default of 30 minutes to `"never"` (not again while the pool lives).
+
+How long a provider gets before the next is asked is `give_way_after`, the lookup's own wait unless set. It is given to the server for that one question, in place of the timeout the server was started with, because that timeout is whatever the command or warm-up that started it chose: five minutes for a server the daemon warmed up, which is no time to wait with another server ready. Only a provider with another after it is given it, so the last one keeps the lookup's whole wait and a pool that reports slow servers behaves as it did. It takes a time: the two ends of the range are already settings, `"report"` for never and the provider order for at once. A pool for one command keeps the same record for that command. Changing the setting clears it.
+
+With `"next"` on that repository all 11 graphs were answered: the first in 109 s (pyright's 59 s, then ty starting; 66 s with `give_way_after = "20s"`), the other ten in 0.7 to 7.8 s with pyright passed over, a repeated one in 1 s or less. ty held 12.3 GB, and pyright was not running. Which provider answered is then a matter of timing, which is why it is off unless asked for and said in every answer it touches. Stored answers are used whichever installed provider gave them, as before, so a graph can rest on answers from two providers that count differently (ty leaves import statements out).
+
+Not covered: `find_uses`, the lookup under a root that is not indexed, tries providers in its own loop. It leaves out a provider passed over on that root, and still reports a timeout of its own. A repository where the first provider is too slow for most questions is better served by listing another in `.lemma/providers.toml`, which is tried first and waits for nothing; choosing by name stays deferred (below).
+
 ## Storage and discovery proposal
 
 SQLite is the initial storage candidate, not a finalized dependency. The model should support:
@@ -203,6 +215,18 @@ Proposed when this is picked up:
 - A chosen server that is not installed is reported with its install hint.
 
 Open: whether a chosen server that cannot start falls back to the built-in order with a warning (proposed default) or fails (opt-in, `strict = true`).
+
+## Deferred: functions given to locals
+
+**Status: tried and dropped for now, 2026-11-15.** A function declared inside another is a symbol. The same function written as `const save = () => ...` (TypeScript) or `save := func() { ... }` (Go) inside a function is not: it cannot be asked about by name, and a use inside it counts as a use by the function around it.
+
+What was tried: two definition queries, one for a `variable_declarator` whose value is an arrow function, a function expression or a generator (`queries/typescript.scm`), one for a `short_var_declaration` of a single name given a `func_literal` (`queries/go.scm`), with `short_var_declaration` classified as a function and the extractor's version moved, since every index is read again from its files. Other locals stayed out.
+
+What was measured, in a workspace of six repositories: 1,576 more symbols on 114,252 (1.4%), and of the caller graphs that ended at the top level of an indexed file, 165 where there had been 168. Against that, a graph traced across repositories lost 17 operations. The trace names a call by the innermost definition around it (`enclosing_function` in the HTTP code facts, and the handlers and impact walks that read them) and then looks for that function's callers by name. A call inside `const save = () => ...` became a call by `save`, which nothing calls by that name from outside, where before it was a call by the handler around it, which the route names.
+
+Why it was dropped: three graphs out of 168 gained, for a change to how every chain across repositories is named.
+
+To take it up again, settle first what a call belongs to where both the symbol walk and the trace read it: the innermost definition (the symbol walk's answer, which wants these locals indexed) or the outermost function a route or an export can name (the trace's). Two ways were considered and not built: the trace walks outwards from a nested definition until it reaches one that is called by name, as a caller graph now adds what a caller is defined inside; or locals are indexed for the symbol walk and left out of the code facts the trace reads. Either needs the differential checks of the trace (recall against the mutation ground truth, the replay of past changes) before and after, since the loss showed only there. The measurements need a sample that counts graphs ending inside indexed files, not only at files outside the snapshot.
 
 ## References
 

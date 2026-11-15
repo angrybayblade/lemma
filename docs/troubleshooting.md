@@ -32,6 +32,7 @@ The message comes from the server or the process start-up. Common causes:
 
 - **`Could not find a valid TypeScript installation`** from `typescript-language-server`: it needs TypeScript 6 or older, installed in the project or globally. With TypeScript 7, Lemma uses the `typescript-native` provider (`tsc --lsp`) instead.
 - **Timed out**: large projects can take longer than 60 seconds to load the first time. Retry with `--timeout-secs 180`.
+- **Timed out every time, for some symbols only**: on a very large repository a server can be too slow for the most widely used names however long it has been running, and a graph shows `callers of <name>: provider failed` under them. Set `when_slow = "next"` under `[servers]` in `~/.config/lemma/config.toml` to have the next installed server for the language answer instead (for Python, install ty: `uv tool install ty`). [When a server is too slow](providers.md#when-a-server-is-too-slow) says what that costs.
 - **Server exited**: run the provider's command by hand to see its error output, for example `pyright-langserver --stdio`.
 
 ## `no references found`, but there are some
