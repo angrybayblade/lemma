@@ -96,6 +96,15 @@ fn git_metadata_directories(root: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// A marker written to confirm that every earlier change was reported,
+/// awaited by [`Watch::changes_after`].
+#[derive(Debug)]
+pub struct Barrier {
+    number: u64,
+    marker: PathBuf,
+    is_written: bool,
+}
+
 /// A running watcher on one directory.
 pub struct Watch {
     watcher: RecommendedWatcher,
@@ -276,10 +285,38 @@ impl Watch {
     /// Every change reported since the last call, once all changes made
     /// before this call are known to have been reported.
     pub fn changes(&mut self) -> Observed {
+        let barrier = self.begin_barrier();
+        self.changes_after(barrier)
+    }
+
+    /// Writes the marker whose event confirms that every change made before
+    /// now has been reported, without waiting for it: several watchers'
+    /// markers can then be awaited together, which costs one watcher's
+    /// latency rather than one each.
+    // TODO: a setting to keep watchers awake between asks with a heartbeat
+    // marker: an idle FSEvents stream takes 12 to 14 ms to deliver the
+    // marker's event and a busy one 5 to 7, traded against battery and disk
+    // (spec 14, rollout item 8).
+    pub fn begin_barrier(&mut self) -> Barrier {
         self.next_barrier += 1;
-        let barrier = self.next_barrier;
-        let marker = self.barrier_dir.join(barrier.to_string());
-        let is_confirmed = fs::write(&marker, b"").is_ok() && self.wait_for(barrier);
+        let number = self.next_barrier;
+        let marker = self.barrier_dir.join(number.to_string());
+        let is_written = fs::write(&marker, b"").is_ok();
+        Barrier {
+            number,
+            marker,
+            is_written,
+        }
+    }
+
+    /// [`Watch::changes`], for a barrier [`Watch::begin_barrier`] began.
+    pub fn changes_after(&mut self, barrier: Barrier) -> Observed {
+        let Barrier {
+            number,
+            marker,
+            is_written,
+        } = barrier;
+        let is_confirmed = is_written && self.wait_for(number);
         let _ = fs::remove_file(&marker);
 
         let mut observed = std::mem::take(&mut lock(&self.shared.state).observed);

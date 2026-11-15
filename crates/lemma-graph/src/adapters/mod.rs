@@ -273,7 +273,36 @@ impl<'a> Adapter<'a> {
             );
             self.run(root, root, &output)
         })?;
-        read_generated(&output)
+        self.kept_if_unchanged(root, &working.state, &output)
+    }
+
+    /// The document the adapter just wrote to `output`, kept there only if
+    /// the working directory at `root` is still in the state `read_at` it
+    /// was in when the adapter started. A file saved while the adapter read
+    /// the code may be in the document, and kept under the earlier state it
+    /// would be taken, by every later check of that state, for its own; for
+    /// a clean working directory, that is the commit's document.
+    fn kept_if_unchanged(
+        &self,
+        root: &Path,
+        read_at: &str,
+        output: &Path,
+    ) -> Result<Generated, GraphError> {
+        let state_now = cache::working_changes(root)?
+            .map(|working| working.scoped(root, &self.from.inputs).state);
+        if state_now.as_deref() == Some(read_at) {
+            return read_generated(output);
+        }
+        log::info!(
+            "adapter: {} changed while the adapter read it; its document is not kept",
+            root.display()
+        );
+        let unkept = self.store.join(format!("{}-unkept.json", self.key));
+        std::fs::rename(output, &unkept).map_err(|source| GraphError::Io {
+            path: output.to_owned(),
+            source,
+        })?;
+        read_generated(&unkept)
     }
 
     /// The working directory's document as the base commit's kept one,
@@ -1086,14 +1115,21 @@ const NETWORK_FAILURES: [&str; 10] = [
 /// state does not cover, and the toolchain environment. A failure in a
 /// sandbox with a broken cache, or before dependencies were installed, is
 /// then tried again elsewhere.
+/// Whether the environment variable `name` changes how a toolchain builds
+/// or runs code (see [`TOOLCHAIN_VARIABLES`]): what an adapter's or a
+/// check's commands may depend on, unlike the variables of the shell or
+/// editor that asked.
+pub fn is_toolchain_variable(name: &str) -> bool {
+    TOOLCHAIN_VARIABLES
+        .iter()
+        .any(|prefix| name == *prefix || name.starts_with(prefix))
+}
+
 fn failure_context(root: &Path, variables: impl Iterator<Item = (OsString, OsString)>) -> String {
     let mut relevant: Vec<String> = variables
         .filter_map(|(name, value)| {
             let name = name.to_str()?.to_owned();
-            let is_toolchain = TOOLCHAIN_VARIABLES
-                .iter()
-                .any(|prefix| name == *prefix || name.starts_with(prefix));
-            is_toolchain.then(|| format!("{name}={}", value.to_string_lossy()))
+            is_toolchain_variable(&name).then(|| format!("{name}={}", value.to_string_lossy()))
         })
         .collect();
     relevant.sort();
@@ -1436,6 +1472,48 @@ mod tests {
         let (_, reading) = reading_of(&document);
 
         assert!(reading.is_complete);
+    }
+
+    #[test]
+    fn a_document_read_while_the_code_changed_is_not_kept_for_the_earlier_state() {
+        let repository = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = repository.path();
+        std::fs::write(root.join("app.py"), "routes = []\n").unwrap();
+        git(root, &["init", "--quiet"]);
+        git(root, &["add", "."]);
+        git(root, &["commit", "--quiet", "-m", "first"]);
+        let runs = cache.path().join("runs");
+        let edited = cache.path().join("edited");
+        // The first run saves an edit midway, as an editor might.
+        let command = format!(
+            "echo run >> '{runs}'; if [ ! -f '{edited}' ]; then touch '{edited}'; \
+             echo 'routes = [1]' > app.py; fi; echo '{{\"paths\": {{}}}}' > \"$LEMMA_OUTPUT\"",
+            runs = runs.display(),
+            edited = edited.display(),
+        );
+        let from = OperationsFrom {
+            command: Some(command),
+            ..OperationsFrom::default()
+        };
+        let read = || {
+            let states = States::default();
+            let keeping = Keeping {
+                cache: cache.path(),
+                states: &states,
+            };
+            in_working_directory(&from, &Runtime::default(), root, keeping).unwrap();
+        };
+
+        read();
+        git(root, &["checkout", "--quiet", "--", "app.py"]);
+        read();
+
+        let run_count = std::fs::read_to_string(&runs).unwrap().lines().count();
+        assert_eq!(
+            run_count, 2,
+            "the clean state's document was taken from the first run"
+        );
     }
 
     #[test]

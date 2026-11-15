@@ -260,6 +260,20 @@ An operation a link still names that the change removed is a `link` finding (int
 
 Exits with 0 when no finding is an error, 4 when one is, 5 when it finished but a `git(...)` repository was not cloned, and 1 on failure.
 
+## `lemma lsp [mod.lm]`
+
+Experimental. A language server for editors that shows what saved changes break, in every repository of the workspace. It speaks the Language Server Protocol over stdin and stdout; an editor starts it, and `lm lsp` serves `.lm` modules instead.
+
+It asks the daemon's sentry, starting the daemon if none runs, so the editor, `lemma check` and the MCP `check` tool share one watched workspace and each other's answers; when sentry is attached to another workspace it watches the workspace itself. When a repository's saved files change, it is checked as `lemma check --change` would, and each finding the change introduced becomes a diagnostic on the line of code it names, in whichever repository that is. Each file the working directory changed gets a summary linking to those lines. Findings that were there before the change are not shown. It reads files from disk, so it follows saves, by an editor or anything else, not typing.
+
+The workspace is the module given, or else the editor's `manifest` initialization option, or else the nearest `mod.lm` above the editor's folder that declares a workspace. The VS Code extension runs it with `lemma.checkOnChange.enabled`.
+
+| Option | Meaning |
+| --- | --- |
+| `--level <level>` | `audit`, `check` or `strict`, as for `lemma check`. |
+| `--no-run` | Run no checkers, as for `lemma check`. |
+| `--engine <name>` | `souffle` or `reference`, as for `lemma check`. |
+
 ## `lemma daemon`
 
 Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground. Language servers start when a lookup needs one, when `lemma index` runs (in the background), or with `lemma daemon lsp start`; there is one per indexed root and language, and the settings below pause and stop idle ones.

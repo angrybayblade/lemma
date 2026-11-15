@@ -1,8 +1,32 @@
 # Language server and integrations
 
-Status: feasibility assessment and proposed architecture. No language server has been implemented.
+Status: feasibility assessment and proposed architecture, written before either surface existed. Both now exist in a first form: `lm lsp` serves `.lm` modules ([spec 13](13-lm-grammar.md)), and `lemma lsp` is an experimental companion for source code, described under [Change diagnostics](#change-diagnostics-experimental). The sections after it are the original assessment.
 
 This document concerns Lemma's **editor-facing** language server. The accepted starting architecture also uses Lemma as an **LSP client** to existing language-specific servers for semantic enrichment; see [Pluggable semantic providers and lean indexing](07-semantic-providers-and-indexing.md). These are separate interfaces over the same core model.
+
+## Change diagnostics (experimental)
+
+**Status: experimental, 2026-11-14.** `lemma lsp` is the second surface below in its smallest useful form: it shows what saved changes break, where they break it, in any repository of the workspace.
+
+**What it does.**
+
+- It is a client of the daemon's sentry ([spec 14](14-sentry.md), rollout item 8), shared with `lemma check` and the MCP tool: sentry watches the workspace and keeps what it read, and an answer one client asked for is given again to the next. `lemma lsp` starts the daemon if none runs. When sentry cannot serve the workspace, as when it is attached to another, the server watches the workspace itself.
+- When a repository's changes settle, it checks that repository as `lemma check --change` would, against the same default base, so a branch's commits and uncommitted work are checked together.
+- Each finding the change introduced becomes a diagnostic on the line of the code it names, in whichever repository that is. The changed line it comes from gets a summary linking to those lines outside the changed files, and each diagnostic links back to it. Findings the change did not introduce are not shown.
+- A repository that has uncommitted changes when the server starts is checked once, after any change that settles meanwhile.
+- `lemma.checkOnChange.enabled` in the VS Code extension runs it. It is off by default, since it runs checks in the background.
+
+**Placing a finding.** A finding names its code through the variables its requirement binds: the standard library's requirements bind the calling code's file as `f` (`#repository:service:path`, the path relative to the repository) and its line as `l`. A finding without them goes on the changed lines it comes from.
+
+**The changed line a finding comes from.** The server asks Git for the lines each changed file differs by from the check's base. A finding names what it is about in the other values its requirement binds, such as the field `connection_slug` or the parameter `limit`. Its summary goes on the changed line naming the longest of them as a word, in each changed file: the line that added the field, or, for a removal, the line now where it was. A finding that names nothing changed goes on each changed file's first changed line, and a file Git does not know on its top. This is a heuristic: a short name, such as a parameter's location `query`, can name an unrelated line when the longer ones name none. A requirement written with other names is placed the same way, until findings carry a location of their own.
+
+**What it does not do yet.**
+
+- Unsaved edits. Checks read files from disk, so it follows saves, by an editor or by an agent, not typing.
+- Unwatched repositories, when it watches the workspace itself. It does not ask Git about a repository it could not watch, as an ask to sentry does.
+- Cancellation. A check runs to the end; a change made meanwhile gets a check of its own afterwards.
+
+**Found while building it.** An adapter's document was kept under the state the working directory was in when the adapter started. A file saved while the adapter read the code was then in a document kept for the state before it: for a clean working directory, the commit's own key. Later checks compared the change against that document and found nothing. Adapters now keep a document only if the working directory's state is unchanged after the run. Separately, the adapter cache is keyed by the runtime as checks served from a long-lived process describe it, which holds the caller's environment, so the editor's server and the command line do not share kept documents.
 
 ## Two surfaces
 

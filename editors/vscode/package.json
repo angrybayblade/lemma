@@ -1,7 +1,7 @@
 {
   "name": "lemma-lm",
   "displayName": "Lemma",
-  "description": "Syntax highlighting and language server support for Lemma's .lm files",
+  "description": "Syntax highlighting and language server support for Lemma's .lm files, and, experimentally, what saved changes break across repositories",
   "version": "0.1.0",
   "publisher": "lemma",
   "private": true,
@@ -13,7 +13,8 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onLanguage:lemma"
+    "onLanguage:lemma",
+    "workspaceContains:**/mod.lm"
   ],
   "contributes": {
     "languages": [
@@ -45,6 +46,23 @@
           "scope": "machine-overridable",
           "markdownDescription": "The `lm` binary. The extension runs `lm lsp` and talks to it over stdio."
         },
+        "lemma.lemmaPath": {
+          "type": "string",
+          "default": "lemma",
+          "scope": "machine-overridable",
+          "markdownDescription": "The `lemma` binary. With `lemma.checkOnChange.enabled`, the extension runs `lemma lsp` and talks to it over stdio."
+        },
+        "lemma.checkOnChange.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Experimental. Runs `lemma lsp`, which watches every repository of the workspace and, when a repository's saved files change, checks it as `lemma check --change` would. What the change breaks is shown as problems on the code it breaks, in any repository, and summarized on the changed files."
+        },
+        "lemma.checkOnChange.manifest": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "The workspace's `mod.lm` for `lemma.checkOnChange.enabled`. By default, the nearest `mod.lm` above the first workspace folder that declares a `workspace`."
+        },
         "lemma.trace.server": {
           "type": "string",
           "enum": [
@@ -60,7 +78,7 @@
     "commands": [
       {
         "command": "lemma.restartServer",
-        "title": "Restart Language Server",
+        "title": "Restart Language Servers",
         "category": "Lemma"
       }
     ]

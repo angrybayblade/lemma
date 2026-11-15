@@ -57,7 +57,8 @@ Between asks, sentry listens to file changes and prepares the check's inputs in 
 | Decision | Status |
 | --- | --- |
 | Sentry runs inside the daemon, attached to one workspace at a time | decided |
-| It attaches only to a daemon that is already running; it never starts one | decided |
+| It attaches only to a daemon that is already running; it never starts one | decided; revised 2026-11-15: `lemma lsp` starts one, since turning it on in an editor is the user's opt-in. `lemma check` still never does |
+| Sentry is the one headless node for every client: `lemma check`, the MCP `check` tool and `lemma lsp` all ask it, and none keeps a workspace warm of its own while it serves | decided, 2026-11-15 |
 | Automatic attachment is opt-in, by the user | decided |
 | Sentry listens and prepares; asks evaluate. No rule evaluation, resolver or checker runs ahead of an ask | decided |
 | v1 serves checks only | decided |
@@ -324,6 +325,38 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 
    Not done: the graphs kept are the ones asked, not the ones an edit touches, so a symbol never asked about is still read when asked; bringing the index up to date, adapters included, does not give way; a command for the same server waits for the answer on its way; and a server being started in the background is waited for to the end.
 
+8. **A headless node for every client (2026-11-15).** `lemma lsp` ([spec 5](05-lsp-and-integrations.md#change-diagnostics-experimental)) kept a watched workspace of its own, so an editor and an agent on the same workspace watched it, read it and checked it twice, and never shared an answer. It is now a client of sentry, as `lemma check` and the MCP tool are:
+
+   ```text
+   lemma_graph::Warm            kept reads
+          │
+   sentry (daemon)              watches, collects, prepares, answers asks, keeps answers and the journal
+          │
+     ┌────┼──────────┐
+    CLI  MCP     lemma lsp      each renders the same report its own way
+   ```
+
+   - `lemma lsp` attaches sentry to its workspace (`daemon::attach_sentry`), starting a daemon, or replacing one of another build, if none serves. Attaching is idempotent for the workspace already attached. It follows the journal with `events --wait` on a thread of its own, and checks a repository once its batches have been quiet for 0.3 s, by asking `check --change <repo> --json`, as `lemma check` would. When sentry is attached to another workspace, turned off, or goes away, it watches the workspace itself, as before; it never re-attaches by itself, so two builds cannot keep replacing each other's daemon.
+   - A batch says how many of the repository's own paths changed, and whether it was bulk. A workspace's directory no longer counts its repositories' files as its own (on macOS one recursive watch reports them), and a batch of Git's files alone, which a check's own `git status` rewrites in a superproject's `.git/modules`, counts none. A client then checks only what changed.
+   - The JSON report gives each finding's bound `values`, which say where its code is, and the `sentry` object says whether the answer was reused and how long evaluating it took (`evaluation_ms`). The rest of an ask's time is what asking costs, which `lemma lsp` logs with each check.
+
+   Measured on the fixture workspace of eleven repositories, before any work on the transport: an ask answered from a held answer took a median of 168 ms from `lemma check` (8 ms of it starting the process) and 166 ms from the MCP tool, which runs `lemma check` as a child. `lemma lsp` spent 88 to 262 ms asking per check. Nearly all of it is the barrier: an ask waits for each of the eleven watchers' markers in turn.
+
+   **The transport, 2026-11-15.** What an ask costs besides evaluating, on the fixture workspace (medians of 60 asks per client answered from a held answer; for `lemma lsp`, 20 checks of an edit):
+
+   | Step | `lemma check` | MCP `check` | `lemma lsp` asking | Agent after the editor |
+   | --- | --- | --- | --- | --- |
+   | Before | 173.9 ms | 170.1 ms | 87.9 ms | 664 ms |
+   | Every watcher's barrier begun before any is awaited | 34.8 ms | 34.2 ms | 12.8 ms | |
+   | The MCP server asks sentry itself, without a child process | | 12.4 ms | | |
+   | A journal follower asks as of a token, and is answered without collecting | | | 0.8 ms | |
+   | Answers held under what is evaluated; Git's index rewrites are no change | 29.8 ms | 12.5 ms | 0.7 ms | 21.8 ms |
+
+   - Starting any process from the measuring harness takes about 10 ms (`/usr/bin/true` 10.5 ms, `lemma --version` 11.2 ms), so a `lemma check` answered from a held answer is that, the barrier, and about 2 ms.
+   - The barrier is what is left, and it is FSEvents': with latency 0 and `NoDefer`, the marker's event takes a median of 12 to 14 ms to arrive when the stream has been idle, and 5 to 7 ms when it is busy, whether one repository is watched or eleven. `FSEventStreamFlushSync` is no barrier: it returned in 0.2 ms, but the write's event had arrived by then in 1 of 40 trials. Linux's inotify queue has no such delay.
+   - An ask from `lemma lsp` follows a change sentry already collected, so it needs no barrier; `lemma check` and MCP asks still confirm, since a file may have been saved a moment before.
+   - "Agent after the editor" is `lemma check --change ctx` right after `lemma lsp` checked the same edit. It was a fresh evaluation, since answers were held under the command line, directory and whole environment, and since each check's own `git status` rewrote the submodules' indexes under the workspace's `.git/modules`, which moved the workspace directory's generation. Answers are now held under the workspace, the options that change findings and the toolchain variables, with printing done per ask; an answer that ran a behavior is given again only for the same whole environment. A change only to Git's index, lock files or objects counts as none. Different `PATH`s, as between an editor started from the Dock and a shell, still keep answers apart, as they should.
+
 **Later:**
 
 - Lookups that know the working copy.
@@ -331,6 +364,12 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 - A Watchman backend for very large repositories. Buck2 uses Watchman for those and `notify` otherwise.
 - More than one workspace.
 - Incremental Datalog, if evaluation comes to dominate ([spec 10](10-native-datastore.md)).
+
+**Parked (2026-11-15),** settings rather than design, left as `TODO`s where each goes:
+
+- Keeping watchers awake between asks, to trade battery for the FSEvents wake-up a confirming ask waits for (`Watch::begin_barrier`).
+- Naming the variables answers are shared across, so an editor started with another `PATH` than the shell can share them when both find the same tools (`Worker::fingerprint`).
+- Taking a daemon's build identity once, when it starts, so a daemon whose binary a build replaced in place does not answer as the new build (`daemon::build_id`).
 
 ## Prior art
 

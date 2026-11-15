@@ -48,6 +48,9 @@ pub(crate) struct Question {
     pub raw: Vec<String>,
     pub cwd: PathBuf,
     pub environment: BTreeMap<String, String>,
+    /// The journal token whose changes the ask is about, from a client
+    /// that follows the journal.
+    pub as_of: Option<String>,
 }
 
 /// A wait for events, with the connection to answer on.
@@ -178,7 +181,14 @@ struct Counts {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Event {
     /// A repository's files changed, so what was kept of it was dropped.
-    Batch { repository: String, paths: usize },
+    Batch {
+        repository: String,
+        /// How many of its own paths changed; none when only Git's files did.
+        paths: usize,
+        /// Whether anything in it may have changed: changes were lost or too
+        /// many to list.
+        bulk: bool,
+    },
     /// A check was answered.
     Answer {
         command: String,
@@ -199,17 +209,24 @@ struct Kept {
     interpreters: BTreeMap<String, String>,
     unread_generations: u64,
     report: Result<Arc<Report>, String>,
+    /// How long evaluating it took.
+    evaluation: Duration,
+    /// A digest of the whole environment of the ask that evaluated it.
+    environment: u64,
 }
 
 impl Kept {
-    /// Whether it still holds, beyond the fingerprint it is held under.
-    fn holds(&self, unread_generations: u64) -> bool {
+    /// Whether it still holds, beyond the fingerprint it is held under. An
+    /// answer that ran a behavior holds only for the same files and the
+    /// same whole environment, since a checker can read any of them.
+    fn holds(&self, unread_generations: u64, environment: u64) -> bool {
         let ran_behavior = self
             .report
             .as_ref()
             .is_ok_and(|report| !report.behaviors.is_empty());
-        lemma_graph::Warm::stamps_hold(&self.interpreters)
-            && (!ran_behavior || self.unread_generations == unread_generations)
+        let behaviors_hold = !ran_behavior
+            || (self.unread_generations == unread_generations && self.environment == environment);
+        lemma_graph::Warm::stamps_hold(&self.interpreters) && behaviors_hold
     }
 }
 
@@ -314,6 +331,7 @@ impl Worker {
             self.record(Event::Batch {
                 repository: batch.repository,
                 paths: batch.paths,
+                bulk: batch.is_bulk,
             });
         }
     }
@@ -332,9 +350,22 @@ impl Worker {
     /// has changed since, otherwise a check on what is kept.
     fn respond(&mut self, question: &Question) -> Answer {
         let started = Instant::now();
-        self.collect(true);
+        // A client that followed the journal to a token asks about changes
+        // already collected, so collecting again, and waiting for the
+        // watchers' barriers, would confirm what is known. A change after
+        // the token is collected at the worker's next turn and gets an ask
+        // of its own, and the answer is held under the generations it read,
+        // which that collection moves past.
+        let has_collected = question
+            .as_of
+            .as_deref()
+            .and_then(|token| self.position_of(token))
+            .is_some_and(|position| position <= self.position);
+        if !has_collected {
+            self.collect(true);
+        }
         let options = options_key(&question.raw);
-        let fingerprint = self.fingerprint(question, &options);
+        let fingerprint = self.fingerprint(question);
         let asked = Asked {
             question,
             options,
@@ -346,12 +377,15 @@ impl Worker {
             .iter()
             .map(Watched::unread_generation)
             .sum();
+        let environment = digest(&question.environment);
         let reused = self
             .held
             .get(&fingerprint)
-            .is_some_and(|kept| kept.holds(unread_generations));
+            .is_some_and(|kept| kept.holds(unread_generations, environment));
         if !reused {
+            let evaluating = Instant::now();
             let report = self.evaluate(question).map(Arc::new);
+            let evaluation = evaluating.elapsed();
             self.held.insert(
                 fingerprint,
                 Kept {
@@ -360,11 +394,13 @@ impl Worker {
                     interpreters: self.workspace.warm().interpreter_stamps(),
                     unread_generations,
                     report,
+                    evaluation,
+                    environment,
                 },
             );
         }
         self.account(&asked, started.elapsed(), reused);
-        self.render(&asked)
+        self.render(&asked, reused)
     }
 
     /// Counts the answer and keeps it in the journal; a new answer's token
@@ -435,7 +471,7 @@ impl Worker {
 
     /// The answer held for `asked`, printed: with its token, and with what
     /// changed since the answer `--since` names.
-    fn render(&self, asked: &Asked<'_>) -> Answer {
+    fn render(&self, asked: &Asked<'_>, reused: bool) -> Answer {
         let Some(kept) = self.held.get(&asked.fingerprint) else {
             return failed("sentry has no answer");
         };
@@ -454,6 +490,12 @@ impl Worker {
         let note = SentryNote {
             token: &token,
             delta,
+            reused,
+            evaluation: if reused {
+                Duration::ZERO
+            } else {
+                kept.evaluation
+            },
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut streams = Streams {
@@ -508,16 +550,25 @@ impl Worker {
         crate::check::evaluate(&question.args, Some(&served)).map_err(|error| format!("{error:#}"))
     }
 
-    /// What an answer rests on besides the files watched: the command
-    /// (without `--since`), its directory and environment, each
-    /// repository's generation, the workspace's own manifests, and the
-    /// date (allowances expire).
-    fn fingerprint(&self, question: &Question, options: &str) -> u64 {
+    /// What an answer rests on besides the files watched: what the ask
+    /// evaluates (see [`evaluated`]), the variables that change how the
+    /// commands a check runs behave, each repository's generation, the
+    /// workspace's own manifests, and the date (allowances expire). How it
+    /// was asked, from which directory and printed how, is left out: those
+    /// change only the printing, done for each ask, so one client's answer
+    /// is given again to another asking the same.
+    fn fingerprint(&self, question: &Question) -> u64 {
         let mut hasher = DefaultHasher::new();
-        options.hash(&mut hasher);
-        question.json.hash(&mut hasher);
-        question.cwd.hash(&mut hasher);
-        question.environment.hash(&mut hasher);
+        evaluated(question).hash(&mut hasher);
+        // TODO: a setting naming the variables answers are shared across, so
+        // an editor started with another `PATH` than the shell can share
+        // them when both find the same tools.
+        let toolchain: Vec<(&String, &String)> = question
+            .environment
+            .iter()
+            .filter(|(name, _)| lemma_graph::adapters::is_toolchain_variable(name))
+            .collect();
+        toolchain.hash(&mut hasher);
         self.workspace.state().hash(&mut hasher);
         today().hash(&mut hasher);
         hasher.finish()
@@ -668,6 +719,38 @@ fn changes<'a>(earlier: &'a Report, now: &'a Report) -> (Vec<&'a Finding>, Vec<&
 
 /// The command line without `--since` and its token: answers to it with
 /// any token are one set of options.
+/// What an ask evaluates: its workspace, by the canonical path of its
+/// description, and the options that change which findings it has. Not
+/// `--json`, `--all` or `--since`, which change how they are printed, nor
+/// `--no-clone`: the repositories sentry watches are here, so nothing is
+/// cloned for them either way.
+fn evaluated(question: &Question) -> String {
+    let args = &question.args;
+    let manifest = crate::check::entry_manifest_in(&question.cwd, &args.manifest);
+    let manifest = manifest.canonicalize().unwrap_or(manifest);
+    format!(
+        "{}\n{:?}\n{:?}\n{:?}\n{:?}\n{}\n{}\n{:?}\n{:?}\n{:?}\n{}",
+        manifest.display(),
+        args.change,
+        args.base,
+        args.head,
+        args.level,
+        args.no_run,
+        args.run_base,
+        args.select,
+        args.engine,
+        args.evaluation,
+        args.explain,
+    )
+}
+
+/// A digest of an environment.
+fn digest(environment: &BTreeMap<String, String>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    environment.hash(&mut hasher);
+    hasher.finish()
+}
+
 fn options_key(raw: &[String]) -> String {
     let mut words = Vec::new();
     let mut skips_next = false;
@@ -689,7 +772,14 @@ fn options_key(raw: &[String]) -> String {
 
 fn describe(event: &Event) -> String {
     match event {
-        Event::Batch { repository, paths } => format!("changed {repository} ({paths} paths)"),
+        Event::Batch {
+            repository,
+            paths,
+            bulk,
+        } => {
+            let bulk = if *bulk { ", in bulk" } else { "" };
+            format!("changed {repository} ({paths} paths{bulk})")
+        }
         Event::Answer {
             command,
             errors,
@@ -817,6 +907,7 @@ mod tests {
             raw,
             cwd: root.to_owned(),
             environment: std::env::vars().collect(),
+            as_of: None,
         }
     }
 
@@ -1013,6 +1104,30 @@ mod tests {
 
         assert_eq!(again, first);
         assert_eq!((worker.counts.evaluated, worker.counts.reused), (2, 2));
+    }
+
+    #[test]
+    fn the_same_question_asked_another_way_is_answered_from_one_evaluation() {
+        let root = tempfile::tempdir().unwrap();
+        shop(root.path());
+        let mut worker =
+            Worker::start(&root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let text = question(root.path());
+        let mut json = question(&root.path().join("web"));
+        json.args.manifest = PathBuf::from("../mod.lm");
+        json.json = true;
+        json.raw = ["check", "../mod.lm", "--change", "billing", "--json"]
+            .map(str::to_owned)
+            .to_vec();
+        json.environment
+            .insert("TERM_PROGRAM".to_owned(), "an editor".to_owned());
+
+        worker.respond(&text);
+        let answered = worker.respond(&json);
+
+        let report: serde_json::Value = serde_json::from_str(&answered.stdout).unwrap();
+        assert_eq!(report["sentry"]["reused"], true);
+        assert_eq!((worker.counts.evaluated, worker.counts.reused), (1, 1));
     }
 
     #[test]
@@ -1239,6 +1354,26 @@ mod tests {
         let answer = worker.respond(&asked);
 
         assert!(read_ahead >= 1);
+        assert_eq!(without_token(&answer), fresh(&asked));
+    }
+
+    #[test]
+    fn an_ask_as_of_a_collected_change_answers_as_a_fresh_check() {
+        let root = tempfile::tempdir().unwrap();
+        shop(root.path());
+        let mut worker =
+            Worker::start(&root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let mut asked = question(root.path());
+        worker.respond(&asked);
+
+        write(
+            &root.path().join("web/src/charge.ts"),
+            "export async function charge() {\n  return fetch(\"/v1/refunds\", { method: \"POST\" });\n}\n",
+        );
+        settle_until_read_ahead(&mut worker);
+        asked.as_of = Some(worker.token(worker.position));
+        let answer = worker.respond(&asked);
+
         assert_eq!(without_token(&answer), fresh(&asked));
     }
 
