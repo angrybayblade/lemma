@@ -216,6 +216,18 @@ Proposed when this is picked up:
 
 Open: whether a chosen server that cannot start falls back to the built-in order with a warning (proposed default) or fails (opt-in, `strict = true`).
 
+## Deferred: functions given to locals
+
+**Status: tried and dropped for now, 2026-11-15.** A function declared inside another is a symbol. The same function written as `const save = () => ...` (TypeScript) or `save := func() { ... }` (Go) inside a function is not: it cannot be asked about by name, and a use inside it counts as a use by the function around it.
+
+What was tried: two definition queries, one for a `variable_declarator` whose value is an arrow function, a function expression or a generator (`queries/typescript.scm`), one for a `short_var_declaration` of a single name given a `func_literal` (`queries/go.scm`), with `short_var_declaration` classified as a function and the extractor's version moved, since every index is read again from its files. Other locals stayed out.
+
+What was measured, in a workspace of six repositories: 1,576 more symbols on 114,252 (1.4%), and of the caller graphs that ended at the top level of an indexed file, 165 where there had been 168. Against that, a graph traced across repositories lost 17 operations. The trace names a call by the innermost definition around it (`enclosing_function` in the HTTP code facts, and the handlers and impact walks that read them) and then looks for that function's callers by name. A call inside `const save = () => ...` became a call by `save`, which nothing calls by that name from outside, where before it was a call by the handler around it, which the route names.
+
+Why it was dropped: three graphs out of 168 gained, for a change to how every chain across repositories is named.
+
+To take it up again, settle first what a call belongs to where both the symbol walk and the trace read it: the innermost definition (the symbol walk's answer, which wants these locals indexed) or the outermost function a route or an export can name (the trace's). Two ways were considered and not built: the trace walks outwards from a nested definition until it reaches one that is called by name, as a caller graph now adds what a caller is defined inside; or locals are indexed for the symbol walk and left out of the code facts the trace reads. Either needs the differential checks of the trace (recall against the mutation ground truth, the replay of past changes) before and after, since the loss showed only there. The measurements need a sample that counts graphs ending inside indexed files, not only at files outside the snapshot.
+
 ## References
 
 - [LSP 3.17 specification source](https://github.com/Microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/specification.md)
