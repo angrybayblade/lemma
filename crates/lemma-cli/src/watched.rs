@@ -211,12 +211,19 @@ impl WatchedWorkspace {
 
     /// The watched repositories' part of [`WatchedWorkspace::collect`].
     fn collect_reported(&mut self, confirming: bool) -> Vec<Batch> {
+        // Every watcher's barrier is begun before any is awaited, so the
+        // watchers' latencies overlap instead of adding up.
+        let barriers: Vec<Option<lemma_index::Barrier>> = self
+            .watched
+            .iter_mut()
+            .map(|watched| watched.begin_barrier(confirming))
+            .collect();
         let mut batches = Vec::new();
-        for watched in &mut self.watched {
-            if watched.watch.is_none() {
+        for (watched, barrier) in self.watched.iter_mut().zip(barriers) {
+            let Some(barrier) = barrier else {
                 continue;
-            }
-            if let Some((paths, is_bulk)) = watched.take_changes(&self.warm, confirming) {
+            };
+            if let Some((paths, is_bulk)) = watched.take_changes(&self.warm, barrier) {
                 batches.push(Batch {
                     repository: watched.root.display().to_string(),
                     paths,
@@ -499,19 +506,27 @@ impl Watched {
         }
     }
 
-    /// Takes the reported changes, dropping what is kept of the paths they
+    /// Begins its watcher's barrier, when it has a watcher and, unless
+    /// `confirming`, a change reported to collect.
+    fn begin_barrier(&mut self, confirming: bool) -> Option<lemma_index::Barrier> {
+        let watch = self.watch.as_mut()?;
+        if !confirming && !watch.has_pending() {
+            return None;
+        }
+        Some(watch.begin_barrier())
+    }
+
+    /// Takes the reported changes, once `barrier` confirms every change
+    /// before it was reported, dropping what is kept of the paths they
     /// touched; whether there were any, how many of its own paths changed,
     /// and whether the change was a bulk one.
     fn take_changes(
         &mut self,
         warm: &lemma_graph::Warm,
-        confirming: bool,
+        barrier: lemma_index::Barrier,
     ) -> Option<(usize, bool)> {
         let watch = self.watch.as_mut()?;
-        if !confirming && !watch.has_pending() {
-            return None;
-        }
-        let observed = watch.changes();
+        let observed = watch.changes_after(barrier);
         if !observed.needs_full_walk && observed.paths.is_empty() {
             return None;
         }
