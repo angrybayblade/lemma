@@ -23,6 +23,7 @@ lemma-store.workspace = true
 lemma-graph.workspace = true
 lemma-lang.workspace = true
 lemma-lm.workspace = true
+lemma-lsp.workspace = true
 lemma-http.workspace = true
 lemma-verify.workspace = true
 log.workspace = true

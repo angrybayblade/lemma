@@ -62,8 +62,12 @@ pub(crate) struct Batch {
 pub(crate) struct Settled {
     /// The repository's directory as a check names it.
     pub repository: PathBuf,
-    /// The changed paths, relative to it; none in a bulk state.
+    /// The changed paths, relative to it; none in a bulk state, and none
+    /// when only Git's own files changed.
     pub paths: Vec<String>,
+    /// Whether too many paths changed to list, or some changes were lost,
+    /// so that anything in it may have changed.
+    pub is_bulk: bool,
 }
 
 impl WatchedWorkspace {
@@ -246,6 +250,7 @@ impl WatchedWorkspace {
                 Some(Settled {
                     repository: watched.spelled.clone(),
                     paths: unprepared.paths.into_iter().collect(),
+                    is_bulk: unprepared.is_bulk,
                 })
             })
             .collect()
