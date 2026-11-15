@@ -209,8 +209,8 @@ Serves Lemma to agents as an [MCP](https://modelcontextprotocol.io) server over 
 | `definition` | `lemma definition` | `file`, `line`, `column` (from 1), `refresh` |
 | `implementations` | `lemma implementations` | `symbol`, `kind`, `language`, `path`, `refresh` |
 | `signature` | `lemma signature` | `symbol`, `kind`, `language`, `path`, `refresh` |
-| `graph` | `lemma graph` | `symbol`, `kind`, `language`, `path`, `refresh`, `direction`, `depth`, `source`, `max_nodes`, `only`, `workspace`, `across` |
-| `check` | `lemma check` | `manifest` (the entry module), `change`, `base`, `head`, `level`, `no_run`, `select`, `all` |
+| `graph` | `lemma graph` | `symbol`, `kind`, `language`, `path`, `refresh`, `direction`, `depth`, `source`, `max_nodes`, `only`, `workspace`, `across`, `outside` |
+| `check` | `lemma check` | `manifest` (the entry module), `change`, `base`, `head`, `level`, `no_run`, `select`, `all`, `since` |
 | `verify` | `lemma verify` | `module`, `all`, `links` |
 
 Each tool returns the command's text output, as the terminal shows it: the same facts and ids as its [JSON output](json-output.md), in a fraction of the size. A command that ran but found no answer (an ambiguous name, a stale file, no server) is a normal result that says why, and so is a check that found errors; only a command that failed, such as a missing index, is returned as an error. `check` can run behaviors' checkers, which run code, so it is not marked read-only.
@@ -284,7 +284,7 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 | `lemma daemon stop` | Stop the running daemon; it returns once the daemon and its language servers have stopped. |
 | `lemma daemon install` | Run the daemon as a login service (launchd on macOS, systemd on Linux), so it is already up when an agent asks its first question. It is restarted only if it crashes, and a command that finds it stopped starts it through the service. The service keeps the `PATH` of the shell that installed it; run `install` again after installing a toolchain elsewhere. |
 | `lemma daemon uninstall` | Remove the login service and stop its daemon. |
-| `lemma daemon lsp [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |
+| `lemma daemon lsp [path]`, or `lemma daemon lsp list [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |
 | `lemma daemon lsp start [path] [--language <l>] [--provider <id>] [--wait]` | Start those servers in the daemon, in the background, or with `--wait` until each has loaded its project, reporting how long it took or why it failed (exit 1). A language's providers are tried in order, as a lookup tries them: when the first cannot start (typescript-language-server without a TypeScript it can use), the next serves. |
 | `lemma daemon lsp stop [path] [--language <l>] [--provider <id>]` | Stop those servers. |
 | `lemma daemon sentry start [manifest]` | Attach the daemon's sentry to a workspace (its `mod.lm`, by default the one in this directory). Sentry watches the workspace's repositories, and `lemma check` on that workspace is then answered by the daemon: what earlier checks read is kept and only what changed is read again, and a check is answered again at once when nothing it read changed. The report is the same as a check run on its own. It attaches only to a daemon already running, to one workspace at a time. |

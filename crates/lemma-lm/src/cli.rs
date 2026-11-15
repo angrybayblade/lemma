@@ -75,3 +75,51 @@ pub(crate) enum New {
         module: PathBuf,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::Cli;
+
+    /// The command reference, whose `lm` section must name every command
+    /// and option.
+    const REFERENCE: &str = include_str!("../../../docs/commands.md");
+
+    /// Each subcommand under `command` (named `path`) and each long option
+    /// of it and below that the reference does not mention.
+    fn unmentioned(command: &clap::Command, path: &str, missing: &mut Vec<String>) {
+        for argument in command.get_arguments() {
+            let Some(long) = argument.get_long().filter(|_| !argument.is_hide_set()) else {
+                continue;
+            };
+            let option = format!("--{long}");
+            if !["--help", "--version"].contains(&option.as_str()) && !REFERENCE.contains(&option) {
+                missing.push(format!("{path} {option}"));
+            }
+        }
+        for subcommand in command.get_subcommands() {
+            if subcommand.is_hide_set() || subcommand.get_name() == "help" {
+                continue;
+            }
+            let named = format!("{path} {}", subcommand.get_name());
+            if !REFERENCE.contains(&named) {
+                missing.push(named.clone());
+            }
+            unmentioned(subcommand, &named, missing);
+        }
+    }
+
+    #[test]
+    fn every_command_and_option_is_in_the_command_reference() {
+        let mut missing = Vec::new();
+
+        unmentioned(&Cli::command(), "lm", &mut missing);
+
+        assert_eq!(
+            missing,
+            Vec::<String>::new(),
+            "missing from docs/commands.md"
+        );
+    }
+}
