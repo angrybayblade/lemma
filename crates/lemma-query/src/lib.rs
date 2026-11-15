@@ -25,7 +25,8 @@ pub use references::{ReferenceReport, SymbolReport, ask_references, find_referen
 pub use resolve::{SymbolResolution, SymbolSelector, resolve_symbol, symbols_in_file};
 pub use search::SymbolSearch;
 pub use sessions::{
-    FilesError, IdlePolicy, Interrupt, ServerState, SessionPool, SessionStatus, WarmUp,
+    FilesError, IdlePolicy, Interrupt, PassedOver, ServerState, SessionPool, SessionStatus, WarmUp,
+    WhenSlow,
 };
 pub use signature::{SignatureReport, signature_of};
 pub use uses::{UnindexedRoot, UsesAnswer, find_uses};

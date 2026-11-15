@@ -280,7 +280,7 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 
 | Command | Meaning |
 | --- | --- |
-| `lemma daemon status` | Whether it runs as a login service; its language servers: starting, running or paused, how long idle, and memory; and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. |
+| `lemma daemon status` | Whether it runs as a login service; its language servers: starting, running or paused, how long idle, and memory, and any passed over for being too slow (`[servers] when_slow`); and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. |
 | `lemma daemon stop` | Stop the running daemon; it returns once the daemon and its language servers have stopped. |
 | `lemma daemon install` | Run the daemon as a login service (launchd on macOS, systemd on Linux), so it is already up when an agent asks its first question. It is restarted only if it crashes, and a command that finds it stopped starts it through the service. The service keeps the `PATH` of the shell that installed it; run `install` again after installing a toolchain elsewhere. |
 | `lemma daemon uninstall` | Remove the login service and stop its daemon. |
@@ -312,6 +312,9 @@ pause_after = "10m"        # pause idle language servers
 stop_after = "2h"          # stop idle language servers
 memory_budget = "none"     # e.g. "2GB": stop the least recently used servers beyond this
 warm_on_activity = true    # start a project's servers again when its files change
+when_slow = "report"       # a server that does not answer in time: "report" it, or ask the "next"
+give_way_after = "60s"     # with "next": how long a server gets before the next is asked
+try_again_after = "30m"    # with "next": how long the slow server is passed over in that repository
 
 [sentry]
 auto_attach = false        # attach sentry to a workspace on its first `lemma check`
@@ -325,6 +328,8 @@ watches = 16384            # directories watched for graphs: 0 watches none, "no
 prepare = "graph"          # after an edit, get ready for the next graph: "off", "index" or "graph"
 kept_ready = 4             # how many of the graphs last asked are answered ahead after an edit
 ```
+
+**A server too slow for a question.** A lookup waits `--timeout-secs` (60 unless given) for a language server. With `when_slow = "report"` one that does not answer in time fails the lookup, as any other failure does. With `"next"` the next installed server for the language is asked once the first has had `give_way_after` (the lookup's own wait unless set), and once it answers the slow one is passed over in that repository for `try_again_after`: `"0s"` asks it first every time, `"never"` leaves it for as long as the daemon runs. It is for very large repositories, where a server can be too slow for the most widely used names every time; the next server may hold much more memory. [Language servers](providers.md#when-a-server-is-too-slow) has the measurements and what the output shows. A command run in its own process reads these three settings too.
 
 **Warm runtimes.** While the daemon runs, `lemma check` asks it to run a repository's Python (a `json.command("{python} -m …")` or `{python} script.py` resolver, or a type read with Pydantic) in a process that has already imported the repository's dependencies, so a run pays only for the repository's own modules. It prints what a new interpreter would, and anything that goes wrong runs the command as before. `memory` is the trade: the more a runtime may hold, the less a run waits. On one service with about 1,700 dependency modules, a 1.6 s resolver ran in 1.2 s with `"24MB"`, 0.7 s with `"96MB"` and 0.2 s once it could hold all 140 MB. A project's `.lemma/config.toml` may set `[runtime]` too, and overrides this file setting by setting. `LEMMA_RUNTIME=off` keeps none warm. `lemma daemon status` lists each one with the memory it holds. A check never starts the daemon for this.
 
@@ -346,7 +351,7 @@ Getting ready takes the time the asks would have taken, after every settled chan
 
 Under each report it answers, sentry adds a line `sentry token: <token>`, and JSON output a `sentry` object; the findings and the exit code are the same as a check run on its own. A token stays the same while nothing a check reads changes. Sentry answers a check only from a daemon already running; `lemma check` never starts one for it. A check that asks for logs (`-l`) or for anchors (`--anchors`) runs in its own process, and `LEMMA_SENTRY=off` keeps every check there. A check sentry answers runs resolvers, adapters and checkers with the environment of the process that asked, as a check run on its own does. `auto_attach` applies only in the user's own settings, and never when `CI` is set. `LEMMA_DAEMON_SOCKET` names another socket for the daemon, to run a separate one.
 
-Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `none`. The values above are the defaults, except `watches`. The daemon rejects unknown settings, so a typo shows up instead of being ignored; a file that stops parsing while the daemon runs leaves the previous settings in force.
+Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `none`. The values above are the defaults, except `watches`, and `give_way_after`, which is the lookup's `--timeout-secs` unless set. The daemon rejects unknown settings, so a typo shows up instead of being ignored; a file that stops parsing while the daemon runs leaves the previous settings in force.
 
 The daemon pauses a server, and every process it started, with `SIGSTOP`: it uses no CPU, and the operating system can compress or swap out its memory under pressure. The next lookup resumes it, which took about 45 ms for gopls in testing, against seconds to start a server again.
 

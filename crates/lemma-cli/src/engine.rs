@@ -23,7 +23,7 @@ use lemma_model::{Language, Outcome, Position, SymbolKind};
 use lemma_providers::ProviderRegistry;
 use lemma_query::{
     IdlePolicy, LookupContext, LookupOptions, ServerState, SessionPool, SymbolResolution,
-    SymbolSearch, SymbolSelector, UsesAnswer, WarmUp,
+    SymbolSearch, SymbolSelector, UsesAnswer, WarmUp, WhenSlow,
 };
 use lemma_store::{
     FactStore, IdPrefix, NameMatch, Store, StoreError, StoredMember, StoredSnapshot, StoredSymbol,
@@ -276,6 +276,12 @@ impl Engine {
         self.graph_asks.clear();
         self.unprepared.clear();
         self.got_ready.clear();
+    }
+
+    /// Sets what lookups do about a language server that does not answer
+    /// in time.
+    pub fn set_when_slow(&mut self, when_slow: WhenSlow) {
+        self.pool.set_when_slow(when_slow);
     }
 
     /// Sets how many of the graphs last asked through a workspace are kept
@@ -1584,11 +1590,26 @@ impl Engine {
     }
 
     fn server_status(&mut self) -> String {
-        let statuses = self.pool.status(Instant::now());
-        if statuses.is_empty() {
+        let now = Instant::now();
+        let statuses = self.pool.status(now);
+        let passed_over = self.pool.passed_over(now);
+        if statuses.is_empty() && passed_over.is_empty() {
             return "no language servers\n".to_owned();
         }
         let mut text = String::new();
+        for slow in passed_over {
+            let tried_again = slow.tried_again_in.map_or_else(
+                || "not tried again".to_owned(),
+                |wait| format!("tried again in {}", format_duration(wait)),
+            );
+            let _ = writeln!(
+                text,
+                "{:<28} passed over: it did not answer in time {} ago; {tried_again}  {}",
+                slow.provider_id,
+                format_duration(slow.since),
+                slow.root.display()
+            );
+        }
         for status in statuses {
             let memory = status.memory_bytes.map_or_else(
                 || "?".to_owned(),

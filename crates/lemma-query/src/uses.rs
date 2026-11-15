@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lemma_model::{Language, Location, LocationQuery, ProviderAnswer};
 use lemma_providers::{ProviderRegistry, SemanticProvider, SourcePoint};
@@ -71,6 +71,8 @@ pub fn find_uses(
     if installed.is_empty() {
         return UsesAnswer::NoProvider;
     }
+    // A server lookups pass over on this root is not asked here either.
+    let (installed, _) = pool.askable(view.root, installed, Instant::now());
     let mut failures = Vec::new();
     for provider in installed {
         let session = match pool.session_at(&view, &mut files, &provider, request_timeout) {

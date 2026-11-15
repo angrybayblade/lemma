@@ -182,6 +182,13 @@ impl ProviderSession {
         self.client.resume()
     }
 
+    /// Has the server's requests wait `within` for an answer in place of
+    /// the timeout it was started with, until told otherwise with `None`:
+    /// see [`LspClient::answer_within`].
+    pub fn answer_within(&mut self, within: Option<Duration>) {
+        self.client.answer_within(within);
+    }
+
     /// Has the server's requests stop waiting once `interrupt` says so:
     /// see [`LspClient::interrupt_when`].
     pub fn interrupt_when(&self, interrupt: Option<lemma_lsp::Interrupt>) {
