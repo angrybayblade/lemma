@@ -122,6 +122,8 @@ pub struct LspClient {
     connection: Arc<Connection>,
     server: ServerDetails,
     request_timeout: Duration,
+    /// How long requests wait in place of `request_timeout`, while set.
+    answer_within: Option<Duration>,
     // Declared last so it is dropped, and the process killed, after the
     // connection is no longer usable.
     process: ServerProcess,
@@ -172,8 +174,21 @@ impl LspClient {
             connection,
             server,
             request_timeout: config.request_timeout,
+            answer_within: None,
             process,
         })
+    }
+
+    /// Has requests wait `within` for an answer in place of the timeout
+    /// the client was started with, until told otherwise with `None`: for
+    /// a caller that has somewhere else to ask after that long.
+    pub fn answer_within(&mut self, within: Option<Duration>) {
+        self.answer_within = within;
+    }
+
+    /// How long a request waits for its answer.
+    fn patience(&self) -> Duration {
+        self.answer_within.unwrap_or(self.request_timeout)
     }
 
     /// What the server reported during initialization.
@@ -206,7 +221,7 @@ impl LspClient {
     where
         R::Params: Clone,
     {
-        let deadline = Instant::now() + self.request_timeout;
+        let deadline = Instant::now() + self.patience();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let answer = self.connection.request::<R>(params.clone(), remaining);
@@ -254,7 +269,7 @@ impl LspClient {
             document.as_str(),
             opened_at,
             quiet_period,
-            self.request_timeout,
+            self.patience(),
         )
     }
 

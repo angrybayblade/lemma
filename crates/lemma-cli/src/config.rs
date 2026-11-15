@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, bail};
-use lemma_query::IdlePolicy;
+use lemma_query::{IdlePolicy, WhenSlow};
 use serde::Deserialize;
 
 /// Everything the config file can set.
@@ -24,6 +24,9 @@ pub(crate) struct Config {
     /// Start a project's servers again when its files change, if they were
     /// stopped, so they are ready by the next lookup.
     pub warms_up_on_activity: bool,
+    /// What a lookup does about a language server that does not answer in
+    /// time.
+    pub when_slow: WhenSlow,
     /// Attach sentry to a workspace on its first `lemma check` while the
     /// daemon runs. Off unless the user turns it on.
     pub sentry_auto_attach: bool,
@@ -86,6 +89,7 @@ impl Default for Config {
                 memory_budget_bytes: None,
             },
             warms_up_on_activity: true,
+            when_slow: WhenSlow::default(),
             sentry_auto_attach: false,
             graph_watches: default_graph_watches(lemma_index::watch_limit()),
             graph_prepare: Prepare::default(),
@@ -214,6 +218,67 @@ struct ServersSection {
     stop_after: Option<String>,
     memory_budget: Option<String>,
     warm_on_activity: Option<bool>,
+    when_slow: Option<SlowServer>,
+    give_way_after: Option<String>,
+    try_again_after: Option<String>,
+}
+
+/// What a lookup does about a language server that does not answer in the
+/// time the lookup allows (`--timeout-secs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SlowServer {
+    /// The lookup fails and says so. The default: few repositories are
+    /// large enough for a server to be that slow, and one that is slow for
+    /// another reason should be seen.
+    #[default]
+    Report,
+    /// The next installed server for the language is asked once the slow
+    /// one has had `give_way_after`, and the slow one is passed over in
+    /// that repository for `try_again_after`.
+    Next,
+}
+
+/// How long a slow server is passed over unless the user says: long enough
+/// that waiting for it again is rare, short enough that a server slow only
+/// while the machine was busy is back within the hour.
+const TRY_AGAIN_AFTER: Duration = Duration::from_secs(30 * 60);
+
+/// What `[servers]` says lookups do about a slow server.
+fn when_slow(section: &ServersSection) -> anyhow::Result<WhenSlow> {
+    let give_way_after = match &section.give_way_after {
+        Some(text) => Some(parse_give_way_after(text)?),
+        None => None,
+    };
+    let try_again_after = match &section.try_again_after {
+        Some(text) => crate::duration::parse_duration(text)?,
+        None => Some(TRY_AGAIN_AFTER),
+    };
+    Ok(match section.when_slow.unwrap_or_default() {
+        SlowServer::Report => WhenSlow::Report,
+        SlowServer::Next => WhenSlow::Next {
+            give_way_after,
+            try_again_after,
+        },
+    })
+}
+
+/// How long a server may take over a question before the next is asked: a
+/// time, since each end of the range has a setting that says it better.
+fn parse_give_way_after(text: &str) -> anyhow::Result<Duration> {
+    match crate::duration::parse_duration(text)? {
+        None => bail!("give_way_after is a time; `when_slow = \"report\"` never asks the next"),
+        Some(Duration::ZERO) => bail!(
+            "give_way_after is more than no time; to ask another server first, list it in `.lemma/providers.toml`"
+        ),
+        Some(after) => Ok(after),
+    }
+}
+
+/// What lookups in a command's own process do about a slow server, by the
+/// user's config file: the daemon is told the same as part of its settings.
+pub(crate) fn when_slow_for_one_process() -> anyhow::Result<WhenSlow> {
+    Ok(load(config_path().as_deref())?.when_slow)
 }
 
 /// What warm runtimes may use for a description in `directory`: the user's
@@ -311,6 +376,7 @@ pub(crate) fn modified(path: Option<&Path>) -> Option<SystemTime> {
 fn parse(text: &str) -> anyhow::Result<Config> {
     let file: ConfigFile = toml::from_str(text)?;
     let defaults = Config::default();
+    let when_slow = when_slow(&file.servers)?;
     let pick = |value: Option<String>, default: Option<Duration>| match value {
         Some(text) => crate::duration::parse_duration(&text),
         None => Ok(default),
@@ -329,6 +395,7 @@ fn parse(text: &str) -> anyhow::Result<Config> {
             .servers
             .warm_on_activity
             .unwrap_or(defaults.warms_up_on_activity),
+        when_slow,
         sentry_auto_attach: file
             .sentry
             .auto_attach
@@ -427,6 +494,61 @@ mod tests {
         assert_eq!(kept_ready("[graph]\nkept_ready = 1\n").unwrap(), 1);
         assert_eq!(kept_ready("[graph]\nkept_ready = 0\n").unwrap(), 0);
         assert!(kept_ready("[graph]\nkept_ready = \"all\"\n").is_err());
+    }
+
+    #[test]
+    fn a_slow_server_is_reported_unless_the_next_is_to_be_asked() {
+        let when_slow = |text: &str| parse(text).map(|config| config.when_slow);
+        let next = |try_again_after| WhenSlow::Next {
+            give_way_after: None,
+            try_again_after,
+        };
+        let minutes = |count: u64| Some(Duration::from_secs(count * 60));
+
+        assert_eq!(when_slow("").unwrap(), WhenSlow::Report);
+        assert_eq!(
+            when_slow("[servers]\nwhen_slow = \"report\"\ntry_again_after = \"5m\"\n").unwrap(),
+            WhenSlow::Report
+        );
+        assert_eq!(
+            when_slow("[servers]\nwhen_slow = \"next\"\n").unwrap(),
+            next(minutes(30))
+        );
+        assert_eq!(
+            when_slow("[servers]\nwhen_slow = \"next\"\ntry_again_after = \"5m\"\n").unwrap(),
+            next(minutes(5))
+        );
+        assert_eq!(
+            when_slow("[servers]\nwhen_slow = \"next\"\ntry_again_after = \"0s\"\n").unwrap(),
+            next(minutes(0))
+        );
+        assert_eq!(
+            when_slow("[servers]\nwhen_slow = \"next\"\ntry_again_after = \"never\"\n").unwrap(),
+            next(None)
+        );
+        assert!(when_slow("[servers]\nwhen_slow = \"skip\"\n").is_err());
+        assert!(
+            when_slow("[servers]\nwhen_slow = \"next\"\ntry_again_after = \"soon\"\n").is_err()
+        );
+    }
+
+    #[test]
+    fn how_long_a_slow_server_gets_is_the_lookups_wait_unless_set() {
+        let give_way_after = |text: &str| {
+            let settings = format!("[servers]\nwhen_slow = \"next\"\n{text}");
+            match parse(&settings)?.when_slow {
+                WhenSlow::Next { give_way_after, .. } => Ok(give_way_after),
+                WhenSlow::Report => bail!("the next server is to be asked"),
+            }
+        };
+
+        assert_eq!(give_way_after("").unwrap(), None);
+        assert_eq!(
+            give_way_after("give_way_after = \"20s\"\n").unwrap(),
+            Some(Duration::from_secs(20))
+        );
+        assert!(give_way_after("give_way_after = \"never\"\n").is_err());
+        assert!(give_way_after("give_way_after = \"0s\"\n").is_err());
     }
 
     #[test]

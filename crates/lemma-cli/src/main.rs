@@ -152,6 +152,13 @@ fn run_in_process(cli: Cli, cwd: std::path::PathBuf) -> ExitCode {
         path_env: None,
     };
     let mut engine = Engine::one_shot();
+    match config::when_slow_for_one_process() {
+        Ok(when_slow) => engine.set_when_slow(when_slow),
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            return ExitCode::FAILURE;
+        }
+    }
     let mut stdout = std::io::stdout().lock();
     let result = engine.execute(cli, &invocation, &mut stdout);
     engine.shutdown();
