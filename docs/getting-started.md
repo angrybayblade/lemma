@@ -1,6 +1,6 @@
 # Getting started
 
-Install Lemma, index a project, and look up your first references. Complete this page to use Lemma for code navigation. To check changes across repositories, continue with the [quickstart](quickstart.md).
+Install Lemma, look up your first references, and connect your agent. This is the first half of what Lemma gives an agent: finding code the way an IDE does, fast enough to ask on every step. To catch what a change breaks in other code, continue with the [quickstart](quickstart.md).
 
 ## 1. Install
 
@@ -144,7 +144,7 @@ lemma outline src/router.py                # what a file defines
 
 ## 7. Connect an agent
 
-Run `lemma mcp` as an MCP server to give agents the same answers. In Claude Code, run this from the project directory:
+Run `lemma mcp` as an MCP server so your agent asks Lemma instead of searching text. In Claude Code, run this from the project directory:
 
 ```sh
 claude mcp add lemma -- lemma mcp
@@ -154,6 +154,7 @@ Then tell agents when to use it; see [Connect agents](onboarding.md#3-connect-ag
 
 ## Next steps
 
+- [Quickstart](quickstart.md): catch a change that breaks code in another repository.
 - [Commands](commands.md): every command, option, and exit code.
 - [Language servers](providers.md): built-in servers, adding your own, and how one is chosen.
 - [Concepts](concepts.md): snapshots, stale results, and caching.

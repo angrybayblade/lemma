@@ -1,6 +1,6 @@
 # Onboarding
 
-Set Lemma up for a team: answer code questions for agents, and check every pull request against the repositories that depend on it. This guide assumes several repositories that talk over HTTP: services with OpenAPI specs, generated clients, and the code that calls them.
+Set Lemma up for a team: agents find code, trace it and check their changes as they work, and every pull request is checked against the repositories that depend on it. This guide assumes several repositories that talk over HTTP: services with OpenAPI specs, generated clients, and the code that calls them.
 
 | Step | Gets you |
 | --- | --- |

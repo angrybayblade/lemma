@@ -1,6 +1,7 @@
 export const sections = [
   {title:'Start here', pages:[
     {slug:'', title:'Introduction', source:'docs/introduction.md'},
+    {slug:'getting-started', title:'Getting started', source:'docs/getting-started.md'},
     {slug:'quickstart', title:'Quickstart', source:'docs/quickstart.md'},
     {slug:'onboarding', title:'Onboarding', source:'docs/onboarding.md'},
   ]},
@@ -20,7 +21,6 @@ export const sections = [
     {slug:'adapters', title:'Read contracts from code', source:'docs/adapters.md'},
   ]},
   {title:'Work with agents', pages:[
-    {slug:'getting-started', title:'Code navigation', source:'docs/getting-started.md'},
     {slug:'agent-skills', title:'Agent skills', source:'skills/README.md'},
     {slug:'lemma-mode', title:'Lemma mode', source:'docs/lemma-mode.md'},
     {slug:'providers', title:'Language servers', source:'docs/providers.md'},
