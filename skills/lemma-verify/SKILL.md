@@ -35,9 +35,9 @@ Each answer ends with `sentry token: <token>`. After fixing what a check reporte
 
 Run with `--all` to see informational findings, and `lemma verify --links` to see which caller Lemma matched to which operation. A wrong finding is usually one wrong match: a path built at run time matched to the wrong operation, or a common field name counted as a use. Say so in the report rather than working around it in code.
 
-## The opt-in Stop hook
+## The stop gate
 
-`hooks/stop-check.py` beside this file runs `lemma check --change` for each repository with uncommitted edits when the agent tries to stop, and sends it back to work once when the change introduced errors. It is off unless a project turns it on in `.claude/settings.json`:
+The stop gate is opt-in. `hooks/stop-check.py` beside this file, a Claude Code Stop hook, runs `lemma check --change` for each repository with uncommitted edits when the agent tries to stop, and sends it back to work once when the change introduced errors. It is off unless a project turns it on in `.claude/settings.json`:
 
 ```json
 {
