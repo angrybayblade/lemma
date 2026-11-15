@@ -5,6 +5,8 @@ The quickstart's checks came from `lemma.http`, the standard library's requireme
 
 Prerequisite: the end state of the [quickstart](../quickstart.md), in `shop`. Result: a requirement that warns about calls to a deprecated operation, and a `check main` that chooses what runs.
 
+<!-- diagram: model -->
+
 ## Write the requirement
 
 `lemma.http` declares relations, sets of facts with typed columns, that Lemma fills from documents and code. One of them is `calls(c, op, f, l)`: consumer `c` calls operation `op` from file `f`, line `l`. State facts of your own in a `graph`, and match them together in a requirement.

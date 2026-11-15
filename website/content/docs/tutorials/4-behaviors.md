@@ -7,6 +7,8 @@ Prerequisites: the end state of the [quickstart](../quickstart.md), in `shop`, a
 
 > **Beta.** Behaviors and checkers may change between releases: their `.lm` syntax, the checker protocol and how evidence is kept. A checker can be any command, but `lm new behavior` writes a complete script only for Python; for TypeScript and Go it writes a starting point to finish by hand. See the [known limitations](../pre-release.md#behaviors-beta).
 
+<!-- diagram: dropped -->
+
 ## Create a service that calls billing
 
 Create `orders`. It charges the customer through billing. When the charge fails, it answers its caller with a 502, but it drops billing's `retriable` flag:
@@ -202,6 +204,8 @@ $ lemma check
 behavior orders::passes_on_retriable: satisfied (3 of 3 cases held, 0 of 2 evidence reused)
 0 errors, 0 warnings, 0 informational
 ```
+
+<!-- diagram: verification -->
 
 ## Reuse evidence
 

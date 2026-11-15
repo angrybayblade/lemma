@@ -4,6 +4,8 @@
 
 [`lemma verify`](verify.md) checks that a description still matches the code it describes, whatever a change does.
 
+<!-- diagram: impact -->
+
 ## Example
 
 A billing service's function takes a request and returns a response. A web service calls it through a Go client. The billing team adds a required `currency` field and stops returning `receipt_url`.
