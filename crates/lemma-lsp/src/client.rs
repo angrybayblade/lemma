@@ -242,7 +242,8 @@ impl LspClient {
     /// Waits until the server looks ready to answer about a document opened
     /// at `opened_at`: it published diagnostics for it, or it went quiet for
     /// `quiet_period` with no work in progress. Gives up after the request
-    /// timeout.
+    /// timeout, or when told to stop waiting (see
+    /// [`LspClient::interrupt_when`]).
     pub fn wait_until_ready(
         &self,
         document: &Url,
@@ -532,6 +533,7 @@ impl Connection {
         limit: Duration,
     ) -> Readiness {
         let deadline = Instant::now() + limit;
+        let interrupt = lock(&self.interrupt).clone();
         let mut activity = lock(&self.activity);
         activity.touch(Instant::now());
         loop {
@@ -542,12 +544,21 @@ impl Connection {
             if now >= deadline {
                 return Readiness::TimedOut;
             }
+            if interrupt.as_ref().is_some_and(|interrupt| interrupt()) {
+                return Readiness::Interrupted;
+            }
             // Wake on new activity, when the quiet period could end, or at the
-            // deadline, whichever is first.
+            // deadline, whichever is first; sooner while someone may say to
+            // stop waiting.
+            let longest = match interrupt {
+                Some(_) => INTERRUPT_CHECK,
+                None => deadline - now,
+            };
             let wake_after = activity
                 .time_until_quiet(quiet_period, now)
                 .max(Duration::from_millis(10))
-                .min(deadline - now);
+                .min(deadline - now)
+                .min(longest);
             activity = self
                 .activity_changed
                 .wait_timeout(activity, wake_after)

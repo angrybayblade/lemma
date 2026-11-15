@@ -27,6 +27,9 @@ pub enum Readiness {
     Quiet,
     /// Neither happened before the limit. Answers may be incomplete.
     TimedOut,
+    /// The caller was told to stop waiting first, and the server may not
+    /// have loaded the workspace.
+    Interrupted,
 }
 
 /// Recent server activity, updated by the reader thread.

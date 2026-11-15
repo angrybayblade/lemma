@@ -17,7 +17,7 @@ use lemma_lsp::lsp_types::{
     ReferenceParams, TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
     TextDocumentPositionParams, Url, VersionedTextDocumentIdentifier,
 };
-use lemma_lsp::{LaunchConfig, LspClient, LspError, PositionEncoding, line_text};
+use lemma_lsp::{LaunchConfig, LspClient, LspError, PositionEncoding, Readiness, line_text};
 use lemma_model::{Language, Location, LocationQuery, Position, ProviderAnswer, Span};
 use serde_json::Value;
 
@@ -135,10 +135,7 @@ impl ProviderSession {
         })?;
         let opened_at = Instant::now();
         self.show_document(&uri, language, source)?;
-        self.client
-            .wait_until_ready(&uri, opened_at, READY_QUIET_PERIOD);
-        self.has_been_ready = true;
-        Ok(())
+        self.wait_until_ready(&uri, opened_at)
     }
 
     /// Tells the server about files that changed on disk since it started or
@@ -203,6 +200,21 @@ impl ProviderSession {
     /// Stops the server politely.
     pub fn shutdown(self) {
         self.client.shutdown();
+    }
+
+    /// Waits until the server looks ready to answer about the document at
+    /// `uri`, opened at `opened_at`, and takes it as ready from then on,
+    /// unless told to stop waiting first: the next lookup waits again.
+    fn wait_until_ready(&mut self, uri: &Url, opened_at: Instant) -> Result<(), ProviderError> {
+        let readiness = self
+            .client
+            .wait_until_ready(uri, opened_at, READY_QUIET_PERIOD);
+        if readiness == Readiness::Interrupted {
+            let method = "the server to load the workspace";
+            return Err(self.server_error(LspError::Interrupted { method }));
+        }
+        self.has_been_ready = true;
+        Ok(())
     }
 
     /// Makes sure the server has the document open with `text`: opens it,
@@ -351,9 +363,7 @@ impl ProviderSession {
         // results that look real. If readiness times out, ask anyway: the
         // answer is the best available.
         if !self.has_been_ready {
-            self.client
-                .wait_until_ready(&uri, opened_at, READY_QUIET_PERIOD);
-            self.has_been_ready = true;
+            self.wait_until_ready(&uri, opened_at)?;
         }
         Ok(TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri },
