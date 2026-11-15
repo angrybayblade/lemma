@@ -24,16 +24,18 @@ const INVALID_PARAMS: i64 = -32602;
 const PARSE_ERROR: i64 = -32700;
 
 /// Told to the agent once, when it connects.
-const INSTRUCTIONS: &str = "Lemma resolves symbols in TypeScript, Python and Go with language \
-servers, so it answers \"where is this used, defined or implemented\" exactly where text search \
-guesses: it leaves out other symbols with the same name and mentions in comments and strings, and \
-follows imports and aliases. Prefer it to grep or rg for those questions, especially for common \
+const INSTRUCTIONS: &str = "Lemma is your IDE here, without an editor. It answers \"where is this \
+used, defined or implemented\" and \"what calls this\" from each language's own language server \
+(TypeScript, JavaScript, Python, Go and Rust), exactly where text search guesses: it leaves out other \
+symbols with the same name and mentions in comments and strings, and follows imports and aliases. \
+Once its servers are warm an answer takes milliseconds, so ask on every step, especially for common \
 names; use text search for strings, configuration and other files.\n\n\
 Workflow: `search_symbols` (or `outline` for a file) gives each definition an id like `#415`, or \
 `#billing:415` in a workspace, where ids are numbered per repository; pass the id as shown to \
 `references`, `implementations`, `signature` or `graph`. `definition` takes a file, line and column. \
 `check` with `change` reports what your edits to a repository break in the others, and what they \
-add without wiring up (an operation with no route or caller); run it as you build a feature. The \
+add without wiring up (an operation with no route or caller); run it as you build a feature, and \
+before calling a change done. The \
 index refreshes itself before every query; an id keeps naming its definition across edits while \
 the definition keeps its name and kind. \"No references found\" means the server \
 saw nothing, not that the code is unused.";
