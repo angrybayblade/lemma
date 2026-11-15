@@ -5,7 +5,7 @@ The quickstart's checks came from `lemma.http`, the standard library's requireme
 
 Prerequisite: the end state of the [quickstart](../quickstart.md), in `shop`. Result: a requirement that warns about calls to a deprecated operation, and a `check main` that chooses what runs.
 
-<!-- diagram: model -->
+<!-- diagram: requirement -->
 
 ## Write the requirement
 

@@ -29,16 +29,23 @@ html{scroll-padding-top:104px;scroll-behavior:smooth}body.docs{margin:0;overflow
 .syntax-comment{color:var(--lm-color-muted);font-style:italic}
 .code-blank{display:block;height:.75em;overflow:hidden}
 .nav-badge{display:inline-block;margin-left:6px;padding:0 6px;border-radius:4px;font-size:11px;line-height:18px;font-weight:500;vertical-align:1px;color:var(--lm-color-muted);background:var(--lm-color-silver)}
-/* Diagrams from the landing page, inline in an article (src/docs/diagrams.js); how they are drawn comes from the landing's stylesheet (diagrams.css). */
+/* Diagrams composed from the kit's units (src/diagram-kit.js, src/diagram-scenes.js), inline in an article. The build renders a scene's words and drawing; src/docs/diagrams.js adds its relief and motion. */
 .docs-diagram{position:relative;margin:32px 0}
-.docs-diagram .story-figure{position:relative;top:auto;margin:0}
-.docs-diagram .story-art{aspect-ratio:600/540;max-height:none}
-.docs-diagram[data-chapter-scene="verification"]{padding-top:44px}
-.docs-diagram .story-replay{left:0;top:-44px}
-.docs-diagram-task .task-loop{max-width:560px;margin:0 auto}
-.docs-diagram-task .task-loop .story-art{aspect-ratio:640/594}
+.kit-figure{position:relative;margin:0;color:var(--lm-color-ink)}
+.kit-figure .story-art{max-height:none}
+.kit-figure .story-layer{opacity:1}
+.kit-figure .diagram-svg{width:100%;height:100%}
+.kit-figure[data-renderer="webgl"] .kit-pictogram{display:none}
+.kit-sketch{fill:none;stroke:currentColor;stroke-width:1.2}
+.kit-sketch--quiet{opacity:.4}
+.kit-arrowhead{fill:none;stroke:currentColor;stroke-width:2;stroke-linejoin:miter}
+.kit-cross{fill:none;stroke:var(--lm-color-copper-ink);stroke-width:2}
+.kit-flag-pole{stroke:currentColor;stroke-width:1.5}
+.kit-flag{fill:var(--lm-color-copper-ink)}
+.diagram-svg .kit-code{font-family:var(--lm-font-mono);font-size:14px}
+.diagram-svg .kit-quiet{fill:var(--lm-color-muted)}
+.docs-diagram-caption{margin:8px 0 0;font-size:14px;line-height:1.5;color:var(--lm-color-muted)}
 .diagram-motion{position:absolute;top:0;right:0;z-index:11;display:grid;place-items:center;width:44px;height:44px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--lm-color-muted);cursor:pointer}
 .diagram-motion:hover{color:var(--lm-color-ink);background:var(--lm-color-silver)}
 .diagram-motion[aria-disabled="true"]{cursor:default;opacity:.5}
 .diagram-motion .lm-icon{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2}
-@media(max-width:850px){.docs-diagram .story-art .diagram-svg .flow-meta,.docs-diagram .story-art .diagram-svg .flow-label,.docs-diagram .story-art .evidence-demo .replay-output{font-size:24px}.docs-diagram .story-art .diagram-svg .flow-repository{font-size:27px}}

@@ -1,9 +1,10 @@
-// The landing page's diagrams, in the docs. A page marks where one goes with
-// `<!-- diagram: <scene> -->`; the build puts a slot there and carries the
-// landing's figures as templates. This mounts a copy in each slot, and gives
-// the docs what the landing's own script gives it: motion a reader can pause,
-// and the behavior figure's switch between the change and the fix.
-import {createStoryEntries, createTaskLoopMesh, initStory, mountChapterDiagram, TASK_SIZE} from '/diagrams-webgl.js';
+// The docs' diagrams. A page marks where one goes with `<!-- diagram: <scene> -->`,
+// and the build renders that scene's words and drawing there
+// (`src/diagram-scenes.js`). This draws the scene's matte relief and motion on
+// the figure's canvas, with the landing page's renderer, and gives every
+// diagram a pause control.
+import {initStory} from '/diagrams-webgl.js';
+import {SCENES} from '/diagram-scenes.js';
 
 const root = document.documentElement;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -49,50 +50,18 @@ function addMotionButton(slot) {
   motionButtons.push(button);
 }
 
-function mountTaskLoop(slot, template) {
-  const figure = template.content.querySelector('[data-diagram="task"]').cloneNode(true);
-  figure.setAttribute('role', 'img');
-  figure.setAttribute('aria-label', slot.dataset.caption);
-  slot.replaceChildren(figure);
-  initStory(figure, {task: {mesh: createTaskLoopMesh(), mode: 0, size: TASK_SIZE, layer: 'task'}});
+function animate(slot) {
+  const name = slot.dataset.docsScene;
+  const scene = SCENES[name];
+  const figure = slot.querySelector('.kit-figure');
+  if (!scene || !figure) return;
+  const {mesh, mode, size} = scene.build();
+  figure.dataset.scene = name;
+  initStory(figure, {[name]: {mesh, mode, size, layer: name}});
+  addMotionButton(slot);
 }
 
-// The behavior figure's switch, as the landing's script runs it, kept to the
-// figure it belongs to.
-function selectReplay(button) {
-  const figure = button.closest('.story-figure');
-  const state = button.dataset.example;
-  const before = state === 'before';
-  figure.dataset.state = state;
-  figure.querySelectorAll('[data-layer="verification"]').forEach(layer => { layer.dataset.state = state; });
-  figure.querySelectorAll('[data-example]').forEach(control => control.setAttribute('aria-pressed', String(control.dataset.example === state)));
-  figure.querySelectorAll('[data-replay-value]').forEach(label => { label.textContent = before ? 'missing' : label.dataset.replayValue; });
-  const status = before ? 'With the change: the retry flag is lost in both cases.' : 'With the fix: the retry flag reaches the caller in both cases.';
-  figure.querySelectorAll('.story-replay [role="status"]').forEach(element => { element.textContent = status; });
-}
-
-const storyTemplate = document.getElementById('docs-story-figure');
-const taskTemplate = document.getElementById('docs-task-figure');
-const chapterSlots = [...document.querySelectorAll('[data-chapter-scene]')];
-const taskSlots = [...document.querySelectorAll('[data-docs-task]')];
 updateMotion();
 reducedMotion.addEventListener('change', updateMotion);
-if (storyTemplate && chapterSlots.length) {
-  const source = storyTemplate.content.querySelector('[data-diagram="story"]');
-  const entries = createStoryEntries();
-  for (const slot of chapterSlots) {
-    mountChapterDiagram(slot, source, entries);
-    addMotionButton(slot);
-  }
-}
-if (taskTemplate) {
-  for (const slot of taskSlots) {
-    mountTaskLoop(slot, taskTemplate);
-    addMotionButton(slot);
-  }
-}
+document.querySelectorAll('[data-docs-scene]').forEach(animate);
 updateMotion();
-document.addEventListener('click', event => {
-  const button = event.target.closest('.chapter-diagram [data-example]');
-  if (button) selectReplay(button);
-});

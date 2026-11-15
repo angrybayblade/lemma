@@ -8,7 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.join(root, 'dist');
 rmSync(output, {recursive: true, force: true});
 mkdirSync(output, {recursive: true});
-for (const file of ['styles.css', 'app.js', 'diagrams-webgl.js', 'change-story.js']) cpSync(path.join(root, 'src', file), path.join(output, file));
+for (const file of ['styles.css', 'app.js', 'diagrams-webgl.js', 'diagram-kit.js', 'diagram-scenes.js', 'change-story.js']) cpSync(path.join(root, 'src', file), path.join(output, file));
 let html = readFileSync(path.join(root, 'src/index.html'), 'utf8');
 const story = JSON.parse(readFileSync(path.join(root, 'assets/change-story.json'), 'utf8'));
 const escape = text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -168,5 +168,5 @@ writeFileSync(path.join(output, 'index.html'), html);
 cpSync(path.join(root, 'assets'), path.join(output, 'assets'), {recursive: true});
 // TODO: bring the design system up to date, then track it and link its page from the site again.
 cpSync(path.join(root, 'design-system'), path.join(output, 'design-system'), {recursive: true});
-buildDocs({root,output,landing:html});
+buildDocs({root,output});
 console.log(`Built static site: ${output}`);
