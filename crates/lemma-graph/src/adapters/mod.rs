@@ -1115,14 +1115,21 @@ const NETWORK_FAILURES: [&str; 10] = [
 /// state does not cover, and the toolchain environment. A failure in a
 /// sandbox with a broken cache, or before dependencies were installed, is
 /// then tried again elsewhere.
+/// Whether the environment variable `name` changes how a toolchain builds
+/// or runs code (see [`TOOLCHAIN_VARIABLES`]): what an adapter's or a
+/// check's commands may depend on, unlike the variables of the shell or
+/// editor that asked.
+pub fn is_toolchain_variable(name: &str) -> bool {
+    TOOLCHAIN_VARIABLES
+        .iter()
+        .any(|prefix| name == *prefix || name.starts_with(prefix))
+}
+
 fn failure_context(root: &Path, variables: impl Iterator<Item = (OsString, OsString)>) -> String {
     let mut relevant: Vec<String> = variables
         .filter_map(|(name, value)| {
             let name = name.to_str()?.to_owned();
-            let is_toolchain = TOOLCHAIN_VARIABLES
-                .iter()
-                .any(|prefix| name == *prefix || name.starts_with(prefix));
-            is_toolchain.then(|| format!("{name}={}", value.to_string_lossy()))
+            is_toolchain_variable(&name).then(|| format!("{name}={}", value.to_string_lossy()))
         })
         .collect();
     relevant.sort();
