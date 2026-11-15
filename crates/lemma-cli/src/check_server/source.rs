@@ -92,13 +92,17 @@ struct SentrySource {
     spelled: BTreeMap<PathBuf, PathBuf>,
     /// Repositories that changed, with when they last did.
     changing: BTreeMap<PathBuf, Instant>,
+    /// The journal token of the last change followed: an ask is about the
+    /// changes up to it.
+    as_of: Option<String>,
     is_lost: bool,
 }
 
 /// What following sentry's journal reports.
 enum Followed {
-    /// A repository's own files changed: its directory, canonical.
-    Changed(PathBuf),
+    /// A repository's own files changed: its directory, canonical, and the
+    /// journal token of the change.
+    Changed(PathBuf, String),
     /// Sentry, or its daemon, went away.
     Lost,
 }
@@ -125,6 +129,7 @@ impl SentrySource {
             events,
             spelled,
             changing: BTreeMap::new(),
+            as_of: None,
             is_lost: false,
         }
     }
@@ -158,8 +163,9 @@ impl Source for SentrySource {
         let now = Instant::now();
         while let Ok(followed) = self.events.try_recv() {
             match followed {
-                Followed::Changed(repository) => {
+                Followed::Changed(repository, token) => {
                     self.changing.insert(repository, now);
+                    self.as_of = Some(token);
                 }
                 Followed::Lost => self.is_lost = true,
             }
@@ -186,7 +192,9 @@ impl Source for SentrySource {
             .unwrap_or(Path::new("/"))
             .to_path_buf();
         let environment = std::env::vars().collect();
-        let Some(answer) = crate::daemon::ask_sentry(self.asked(name), directory, environment)
+        let asked = self.asked(name);
+        let as_of = self.as_of.clone();
+        let Some(answer) = crate::daemon::ask_sentry_as_of(asked, directory, environment, as_of)
         else {
             self.is_lost = true;
             return Err(CheckFailure::NotServed);
@@ -250,10 +258,8 @@ fn follow_journal(sender: &Sender<Followed>) {
             let Some(repository) = event.repository.filter(|_| is_change) else {
                 continue;
             };
-            if sender
-                .send(Followed::Changed(PathBuf::from(repository)))
-                .is_err()
-            {
+            let changed = Followed::Changed(PathBuf::from(repository), event.token);
+            if sender.send(changed).is_err() {
                 return;
             }
         }
@@ -272,6 +278,7 @@ struct Events {
 #[derive(serde::Deserialize)]
 struct Event {
     kind: String,
+    token: String,
     repository: Option<String>,
     #[serde(default)]
     paths: usize,

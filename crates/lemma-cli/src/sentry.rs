@@ -48,6 +48,9 @@ pub(crate) struct Question {
     pub raw: Vec<String>,
     pub cwd: PathBuf,
     pub environment: BTreeMap<String, String>,
+    /// The journal token whose changes the ask is about, from a client
+    /// that follows the journal.
+    pub as_of: Option<String>,
 }
 
 /// A wait for events, with the connection to answer on.
@@ -342,7 +345,20 @@ impl Worker {
     /// has changed since, otherwise a check on what is kept.
     fn respond(&mut self, question: &Question) -> Answer {
         let started = Instant::now();
-        self.collect(true);
+        // A client that followed the journal to a token asks about changes
+        // already collected, so collecting again, and waiting for the
+        // watchers' barriers, would confirm what is known. A change after
+        // the token is collected at the worker's next turn and gets an ask
+        // of its own, and the answer is held under the generations it read,
+        // which that collection moves past.
+        let has_collected = question
+            .as_of
+            .as_deref()
+            .and_then(|token| self.position_of(token))
+            .is_some_and(|position| position <= self.position);
+        if !has_collected {
+            self.collect(true);
+        }
         let options = options_key(&question.raw);
         let fingerprint = self.fingerprint(question, &options);
         let asked = Asked {
@@ -843,6 +859,7 @@ mod tests {
             raw,
             cwd: root.to_owned(),
             environment: std::env::vars().collect(),
+            as_of: None,
         }
     }
 
@@ -1265,6 +1282,26 @@ mod tests {
         let answer = worker.respond(&asked);
 
         assert!(read_ahead >= 1);
+        assert_eq!(without_token(&answer), fresh(&asked));
+    }
+
+    #[test]
+    fn an_ask_as_of_a_collected_change_answers_as_a_fresh_check() {
+        let root = tempfile::tempdir().unwrap();
+        shop(root.path());
+        let mut worker =
+            Worker::start(&root.path().join("mod.lm").canonicalize().unwrap()).unwrap();
+        let mut asked = question(root.path());
+        worker.respond(&asked);
+
+        write(
+            &root.path().join("web/src/charge.ts"),
+            "export async function charge() {\n  return fetch(\"/v1/refunds\", { method: \"POST\" });\n}\n",
+        );
+        settle_until_read_ahead(&mut worker);
+        asked.as_of = Some(worker.token(worker.position));
+        let answer = worker.respond(&asked);
+
         assert_eq!(without_token(&answer), fresh(&asked));
     }
 

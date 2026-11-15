@@ -76,6 +76,11 @@ enum Request {
         cwd: PathBuf,
         /// The asking process's environment, for the commands a check runs.
         environment: BTreeMap<String, String>,
+        /// A journal token whose changes the ask is about, from a client
+        /// that follows the journal: the changes up to it were collected,
+        /// so sentry need not wait for its watchers first.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<String>,
     },
     /// Attach sentry, detach it, or report on it.
     Sentry {
@@ -392,12 +397,14 @@ fn route_sentry(
             args,
             cwd,
             environment,
+            as_of,
         } => {
             let asked = Asked {
                 build,
                 args,
                 cwd,
                 environment,
+                as_of,
             };
             hand_to_sentry(asked, stream, sentry, settings);
             None
@@ -441,6 +448,7 @@ struct Asked {
     args: Vec<String>,
     cwd: PathBuf,
     environment: BTreeMap<String, String>,
+    as_of: Option<String>,
 }
 
 /// Gives a check to sentry when it is attached to the check's workspace,
@@ -499,6 +507,7 @@ fn hand_to_sentry(
             raw: asked.args,
             cwd: asked.cwd,
             environment: asked.environment,
+            as_of: asked.as_of,
         },
         stream,
     });
@@ -581,6 +590,17 @@ pub(crate) fn ask_sentry(
     cwd: PathBuf,
     environment: BTreeMap<String, String>,
 ) -> Option<crate::sentry::Answer> {
+    ask_sentry_as_of(args, cwd, environment, None)
+}
+
+/// [`ask_sentry`] for a client that follows sentry's journal, about the
+/// changes up to the journal token `as_of`.
+pub(crate) fn ask_sentry_as_of(
+    args: Vec<String>,
+    cwd: PathBuf,
+    environment: BTreeMap<String, String>,
+    as_of: Option<String>,
+) -> Option<crate::sentry::Answer> {
     let socket = socket_path().ok()?;
     let mut stream = UnixStream::connect(&socket).ok()?;
     let request = Request::SentryAsk {
@@ -588,6 +608,7 @@ pub(crate) fn ask_sentry(
         args,
         cwd,
         environment,
+        as_of,
     };
     send(&mut stream, &request).ok()?;
     let mut reader = BufReader::new(stream);
