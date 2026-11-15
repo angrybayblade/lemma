@@ -16,7 +16,7 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 
 | Area | Ready for | Evidence |
 | --- | --- | --- |
-| Code intelligence: TypeScript, TSX, JavaScript, Python, Go, Rust | Daily use by people and agents | Symbols, outlines, references, definitions, implementations and signatures, each through the language's own server. Across 241 random symbols in five repositories, 96% of reported lines were real references ([comparison](comparison.md)); 1-3 ms once cached ([performance](performance.md)). |
+| Code intelligence: TypeScript, TSX, Python, Go, Rust | Daily use by people and agents | Symbols, outlines, references, definitions, implementations and signatures, each through the language's own server. Across 241 random symbols in five repositories, 96% of reported lines were real references ([comparison](comparison.md)); 1-3 ms once cached ([performance](performance.md)). |
 | MCP server | Agents in Claude Code and other MCP clients | Agent benchmark rounds r0-r6 ([results](agent-benchmark.md)) |
 | `lemma.http` requirements for HTTP contracts | Internal use, errors gating CI after a reporting period | In rc0, 318 historical changes replayed on a production system of ten repositories with no false error; every error matched a real break. |
 | `lemma check` across a system's repositories | Internal use, errors gating CI after a reporting period | On a production system of six repositories, for rc1: 54 past contract changes replayed with every finding, severity and trace as reviewed; synthetic breaks found every known caller (47 of 47 for new required fields, 33 of 33 for removed operations) and no other; change-driven evaluation gave the same findings as reading all code on 34 changes and 30 breaks, in about 60% of the time. On a generated system of 100,000 files, a warm change-driven check took 2.2 s and 192 MB. |
@@ -75,6 +75,7 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 | Limitation | Effect | Until fixed |
 | --- | --- | --- |
 | Answers come from language servers, which must be installed and can be slow on first use | First lookups in a large repository take seconds; servers without dependencies installed miss references through imports | Install dependencies; the daemon keeps servers warm |
+| `lemma index` reads no JavaScript files (`.js`, `.jsx`, `.mjs`, `.cjs`) | What they define cannot be looked up by `lemma symbols`, `refs` or `graph`; `lemma check` still reads them for calls to operations | Ask about the TypeScript that uses them, or use text search |
 | pyright and ty do not answer implementation lookups | `lemma implementations` says the server does not support it for Python | Use `lemma refs` |
 | gopls finds references only within one module without `go.work` | Cross-module references are missed | Add a `go.work` |
 | "No references found" means the server saw none, not that a symbol is unused | Deleting on that basis can break dynamic uses | Cross-check with text search before deleting |

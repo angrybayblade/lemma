@@ -26,7 +26,7 @@ const PARSE_ERROR: i64 = -32700;
 /// Told to the agent once, when it connects.
 const INSTRUCTIONS: &str = "Lemma is your IDE here, without an editor. It answers \"where is this \
 used, defined or implemented\" and \"what calls this\" from each language's own language server \
-(TypeScript, JavaScript, Python, Go and Rust), exactly where text search guesses: it leaves out other \
+(TypeScript, Python, Go and Rust), exactly where text search guesses: it leaves out other \
 symbols with the same name and mentions in comments and strings, and follows imports and aliases. \
 Once its servers are warm an answer takes milliseconds, so ask on every step, especially for common \
 names; use text search for strings, configuration and other files.\n\n\

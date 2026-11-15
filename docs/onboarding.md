@@ -41,7 +41,7 @@ Install the language server for each language your code uses:
 
 | Language | Install | Command Lemma runs |
 | --- | --- | --- |
-| TypeScript, TSX, JavaScript | `npm install -g typescript typescript-language-server` | `typescript-language-server` |
+| TypeScript, TSX | `npm install -g typescript typescript-language-server` | `typescript-language-server` |
 | Python | `uv tool install ty` (fastest) or `npm install -g pyright` | `ty` or `pyright-langserver` |
 | Go | `go install golang.org/x/tools/gopls@latest` | `gopls` |
 | Rust | `rustup component add rust-analyzer` | `rust-analyzer` |
