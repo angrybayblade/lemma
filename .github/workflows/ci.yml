@@ -26,6 +26,22 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+  # The documentation site: its copy of the docs is current, it builds, and
+  # its routes, anchors and labels hold.
+  docs:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The build names the last commit that changed the docs.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python3 website/scripts/check_content.py
+      - run: node website/scripts/build.mjs
+      - run: python3 website/scripts/check_docs.py
+
   test:
     strategy:
       fail-fast: false

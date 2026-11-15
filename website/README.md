@@ -15,9 +15,12 @@ The approved landing page and a design-system-compatible documentation site shar
 Build and check from the Lemma repository:
 
 ```sh
+python3 website/scripts/check_content.py   # before the build, which refreshes content/
 node website/scripts/build.mjs
 python3 website/scripts/check_docs.py
 ```
+
+CI runs the same three steps. Commit `content/` with any docs change; `check_content.py` fails when it lags its sources. `cargo test` also fails when `docs/commands.md` leaves out a `lemma` or `lm` command, an option, or an MCP tool argument.
 
 From the isolated Site checkout, use `node scripts/build.mjs` and `python3 scripts/check_docs.py`. The source snapshot makes the build self-contained. Preview `dist/` with any static HTTP server; open `/docs/`.
 
