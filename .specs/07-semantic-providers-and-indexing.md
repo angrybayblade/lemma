@@ -83,6 +83,10 @@ Capability adaptation should be explicit. Do not invent methods or infer support
 
 LSP does not guarantee a universal “entire repository analysis complete” signal. Readiness and background-analysis behavior need provider-specific testing.
 
+**A server that cannot start (2026-11-14).** Providers are tried in order, and one that cannot start gives way to the next. Where that is the settled state of a machine, as `typescript-language-server` beside TypeScript 7 with `typescript-native` serving, every lookup used to start the first again before falling back, 0.1 s each. A graph asks dozens of questions: of 7.7 s for one after an edit on a public repository, 7 s went to 58 failed starts and 0.1 s to the server that answered. The session pool now remembers the failure with its message (`SessionPool::failed_starts`) and reports it as `ProviderError::CouldNotStart` without starting the server: for 60 s in a pool that stays, so a repaired installation is picked up within a minute, and for the life of a pool made for one lookup. A server started since, as `lemma daemon lsp start` does, serves at once. On that repository the first graph after an edit went from 7.5 s to 1.0 to 1.5 s for two symbols and from 38 s to 3.6 s for a third, with the same answers; where the first server starts, nothing changes.
+
+**Waiting that can be given up (2026-11-14).** A client can be handed a function that says when to stop waiting for answers (`LspClient::interrupt_when`), for requests made ahead of anyone asking ([spec 14](14-sentry.md), "More than one graph, and giving way"). The request is not cancelled, and the same request made again before the server is told of a change waits for the answer already on its way.
+
 ## Proposed normalized operations
 
 ```text
