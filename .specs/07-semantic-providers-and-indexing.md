@@ -135,7 +135,11 @@ LSP is optimized for interactive requests rather than bulk export. The initial i
 
 Bound concurrency and query expansion. Measure provider startup, query latency, cache behavior, and memory before attempting whole-repository reference enumeration.
 
-If bulk semantic indexing becomes necessary, evaluate SCIP or direct compiler/indexer adapters as additional producers. The normalized model must not depend on LSP response shapes.
+**Callers outside the snapshot (2026-11-15).** A language server reads the files its project names, not the files Lemma indexes, so a reference can be in a file the snapshot leaves out: a test, or a script outside `include`. A graph names the definition such a use sits in by parsing that one file when the walk meets it, gives it the id it would have if the file were indexed, and marks it `(outside the snapshot)`. Nothing is added to the index. What was found around the use is kept with the snapshot's answers under the file's contents and the extractor's version, so a graph asked again reads the file and parses nothing: without that, a graph with 199 such callers took 3.7 s each time it was asked again, and with it 0.23 s.
+
+The walk does not ask about such a definition unless `--outside <n>` allows it. A lookup in a file the snapshot does not hold is answered only for a walk that has read the file, and its answer is kept under a hash of the file's contents, because the snapshot's own fingerprint does not cover the file.
+
+Naming without following is the default because of what was measured in a workspace of six repositories. Of 109 sampled graphs, 29 ended at files outside the snapshot, 692 such files in all, 634 of them not tests by their names. Naming left 9 graphs ending at 34 files, 31 of them the top-level code of tests, and named 775 definitions, with a repeated graph as fast as before (a median of 25 ms). Following every named definition, on a sample of 120, added 26 more outside the snapshot and 3 inside it, since 795 of 834 were tests and entry points nothing calls, and the first ask of one graph went from 0.15 s to over seven minutes: about two seconds for each of its 199 callers. So the graph says what is at the edge of what a description includes, and going past the edge is asked for by number.
 
 ## Storage and discovery proposal
 

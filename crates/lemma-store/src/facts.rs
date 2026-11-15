@@ -208,6 +208,9 @@ pub enum Question {
     /// Lemma's own warnings about files a provider leaves out of a
     /// symbol's references; costly to find, so kept with the answers.
     UnseenFiles,
+    /// Lemma's own reading of the definitions around a position in a file
+    /// the snapshot leaves out, kept so the file is not parsed again.
+    DefinitionsAround,
 }
 
 impl Question {
@@ -217,6 +220,7 @@ impl Question {
             Self::Locations(query) => query.as_str(),
             Self::Hover => "hover",
             Self::UnseenFiles => "unseen_files",
+            Self::DefinitionsAround => "definitions_around",
         }
     }
 }
