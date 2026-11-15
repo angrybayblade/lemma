@@ -1,6 +1,7 @@
 // Shared matte material and batched geometry for the three product diagrams.
 // SVG carries the language; transparent WebGL canvases carry relief and motion.
 import {changeStory} from './change-story.js';
+import {createBuilder, stopAtArrow} from './diagram-kit.js';
 
 const vertexSource = `
 precision highp float;
@@ -165,58 +166,6 @@ void main() {
   gl_FragColor = vec4(color + grain * 0.3, alpha * u_alpha);
 }`;
 
-function createBuilder() {
-  const vertices = [];
-  const corners = [[0,0],[1,0],[1,1],[0,0],[1,1],[0,1]];
-  function quad(points, kind, phase, seed, flow = [seed,seed], size = [12,12]) {
-    for (const [u,v] of corners) {
-      const a = points[0], b = points[1], d = points[3];
-      vertices.push(a[0]+(b[0]-a[0])*u+(d[0]-a[0])*v,
-        a[1]+(b[1]-a[1])*u+(d[1]-a[1])*v,
-        u,v,kind,phase,seed,flow[0]+(flow[1]-flow[0])*u,...size);
-    }
-  }
-  function line(a,b,width,kind,phase,seed,flow) {
-    const dx=b[0]-a[0],dy=b[1]-a[1],length=Math.hypot(dx,dy);
-    if (!length) return;
-    const nx=-dy/length*width/2,ny=dx/length*width/2;
-    quad([[a[0]+nx,a[1]+ny],[b[0]+nx,b[1]+ny],
-      [b[0]-nx,b[1]-ny],[a[0]-nx,a[1]-ny]],kind,phase,seed,flow,[length,width]);
-  }
-  // `span` is the part of the stage's flow this path covers, so a pulse can cross several paths in turn.
-  function path(points,width,kind,phase,seed=0.5,span=[0,1]) {
-    const lengths=points.slice(1).map((p,i)=>Math.hypot(p[0]-points[i][0],p[1]-points[i][1]));
-    const total=lengths.reduce((a,b)=>a+b,0);let distance=0;
-    const flow=part=>span[0]+part*(span[1]-span[0]);
-    points.slice(1).forEach((p,i)=>{
-      line(points[i],p,width,kind,phase,seed,[flow(distance/total),flow((distance+lengths[i])/total)]);
-      distance+=lengths[i];
-    });
-  }
-  function tile(x,y,width,height,kind,phase,seed) {
-    quad([[x,y],[x+width,y],[x+width,y+height],[x,y+height]],kind,phase,seed);
-  }
-  const iso=(x,y,z,origin)=>[origin[0]+(x-y)*0.83,origin[1]+(x+y)*0.36-z];
-  function plate(x,y,w,h,z,origin,phase,seed) {
-    const points=[[x,y],[x+w,y],[x+w,y+h],[x,y+h]].map(([a,b])=>iso(a,b,z,origin));
-    // A fine underside and a printed top face give the metal its shallow relief.
-    const lower=point=>[point[0],point[1]+(w>60?3.5:2.0)];
-    quad([points[3],points[2],lower(points[2]),lower(points[3])],5,phase,seed);
-    quad([points[1],points[2],lower(points[2]),lower(points[1])],5,phase,seed);
-    quad(points,1,phase,seed,[seed,seed],[w,h]);
-  }
-  return {quad,line,path,tile,iso,plate,finish:()=>new Float32Array(vertices)};
-}
-
-// A chevron narrows to its tip, so anything arriving off-center must stop at
-// the chevron's arm or it pokes through. `runPerOffset` is the arm's slope:
-// how far back along the pipe the arm is, per unit away from the center.
-function stopAtArrow(points,offset,runPerOffset) {
-  const end=points[points.length-1],before=points[points.length-2];
-  const length=Math.hypot(end[0]-before[0],end[1]-before[1]);
-  const back=(Math.abs(offset)*runPerOffset+.5)/length;
-  return [...points.slice(0,-1),[end[0]+(before[0]-end[0])*back,end[1]+(before[1]-end[1])*back]];
-}
 const HERO_ARROW_RUN=14/12,REPLAY_ARROW_RUN=12/10,PULSE_HALF_WIDTH=3;
 
 function createHeroMesh() {
@@ -474,7 +423,7 @@ function createVerificationMeshes() {
 
 // The closing section's loop: the hero's four stages, told for one task,
 // "implement support for payment failure retries". Same material and timing as the hero.
-export const TASK_SIZE=[640,594];
+const TASK_SIZE=[640,594];
 const TASK_STAGES=[[130,212],[490,212],[490,398],[130,398]];
 const TASK_MARK=[310,305];
 
@@ -547,7 +496,7 @@ function taskReplay(mesh,[x,y],phase,isFixed) {
   });
 }
 
-export function createTaskLoopMesh() {
+function createTaskLoopMesh() {
   const mesh=createBuilder();
   taskContract(mesh,TASK_STAGES[0]);
   taskCallers(mesh,TASK_STAGES[1]);
@@ -570,7 +519,7 @@ export function createTaskLoopMesh() {
   return vertices;
 }
 
-export function createStoryEntries() {
+function createStoryEntries() {
   const workflow=createWorkflowMeshes(),verification=createVerificationMeshes();
   return {
     hero:{mesh:createHeroMesh(),mode:0,size:[680,566],layer:'hero'},
@@ -583,6 +532,7 @@ export function createStoryEntries() {
   };
 }
 
+// The docs animate their own scenes with this too (`src/docs/diagrams.js`).
 export function initStory(figure,entries) {
   const canvas=figure.querySelector('.diagram-webgl');
   const artwork=figure.querySelector('.story-art');
@@ -773,8 +723,7 @@ function prepareChapterSwitch(figure,scene) {
   replay.inert=false;
 }
 
-// The docs mount these too, from a template of this page's figure (`src/docs/diagrams.js`).
-export function mountChapterDiagram(slot,source,entries) {
+function mountChapterDiagram(slot,source,entries) {
   const scene=slot.dataset.chapterScene;
   const figure=source.cloneNode(true);
   makeIdsUnique(figure,scene);
