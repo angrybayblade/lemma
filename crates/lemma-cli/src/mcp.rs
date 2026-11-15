@@ -93,6 +93,13 @@ impl Runner {
 
     fn run(&mut self, args: Vec<String>) -> Finished {
         if runs_in_own_process(&args) {
+            // A check sentry serves needs no process of its own: asking it
+            // here saves starting one only for it to ask.
+            if self.uses_daemon
+                && let Some(finished) = ask_sentry(&args, &self.cwd)
+            {
+                return finished;
+            }
             return self.run_as_child(&args);
         }
         if self.uses_daemon
@@ -180,6 +187,28 @@ fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
 
 #[cfg(not(unix))]
 fn forward(_args: Vec<String>, _cwd: PathBuf) -> Option<Finished> {
+    None
+}
+
+/// A `check` answered by the daemon's sentry, as the command run in `cwd`
+/// would be; `None` when sentry does not serve it, or for any other command.
+#[cfg(unix)]
+fn ask_sentry(args: &[String], cwd: &std::path::Path) -> Option<Finished> {
+    let is_check = args.first().map(String::as_str) == Some("check");
+    if !is_check || crate::sentry::is_turned_off() {
+        return None;
+    }
+    let environment = std::env::vars().collect();
+    let answer = crate::daemon::ask_sentry(args.to_vec(), cwd.to_path_buf(), environment)?;
+    Some(Finished {
+        stdout: answer.stdout,
+        stderr: answer.stderr,
+        exit_code: answer.exit_code,
+    })
+}
+
+#[cfg(not(unix))]
+fn ask_sentry(_args: &[String], _cwd: &std::path::Path) -> Option<Finished> {
     None
 }
 
