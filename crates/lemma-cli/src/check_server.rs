@@ -1,4 +1,4 @@
-//! `lemma check --lsp`: a language server whose diagnostics are what each
+//! `lemma lsp`: a language server whose diagnostics are what each
 //! repository's uncommitted changes break, in that repository and in the
 //! others of its workspace.
 //!
@@ -33,12 +33,12 @@ use lemma_lsp::{PositionEncoding, line_text, read_message, write_message};
 use serde_json::{Value, json};
 
 use crate::check::Served;
-use crate::cli::CheckArgs;
+use crate::cli::{CheckArgs, LanguageServerArgs};
 use crate::watched::{BATCH_INTERVAL, WatchedWorkspace};
 use diagnostics::{FileDiagnostics, LineDiagnostic};
 
-/// The description `lemma check` reads when none is named.
-const DEFAULT_MANIFEST: &str = "mod.lm";
+/// A repository's or workspace's root module.
+const ROOT_MODULE: &str = "mod.lm";
 /// The JSON-RPC code for a method the server does not know.
 const METHOD_NOT_FOUND: i64 = -32601;
 /// How long to wait for the editor to accept a progress report before
@@ -49,7 +49,7 @@ const TOUCHED_LIMIT: usize = 20;
 
 /// Serves diagnostics over standard input and output until the editor
 /// says `exit` or closes the stream.
-pub(crate) fn run(args: &CheckArgs) -> ExitCode {
+pub(crate) fn run(args: &LanguageServerArgs) -> ExitCode {
     let messages = match read_on_thread(BufReader::new(io::stdin())) {
         Ok(messages) => messages,
         Err(error) => {
@@ -95,7 +95,7 @@ enum Flow {
 }
 
 struct Server<'a> {
-    args: &'a CheckArgs,
+    args: &'a LanguageServerArgs,
     encoding: PositionEncoding,
     /// Whether the editor shows progress the server reports.
     reports_progress: bool,
@@ -121,7 +121,7 @@ struct Server<'a> {
 }
 
 impl<'a> Server<'a> {
-    fn new(args: &'a CheckArgs) -> Self {
+    fn new(args: &'a LanguageServerArgs) -> Self {
         Self {
             args,
             encoding: PositionEncoding::Utf16,
@@ -182,7 +182,7 @@ impl<'a> Server<'a> {
             (other, Some(id)) => {
                 let error = json!({
                     "code": METHOD_NOT_FOUND,
-                    "message": format!("`lemma check --lsp` does not answer {other}"),
+                    "message": format!("`lemma lsp` does not answer {other}"),
                 });
                 write_message(
                     output,
@@ -457,20 +457,28 @@ impl<'a> Server<'a> {
 /// Checks the change to the repository named `name` as `lemma check
 /// --change` would, reading through `warm`.
 fn check_change(
-    args: &CheckArgs,
+    args: &LanguageServerArgs,
     manifest: &Path,
     name: &str,
     warm: Arc<lemma_graph::Warm>,
 ) -> anyhow::Result<Report> {
     let asked = CheckArgs {
         manifest: manifest.to_path_buf(),
-        change: Some(name.to_owned()),
         // An editor's server has no one to ask, and cloning behind its back
         // would surprise.
         no_clone: true,
+        change: Some(name.to_owned()),
+        base: None,
+        head: None,
+        level: args.level.clone(),
+        no_run: args.no_run,
+        run_base: false,
+        select: None,
         since: None,
-        lsp: false,
-        ..args.clone()
+        all: false,
+        engine: args.engine.clone(),
+        evaluation: None,
+        explain: false,
     };
     let served = Served {
         manifest,
@@ -480,11 +488,14 @@ fn check_change(
     crate::check::evaluate(&asked, Some(&served))
 }
 
-/// The description to check: the editor's `manifest` initialization
-/// option, the one given on the command line, or the nearest `mod.lm` above
+/// The description to check: the one given on the command line, the
+/// editor's `manifest` initialization option, or the nearest `mod.lm` above
 /// the editor's first folder that declares a workspace (else the nearest
 /// `mod.lm`).
-fn chosen_manifest(args: &CheckArgs, params: &InitializeParams) -> Option<PathBuf> {
+fn chosen_manifest(args: &LanguageServerArgs, params: &InitializeParams) -> Option<PathBuf> {
+    if let Some(manifest) = &args.manifest {
+        return std::path::absolute(manifest).ok();
+    }
     let configured = params
         .initialization_options
         .as_ref()
@@ -493,9 +504,6 @@ fn chosen_manifest(args: &CheckArgs, params: &InitializeParams) -> Option<PathBu
         .filter(|manifest| !manifest.trim().is_empty());
     if let Some(manifest) = configured {
         return std::path::absolute(manifest).ok();
-    }
-    if args.manifest != Path::new(DEFAULT_MANIFEST) {
-        return std::path::absolute(&args.manifest).ok();
     }
     let folder = params
         .workspace_folders
@@ -511,7 +519,7 @@ fn chosen_manifest(args: &CheckArgs, params: &InitializeParams) -> Option<PathBu
 fn nearest_workspace_manifest(folder: &Path) -> Option<PathBuf> {
     let found: Vec<PathBuf> = folder
         .ancestors()
-        .map(|directory| directory.join(DEFAULT_MANIFEST))
+        .map(|directory| directory.join(ROOT_MODULE))
         .filter(|manifest| manifest.is_file())
         .collect();
     let declares_workspace = |manifest: &&PathBuf| {

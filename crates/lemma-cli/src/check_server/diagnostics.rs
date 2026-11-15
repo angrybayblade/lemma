@@ -1,4 +1,4 @@
-//! What a change's report says about each file, for `lemma check --lsp`.
+//! What a change's report says about each file, for `lemma lsp`.
 //!
 //! Pure: a report and the files the change touched go in, diagnostics by
 //! file come out. Reading files to place a diagnostic within its line, and

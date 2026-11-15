@@ -1,12 +1,12 @@
 # Language server and integrations
 
-Status: feasibility assessment and proposed architecture, written before either surface existed. Both now exist in a first form: `lm lsp` serves `.lm` modules ([spec 13](13-lm-grammar.md)), and `lemma check --lsp` is an experimental companion for source code, described under [Change diagnostics](#change-diagnostics-experimental). The sections after it are the original assessment.
+Status: feasibility assessment and proposed architecture, written before either surface existed. Both now exist in a first form: `lm lsp` serves `.lm` modules ([spec 13](13-lm-grammar.md)), and `lemma lsp` is an experimental companion for source code, described under [Change diagnostics](#change-diagnostics-experimental). The sections after it are the original assessment.
 
 This document concerns Lemma's **editor-facing** language server. The accepted starting architecture also uses Lemma as an **LSP client** to existing language-specific servers for semantic enrichment; see [Pluggable semantic providers and lean indexing](07-semantic-providers-and-indexing.md). These are separate interfaces over the same core model.
 
 ## Change diagnostics (experimental)
 
-**Status: experimental, 2026-11-14.** `lemma check --lsp` is the second surface below in its smallest useful form: it shows what saved changes break, where they break it, in any repository of the workspace.
+**Status: experimental, 2026-11-14.** `lemma lsp` is the second surface below in its smallest useful form: it shows what saved changes break, where they break it, in any repository of the workspace.
 
 **What it does.**
 

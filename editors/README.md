@@ -25,7 +25,7 @@ It speaks the Language Server Protocol over stdio. A directory holding `mod.lm`,
 
 ### What changes break, as you save (experimental)
 
-`lemma check --lsp` is a second server, for source code rather than `.lm` files. It watches every repository of a workspace and, when a repository's saved files change, checks it as `lemma check --change` would: what the change breaks is published as diagnostics on the code it breaks, in any repository, and summarized on the changed files. In VS Code, turn on `lemma.checkOnChange.enabled`; set `lemma.checkOnChange.manifest` if the workspace's `mod.lm` is not above the folder you opened. Any editor can run it for every file type, since it needs no document from the editor. See [spec 5](../.specs/05-lsp-and-integrations.md#change-diagnostics-experimental).
+`lemma lsp` is a second server, for source code rather than `.lm` files. It watches every repository of a workspace and, when a repository's saved files change, checks it as `lemma check --change` would: what the change breaks is published as diagnostics on the code it breaks, in any repository, and summarized on the changed files. In VS Code, turn on `lemma.checkOnChange.enabled`; set `lemma.checkOnChange.manifest` if the workspace's `mod.lm` is not above the folder you opened. Any editor can run it for every file type, since it needs no document from the editor. See [spec 5](../.specs/05-lsp-and-integrations.md#change-diagnostics-experimental).
 
 ## Neovim
 
