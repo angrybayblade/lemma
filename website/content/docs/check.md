@@ -4,7 +4,7 @@
 
 [`lemma verify`](verify.md) checks that a description still matches the code it describes, whatever a change does.
 
-<!-- diagram: impact -->
+<!-- diagram: trace -->
 
 ## Example
 

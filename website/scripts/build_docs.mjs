@@ -4,6 +4,7 @@ import {execFileSync} from 'node:child_process';
 import path from 'node:path';
 import {Marked} from '../vendor/marked/marked.mjs';
 import {pages,sections} from '../src/docs/navigation.mjs';
+import {SCENES} from '../src/diagram-scenes.js';
 
 const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
 const icon=name=>`<svg class="lm-icon" aria-hidden="true"><use href="/design-system/assets/symbols.svg#${name}"/></svg>`;
@@ -49,31 +50,18 @@ function highlight(source,language) {
   return result+escape(source.slice(offset));
 }
 
-// The task loop has no caption on the landing page, where its section heading says what it is.
-const TASK_CAPTION='One task with Lemma: your agent adds a retry flag, Lemma traces its callers and simulates a decline, and your agent fixes it and checks again.';
-
-// The landing page's figures and the captions of its scenes, for the docs pages that show one.
-function landingFigures(landing) {
-  const figure=start=>{
-    const from=landing.indexOf(start);
-    if(from<0)throw new Error(`The landing page has no figure starting ${start}`);
-    return landing.slice(from,landing.indexOf('</figure>',from)+'</figure>'.length);
-  };
-  const captions=Object.fromEntries([...landing.matchAll(/data-chapter-scene="([\w-]+)" data-caption="([^"]*)"/g)].map(([,scene,caption])=>[scene,caption]));
-  return {story:figure('<figure class="story-figure"'),task:figure('<figure class="task-loop"'),captions};
+// A page's `<!-- diagram: scene -->` marker, as the scene's figure: its words and drawing rendered
+// now, so they show without JavaScript, and the canvas the docs' script draws its relief on.
+function diagramSlot(name) {
+  const scene=SCENES[name];
+  if(!scene)throw new Error(`No diagram scene is called ${name}; use one of ${Object.keys(SCENES).join(', ')} (src/diagram-scenes.js)`);
+  const {svg,size}=scene.build();
+  return `<div class="docs-diagram" data-docs-scene="${escape(name)}"><figure class="kit-figure" data-diagram="kit" role="img" aria-label="${escape(scene.caption)}"><div class="story-art" style="aspect-ratio:${size[0]}/${size[1]}"><canvas class="diagram-webgl" aria-hidden="true"></canvas><div class="story-layer" data-layer="${escape(name)}">${svg}</div></div></figure><p class="docs-diagram-caption">${escape(scene.caption)}</p></div>\n`;
 }
 
-// A page's `<!-- diagram: scene -->` marker, as the slot the docs' script mounts a landing figure in.
-function diagramSlot(scene,figures) {
-  if(scene==='task')return `<div class="docs-diagram docs-diagram-task" data-docs-task data-caption="${escape(TASK_CAPTION)}"></div>\n`;
-  const caption=figures.captions[scene];
-  if(caption===undefined)throw new Error(`No landing diagram is called ${scene}; use task or one of ${Object.keys(figures.captions).join(', ')}`);
-  return `<div class="docs-diagram chapter-diagram" data-chapter-scene="${escape(scene)}" data-caption="${caption}"></div>\n`;
-}
-
-// What styles the landing page's diagrams, and not its layout, from its stylesheet: the rules
-// whose selectors name a class the figures use, and the rule pausing animation with the page's
-// motion. How a diagram sits in an article is the docs' own (docs.css). The custom properties
+// What styles the diagrams, from the landing page's stylesheet, and not its layout: the rules whose
+// selectors name a class the scenes' figures use, and the rule pausing animation with the page's
+// motion. The kit's own classes are styled in docs.css. How a diagram sits in an article is the docs' own (docs.css). The custom properties
 // those rules read come too.
 const PAUSES_MOTION=/^html\[data-motion="(?:paused|off)"\]/;
 const LANDING_LAYOUT=/story-copy|story-layout|story-rail|story-chapter|chapter-diagram|file-tabs|data-reveal|workflow-step|evidence-copy|verification-copy|hero-intro/;
@@ -110,7 +98,7 @@ function diagramStyles(source,markup) {
   return styles.replace(/url\((?!['"]?(?:[a-z]+:|\/|#))(['"]?)/g,'url($1/');
 }
 
-function renderDocument(markdown,page,sourceInfo,figures) {
+function renderDocument(markdown,page,sourceInfo) {
   const headings=[],counts=new Map(),diagrams=[];let fileLabel='',currentSection=page.title,codeNumber=0;
   const parser=new Marked({gfm:true,breaks:false,renderer:{
     heading({depth,text,tokens}){
@@ -122,7 +110,7 @@ function renderDocument(markdown,page,sourceInfo,figures) {
     link({href,title,tokens}){return `<a href="${escape(rewriteLink(href,page.source,sourceInfo))}"${title?` title="${escape(title)}"`:''}>${this.parser.parseInline(tokens)}</a>`;},
     html({text}){
       const diagram=text.trim().match(/^<!--\s*diagram:\s*([\w-]+)\s*-->$/);
-      if(diagram){diagrams.push(diagram[1]);return diagramSlot(diagram[1],figures);}
+      if(diagram){diagrams.push(diagram[1]);return diagramSlot(diagram[1]);}
       const match=text.match(/<!--\s*(?:file|append):\s*([^\n>]+?)\s*-->/);if(match)fileLabel=match[1];
       return text.trim().startsWith('<!--')?'':escape(text);
     },
@@ -166,19 +154,14 @@ function socialMeta(title,description,href) {
   const url=`${SITE_URL}${href}`;
   return `<link rel="canonical" href="${escape(url)}"><meta property="og:type" content="article"><meta property="og:site_name" content="Lemma"><meta property="og:url" content="${escape(url)}"><meta property="og:title" content="${title}"><meta property="og:description" content="${description}"><meta property="og:image" content="${image}"><meta property="og:image:type" content="image/png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta property="og:image:alt" content="${alt}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${title}"><meta name="twitter:description" content="${description}"><meta name="twitter:image" content="${image}"><meta name="twitter:image:alt" content="${alt}">`;
 }
-// What a page with diagrams adds: their styles and script in the head, and the landing figures
-// they are copied from at the end of the body.
-function diagramParts(document,figures) {
-  if(!document.diagrams.length)return {head:'',body:''};
-  const story=document.diagrams.some(scene=>scene!=='task')?`<template id="docs-story-figure">${figures.story}</template>`:'';
-  const task=document.diagrams.includes('task')?`<template id="docs-task-figure">${figures.task}</template>`:'';
-  return {head:'<link rel="stylesheet" href="/docs/diagrams.css"><script type="module" src="/docs/diagrams.js"></script>',body:story+task};
+// What a page with diagrams adds to its head: their styles and the script that animates them.
+function diagramHead(document) {
+  return document.diagrams.length?'<link rel="stylesheet" href="/docs/diagrams.css"><script type="module" src="/docs/diagrams.js"></script>':'';
 }
 
-function template(page,document,sourceInfo,figures) {
-  const diagrams=diagramParts(document,figures);
+function template(page,document,sourceInfo) {
   const nav=navigation(page),toc=outline(document.headings),sourceLink=`<a href="${escape(`https://github.com/${sourceInfo.repository}/blob/${sourceInfo.revision}/${page.source}`)}">View Markdown source ↗</a>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#F3F3EE"><title>${escape(page.title)}; Lemma docs</title><meta name="description" content="${escape(document.description.slice(0,200))}">${socialMeta(`${escape(page.title)}; Lemma docs`,escape(document.description.slice(0,200)),page.href)}<link rel="icon" href="/design-system/assets/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="/design-system/tokens.css"><link rel="stylesheet" href="/design-system/components.css"><link rel="stylesheet" href="/docs/docs.css"><script defer src="/docs/docs.js"></script>${diagrams.head}</head>
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#F3F3EE"><title>${escape(page.title)}; Lemma docs</title><meta name="description" content="${escape(document.description.slice(0,200))}">${socialMeta(`${escape(page.title)}; Lemma docs`,escape(document.description.slice(0,200)),page.href)}<link rel="icon" href="/design-system/assets/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="/design-system/tokens.css"><link rel="stylesheet" href="/design-system/components.css"><link rel="stylesheet" href="/docs/docs.css"><script defer src="/docs/docs.js"></script>${diagramHead(document)}</head>
 <body class="lm docs"><a class="docs-skip" href="#main">Skip to content</a>
 <header class="docs-header"><div class="docs-header-inner"><a class="docs-brand" href="/" aria-label="Lemma home">${icon('mark')}<span>lemma</span></a><a class="docs-header-label" href="/docs/">Documentation</a><div class="docs-header-actions"><button type="button" class="docs-search-button" aria-label="Search docs" data-open-search>${icon('search')}<span>Search docs</span><kbd>⌘ K</kbd></button><a class="docs-github" href="https://github.com/angrybayblade/lemma">GitHub ↗</a><button class="docs-menu-button" type="button" data-open-menu aria-label="Open documentation navigation">${icon('repository')}</button></div></div></header>
 <div class="docs-layout"><aside class="docs-sidebar" aria-label="Documentation navigation"><nav aria-label="Documentation">${nav}</nav></aside>
@@ -186,7 +169,7 @@ function template(page,document,sourceInfo,figures) {
 <aside class="docs-outline"><nav aria-label="On this page"><p>On this page</p>${toc}</nav><a href="/docs/troubleshooting/" class="docs-help-link">Need a hand? ↗</a></aside></div>
 <dialog id="docs-search" class="docs-search-dialog" aria-labelledby="search-label"><div class="search-heading"><label id="search-label" for="docs-query">Search documentation</label><button type="button" data-close-search aria-label="Close search">${icon('close')}</button></div><div class="search-field">${icon('search')}<input id="docs-query" type="search" placeholder="Find a guide, command, or concept…" autocomplete="off" spellcheck="false" aria-controls="docs-search-results"></div><p id="search-count" role="status">Try “behavior”, “MCP”, or “lm check”.</p><div id="docs-search-results"></div><p class="search-hint"><span><kbd>↓</kbd> to results</span><span><kbd>Esc</kbd> to close</span></p></dialog>
 <dialog id="docs-menu" class="docs-menu-dialog" aria-labelledby="menu-label"><div class="menu-heading"><span id="menu-label">Documentation</span><button type="button" data-close-menu aria-label="Close navigation">${icon('close')}</button></div><nav aria-label="Mobile documentation">${nav}</nav></dialog>
-<p class="docs-copy-status" id="docs-copy-status" role="status"></p>${diagrams.body}<noscript><style>@media(max-width:850px){.docs-sidebar{display:block;position:static;height:auto;margin-bottom:32px}.docs-menu-button,.docs-search-button{display:none}}</style></noscript></body></html>`;
+<p class="docs-copy-status" id="docs-copy-status" role="status"></p><noscript><style>@media(max-width:850px){.docs-sidebar{display:block;position:static;height:auto;margin-bottom:32px}.docs-menu-button,.docs-search-button{display:none}}</style></noscript></body></html>`;
 }
 
 // Published URLs that moved keep working.
@@ -198,18 +181,17 @@ function writeRedirects(destination) {
   }
 }
 
-export function buildDocs({root,output,landing}) {
+export function buildDocs({root,output}) {
   const sourceInfo=snapshotSources(root),destination=path.join(output,'docs'),search=[];
-  const figures=landingFigures(landing);
   mkdirSync(destination,{recursive:true});
   for(const name of ['docs.css','docs.js','diagrams.js'])cpSync(path.join(root,'src/docs',name),path.join(destination,name));
-  writeFileSync(path.join(destination,'diagrams.css'),diagramStyles(readFileSync(path.join(root,'src/styles.css'),'utf8'),figures.story+figures.task));
+  writeFileSync(path.join(destination,'diagrams.css'),diagramStyles(readFileSync(path.join(root,'src/styles.css'),'utf8'),Object.keys(SCENES).map(diagramSlot).join('')));
   const covered=new Set(pages.map(page=>page.source));
   function checkCoverage(directory){for(const entry of readdirSync(directory,{withFileTypes:true})){const file=path.join(directory,entry.name);if(entry.isDirectory())checkCoverage(file);else if(entry.name.endsWith('.md')){const relative=path.relative(sourceInfo.directory,file).split(path.sep).join('/');if(!covered.has(relative))throw new Error(`Document missing from navigation: ${relative}`);}}}
   checkCoverage(path.join(sourceInfo.directory,'docs'));
   for(const page of pages){
     const markdown=readFileSync(path.join(sourceInfo.directory,page.source),'utf8');
-    const document=renderDocument(markdown,page,sourceInfo,figures),directory=path.join(destination,page.slug);mkdirSync(directory,{recursive:true});writeFileSync(path.join(directory,'index.html'),template(page,document,sourceInfo,figures));search.push(...document.records);
+    const document=renderDocument(markdown,page,sourceInfo),directory=path.join(destination,page.slug);mkdirSync(directory,{recursive:true});writeFileSync(path.join(directory,'index.html'),template(page,document,sourceInfo));search.push(...document.records);
   }
   writeRedirects(destination);
   writeFileSync(path.join(destination,'search-index.json'),JSON.stringify(search));

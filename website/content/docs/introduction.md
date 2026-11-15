@@ -14,7 +14,7 @@ Lemma gives a coding agent what an IDE gives a person, without an editor open. I
 
 Agents reach all of it as MCP tools (`lemma mcp`), and the [agent skills](../skills/README.md) teach them when to use which.
 
-<!-- diagram: task -->
+<!-- diagram: gate -->
 
 ## What `lemma check` checks
 
