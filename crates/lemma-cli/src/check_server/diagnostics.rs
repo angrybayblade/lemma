@@ -1,8 +1,8 @@
 //! What a change's report says about each file, for `lemma lsp`.
 //!
-//! Pure: a report and the files the change touched go in, diagnostics by
-//! file come out. Reading files to place a diagnostic within its line, and
-//! speaking LSP, happen in the server.
+//! Pure: a report and the lines the change touched go in, diagnostics by
+//! file come out. Asking Git for those lines, reading files to place a
+//! diagnostic within its line, and speaking LSP happen in the server.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -37,24 +37,56 @@ pub(crate) struct Place {
 /// Diagnostics by absolute file path, each file's sorted.
 pub(crate) type FileDiagnostics = BTreeMap<PathBuf, Vec<LineDiagnostic>>;
 
+/// A file a change touched, and the lines it changed: none for a file Git
+/// does not know, which is new as a whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChangedFile {
+    pub path: PathBuf,
+    pub lines: Vec<ChangedLine>,
+}
+
+/// A line a change added, or the line where it removed some, with the text
+/// added or removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChangedLine {
+    /// Counted from zero, in the file as it is now.
+    pub line: u32,
+    pub text: String,
+}
+
+/// Where a change answers for findings: a changed line of a file.
+type Anchor = (PathBuf, u32);
+
+/// What one changed line answers for: the places elsewhere its findings
+/// are at, each with its repository and severity, and the findings that
+/// name no place.
+#[derive(Default)]
+struct Answerable<'a> {
+    elsewhere: Vec<(&'a str, Severity, Place)>,
+    unlocated: Vec<&'a Finding>,
+}
+
 /// The diagnostics one repository's change gives: each finding the change
-/// introduced, on the line of code it names, and on each file in `touched`
-/// a summary linking to every such line outside those files, together with
-/// the introduced findings that name no line. Findings that were there
-/// before the change are left out: they are not the change's to fix.
-pub(crate) fn diagnose(report: &Report, touched: &[PathBuf]) -> FileDiagnostics {
+/// introduced, on the line of code it names, and on the changed lines it
+/// comes from (see [`anchors`]) a summary linking to every such line
+/// outside the changed files, together with the introduced findings that
+/// name no line. Findings that were there before the change are left out:
+/// they are not the change's to fix.
+pub(crate) fn diagnose(report: &Report, changed: &[ChangedFile]) -> FileDiagnostics {
     let roots = repository_roots(report);
-    let introduced: Vec<&Finding> = report
-        .findings
-        .iter()
-        .filter(|finding| finding.introduced)
-        .collect();
+    let introduced = report.findings.iter().filter(|finding| finding.introduced);
     let mut files = FileDiagnostics::new();
-    let mut elsewhere: Vec<(&str, Severity, Place)> = Vec::new();
-    let mut unlocated = Vec::new();
+    let mut answerable: BTreeMap<Anchor, Answerable<'_>> = BTreeMap::new();
     for finding in introduced {
+        let anchors = anchors(finding, changed);
         let Some(location) = finding_location(finding, &roots) else {
-            unlocated.push(finding);
+            for anchor in anchors {
+                answerable
+                    .entry(anchor)
+                    .or_default()
+                    .unlocated
+                    .push(finding);
+            }
             continue;
         };
         let place = Place {
@@ -70,22 +102,39 @@ pub(crate) fn diagnose(report: &Report, touched: &[PathBuf]) -> FileDiagnostics 
                 severity: finding.severity,
                 code: finding.check.clone(),
                 message: place.message.clone(),
-                related: changed_files(touched, &place.path),
+                related: changed_here(&anchors, &place.path),
             });
-        if !touched.contains(&place.path) {
-            elsewhere.push((location.repository, finding.severity, place));
+        if changed.iter().any(|file| file.path == place.path) {
+            continue;
+        }
+        for anchor in anchors {
+            let entry = (location.repository, finding.severity, place.clone());
+            answerable.entry(anchor).or_default().elsewhere.push(entry);
         }
     }
-    elsewhere.sort();
-    elsewhere.dedup();
-    for path in touched {
-        let diagnostics = files.entry(path.clone()).or_default();
-        if !elsewhere.is_empty() {
-            diagnostics.push(summary(&elsewhere));
+    add_answers(&mut files, answerable);
+    files.retain(|_, diagnostics| !diagnostics.is_empty());
+    for diagnostics in files.values_mut() {
+        diagnostics.sort();
+        diagnostics.dedup();
+    }
+    files
+}
+
+/// Adds to `files`, on each changed line, what it answers for: a summary of
+/// the places elsewhere its findings are at, and each finding that names no
+/// place.
+fn add_answers(files: &mut FileDiagnostics, answerable: BTreeMap<Anchor, Answerable<'_>>) {
+    for ((path, line), mut answered) in answerable {
+        let diagnostics = files.entry(path).or_default();
+        answered.elsewhere.sort();
+        answered.elsewhere.dedup();
+        if !answered.elsewhere.is_empty() {
+            diagnostics.push(summary(line, &answered.elsewhere));
         }
-        for finding in &unlocated {
+        for finding in answered.unlocated {
             diagnostics.push(LineDiagnostic {
-                line: 0,
+                line,
                 severity: finding.severity,
                 code: finding.check.clone(),
                 message: finding.message.clone(),
@@ -93,12 +142,6 @@ pub(crate) fn diagnose(report: &Report, touched: &[PathBuf]) -> FileDiagnostics 
             });
         }
     }
-    files.retain(|_, diagnostics| !diagnostics.is_empty());
-    for diagnostics in files.values_mut() {
-        diagnostics.sort();
-        diagnostics.dedup();
-    }
-    files
 }
 
 /// Each repository's name as findings spell it (`#billing`, `self`), with
@@ -156,16 +199,75 @@ fn short_message(finding: &Finding) -> String {
         .to_owned()
 }
 
-/// The files a change touched other than `own`, as places a diagnostic in
-/// `own` links back to.
-fn changed_files(touched: &[PathBuf], own: &Path) -> Vec<Place> {
-    touched
+/// The changed lines a finding comes from. A finding names what it is about
+/// in the values its requirement binds, such as a field or a parameter:
+/// the changed lines that name the longest such value, one per file, as a
+/// change to `connection_slug` is the line that added or removed it. A
+/// finding that names nothing the change touched comes from the first
+/// changed line of each changed file; a file Git does not know, from its
+/// top.
+fn anchors(finding: &Finding, changed: &[ChangedFile]) -> Vec<Anchor> {
+    let mut names: Vec<&str> = finding
+        .values
         .iter()
-        .filter(|path| path.as_path() != own)
+        .filter(|(variable, _)| !["f", "l"].contains(&variable.as_str()))
+        .map(|(_, value)| value.as_str())
+        .filter(|value| is_identifier(value))
+        .collect();
+    names.sort_by_key(|name| std::cmp::Reverse(name.len()));
+    for name in names {
+        let naming: Vec<Anchor> = changed
+            .iter()
+            .filter_map(|file| {
+                let line = file.lines.iter().find(|line| mentions(&line.text, name))?;
+                Some((file.path.clone(), line.line))
+            })
+            .collect();
+        if !naming.is_empty() {
+            return naming;
+        }
+    }
+    changed
+        .iter()
+        .map(|file| {
+            (
+                file.path.clone(),
+                file.lines.first().map_or(0, |line| line.line),
+            )
+        })
+        .collect()
+}
+
+/// Whether `value` reads as a name in code: a field, a parameter or a
+/// function, rather than a path, an operation or a number.
+fn is_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+/// Whether `text` holds `name` as a word of its own.
+fn mentions(text: &str, name: &str) -> bool {
+    let is_word = |character: char| character.is_ascii_alphanumeric() || character == '_';
+    text.match_indices(name).any(|(start, _)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + name.len()..].chars().next();
+        !before.is_some_and(is_word) && !after.is_some_and(is_word)
+    })
+}
+
+/// The changed lines a finding in `own` comes from, outside `own`, as
+/// places its diagnostic links back to.
+fn changed_here(anchors: &[Anchor], own: &Path) -> Vec<Place> {
+    anchors
+        .iter()
+        .filter(|(path, _)| path.as_path() != own)
         .take(RELATED_LIMIT)
-        .map(|path| Place {
+        .map(|(path, line)| Place {
             path: path.clone(),
-            line: 0,
+            line: *line,
             message: "changed here".to_owned(),
         })
         .collect()
@@ -174,7 +276,7 @@ fn changed_files(touched: &[PathBuf], own: &Path) -> Vec<Place> {
 /// What a change breaks, in one diagnostic linking to each place, given
 /// with its repository and how serious the finding there is: as serious as
 /// the most serious of them.
-fn summary(located: &[(&str, Severity, Place)]) -> LineDiagnostic {
+fn summary(line: u32, located: &[(&str, Severity, Place)]) -> LineDiagnostic {
     let severity = located
         .iter()
         .map(|(_, severity, _)| *severity)
@@ -197,7 +299,7 @@ fn summary(located: &[(&str, Severity, Place)]) -> LineDiagnostic {
         message.push_str(" are linked)");
     }
     LineDiagnostic {
-        line: 0,
+        line,
         severity,
         code: "change".to_owned(),
         message,
@@ -223,6 +325,27 @@ mod tests {
             head: None,
             manifest_from_working_directory: false,
         }
+    }
+
+    /// A changed file whose changed lines are `lines`, each a zero-based
+    /// line and its text.
+    fn changed(path: &str, lines: &[(u32, &str)]) -> ChangedFile {
+        ChangedFile {
+            path: PathBuf::from(path),
+            lines: lines
+                .iter()
+                .map(|(line, text)| ChangedLine {
+                    line: *line,
+                    text: (*text).to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    /// `finding` binding `value` to `variable` too.
+    fn binding(mut finding: Finding, variable: &str, value: &str) -> Finding {
+        finding.values.insert(variable.to_owned(), value.to_owned());
+        finding
     }
 
     fn finding(introduced: bool, file: Option<(&str, &str)>, message: &str) -> Finding {
@@ -286,7 +409,7 @@ mod tests {
     fn a_finding_from_before_the_change_is_left_out() {
         let old = finding(false, Some(("#client:sdk:src/api.ts", "12")), "old");
 
-        let files = diagnose(&report(vec![old]), &[PathBuf::from("/work/server/link.ts")]);
+        let files = diagnose(&report(vec![old]), &[changed("/work/server/link.ts", &[])]);
 
         assert!(files.is_empty());
     }
@@ -296,10 +419,12 @@ mod tests {
         let first = finding(true, Some(("#client:sdk:src/a.ts", "3")), "#client:sdk:a");
         let second = finding(true, Some(("#client:sdk:src/b.ts", "7")), "#client:sdk:b");
         let touched = PathBuf::from("/work/server/link.ts");
+        let change = changed("/work/server/link.ts", &[(9, "  url: z.string(),")]);
 
-        let files = diagnose(&report(vec![first, second]), std::slice::from_ref(&touched));
+        let files = diagnose(&report(vec![first, second]), &[change]);
 
         let summary = &files[&touched][0];
+        assert_eq!(summary.line, 9);
         assert_eq!(
             summary.message,
             "this change affects 2 places in other code: #client"
@@ -322,8 +447,9 @@ mod tests {
     fn a_finding_in_a_touched_file_is_not_summarized_there_again() {
         let own = finding(true, Some(("#server:api:link.ts", "4")), "#server:api:link");
         let touched = PathBuf::from("/work/server/link.ts");
+        let change = changed("/work/server/link.ts", &[(3, "  link: z.string(),")]);
 
-        let files = diagnose(&report(vec![own]), std::slice::from_ref(&touched));
+        let files = diagnose(&report(vec![own]), &[change]);
 
         let diagnostics = &files[&touched];
         assert_eq!(diagnostics.len(), 1);
@@ -332,15 +458,45 @@ mod tests {
     }
 
     #[test]
-    fn a_finding_that_names_no_line_goes_on_each_touched_file() {
+    fn a_summary_sits_on_the_changed_line_naming_what_it_is_about() {
+        let caller = finding(true, Some(("#client:sdk:src/a.ts", "3")), "#client:sdk:a");
+        let caller = binding(binding(caller, "leaf", "connection_slug"), "loc", "body");
+        let touched = PathBuf::from("/work/server/link.ts");
+        let change = changed(
+            "/work/server/link.ts",
+            &[
+                (4, "  body: z.object({"),
+                (24, "  connection_slug: z.string(),"),
+            ],
+        );
+
+        let files = diagnose(&report(vec![caller]), &[change]);
+
+        assert_eq!(files[&touched][0].line, 24);
+        let back = &files[Path::new("/work/client/src/a.ts")][0].related;
+        assert_eq!(
+            (back[0].path.as_path(), back[0].line),
+            (touched.as_path(), 24)
+        );
+    }
+
+    #[test]
+    fn a_finding_naming_nothing_changed_goes_on_the_first_changed_line() {
         let unlocated = finding(true, None, "the request schemas disagree");
         let touched = PathBuf::from("/work/server/link.ts");
+        let change = changed("/work/server/link.ts", &[(7, "  a: 1,"), (30, "  b: 2,")]);
 
-        let files = diagnose(&report(vec![unlocated]), std::slice::from_ref(&touched));
+        let files = diagnose(&report(vec![unlocated]), &[change]);
 
         assert_eq!(files[&touched].len(), 1);
         assert_eq!(files[&touched][0].message, "the request schemas disagree");
-        assert_eq!(files[&touched][0].line, 0);
+        assert_eq!(files[&touched][0].line, 7);
+    }
+
+    #[test]
+    fn a_name_inside_a_longer_word_is_not_a_mention() {
+        assert!(mentions("  user_id: z.string(),", "user_id"));
+        assert!(!mentions("  owner_user_id: z.string(),", "user_id"));
     }
 
     #[test]

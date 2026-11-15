@@ -12,11 +12,13 @@ This document concerns Lemma's **editor-facing** language server. The accepted s
 
 - It watches every repository of the workspace with the watcher sentry uses ([spec 14](14-sentry.md)) and keeps what it read between checks, in its own process. It does not need the daemon.
 - When a repository's changes settle, it checks that repository as `lemma check --change` would, against the same default base, so a branch's commits and uncommitted work are checked together.
-- Each finding the change introduced becomes a diagnostic on the line of the code it names, in whichever repository that is. Each file the working directory changed gets a summary, linking to those lines outside it. Findings the change did not introduce are not shown.
+- Each finding the change introduced becomes a diagnostic on the line of the code it names, in whichever repository that is. The changed line it comes from gets a summary linking to those lines outside the changed files, and each diagnostic links back to it. Findings the change did not introduce are not shown.
 - A repository that has uncommitted changes when the server starts is checked once, after any change that settles meanwhile.
 - `lemma.checkOnChange.enabled` in the VS Code extension runs it. It is off by default, since it runs checks in the background.
 
-**Placing a finding.** A finding names its code through the variables its requirement binds: the standard library's requirements bind the calling code's file as `f` (`#repository:service:path`, the path relative to the repository) and its line as `l`. A finding without them goes on the changed files. A requirement written with other names is placed the same way, until findings carry a location of their own.
+**Placing a finding.** A finding names its code through the variables its requirement binds: the standard library's requirements bind the calling code's file as `f` (`#repository:service:path`, the path relative to the repository) and its line as `l`. A finding without them goes on the changed lines it comes from.
+
+**The changed line a finding comes from.** The server asks Git for the lines each changed file differs by from the check's base. A finding names what it is about in the other values its requirement binds, such as the field `connection_slug` or the parameter `limit`. Its summary goes on the changed line naming the longest of them as a word, in each changed file: the line that added the field, or, for a removal, the line now where it was. A finding that names nothing changed goes on each changed file's first changed line, and a file Git does not know on its top. This is a heuristic: a short name, such as a parameter's location `query`, can name an unrelated line when the longer ones name none. A requirement written with other names is placed the same way, until findings carry a location of their own.
 
 **What it does not do yet.**
 
