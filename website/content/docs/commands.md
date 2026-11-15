@@ -141,15 +141,31 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | --- | --- |
 | `--direction <way>` | `callers` (what uses it), `callees` (what it uses), or `both` (the default). |
 | `--depth <n>` | How many uses away to go. Default: 2. |
-| `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Lemma caches answers in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones, and files outside the snapshot, such as tests left out of `include`, are not read; an empty graph says so. With `lsp`, a caller in a file outside the snapshot is shown as `path (outside the snapshot)`. |
+| `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Lemma caches answers in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones, and files outside the snapshot, such as tests left out of `include`, are not read; an empty graph says so. |
 | `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`, and the `source` it was found by), `notes` and `truncated`. |
 | `--max-nodes <n>` | The most nodes to include. Default: 200. |
+| `--outside <n>` | How many callers in files outside the snapshot to follow. Default: 0. See below. |
 | `--only <kinds>` | Only symbols of these kinds besides the symbol itself, comma-separated: `--only function,method` shows the calls without the fields, types and constants a body uses. The top level of a file always counts as a caller. |
 | `--workspace <mod.lm>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations. See below. |
 | `--across <calls>` | Across a workspace, how many calls from other code to follow: `1` (the default) stops at the code calling the operations the handlers serve; each more goes on through that code to its own operations and their callers. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
 
-References from a file's top-level code appear as the file; imports are left out. A symbol implementing an export that a graph of `Link` links to another operation uses that operation, which appears by address (`linked operation`). The graph lists questions the server could not answer, such as a stale file or a missing server, as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
+References from a file's top-level code appear as the file; imports are left out. A function defined inside another is a caller under its own name, and what it is defined inside comes next without counting as a use further away. A symbol implementing an export that a graph of `Link` links to another operation uses that operation, which appears by address (`linked operation`). The graph lists questions the server could not answer, such as a stale file or a missing server, as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
+
+The language server reads files the snapshot leaves out, such as tests and scripts outside `include`, so a caller can be in one. Lemma reads that file and names the definition the use sits in, marked `(outside the snapshot)`; a use at the file's top level appears as the file. The graph stops there unless `--outside <n>` says how many such callers to follow: each one followed is a lookup in a file the index does not hold, which takes seconds the first time, and most turn out to be tests and entry points that nothing calls. A note counts the callers left unfollowed.
+
+```text
+$ lemma graph charge --direction callers --depth 3 --outside 5
+charge  (function, src/billing/charge.ts:1)
+  used by
+  ├─ backfill (outside the snapshot)  (function, scripts/backfill.ts:2)
+  │  └─ nightly (outside the snapshot)  (function, scripts/nightly.ts:2)
+  │     └─ main (outside the snapshot)  (function, scripts/nightly.ts:3)
+  ├─ refund  (function, src/billing/charge.ts:10)
+  ├─ Ledger.post  (method, src/billing/charge.ts:13)
+  └─ tests/charge.test.ts (outside the snapshot)  (file, tests/charge.test.ts)
+7 nodes, 6 relationships (lsp)
+```
 
 ### Across repositories
 
@@ -251,7 +267,7 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 | Command | Meaning |
 | --- | --- |
 | `lemma daemon status` | Whether it runs as a login service; its language servers: starting, running or paused, how long idle, and memory; and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. |
-| `lemma daemon stop` | Stop the running daemon. |
+| `lemma daemon stop` | Stop the running daemon; it returns once the daemon and its language servers have stopped. |
 | `lemma daemon install` | Run the daemon as a login service (launchd on macOS, systemd on Linux), so it is already up when an agent asks its first question. It is restarted only if it crashes, and a command that finds it stopped starts it through the service. The service keeps the `PATH` of the shell that installed it; run `install` again after installing a toolchain elsewhere. |
 | `lemma daemon uninstall` | Remove the login service and stop its daemon. |
 | `lemma daemon lsp [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |
@@ -285,11 +301,38 @@ warm_on_activity = true    # start a project's servers again when its files chan
 
 [sentry]
 auto_attach = false        # attach sentry to a workspace on its first `lemma check`
+
+[runtime]
+memory = "512MB"           # what warm runtimes may hold: "0" keeps none, "none" sets no limit
+stop_after = "30m"         # stop an idle warm runtime
+
+[graph]
+watches = 16384            # directories watched for graphs: 0 watches none, "none" sets no limit
+prepare = "graph"          # after an edit, get ready for the next graph: "off", "index" or "graph"
+kept_ready = 4             # how many of the graphs last asked are answered ahead after an edit
 ```
+
+**Warm runtimes.** While the daemon runs, `lemma check` asks it to run a repository's Python (a `json.command("{python} -m …")` or `{python} script.py` resolver, or a type read with Pydantic) in a process that has already imported the repository's dependencies, so a run pays only for the repository's own modules. It prints what a new interpreter would, and anything that goes wrong runs the command as before. `memory` is the trade: the more a runtime may hold, the less a run waits. On one service with about 1,700 dependency modules, a 1.6 s resolver ran in 1.2 s with `"24MB"`, 0.7 s with `"96MB"` and 0.2 s once it could hold all 140 MB. A project's `.lemma/config.toml` may set `[runtime]` too, and overrides this file setting by setting. `LEMMA_RUNTIME=off` keeps none warm. `lemma daemon status` lists each one with the memory it holds. A check never starts the daemon for this.
+
+**Graphs across a workspace.** The first `lemma graph` in a workspace has the daemon watch each of its repositories and keep what following callers across them reads: file listings, API documents, and the routes and calls found in them. The next graph reads only what changed since, and `lemma daemon status` lists what is watched. On Linux a watcher takes one watch for each directory Git lists, out of a number the system limits per user (`fs.inotify.max_user_watches`) and that the indexes and your editor draw on too. `watches` is how many the daemon may take for graphs, over all workspaces: a quarter of the system's limit unless you set it, so the value above is only an example. The largest repositories that fit are watched. One that does not fit, or that the system will not watch, is checked when a graph is asked for: Git says whether its working directory is as it was at the last ask, and what was read of it is kept while it is. That costs one `git status` per such repository on every graph, so `watches` trades watches for time. On a workspace of six repositories and 9,155 directories, 5,672 of them in one repository, a repeated graph took 0.06 s with every repository watched, 0.11 s with `watches = 6000` (the largest watched, most of the others left to Git), 0.29 s with `watches = 4000` (the largest left to Git) and 0.33 s with `watches = 0`; with nothing kept it took 0.62 s. A workspace no graph has gone through for `[servers] stop_after` is let go, its watches included.
+
+**Ready before the next graph.** Once a graph has been asked through a workspace, the daemon gets ready for the next one whenever the workspace's files change and settle: 0.2 s after the last change, or 2 s into a run of them. `[graph] prepare` says how far, and trades work after every settled change for time at the next ask:
+
+| `prepare` | What the daemon does once a change settles | First graph after an edit: the graph asked last | Another of the graphs kept ready |
+| --- | --- | --- | --- |
+| `"off"` | Nothing: the ask reads what changed. | 1.33 s | 1.25 s |
+| `"index"` | Brings the index up to date as the graphs last asked did: the changed files, the exports, and each adapter's document. | 1.11 s | 1.14 s |
+| `"graph"` (the default) | Also answers the graphs last asked again, unseen, the latest first, which leaves the traced system, the callers fetched and the language servers' answers as the files now have them. | 0.08 s | 0.05 s |
+
+The times are medians over six edits in a workspace of six repositories, asked 6 s after the edit; a graph asked before the change settles reads what changed itself, at any setting (1.5 to 1.9 s there). An edit retires every answer the edited repository's language servers gave, whichever graph they were for, so a graph that was not answered ahead asks them again: 3.4 to 4.2 s there for a TypeScript or Python symbol, against 0.04 to 0.08 s for one kept ready. `kept_ready` says how many of the graphs last asked are kept, four unless you say. Each one more is a graph that costs nothing when asked next and one more to answer after every change: on one repository the four took 11 to 17 s of its language server's time, where the last one took 5 s. `kept_ready = 0` answers none, which leaves `"graph"` doing what `"index"` does.
+
+For a working directory that is at its commit when it is prepared, as right after a commit, the adapter's document is the one later edits are patched from, so an adapter does not run again for each of them.
+
+Getting ready takes the time the asks would have taken, after every settled change, and gives way to any command: the daemon stops at the next language server it would ask, or stops waiting for the one it is asking, serves the command, and goes on after it. The server is not interrupted, so a graph asked meanwhile waits only for the answer already on its way. Between changes the daemon looks four times a second, which took 0.1% of one core. A repository past the watches graphs may take reports no changes, so the daemon asks Git about it instead, no more often than every 2 s and with fifty times what asking took in between. A workspace no graph was asked through for `[servers] pause_after` is no longer kept ready. `lemma daemon status` shows the graphs kept ready for each workspace, and how often and for how long the daemon got ready for them.
 
 Under each report it answers, sentry adds a line `sentry token: <token>`, and JSON output a `sentry` object; the findings and the exit code are the same as a check run on its own. A token stays the same while nothing a check reads changes. Sentry answers a check only from a daemon already running; `lemma check` never starts one for it. A check that asks for logs (`-l`) or for anchors (`--anchors`) runs in its own process, and `LEMMA_SENTRY=off` keeps every check there. A check sentry answers runs resolvers, adapters and checkers with the environment of the process that asked, as a check run on its own does. `auto_attach` applies only in the user's own settings, and never when `CI` is set. `LEMMA_DAEMON_SOCKET` names another socket for the daemon, to run a separate one.
 
-Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `none`. The values above are the defaults. The daemon rejects unknown settings, so a typo shows up instead of being ignored; a file that stops parsing while the daemon runs leaves the previous settings in force.
+Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `none`. The values above are the defaults, except `watches`. The daemon rejects unknown settings, so a typo shows up instead of being ignored; a file that stops parsing while the daemon runs leaves the previous settings in force.
 
 The daemon pauses a server, and every process it started, with `SIGSTOP`: it uses no CPU, and the operating system can compress or swap out its memory under pressure. The next lookup resumes it, which took about 45 ms for gopls in testing, against seconds to start a server again.
 
