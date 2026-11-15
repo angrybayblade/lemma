@@ -560,6 +560,9 @@ impl Worker {
     fn fingerprint(&self, question: &Question) -> u64 {
         let mut hasher = DefaultHasher::new();
         evaluated(question).hash(&mut hasher);
+        // TODO: a setting naming the variables answers are shared across, so
+        // an editor started with another `PATH` than the shell can share
+        // them when both find the same tools.
         let toolchain: Vec<(&String, &String)> = question
             .environment
             .iter()
