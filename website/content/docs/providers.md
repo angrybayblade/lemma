@@ -25,7 +25,7 @@ For each lookup, Lemma takes the providers configured for the symbol's language,
 1. Project providers, in file order.
 2. Built-in providers, in the order above.
 
-If a provider fails to start, Lemma tries the next one and reports the skipped one. If a provider starts but then fails while answering, Lemma reports the failure instead of trying another. Switching quietly would hide a real problem, such as a broken project setup.
+If a provider fails to start, Lemma tries the next one and reports the skipped one. It does not start that provider again for the rest of the command, or for a minute in the daemon: a graph asks dozens of questions, and each failed start takes a tenth of a second. If a provider starts but then fails while answering, Lemma reports the failure instead of trying another. Switching quietly would hide a real problem, such as a broken project setup.
 
 `lemma providers` shows the order for each language.
 
