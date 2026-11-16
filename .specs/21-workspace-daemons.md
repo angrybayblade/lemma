@@ -1,6 +1,6 @@
 # Workspace daemons: one daemon per workspace, its sentry and its clients
 
-**Status: designed, 2026-11-15; steps 1 to 6 of [Build order](#build-order) built, 2026-11-16.** One daemon serves each workspace, found by walking up and started at the workspace's root, and it refuses directories it does not serve; `[daemon] autostart` says who may start one; the daemon answers `check`, through sentry or by itself, and `verify` and `graph --workspace`. Sentry is attached when a client asks and let go when it leaves, and it owns graph preparation and restarting servers. Lookups answered from the index, status and checks no longer wait behind a lookup that waits for a language server. Not built: a lane per language server, the names of the three `lsp` commands, and settings in `.lm`; the settings below are TOML keys under `[daemon]`, `[servers]` and `[sentry]` until then. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion of 2026-11-15; rows marked *proposal* follow from them and still need the same review. Measurements are from Lemma's own repository and from the six-repository bench workspace, on Linux.
+**Status: designed, 2026-11-15; steps 1 to 7 of [Build order](#build-order) built, 2026-11-16.** One daemon serves each workspace, found by walking up and started at the workspace's root, and it refuses directories it does not serve; `[daemon] autostart` says who may start one; the daemon answers `check`, through sentry or by itself, and `verify` and `graph --workspace`. Sentry is attached when a client asks and let go when it leaves, and it owns graph preparation and restarting servers. Lookups answered from the index, status and checks no longer wait behind a lookup that waits for a language server. Not built: a lane per language server, and settings in `.lm`; the settings below are TOML keys under `[daemon]`, `[servers]` and `[sentry]` until then. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion of 2026-11-15; rows marked *proposal* follow from them and still need the same review. Measurements are from Lemma's own repository and from the six-repository bench workspace, on Linux.
 
 ## Problem
 
@@ -362,7 +362,7 @@ The built-in list stays compiled in, and `--providers <file>` goes with the TOML
 
 ## Open questions
 
-1. **What the three things called "lsp" are named.** `lemma lsp` is Lemma serving an editor, `lemma daemon lsp` manages the language servers Lemma uses, and `lm lsp` serves `.lm` modules. One name per thing is wanted; this spec calls them the editor's server, language servers, and the `.lm` server.
+1. **What the three things called "lsp" are named.** *Decided 2026-11-16: the names stay.* `lemma lsp` is Lemma serving an editor, `lemma daemon lsp` manages the language servers Lemma uses, and `lm lsp` serves `.lm` modules. The documentation says which is which wherever one is named ([Concepts](../docs/concepts.md#daemon-sentry-and-clients)), and calls them the editor's server, language servers, and the `.lm` server.
 2. **Whether Lemma says anything when `config.lm` is tracked by Git.** It is meant to be ignored; Lemma does not edit `.gitignore`.
 3. **Whether `sentry.stop_after` is needed**, or whether a sentry asked for from the command line simply lives as long as its daemon.
 4. **How an agent turns sentry on through MCP** when the workspace's `config` does not: a tool, or not at all.
@@ -378,7 +378,7 @@ Each step leaves every gate passing.
 4. **Sentry asked for by clients,** owning graph preparation and server restarts.
 5. **The remaining guardrails:** the source in every answer, and the differential gate.
 6. **Lookups side by side.** Measured first: a symbol search waited 299 s behind a lookup whose server never answered. Built as [lanes](#lanes); a lane per language server is left until it is measured to matter.
-7. **Documentation and names:** one page that states the three roles, and the outcome of open question 1.
+7. **Documentation and names:** one page that states the three roles ([Concepts](../docs/concepts.md#daemon-sentry-and-clients)), which also says what each of the three `lsp` commands is; their names stay.
 8. **`config` in `.lm`:** the declaration, `load`, `|`, the typed settings, language servers; TOML reading removed. Last: the settings above are TOML keys until then.
 
 ## What to measure
