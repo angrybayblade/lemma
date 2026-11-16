@@ -152,7 +152,11 @@ fn a_directory_no_daemon_serves_is_told_how_to_start_one() {
         status.contains("no lemma daemon serves this directory"),
         "{status}"
     );
-    assert!(status.contains("lemma daemon start"), "{status}");
+    let starts = format!(
+        "`lemma daemon start` starts one for the workspace {}",
+        runtime.display()
+    );
+    assert!(status.contains(&starts), "{status}");
 }
 
 #[test]
@@ -384,4 +388,84 @@ fn a_check_without_sentry_prints_what_one_in_its_own_process_prints() {
 
     assert_eq!(said(&without_sentry), said(&own_process));
     assert_eq!(sentry_said(&runtime, &shop, str::is_empty), "");
+}
+
+/// A checkout holding one Python function, indexed.
+fn checkout_defining(runtime: &Path, directory: &Path, function: &str) {
+    fs::create_dir_all(directory.join("src")).unwrap();
+    if !directory.join(".git").exists() {
+        checkout(directory);
+    }
+    let source = format!("def {function}():\n    return 1\n");
+    fs::write(directory.join("src/m.py"), source).unwrap();
+    let indexed = lemma(runtime, directory, &["index", ".", "--no-daemon"]);
+    assert!(indexed.status.success(), "{}", said(&indexed));
+}
+
+#[test]
+fn every_place_is_answered_about_its_own_code_whichever_daemons_run() {
+    let space = space();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let app = runtime.join("app");
+    let sibling = runtime.join("sibling");
+    let worktree = app.join(".claude/worktrees/task");
+    fs::create_dir_all(&worktree).unwrap();
+    fs::write(worktree.join(".git"), "gitdir: elsewhere\n").unwrap();
+    checkout_defining(&runtime, &app, "in_the_app");
+    checkout_defining(&runtime, &sibling, "in_the_sibling");
+    checkout_defining(&runtime, &worktree, "in_the_worktree");
+    // The app's daemon runs first, above the worktree and beside the
+    // sibling: the one each would be given by a client that only walked up.
+    lemma(&runtime, &app, &["daemon", "start"]);
+    // Where each command is asked from, the file it outlines from there,
+    // and the function only that checkout defines.
+    let places = [
+        (app.clone(), "src/m.py", "in_the_app"),
+        (app.join("src"), "m.py", "in_the_app"),
+        (sibling.clone(), "src/m.py", "in_the_sibling"),
+        (worktree.clone(), "src/m.py", "in_the_worktree"),
+        (worktree.join("src"), "m.py", "in_the_worktree"),
+    ];
+
+    for (place, file, function) in &places {
+        for asked in [["symbols", "in_the"], ["outline", file]] {
+            let alone: Vec<&str> = asked.iter().copied().chain(["--no-daemon"]).collect();
+
+            let from_daemon = said(&lemma(&runtime, place, &asked));
+            let own_process = said(&lemma(&runtime, place, &alone));
+
+            let asked_in = format!("{asked:?} in {}", place.display());
+            assert!(own_process.contains(function), "{asked_in}: {own_process}");
+            assert_eq!(from_daemon, own_process, "{asked_in}");
+        }
+    }
+    let all = said(&lemma(&runtime, &runtime, &["daemon", "status", "--all"]));
+    assert_eq!(all.matches("workspace: ").count(), 3, "{all}");
+}
+
+#[test]
+fn a_file_in_another_checkout_is_refused_and_never_answered_from_this_one() {
+    let space = space();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let app = runtime.join("app");
+    let sibling = runtime.join("sibling");
+    checkout_defining(&runtime, &app, "in_the_app");
+    checkout_defining(&runtime, &sibling, "in_the_sibling");
+    let elsewhere = sibling.join("src/m.py");
+
+    let asked = lemma(&runtime, &app, &["outline", elsewhere.to_str().unwrap()]);
+
+    let answer = said(&asked);
+    assert!(!asked.status.success(), "{answer}");
+    assert!(
+        answer.contains("is outside the indexed directory"),
+        "{answer}"
+    );
+    assert!(
+        answer.contains("run the command in the repository"),
+        "{answer}"
+    );
+    assert!(!answer.contains("in_the_app"), "{answer}");
 }

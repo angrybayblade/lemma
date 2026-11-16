@@ -61,6 +61,36 @@ Lemma stores each answer with:
 
 Lemma reuses a cached answer only when all of these match. Re-indexing after a content change, or changing a provider's configuration, makes the next lookup ask again: an edit in one file can change the references to a symbol defined in another, so Lemma drops every cached answer for the snapshot. Re-indexing with no content change keeps them. `--refresh` always asks again.
 
+## Daemon, sentry and clients
+
+Three things take part in every answer, and each has one job:
+
+| Role | What it is | What it does |
+| --- | --- | --- |
+| **Client** | The `lemma` command, the MCP server (`lemma mcp`), or the editor's server (`lemma lsp`) | Asks, and shows the answer. It does no lookup or check of its own while a daemon serves it. |
+| **Daemon** | One background process for each workspace | Runs the language servers, holds the index, and answers every lookup, graph, check and verify for that workspace and no other. |
+| **Sentry** | The daemon's watcher for its workspace, attached while something asks for it | Does work ahead of a request: keeps what checks read, gets ready for the next graph after an edit, and starts stopped language servers again. It never changes what an answer says, only how soon it comes. |
+
+```text
+workspace A:  command, MCP server, editor's server  ──ask──▶  daemon A  ◀──prepares ahead──  sentry A
+workspace B:  command, MCP server, editor's server  ──ask──▶  daemon B  ◀──prepares ahead──  sentry B
+```
+
+A **workspace** is what one daemon serves: the directory of a `mod.lm` that declares a `workspace`, with the repositories it names, or else one Git checkout. A command finds its workspace's daemon by walking up from where it runs, and starts one at the workspace's root if none is running. A Git worktree inside a checkout is a checkout of its own, so it has a daemon of its own.
+
+What a user decides, and where:
+
+| Question | Setting | Default |
+| --- | --- | --- |
+| May a command start a daemon? | `[daemon] autostart`: `"always"`, `"clients"` (only the MCP server and the editor's server), `"never"` | `"always"` |
+| Does a command ask for sentry? | `[sentry] autostart`, with the same three values | `"always"` |
+| Keep one command out of the daemon | `--no-daemon`, or `LEMMA_NO_DAEMON=1` | off |
+| Keep sentry out of one command | `LEMMA_SENTRY=off` | off |
+
+Without a daemon, a command does the same work in its own process and prints the same answer, more slowly. Without sentry, the daemon gives the same answer, and the first one after an edit pays for what changed. `lemma daemon status` shows the workspace a directory's daemon serves, its language servers, and who keeps sentry attached. The commands and settings are in [`lemma daemon`](commands.md#lemma-daemon).
+
+Three commands have "lsp" in their name, and they are different things: `lemma lsp` is Lemma serving an editor, `lemma daemon lsp` lists and manages the language servers Lemma itself uses, and `lm lsp` serves `.lm` modules to an editor.
+
 ## The daemon and warm language servers
 
 Starting a language server and letting it load a large project takes seconds; asking one that has loaded takes milliseconds. So every command runs in a background daemon, one for each workspace ([`lemma daemon`](commands.md#lemma-daemon)), which keeps servers running between lookups. After `lemma index` it starts the server for each indexed language in the background, opening a file from the densest part of the tree so the server loads the project most lookups will need. A lookup that arrives while a server is still starting waits for it.
@@ -69,7 +99,7 @@ Before reusing a server, the daemon tells it which files were created, changed o
 
 The daemon also keeps every symbol name in memory for substring search, rebuilt in the background after each index.
 
-The daemon keeps running and manages idle servers: it pauses a server nobody has used for 10 minutes, so the server uses no CPU and its memory can be compressed, and stops one idle for 2 hours. When files change in a project whose servers were stopped, the daemon starts them again, so they are usually ready by the next lookup. All of this is configurable; see [`lemma daemon`](commands.md#lemma-daemon). `lemma daemon stop` stops the daemon, and `--no-daemon` runs a command in-process.
+The daemon manages idle servers: it pauses a server nobody has used for 10 minutes, so the server uses no CPU and its memory can be compressed, and stops one idle for 2 hours. While sentry is attached, when files change in a project whose servers were stopped, it starts them again, so they are usually ready by the next lookup. A daemon that holds nothing warm and has had no command for those 2 hours exits; the workspace's next command starts one. All of this is configurable; see [`lemma daemon`](commands.md#lemma-daemon). `lemma daemon stop` stops the daemon, and `--no-daemon` runs a command in-process.
 
 ## Index file
 
@@ -80,5 +110,5 @@ The daemon keeps running and manages idle servers: it pauses a server nobody has
 - Supported languages are TypeScript, TSX, Python, Go, and Rust.
 - The semantic questions are references, definitions, implementations, and hover text. Which of them a server supports varies; Lemma reports an unsupported question as such.
 - Lemma waits for a server to finish loading the project before asking. It waits exactly for servers that announce it (pyright, basedpyright, typescript-language-server); for others it uses signals such as diagnostics and quiet periods. A server that is still loading when it answers can give an incomplete result; `--refresh` asks again.
-- The daemon runs one command at a time; parallel calls queue.
+- A daemon answers one lookup at a time; lookups asked meanwhile queue, so a quick one waits behind a slow one in the same workspace. A check or a verify does not hold lookups up, and neither does another workspace, which has a daemon of its own.
 - Language servers keep their memory while paused; the operating system reclaims it only under memory pressure. Set `memory_budget` or a shorter `stop_after` to bound it.
