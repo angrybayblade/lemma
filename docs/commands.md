@@ -312,6 +312,7 @@ The daemon reads `~/.config/lemma/config.toml` (or `$XDG_CONFIG_HOME/lemma/confi
 
 ```toml
 [daemon]
+autostart = "always"       # who may start a daemon: "always", "clients" or "never"
 idle_exit = "never"        # stop the daemon after this long without a command, whatever it holds
 
 [servers]
@@ -335,6 +336,16 @@ watches = 16384            # directories watched for graphs: 0 watches none, "no
 prepare = "graph"          # after an edit, get ready for the next graph: "off", "index" or "graph"
 kept_ready = 4             # how many of the graphs last asked are answered ahead after an edit
 ```
+
+**Who starts a daemon.** `autostart` says what may start a daemon for a workspace that has none. A daemon that is already running is used by every command, whatever the setting, and `lemma daemon start` always starts one.
+
+| `autostart` | A command run from a shell | The MCP server and the editor's server (`lemma lsp`) |
+| --- | --- | --- |
+| `"always"` (the default) | Starts a daemon. | Start a daemon. |
+| `"clients"` | Does its work in its own process: the same answers, with nothing kept warm for the next command. | Start a daemon. |
+| `"never"` | Does its work in its own process. | Do their work in their own process. |
+
+`"clients"` is for a person who wants a daemon only where an agent or an editor is at work; `"never"` for a machine where nothing should stay in the background, such as CI. `--no-daemon` and `LEMMA_NO_DAEMON=1` are different: they keep one command out of a daemon that is running.
 
 **When a daemon exits.** A daemon exits by itself once it holds nothing warm (no language server running or starting, no warm runtime, no sentry, no workspace watched for graphs) and no command has come for as long as `[servers] stop_after`. So a workspace nobody is using has no daemon; its next command starts one. With `stop_after = "never"` servers are kept, and so is the daemon. `idle_exit` is a limit of its own: the daemon exits after that long without a command, whatever it holds.
 

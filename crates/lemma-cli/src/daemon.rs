@@ -33,7 +33,7 @@ use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use crate::anchors::UsesRequest;
 use crate::cli::Cli;
-use crate::config::{self, Config};
+use crate::config::{self, Autostart, Config};
 use crate::engine::{Engine, Invocation};
 use crate::sentry::Sentry;
 use crate::workspace::{Workspace, named_repositories};
@@ -185,6 +185,25 @@ enum Reply {
     Outside,
 }
 
+/// Who asks a daemon, which decides whether one is started for it when none
+/// serves its directory (`[daemon] autostart`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asker {
+    /// A command run from a shell, which can do its work itself.
+    Command,
+    /// The MCP server or the editor's server, which stays running.
+    Server,
+}
+
+/// Whether `asker` may start a daemon, by the `autostart` setting.
+fn may_start(autostart: Autostart, asker: Asker) -> bool {
+    match autostart {
+        Autostart::Always => true,
+        Autostart::Clients => asker == Asker::Server,
+        Autostart::Never => false,
+    }
+}
+
 /// What a forwarded command printed and returned.
 pub(crate) struct Finished {
     pub stdout: String,
@@ -199,11 +218,13 @@ fn print_logs(logs: &str) {
     let _ = std::io::Write::write_all(&mut std::io::stderr(), logs.as_bytes());
 }
 
-/// Runs the command in the daemon, starting one if needed. `None` means no
-/// daemon could be reached, and the caller should run the command itself.
-pub(crate) fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
+/// Runs the command in the daemon, starting one if none serves it and
+/// `asker` may. `None` means no daemon serves it or could be reached, and
+/// the caller should run the command itself.
+pub(crate) fn forward(args: Vec<String>, cwd: PathBuf, asker: Asker) -> Option<Finished> {
     let place = canonical(&place_of(&args, &cwd));
-    let daemon = daemon_for(&place).ok()?;
+    let starts = may_start(config::autostart(), asker);
+    let daemon = daemon_to_ask(&place, starts)?;
     let request = Request::Run {
         build: build_id(),
         args,
@@ -212,11 +233,12 @@ pub(crate) fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
         path_env: std::env::var_os("PATH").map(OsString::into_vec),
     };
     log::debug!("forwarding to the daemon at {}", daemon.socket.display());
-    let mut reply = exchange(&daemon, &request).ok()?;
+    let mut reply = exchange(&daemon, &request, starts).ok()?;
     if matches!(reply, Reply::Restart) {
+        // A daemon was wanted here, whoever started it: it is replaced.
         log::info!("the running daemon is another build; replacing it");
         wait_until_gone(&daemon.socket).ok()?;
-        reply = exchange(&daemon, &request).ok()?;
+        reply = exchange(&daemon, &request, true).ok()?;
     }
     match reply {
         Reply::Done {
@@ -774,18 +796,22 @@ fn read_reply(reader: &mut BufReader<UnixStream>) -> Option<Reply> {
 /// serves the workspace: not when it is attached to another.
 pub(crate) fn attach_sentry(manifest: &Path) -> anyhow::Result<bool> {
     let manifest = &canonical(manifest);
-    let daemon = daemon_for(manifest.parent().unwrap_or(manifest))?;
+    let starts = may_start(config::autostart(), Asker::Server);
+    let workspace = manifest.parent().unwrap_or(manifest);
+    let Some(daemon) = daemon_to_ask(workspace, starts) else {
+        return Ok(false);
+    };
     let request = Request::Sentry {
         build: build_id(),
         action: SentryAction::Start {
             manifest: manifest.clone(),
         },
     };
-    let mut reply = exchange(&daemon, &request)?;
+    let mut reply = exchange(&daemon, &request, starts)?;
     if matches!(reply, Reply::Restart) {
         log::info!("the running daemon is another build; replacing it");
         wait_until_gone(&daemon.socket)?;
-        reply = exchange(&daemon, &request)?;
+        reply = exchange(&daemon, &request, true)?;
     }
     match reply {
         Reply::Done { exit_code: 0, .. } => Ok(true),
@@ -1038,8 +1064,12 @@ fn run(
 }
 
 /// Sends a request and reads the reply, starting a daemon if none answers.
-fn exchange(daemon: &Daemon, request: &Request) -> anyhow::Result<Reply> {
-    let mut stream = connect_or_start(daemon)?;
+fn exchange(daemon: &Daemon, request: &Request, starts: bool) -> anyhow::Result<Reply> {
+    let mut stream = if starts {
+        connect_or_start(daemon)?
+    } else {
+        UnixStream::connect(&daemon.socket)?
+    };
     send(&mut stream, request)?;
     receive(&mut stream)
 }
@@ -1320,6 +1350,15 @@ fn daemon_for(place: &Path) -> anyhow::Result<Daemon> {
         socket: socket_of(&root)?,
         root: Some(root),
     })
+}
+
+/// The daemon to ask about `place` (canonical): the one serving it, or,
+/// when one may be started (`starts`), the one that would be.
+fn daemon_to_ask(place: &Path, starts: bool) -> Option<Daemon> {
+    if starts {
+        return daemon_for(place).ok();
+    }
+    serving(place)
 }
 
 /// The sockets of the daemons a `status` or `stop` is for: the one serving
@@ -1655,6 +1694,16 @@ mod tests {
         assert!(!has_nothing_to_stay_for(true, short, kept));
         assert!(!has_nothing_to_stay_for(false, long, kept));
         assert!(!has_nothing_to_stay_for(true, long, None));
+    }
+
+    #[test]
+    fn who_may_start_a_daemon_runs_from_any_command_to_none() {
+        let starts =
+            |autostart| [Asker::Command, Asker::Server].map(|asker| may_start(autostart, asker));
+
+        assert_eq!(starts(Autostart::Always), [true, true]);
+        assert_eq!(starts(Autostart::Clients), [false, true]);
+        assert_eq!(starts(Autostart::Never), [false, false]);
     }
 
     #[test]

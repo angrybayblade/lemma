@@ -13,9 +13,25 @@ use anyhow::{Context, bail};
 use lemma_query::{IdlePolicy, WhenSlow};
 use serde::Deserialize;
 
+/// Who may start a daemon for a workspace that has none.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Autostart {
+    /// Any command.
+    #[default]
+    Always,
+    /// The MCP server and the editor's server. A command run from a shell
+    /// does its work in its own process.
+    Clients,
+    /// Nothing: a daemon runs once `lemma daemon start` has started it.
+    Never,
+}
+
 /// Everything the config file can set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Config {
+    /// Who may start a daemon for a workspace that has none.
+    pub autostart: Autostart,
     /// Exit the daemon after this long without a command. `None` keeps it
     /// running.
     pub idle_exit: Option<Duration>,
@@ -82,6 +98,7 @@ fn default_graph_watches(limit: Option<usize>) -> Option<usize> {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            autostart: Autostart::default(),
             idle_exit: None,
             idle_policy: IdlePolicy {
                 pause_after: Some(Duration::from_secs(10 * 60)),
@@ -207,6 +224,7 @@ fn repositories_clone(path: &Path) -> anyhow::Result<Option<ClonePolicy>> {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct DaemonSection {
+    autostart: Option<Autostart>,
     idle_exit: Option<String>,
 }
 
@@ -273,6 +291,12 @@ fn parse_give_way_after(text: &str) -> anyhow::Result<Duration> {
         ),
         Some(after) => Ok(after),
     }
+}
+
+/// Who may start a daemon, by the user's config file; the default when
+/// the file cannot be read, which whatever starts then reports.
+pub(crate) fn autostart() -> Autostart {
+    load(config_path().as_deref()).map_or_else(|_| Autostart::default(), |config| config.autostart)
 }
 
 /// What lookups in a command's own process do about a slow server, by the
@@ -382,6 +406,7 @@ fn parse(text: &str) -> anyhow::Result<Config> {
         None => Ok(default),
     };
     Ok(Config {
+        autostart: file.daemon.autostart.unwrap_or_default(),
         idle_exit: pick(file.daemon.idle_exit, defaults.idle_exit)?,
         idle_policy: IdlePolicy {
             pause_after: pick(file.servers.pause_after, defaults.idle_policy.pause_after)?,
@@ -575,6 +600,22 @@ mod tests {
     fn unless_set_graphs_may_take_a_quarter_of_the_systems_watches() {
         assert_eq!(default_graph_watches(Some(8192)), Some(2048));
         assert_eq!(default_graph_watches(None), None);
+    }
+
+    #[test]
+    fn any_command_starts_a_daemon_unless_the_file_says_who_may() {
+        let who = |text: &str| parse(text).map(|config| config.autostart);
+
+        assert_eq!(who("").unwrap(), Autostart::Always);
+        assert_eq!(
+            who("[daemon]\nautostart = \"clients\"\n").unwrap(),
+            Autostart::Clients
+        );
+        assert_eq!(
+            who("[daemon]\nautostart = \"never\"\n").unwrap(),
+            Autostart::Never
+        );
+        assert!(who("[daemon]\nautostart = \"sometimes\"\n").is_err());
     }
 
     #[test]
