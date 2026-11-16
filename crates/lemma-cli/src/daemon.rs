@@ -78,9 +78,9 @@ enum Request {
         cwd: PathBuf,
         path_env: Option<Vec<u8>>,
     },
-    /// A check for sentry to answer, if it is attached to the check's
-    /// workspace; asked by `lemma check` of a daemon already running.
-    SentryAsk {
+    /// A check to answer: through sentry if it is attached to the check's
+    /// workspace, and by itself otherwise.
+    Check {
         build: String,
         /// Arguments after the program name.
         args: Vec<String>,
@@ -115,7 +115,7 @@ impl Request {
     /// answers it only if it serves that directory.
     fn place(&self) -> Option<&Path> {
         match self {
-            Self::Run { place, .. } | Self::Serves { place } | Self::SentryAsk { place, .. } => {
+            Self::Run { place, .. } | Self::Serves { place } | Self::Check { place, .. } => {
                 Some(place)
             }
             Self::Uses { question, .. } => Some(&question.root),
@@ -169,9 +169,10 @@ enum Reply {
     /// The daemon is from a different build and is exiting; start a new one.
     Restart,
     Stopping,
-    /// Sentry is not attached to the check's workspace: check it yourself.
+    /// The request is not one this daemon answers, such as a check from
+    /// another build: do it yourself.
     NotServed,
-    /// Sentry took the check; its answer follows on the same connection.
+    /// The check was taken; its answer follows on the same connection.
     Accepted,
     /// The answer to a `Prepare` request: whether any workspace is being
     /// kept ready for graphs, and so worth looking at again soon.
@@ -529,8 +530,8 @@ pub(crate) fn warm_runtime(directory: &Path) -> Option<lemma_graph::runtime::Run
     Some(lemma_graph::runtime::Runtime(Arc::new(asked)))
 }
 
-/// Serves what is sentry's: a check asked of it, attaching or detaching it,
-/// and detaching it from a workspace that is gone. Everything else comes
+/// Serves what does not go through the engine: a check, attaching or
+/// detaching sentry, and detaching it from a workspace that is gone. Everything else comes
 /// back, with its connection, for the daemon to serve.
 fn route_sentry(
     request: Request,
@@ -539,7 +540,7 @@ fn route_sentry(
     settings: &Settings,
 ) -> Option<(Request, UnixStream)> {
     match request {
-        Request::SentryAsk {
+        Request::Check {
             build,
             args,
             cwd,
@@ -554,7 +555,7 @@ fn route_sentry(
                 environment,
                 as_of,
             };
-            hand_to_sentry(asked, stream, sentry, settings);
+            hand_check(asked, stream, sentry, settings);
             None
         }
         Request::Sentry {
@@ -590,7 +591,7 @@ fn route_sentry(
     }
 }
 
-/// A check asked of sentry, before its arguments are read.
+/// A check asked of the daemon, before its arguments are read.
 struct Asked {
     build: String,
     args: Vec<String>,
@@ -599,11 +600,13 @@ struct Asked {
     as_of: Option<String>,
 }
 
-/// Gives a check to sentry when it is attached to the check's workspace,
-/// attaching it first if the user opted in to that; otherwise replies that
-/// the caller should check itself. Sentry answers on `stream` itself, so
-/// the daemon goes on serving lookups meanwhile.
-fn hand_to_sentry(
+/// Takes a check: gives it to sentry when it is attached to the check's
+/// workspace, attaching it first if the user opted in to that, and
+/// otherwise answers it with nothing kept from earlier checks. Either way
+/// the answer is written to `stream` from another thread, so the daemon
+/// goes on serving lookups meanwhile. A check from another build is left to
+/// its asker.
+fn hand_check(
     asked: Asked,
     mut stream: UnixStream,
     sentry: &mut Option<Sentry>,
@@ -624,41 +627,65 @@ fn hand_to_sentry(
     };
     let manifest = crate::check::entry_manifest_in(&asked.cwd, &args.manifest);
     let manifest = manifest.canonicalize().unwrap_or(manifest);
-    let wants_attach = settings.config.sentry_auto_attach
-        && !asked.environment.contains_key("CI")
-        && asked
-            .environment
-            .get("LEMMA_SENTRY")
-            .is_none_or(|value| value != "off");
+    let uses_sentry = asked
+        .environment
+        .get("LEMMA_SENTRY")
+        .is_none_or(|value| value != "off");
+    let wants_attach =
+        uses_sentry && settings.config.sentry_auto_attach && !asked.environment.contains_key("CI");
     if sentry.is_none() && wants_attach {
-        match Sentry::attach(&manifest) {
-            Ok(attached) => *sentry = Some(attached),
-            Err(error) => log::warn!(
-                "sentry: could not attach to {}: {error:#}",
-                manifest.display()
-            ),
-        }
+        attach_for_check(sentry, &manifest);
     }
-    let Some(attached) = sentry
-        .as_ref()
-        .filter(|attached| attached.manifest() == manifest)
-    else {
-        return not_served(stream);
-    };
     if send(&mut stream, &Reply::Accepted).is_err() {
         return;
     }
-    attached.ask(crate::sentry::Ask {
-        question: crate::sentry::Question {
-            args,
-            json: cli.json,
-            raw: asked.args,
-            cwd: asked.cwd,
-            environment: asked.environment,
-            as_of: asked.as_of,
-        },
-        stream,
-    });
+    let question = crate::sentry::Question {
+        args,
+        json: cli.json,
+        raw: asked.args,
+        cwd: asked.cwd,
+        environment: asked.environment,
+        as_of: asked.as_of,
+    };
+    let attached = sentry
+        .as_ref()
+        .filter(|attached| uses_sentry && attached.manifest() == manifest);
+    match attached {
+        Some(attached) => attached.ask(crate::sentry::Ask { question, stream }),
+        None => check_alone(question, manifest, stream),
+    }
+}
+
+/// Attaches sentry to the workspace of `manifest` for a check that opted in
+/// to that; a workspace it cannot attach to is checked without it.
+fn attach_for_check(sentry: &mut Option<Sentry>, manifest: &Path) {
+    match Sentry::attach(manifest) {
+        Ok(attached) => *sentry = Some(attached),
+        Err(error) => log::warn!(
+            "sentry: could not attach to {}: {error:#}",
+            manifest.display()
+        ),
+    }
+}
+
+/// Answers a check no sentry serves, on a thread of its own: the report the
+/// check gives run by itself. If the thread cannot start or fails, the
+/// connection closes unanswered and the asker checks by itself.
+fn check_alone(question: crate::sentry::Question, manifest: PathBuf, stream: UnixStream) {
+    let checking = thread::Builder::new()
+        .name("check".to_owned())
+        .spawn(move || {
+            let answer = crate::check::answered_alone(
+                &question.args,
+                question.json,
+                &manifest,
+                question.environment,
+            );
+            reply_answer(stream, &answer);
+        });
+    if let Err(error) = checking {
+        log::warn!("could not start a thread for a check: {error}");
+    }
 }
 
 /// Attaches, detaches or reports on sentry, for `lemma daemon sentry`.
@@ -730,35 +757,56 @@ pub(crate) fn reply_answer(mut stream: UnixStream, answer: &crate::sentry::Answe
     let _ = send(&mut stream, &reply);
 }
 
-/// Asks the running daemon's sentry to answer a check. `None` when no
-/// daemon of this build runs (none is started for this) or sentry does not
-/// serve the check's workspace.
-pub(crate) fn ask_sentry(
-    args: Vec<String>,
-    cwd: PathBuf,
-    environment: BTreeMap<String, String>,
-) -> Option<crate::sentry::Answer> {
-    ask_sentry_as_of(args, cwd, environment, None)
+/// A check to ask a daemon for: its command line, where it was run, and
+/// the environment of whoever ran it.
+pub(crate) struct AskedCheck {
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub environment: BTreeMap<String, String>,
+    /// A journal token whose changes the check is about, from a client
+    /// that follows sentry's journal.
+    pub as_of: Option<String>,
 }
 
-/// [`ask_sentry`] for a client that follows sentry's journal, about the
-/// changes up to the journal token `as_of`.
-pub(crate) fn ask_sentry_as_of(
+/// Asks the daemon of the check's workspace to answer it, starting one if
+/// none serves it and `asker` may. `None` when no daemon of this build
+/// answers, and the caller should check by itself.
+pub(crate) fn ask_for_check(
     args: Vec<String>,
     cwd: PathBuf,
     environment: BTreeMap<String, String>,
-    as_of: Option<String>,
+    asker: Asker,
 ) -> Option<crate::sentry::Answer> {
-    let place = canonical(&place_of(&args, &cwd));
-    let daemon = serving(&place)?;
-    let mut stream = UnixStream::connect(&daemon.socket).ok()?;
-    let request = Request::SentryAsk {
-        build: build_id(),
+    let check = AskedCheck {
         args,
         cwd,
-        place,
         environment,
-        as_of,
+        as_of: None,
+    };
+    ask_for_check_as_of(check, asker)
+}
+
+/// [`ask_for_check`] for a client that follows sentry's journal, about the
+/// changes up to the journal token `check.as_of`.
+pub(crate) fn ask_for_check_as_of(
+    check: AskedCheck,
+    asker: Asker,
+) -> Option<crate::sentry::Answer> {
+    let place = canonical(&place_of(&check.args, &check.cwd));
+    let starts = may_start(config::autostart(), asker);
+    let daemon = daemon_to_ask(&place, starts)?;
+    let mut stream = if starts {
+        connect_or_start(&daemon).ok()?
+    } else {
+        UnixStream::connect(&daemon.socket).ok()?
+    };
+    let request = Request::Check {
+        build: build_id(),
+        args: check.args,
+        cwd: check.cwd,
+        place,
+        environment: check.environment,
+        as_of: check.as_of,
     };
     send(&mut stream, &request).ok()?;
     let mut reader = BufReader::new(stream);
@@ -772,7 +820,7 @@ pub(crate) fn ask_sentry_as_of(
             exit_code,
             ..
         } => {
-            log::info!("answered by sentry, exit code {exit_code}");
+            log::info!("answered by the daemon, exit code {exit_code}");
             Some(crate::sentry::Answer {
                 stdout,
                 stderr,
@@ -871,9 +919,7 @@ fn reply_to(
     match request {
         Request::Shutdown => Reply::Stopping,
         // The accept loop serves these itself; a stray one is not served.
-        Request::SentryAsk { .. } | Request::Sentry { .. } | Request::Serves { .. } => {
-            Reply::NotServed
-        }
+        Request::Check { .. } | Request::Sentry { .. } | Request::Serves { .. } => Reply::NotServed,
         Request::Maintain => {
             settings.reload_if_changed(config::config_path().as_deref());
             let config = &settings.config;

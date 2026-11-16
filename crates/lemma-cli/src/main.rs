@@ -71,7 +71,6 @@ fn main() -> ExitCode {
         return verify::run(args, &lsp, cli.json);
     }
     if let Command::Check(args) = &cli.command {
-        log::info!("running in this process: check always does");
         let asks_daemon = !cli.no_daemon && !daemon_disabled_by_environment();
         return check::run(args, asks_daemon, cli.json);
     }

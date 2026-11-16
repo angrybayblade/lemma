@@ -195,7 +195,13 @@ impl Source for SentrySource {
         let environment = std::env::vars().collect();
         let asked = self.asked(name);
         let as_of = self.as_of.clone();
-        let Some(answer) = crate::daemon::ask_sentry_as_of(asked, directory, environment, as_of)
+        let asked = crate::daemon::AskedCheck {
+            args: asked,
+            cwd: directory,
+            environment,
+            as_of,
+        };
+        let Some(answer) = crate::daemon::ask_for_check_as_of(asked, crate::daemon::Asker::Server)
         else {
             self.is_lost = true;
             return Err(CheckFailure::NotServed);
