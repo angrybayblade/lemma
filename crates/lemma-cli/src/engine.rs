@@ -78,13 +78,13 @@ impl Invocation {
 pub(crate) struct Engine {
     stores: HashMap<PathBuf, OpenStore>,
     /// Indexes kept up to date between runs, by database and root.
-    live_indexes: HashMap<(PathBuf, PathBuf), LiveIndex>,
+    live_indexes: LiveIndexes,
     pool: SessionPool,
     /// Whether to start language servers right after indexing, so the first
     /// lookup finds them ready. Only worth it in a long-lived process.
     warms_up_after_index: bool,
     /// In-memory symbol name search, by database, built in the background.
-    searches: HashMap<PathBuf, Arc<Mutex<SearchSlot>>>,
+    searches: Searches,
     /// Where each indexed directory was last indexed from, by database and
     /// root, so its servers can be started again later with the same `PATH`
     /// and provider configuration.
@@ -205,6 +205,20 @@ impl Origin {
     }
 }
 
+/// The indexes a process keeps up to date between runs, by database and
+/// root. Engines of one process share them, so that a directory is watched
+/// and read once however many of them answer about it.
+type LiveIndexes = Arc<Mutex<HashMap<(PathBuf, PathBuf), LiveIndex>>>;
+
+/// The in-memory symbol name searches of a process, by database, shared
+/// by its engines as its [`LiveIndexes`] are: one copy however many search.
+type Searches = Arc<Mutex<HashMap<PathBuf, Arc<Mutex<SearchSlot>>>>>;
+
+/// The slot for `db_path`'s search in `searches`, empty until one is built.
+fn search_slot(searches: &Searches, db_path: &Path) -> Arc<Mutex<SearchSlot>> {
+    Arc::clone(lock(searches).entry(db_path.to_path_buf()).or_default())
+}
+
 /// A database's in-memory search: the one ready to use, and the snapshot
 /// fingerprint of one being built.
 #[derive(Default)]
@@ -225,10 +239,10 @@ impl Engine {
     pub fn one_shot() -> Self {
         Self {
             stores: HashMap::new(),
-            live_indexes: HashMap::new(),
+            live_indexes: LiveIndexes::default(),
             pool: SessionPool::for_one_lookup(),
             warms_up_after_index: false,
-            searches: HashMap::new(),
+            searches: Searches::default(),
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
             graph_watches: None,
@@ -246,10 +260,10 @@ impl Engine {
     pub fn long_lived() -> Self {
         Self {
             stores: HashMap::new(),
-            live_indexes: HashMap::new(),
+            live_indexes: LiveIndexes::default(),
             pool: SessionPool::long_lived(),
             warms_up_after_index: true,
-            searches: HashMap::new(),
+            searches: Searches::default(),
             origins: HashMap::new(),
             traced_workspaces: HashMap::new(),
             graph_watches: None,
@@ -619,8 +633,8 @@ impl Engine {
                 self.warm_up(&db_path, &root, &languages, &origin)?;
             }
             self.origins.insert((db_path.clone(), root), origin);
-            let slot = self.searches.entry(db_path.clone()).or_default();
-            build_search(slot, &db_path, &summary.snapshot.fingerprint);
+            let slot = search_slot(&self.searches, &db_path);
+            build_search(&slot, &db_path, &summary.snapshot.fingerprint);
         }
         Ok(0)
     }
@@ -666,8 +680,10 @@ impl Engine {
         let key = (db_path.to_path_buf(), root.to_path_buf());
         // A changed selection starts a fresh index, whose first run walks
         // the whole tree and so drops files no longer selected.
-        let is_current = self
-            .live_indexes
+        // Held while the index is brought up to date, and no longer: an
+        // engine beside this one waits for that, never for a provider.
+        let mut live_indexes = lock(&self.live_indexes);
+        let is_current = live_indexes
             .get(&key)
             .is_some_and(|live| live.selection().description() == selection.description());
         if !is_current {
@@ -677,11 +693,10 @@ impl Engine {
             } else {
                 LiveIndex::selecting(root, selection)?
             };
-            self.live_indexes.insert(key.clone(), live);
+            live_indexes.insert(key.clone(), live);
         }
         let store = store_for_writing(&mut self.stores, db_path)?;
-        let live = self
-            .live_indexes
+        let live = live_indexes
             .get_mut(&key)
             .context("the live index was lost")?;
         Ok(live.index(store)?)
@@ -771,8 +786,7 @@ impl Engine {
             };
             let root = PathBuf::from(&root.snapshot.root);
             store.delete_snapshot(id)?;
-            self.live_indexes
-                .remove(&(db_path.to_path_buf(), root.clone()));
+            lock(&self.live_indexes).remove(&(db_path.to_path_buf(), root.clone()));
             if root.starts_with(&worktrees) && root.exists() {
                 lemma_graph::repos::remove_worktree(&own, &root)?;
             }
@@ -840,8 +854,8 @@ impl Engine {
         let (store, snapshot) = index_at(&mut self.stores, &db_path)?;
         let in_memory = match filter.name_match {
             NameMatch::Contains if self.warms_up_after_index => {
-                let slot = self.searches.entry(db_path.clone()).or_default();
-                search_in_memory(slot, &db_path, store, &snapshot, &filter)?
+                let slot = search_slot(&self.searches, &db_path);
+                search_in_memory(&slot, &db_path, store, &snapshot, &filter)?
             }
             _ => None,
         };
@@ -1451,8 +1465,7 @@ impl Engine {
         if !warms_up_on_activity {
             return;
         }
-        let active: Vec<((PathBuf, PathBuf), Vec<Language>)> = self
-            .live_indexes
+        let active: Vec<((PathBuf, PathBuf), Vec<Language>)> = lock(&self.live_indexes)
             .iter()
             .filter(|(_, live)| live.has_unindexed_changes() && !self.pool.serves_root(live.root()))
             .map(|(key, live)| (key.clone(), live.languages()))
@@ -1486,12 +1499,11 @@ impl Engine {
     /// keeps their files open until it runs out of file descriptors.
     fn forget_vanished(&mut self) {
         let is_present = |db_path: &Path, root: &Path| db_path.exists() && root.exists();
-        self.live_indexes
-            .retain(|(db_path, root), _| is_present(db_path, root));
+        lock(&self.live_indexes).retain(|(db_path, root), _| is_present(db_path, root));
         self.origins
             .retain(|(db_path, root), _| is_present(db_path, root));
         self.stores.retain(|db_path, _| db_path.exists());
-        self.searches.retain(|db_path, _| db_path.exists());
+        lock(&self.searches).retain(|db_path, _| db_path.exists());
         self.traced_workspaces
             .retain(|manifest, _| manifest.exists());
         self.pool.stop_vanished();
@@ -1525,8 +1537,7 @@ impl Engine {
     /// A line per live index: how many directories it watches, or why it
     /// walks the whole tree instead.
     fn watch_status(&self) -> String {
-        let mut lines: Vec<String> = self
-            .live_indexes
+        let mut lines: Vec<String> = lock(&self.live_indexes)
             .values()
             .filter_map(|live| {
                 let report = live.watch_report()?;
