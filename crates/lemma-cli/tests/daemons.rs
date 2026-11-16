@@ -8,6 +8,17 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
+/// A directory for a test's checkouts and its daemons' sockets. It is made
+/// in `/tmp`, not the system's temporary directory, whose path on macOS is
+/// too long for a socket: the daemons would then all listen in one shared
+/// directory, and one test stopping its own would stop another's.
+fn space() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("lm")
+        .tempdir_in("/tmp")
+        .unwrap()
+}
+
 /// Runs `lemma` in `directory`, with its daemons' sockets under `runtime`.
 fn lemma(runtime: &Path, directory: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_lemma"))
@@ -53,7 +64,7 @@ impl Drop for Daemons<'_> {
 
 #[test]
 fn a_daemon_started_from_a_subdirectory_serves_the_whole_checkout() {
-    let space = tempfile::tempdir().unwrap();
+    let space = space();
     let runtime = space.path().canonicalize().unwrap();
     let _daemons = Daemons(&runtime);
     let app = runtime.join("app");
@@ -71,7 +82,7 @@ fn a_daemon_started_from_a_subdirectory_serves_the_whole_checkout() {
 
 #[test]
 fn two_checkouts_and_a_worktree_inside_one_each_have_a_daemon() {
-    let space = tempfile::tempdir().unwrap();
+    let space = space();
     let runtime = space.path().canonicalize().unwrap();
     let _daemons = Daemons(&runtime);
     let app = runtime.join("app");
@@ -101,7 +112,7 @@ fn two_checkouts_and_a_worktree_inside_one_each_have_a_daemon() {
 
 #[test]
 fn stopping_a_workspaces_daemon_leaves_the_others_running() {
-    let space = tempfile::tempdir().unwrap();
+    let space = space();
     let runtime = space.path().canonicalize().unwrap();
     let _daemons = Daemons(&runtime);
     let app = runtime.join("app");
@@ -122,7 +133,7 @@ fn stopping_a_workspaces_daemon_leaves_the_others_running() {
 
 #[test]
 fn a_directory_no_daemon_serves_is_told_how_to_start_one() {
-    let space = tempfile::tempdir().unwrap();
+    let space = space();
     let runtime = space.path().canonicalize().unwrap();
 
     let status = said(&lemma(&runtime, &runtime, &["daemon", "status"]));
@@ -136,7 +147,7 @@ fn a_directory_no_daemon_serves_is_told_how_to_start_one() {
 
 #[test]
 fn a_command_starts_no_daemon_when_only_clients_may() {
-    let space = tempfile::tempdir().unwrap();
+    let space = space();
     let runtime = space.path().canonicalize().unwrap();
     let _daemons = Daemons(&runtime);
     let app = runtime.join("app");
@@ -224,7 +235,7 @@ fn shop_with_a_break(shop: &Path) {
 
 #[test]
 fn a_check_the_daemon_answers_prints_what_one_in_its_own_process_prints() {
-    let space = tempfile::tempdir().unwrap();
+    let space = space();
     let runtime = space.path().canonicalize().unwrap();
     let _daemons = Daemons(&runtime);
     let shop = runtime.join("shop");
@@ -253,7 +264,7 @@ fn a_check_the_daemon_answers_prints_what_one_in_its_own_process_prints() {
 
 #[test]
 fn a_verify_the_daemon_answers_prints_what_one_in_its_own_process_prints() {
-    let space = tempfile::tempdir().unwrap();
+    let space = space();
     let runtime = space.path().canonicalize().unwrap();
     let _daemons = Daemons(&runtime);
     let shop = runtime.join("shop");
