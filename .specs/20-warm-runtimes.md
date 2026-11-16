@@ -108,7 +108,7 @@ The whole check, after an edit to a Python model, took about 2.7 s with no warm 
 
 ## Limits
 
-- **A check never starts the daemon.** A user who only runs `lemma check` sees no change until a daemon runs: after a lookup, or `lemma daemon install`.
+- **A check never starts the daemon.** A user who only runs `lemma check` sees no change until a daemon runs, after a lookup.
 - **The first run in a new host pays what a cold run pays.** With a list kept from before, the host imports it as it starts and then runs: 1.3 to 1.6 s measured, against 1.6 to 1.7 s cold.
 - **One run at a time in a host.** A second check asking while the first's run is in progress runs its own command.
 - **Threads a library starts are not seen on every system the same way.** On Linux the count is exact. On macOS it comes from `ps`; if that undercounts, a forked child can crash, which is handled as any failed run.

@@ -246,15 +246,10 @@ pub(crate) struct DaemonArgs {
 
 #[derive(Subcommand)]
 pub(crate) enum DaemonAction {
-    /// Show the daemon's language servers and whether it runs as a service.
+    /// Show the daemon's language servers.
     Status,
     /// Stop the running daemon.
     Stop,
-    /// Run the daemon as a login service (launchd on macOS, systemd on
-    /// Linux), so it is already running when the first command arrives.
-    Install,
-    /// Remove the login service and stop its daemon.
-    Uninstall,
     /// List, start or stop the daemon's language servers for a repository
     /// or workspace. Without an action, lists them.
     Lsp(LspArgs),

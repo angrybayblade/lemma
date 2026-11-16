@@ -23,8 +23,6 @@ mod runtime;
 mod selection;
 #[cfg(unix)]
 mod sentry;
-#[cfg(unix)]
-mod service;
 mod trace;
 mod verify;
 mod watched;
@@ -199,11 +197,6 @@ fn forward(_cwd: std::path::PathBuf, _declined_cloning: bool) -> Option<ExitCode
 #[cfg(unix)]
 fn run_daemon(args: &cli::DaemonArgs, logger: &'static logging::Logger) -> ExitCode {
     let result = match args.action {
-        // A daemon started on demand would otherwise keep the socket.
-        Some(DaemonAction::Install) => daemon::stop()
-            .and_then(|_| service::install())
-            .map(|done| println!("{done}")),
-        Some(DaemonAction::Uninstall) => service::uninstall().map(|done| println!("{done}")),
         // `main` forwards these to the daemon before getting here.
         Some(DaemonAction::Lsp(_)) => Err(anyhow::anyhow!("`lemma daemon lsp` needs the daemon")),
         Some(DaemonAction::Sentry(_)) => {
@@ -214,12 +207,9 @@ fn run_daemon(args: &cli::DaemonArgs, logger: &'static logging::Logger) -> ExitC
                 eprintln!("no lemma daemon is running");
             }
         }),
-        Some(DaemonAction::Status) => daemon::status().map(|status| {
-            println!("{}", service::describe());
-            match status {
-                Some(text) => print!("{text}"),
-                None => println!("no lemma daemon is running"),
-            }
+        Some(DaemonAction::Status) => daemon::status().map(|status| match status {
+            Some(text) => print!("{text}"),
+            None => println!("no lemma daemon is running"),
         }),
         None => daemon::serve(args.idle_secs.map(std::time::Duration::from_secs), logger),
     };
@@ -271,7 +261,7 @@ fn control_sentry(args: &cli::SentryArgs, json: bool) -> ExitCode {
         Ok(None) => {
             eprintln!(
                 "error: no lemma daemon is running; sentry attaches only to a running daemon \
-                 (it starts with the first lookup, or at login after `lemma daemon install`)"
+                 (it starts with the first lookup)"
             );
             ExitCode::FAILURE
         }
