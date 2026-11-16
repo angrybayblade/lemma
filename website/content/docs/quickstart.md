@@ -134,6 +134,8 @@ $ lemma check
 0 errors, 0 warnings, 0 informational
 ```
 
+Your report ends with one more line, `sentry token: ...`. The check ran in the workspace's background daemon, whose sentry keeps what a check reads so that the next one reads only what changed; the token names this answer. The findings are the same without it. See [`lemma daemon`](commands.md#lemma-daemon).
+
 ## 4. Break the contract
 
 Make billing require `currency` and stop returning `receipt_url`. Replace `billing/openapi.json` with:

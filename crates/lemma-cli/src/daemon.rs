@@ -64,6 +64,10 @@ enum Request {
         place: PathBuf,
         /// The caller's `PATH`, as raw bytes.
         path_env: Option<Vec<u8>>,
+        /// Whether the command asks for sentry on its workspace
+        /// (`[sentry] autostart`).
+        #[serde(default)]
+        wants_sentry: bool,
     },
     /// Whether this daemon serves a directory; asked by a client walking
     /// up from it to find its daemon.
@@ -87,6 +91,10 @@ enum Request {
         cwd: PathBuf,
         /// The directory of the module the check starts from.
         place: PathBuf,
+        /// Whether the check asks for sentry on its workspace
+        /// (`[sentry] autostart`).
+        #[serde(default)]
+        wants_sentry: bool,
         /// The asking process's environment, for the commands a check runs.
         environment: BTreeMap<String, String>,
         /// A journal token whose changes the ask is about, from a client
@@ -207,6 +215,18 @@ pub(crate) enum Asker {
     Server,
 }
 
+/// Whether a request from `asker` asks for sentry on its workspace, by
+/// `[sentry] autostart`: a command does when any command may, unless its
+/// environment turns sentry off (`LEMMA_SENTRY=off`) or says it runs in CI.
+/// The MCP server and the editor's server ask once, when they start, and
+/// hold it ([`hold_sentry`]).
+fn asks_for_sentry(asker: Asker) -> bool {
+    asker == Asker::Command
+        && config::sentry_autostart() == Autostart::Always
+        && !crate::sentry::is_turned_off()
+        && std::env::var_os("CI").is_none()
+}
+
 /// Whether `asker` may start a daemon, by the `autostart` setting.
 fn may_start(autostart: Autostart, asker: Asker) -> bool {
     match autostart {
@@ -243,6 +263,7 @@ pub(crate) fn forward(args: Vec<String>, cwd: PathBuf, asker: Asker) -> Option<F
         cwd,
         place,
         path_env: std::env::var_os("PATH").map(OsString::into_vec),
+        wants_sentry: asks_for_sentry(asker),
     };
     log::debug!("forwarding to the daemon at {}", daemon.socket.display());
     let mut reply = exchange(&daemon, &request, starts).ok()?;
@@ -561,22 +582,18 @@ fn route_sentry(
     settings: &Settings,
 ) -> Option<(Request, UnixStream)> {
     match request {
-        Request::Check {
-            build,
-            args,
-            cwd,
-            environment,
-            as_of,
-            place: _,
+        Request::Run {
+            wants_sentry: true,
+            ref place,
+            ..
         } => {
-            let asked = Asked {
-                build,
-                args,
-                cwd,
-                environment,
-                as_of,
-            };
-            hand_check(asked, stream, attachment);
+            attachment.use_for_commands(crate::workspace::entry_module_above(place));
+            Some((request, stream))
+        }
+        Request::Check { .. } => {
+            if let Some(asked) = Asked::of(request) {
+                hand_check(asked, stream, attachment);
+            }
             None
         }
         Request::Sentry {
@@ -627,12 +644,16 @@ struct Attachment {
     /// The clients that asked for it and are still connected: an MCP
     /// server, the editor's server.
     holders: usize,
-    /// Whether `lemma daemon sentry start` asked for it. It then stays
-    /// without a client, until it has gone unused for as long as an idle
-    /// language server is kept.
+    /// Whether a command asked for it: `lemma daemon sentry start`, or any
+    /// command where `[sentry] autostart` has commands ask. It then stays
+    /// without a client, until no command has used it for as long as an
+    /// idle language server is kept.
     is_kept_by_hand: bool,
-    /// When it was attached or last answered a check.
+    /// When it was attached or a command last used it.
     used: Instant,
+    /// An entry module it could not be attached to for a command, which is
+    /// not tried again until the daemon next looks after itself.
+    refused: Option<PathBuf>,
     /// The daemon's own socket, to tell it that a client has gone.
     socket: PathBuf,
 }
@@ -644,7 +665,37 @@ impl Attachment {
             holders: 0,
             is_kept_by_hand: false,
             used: Instant::now(),
+            refused: None,
             socket,
+        }
+    }
+
+    /// Attaches sentry for a command that asks for it, to the workspace of
+    /// the entry module `manifest`, unless it is attached already, and
+    /// counts the command as using it. A module it cannot attach to, such
+    /// as one that does not load, is left for a while.
+    fn use_for_commands(&mut self, manifest: Option<PathBuf>) {
+        self.used = Instant::now();
+        let Some(manifest) = manifest.filter(|manifest| self.refused.as_ref() != Some(manifest))
+        else {
+            return;
+        };
+        if self.sentry.is_some() {
+            return;
+        }
+        match Sentry::attach(&manifest) {
+            Ok(attached) => {
+                log::info!("sentry: attached to {} for a command", manifest.display());
+                self.sentry = Some(attached);
+                self.is_kept_by_hand = true;
+            }
+            Err(error) => {
+                log::warn!(
+                    "sentry: could not attach to {}: {error:#}",
+                    manifest.display()
+                );
+                self.refused = Some(manifest);
+            }
         }
     }
 
@@ -694,6 +745,7 @@ impl Attachment {
     /// it and no check has used it for `kept`, the time an idle language
     /// server is kept.
     fn let_go_if_done(&mut self, kept: Option<Duration>) {
+        self.refused = None;
         let Some(attached) = &self.sentry else {
             return;
         };
@@ -719,9 +771,9 @@ impl Attachment {
             holders => format!("{holders} connected clients"),
         };
         let kept_by = match (self.holders, self.is_kept_by_hand) {
-            (0, _) => "asked for by hand".to_owned(),
+            (0, _) => "kept for commands".to_owned(),
             (_, false) => format!("kept by {clients}"),
-            (_, true) => format!("kept by {clients}, and by hand"),
+            (_, true) => format!("kept by {clients}, and for commands"),
         };
         format!("{}sentry is {kept_by}\n", attached.status())
     }
@@ -750,6 +802,33 @@ struct Asked {
     cwd: PathBuf,
     environment: BTreeMap<String, String>,
     as_of: Option<String>,
+    wants_sentry: bool,
+}
+
+impl Asked {
+    /// What a `Check` request asks; `None` for any other request.
+    fn of(request: Request) -> Option<Self> {
+        let Request::Check {
+            build,
+            args,
+            cwd,
+            environment,
+            as_of,
+            wants_sentry,
+            place: _,
+        } = request
+        else {
+            return None;
+        };
+        Some(Self {
+            build,
+            args,
+            cwd,
+            environment,
+            as_of,
+            wants_sentry,
+        })
+    }
 }
 
 /// Takes a `check` or a `verify` asked of the daemon. Either is answered
@@ -803,6 +882,9 @@ fn check_through(attachment: &mut Attachment, check: Checked, mut stream: UnixSt
         .environment
         .get("LEMMA_SENTRY")
         .is_none_or(|value| value != "off");
+    if asked.wants_sentry && uses_sentry {
+        attachment.use_for_commands(Some(manifest.clone()));
+    }
     if send(&mut stream, &Reply::Accepted).is_err() {
         return;
     }
@@ -1000,6 +1082,7 @@ pub(crate) fn ask_for_check_as_of(
         args: check.args,
         cwd: check.cwd,
         place,
+        wants_sentry: asks_for_sentry(asker),
         environment: check.environment,
         as_of: check.as_of,
     };
@@ -1882,6 +1965,7 @@ mod tests {
             cwd: PathBuf::from("/repo/src"),
             place: PathBuf::from("/repo"),
             path_env: Some(b"/usr/bin:/bin".to_vec()),
+            wants_sentry: false,
         };
 
         let line = serde_json::to_string(&request).unwrap();

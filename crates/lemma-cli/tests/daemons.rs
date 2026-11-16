@@ -253,12 +253,21 @@ fn a_check_the_daemon_answers_prints_what_one_in_its_own_process_prints() {
         "{}",
         said(&own_process)
     );
-    assert_eq!(said(&from_daemon), said(&own_process));
+    // Any command asks for sentry unless told otherwise, and sentry names
+    // each answer in a last line of its own.
+    let report = said(&from_daemon);
+    let (findings, token) = report.rsplit_once("sentry token: ").unwrap();
+    assert_eq!(findings, said(&own_process));
+    assert!(!token.trim().is_empty(), "{report}");
     assert_eq!(from_daemon.status.code(), own_process.status.code());
     assert_eq!(
         served_root(&runtime, &shop),
         Some(shop.display().to_string()),
         "the check started the workspace's daemon"
+    );
+    assert_eq!(
+        sentry_said(&runtime, &shop, |said| !said.is_empty()),
+        "sentry is kept for commands"
     );
 }
 
@@ -320,7 +329,7 @@ fn sentry_asked_for_by_hand_starts_the_daemon_and_stays() {
     );
     assert_eq!(
         sentry_said(&runtime, &shop, |said| !said.is_empty()),
-        "sentry is asked for by hand"
+        "sentry is kept for commands"
     );
 }
 
@@ -352,4 +361,31 @@ fn sentry_an_mcp_server_asked_for_is_let_go_when_the_server_leaves() {
 
     assert_eq!(held, "sentry is kept by 1 connected client");
     assert_eq!(after, "");
+}
+
+#[test]
+fn a_check_without_sentry_prints_what_one_in_its_own_process_prints() {
+    let space = space();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let shop = runtime.join("shop");
+    shop_with_a_break(&shop);
+    let check = [
+        "check", "--change", "billing", "--base", "HEAD~1", "--head", "HEAD",
+    ];
+    let alone: Vec<&str> = check.iter().copied().chain(["--no-daemon"]).collect();
+    let without_sentry = Command::new(env!("CARGO_BIN_EXE_lemma"))
+        .args(check)
+        .current_dir(&shop)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("LEMMA_SENTRY", "off")
+        .env_remove("LEMMA_DAEMON_SOCKET")
+        .env_remove("LEMMA_NO_DAEMON")
+        .output()
+        .unwrap();
+
+    let own_process = lemma(&runtime, &shop, &alone);
+
+    assert_eq!(said(&without_sentry), said(&own_process));
+    assert_eq!(sentry_said(&runtime, &shop, str::is_empty), "");
 }

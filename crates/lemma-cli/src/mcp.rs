@@ -180,13 +180,13 @@ impl Runner {
 
 /// Asks the workspace's daemon for sentry for as long as this server runs,
 /// as the editor's server does, so that graphs and checks asked between an
-/// agent's edits are prepared ahead. Not when `[sentry] mcp` is off, with
+/// agent's edits are prepared ahead. Not when `[sentry] autostart` is `never`, with
 /// `LEMMA_SENTRY=off`, in CI, or where the directory has no root module
 /// above it. It is asked for on a thread of its own, since attaching
 /// starts watching every repository and no tool call should wait for that.
 #[cfg(unix)]
 fn ask_for_sentry(cwd: &std::path::Path) {
-    let is_wanted = crate::config::sentry_for_mcp()
+    let is_wanted = crate::config::sentry_autostart() != crate::config::Autostart::Never
         && !crate::sentry::is_turned_off()
         && std::env::var_os("CI").is_none();
     let Some(manifest) = crate::workspace::entry_module_above(cwd).filter(|_| is_wanted) else {

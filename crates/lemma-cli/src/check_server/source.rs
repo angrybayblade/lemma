@@ -69,7 +69,8 @@ pub(crate) fn open(
     repositories: &[PathBuf],
     asks_sentry: bool,
 ) -> anyhow::Result<Box<dyn Source>> {
-    if asks_sentry && !crate::sentry::is_turned_off() {
+    let may_ask = crate::config::sentry_autostart() != crate::config::Autostart::Never;
+    if asks_sentry && may_ask && !crate::sentry::is_turned_off() {
         match crate::daemon::hold_sentry(manifest) {
             Ok(Some(hold)) => {
                 let followed = SentrySource::follow(args, manifest, repositories, hold);

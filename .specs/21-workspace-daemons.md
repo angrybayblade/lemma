@@ -164,8 +164,8 @@ Sentry is the daemon's watcher for its workspace. It is off until a client asks 
 
 | Client | How it asks |
 | --- | --- |
-| Command line | `lemma daemon sentry start`, which starts the daemon first when `daemon.autostart` allows |
-| MCP server | When it starts, unless `[sentry] mcp` is off (decided 2026-11-16: on by default, since graphs prepared ahead would otherwise be lost to agents, who have them today). Not in CI, with `LEMMA_SENTRY=off`, or with no root module above its directory |
+| Command line | Any command, unless `[sentry] autostart` says otherwise; `lemma daemon sentry start` by hand. Either starts the daemon first when `daemon.autostart` allows |
+| MCP server | When it starts, unless `[sentry] autostart` is `never`. Not in CI, with `LEMMA_SENTRY=off`, or with no root module above its directory |
 | Editor's server | When it starts, for the workspace it was opened on |
 
 What sentry owns, all of it under one name:
@@ -183,7 +183,9 @@ One watcher is not sentry's (decided 2026-11-16): the daemon watches each indexe
 
 Checks and graphs still watch a workspace's repositories with a set of watchers each (decided 2026-11-16: merged later, as its own change, since it shares state between sentry's thread and the daemon's loop). A repository without a root module above it has no sentry, since sentry attaches to an entry module.
 
-Sentry lets go when the last client that asked for it disconnects (an MCP server or an editor's server that exits), on `lemma daemon sentry stop`, and when its daemon exits. A client asks by holding a connection open, which the daemon sees close however the client ends. Asked from the command line, sentry stays until stopped, or until no client holds it and no check has used it for `[servers] stop_after`, the time an idle language server is kept: no setting of its own.
+**Who asks unasked (decided 2026-11-16).** `[sentry] autostart` takes the values `[daemon] autostart` does: `always` (the default: any command asks, and so do the MCP server and the editor's server), `clients` (those two only) and `never` (by hand only). The default is `always` because of what going without costs. On the six-repository bench workspace a graph asked after an edit took 0.03 to 0.10 s with sentry attached and 3.2 to 4.6 s without: unwatched, the daemon learns only that a repository changed and reads all of it again. Agents run `lemma` commands as often as they call MCP tools, so `clients` as the default would have made most of them some eighty times slower at this than they were. Reading only the files Git names as changed would bring the cost without sentry down; that is left to the next round of performance work.
+
+Sentry lets go when the last client that asked for it disconnects (an MCP server or an editor's server that exits), on `lemma daemon sentry stop`, and when its daemon exits. A client asks by holding a connection open, which the daemon sees close however the client ends. Asked for by a command, sentry stays until stopped, or until no client holds it and no command has used it for `[servers] stop_after`, the time an idle language server is kept: no setting of its own.
 
 Spec 14's rule that sentry never evaluates rules, runs resolvers or runs checkers ahead of an ask stands. Its `auto_attach` setting goes: a client asking is the one way sentry turns on.
 
