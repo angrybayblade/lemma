@@ -323,22 +323,20 @@ idle_exit = "never"        # stop the daemon after this long without a command, 
 pause_after = "10m"        # pause idle language servers
 stop_after = "2h"          # stop idle language servers
 memory_budget = "none"     # e.g. "2GB": stop the least recently used servers beyond this
-warm_on_activity = true    # start a project's servers again when its files change
 when_slow = "report"       # a server that does not answer in time: "report" it, or ask the "next"
 give_way_after = "60s"     # with "next": how long a server gets before the next is asked
 try_again_after = "30m"    # with "next": how long the slow server is passed over in that repository
 
 [sentry]
 mcp = true                 # the MCP server asks for sentry when it starts
+servers = true             # start a project's servers again when its files change
+graphs = "graph"           # after an edit, get ready for the next graph: "off", "index" or "graph"
+kept_ready = 4             # how many of the graphs last asked are answered ahead after an edit
+watches = 16384            # directories watched for graphs: 0 watches none, "none" sets no limit
 
 [runtime]
 memory = "512MB"           # what warm runtimes may hold: "0" keeps none, "none" sets no limit
 stop_after = "30m"         # stop an idle warm runtime
-
-[graph]
-watches = 16384            # directories watched for graphs: 0 watches none, "none" sets no limit
-prepare = "graph"          # after an edit, get ready for the next graph: "off", "index" or "graph"
-kept_ready = 4             # how many of the graphs last asked are answered ahead after an edit
 ```
 
 **Who starts a daemon.** `autostart` says what may start a daemon for a workspace that has none. A daemon that is already running is used by every command, whatever the setting, and `lemma daemon start` always starts one.
@@ -357,11 +355,13 @@ kept_ready = 4             # how many of the graphs last asked are answered ahea
 
 **Warm runtimes.** While the daemon runs, `lemma check` asks it to run a repository's Python (a `json.command("{python} -m …")` or `{python} script.py` resolver, or a type read with Pydantic) in a process that has already imported the repository's dependencies, so a run pays only for the repository's own modules. It prints what a new interpreter would, and anything that goes wrong runs the command as before. `memory` is the trade: the more a runtime may hold, the less a run waits. On one service with about 1,700 dependency modules, a 1.6 s resolver ran in 1.2 s with `"24MB"`, 0.7 s with `"96MB"` and 0.2 s once it could hold all 140 MB. A project's `.lemma/config.toml` may set `[runtime]` too, and overrides this file setting by setting. `LEMMA_RUNTIME=off` keeps none warm. `lemma daemon status` lists each one with the memory it holds. A check never starts the daemon for this.
 
-**Graphs across a workspace.** The first `lemma graph` in a workspace has the daemon watch each of its repositories and keep what following callers across them reads: file listings, API documents, and the routes and calls found in them. The next graph reads only what changed since, and `lemma daemon status` lists what is watched. On Linux a watcher takes one watch for each directory Git lists, out of a number the system limits per user (`fs.inotify.max_user_watches`) and that the indexes and your editor draw on too. `watches` is how many the daemon may take for graphs, over all workspaces: a quarter of the system's limit unless you set it, so the value above is only an example. The largest repositories that fit are watched. One that does not fit, or that the system will not watch, is checked when a graph is asked for: Git says whether its working directory is as it was at the last ask, and what was read of it is kept while it is. That costs one `git status` per such repository on every graph, so `watches` trades watches for time. On a workspace of six repositories and 9,155 directories, 5,672 of them in one repository, a repeated graph took 0.06 s with every repository watched, 0.11 s with `watches = 6000` (the largest watched, most of the others left to Git), 0.29 s with `watches = 4000` (the largest left to Git) and 0.33 s with `watches = 0`; with nothing kept it took 0.62 s. A workspace no graph has gone through for `[servers] stop_after` is let go, its watches included.
+**What sentry does ahead of a request.** Watching a workspace for graphs, getting ready for the next graph, and starting stopped servers again are sentry's: they happen while sentry is attached and not otherwise. Without sentry the answers are the same, and each graph asks Git about every repository, as with `watches = 0` below.
 
-**Ready before the next graph.** Once a graph has been asked through a workspace, the daemon gets ready for the next one whenever the workspace's files change and settle: 0.2 s after the last change, or 2 s into a run of them. `[graph] prepare` says how far, and trades work after every settled change for time at the next ask:
+**Graphs across a workspace.** With sentry attached, the first `lemma graph` in a workspace has the daemon watch each of its repositories and keep what following callers across them reads: file listings, API documents, and the routes and calls found in them. The next graph reads only what changed since, and `lemma daemon status` lists what is watched. On Linux a watcher takes one watch for each directory Git lists, out of a number the system limits per user (`fs.inotify.max_user_watches`) and that the indexes and your editor draw on too. `watches` is how many the daemon may take for graphs, over all workspaces: a quarter of the system's limit unless you set it, so the value above is only an example. The largest repositories that fit are watched. One that does not fit, or that the system will not watch, is checked when a graph is asked for: Git says whether its working directory is as it was at the last ask, and what was read of it is kept while it is. That costs one `git status` per such repository on every graph, so `watches` trades watches for time. On a workspace of six repositories and 9,155 directories, 5,672 of them in one repository, a repeated graph took 0.06 s with every repository watched, 0.11 s with `watches = 6000` (the largest watched, most of the others left to Git), 0.29 s with `watches = 4000` (the largest left to Git) and 0.33 s with `watches = 0`; with nothing kept it took 0.62 s. A workspace no graph has gone through for `[servers] stop_after` is let go, its watches included.
 
-| `prepare` | What the daemon does once a change settles | First graph after an edit: the graph asked last | Another of the graphs kept ready |
+**Ready before the next graph.** Once a graph has been asked through a workspace, the daemon gets ready for the next one whenever the workspace's files change and settle: 0.2 s after the last change, or 2 s into a run of them. `[sentry] graphs` says how far, and trades work after every settled change for time at the next ask:
+
+| `graphs` | What the daemon does once a change settles | First graph after an edit: the graph asked last | Another of the graphs kept ready |
 | --- | --- | --- | --- |
 | `"off"` | Nothing: the ask reads what changed. | 1.33 s | 1.25 s |
 | `"index"` | Brings the index up to date as the graphs last asked did: the changed files, the exports, and each adapter's document. | 1.11 s | 1.14 s |

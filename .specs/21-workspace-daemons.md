@@ -1,6 +1,6 @@
 # Workspace daemons: one daemon per workspace, its sentry and its clients
 
-**Status: designed, 2026-11-15; steps 1 to 3 of [Build order](#build-order) built, 2026-11-16.** One daemon serves each workspace, found by walking up and started at the workspace's root, and it refuses directories it does not serve; `[daemon] autostart` says who may start one; the daemon answers `check`, through sentry or by itself, and `verify` and `graph --workspace`. Not built: sentry is still attached by hand, and settings are still TOML. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion of 2026-11-15; rows marked *proposal* follow from them and still need the same review. Measurements are from Lemma's own repository and from the six-repository bench workspace, on Linux.
+**Status: designed, 2026-11-15; steps 1 to 4 of [Build order](#build-order) built, 2026-11-16.** One daemon serves each workspace, found by walking up and started at the workspace's root, and it refuses directories it does not serve; `[daemon] autostart` says who may start one; the daemon answers `check`, through sentry or by itself, and `verify` and `graph --workspace`. Sentry is attached when a client asks and let go when it leaves, and it owns graph preparation and restarting servers. Not built: the remaining guardrails, lookups side by side, and settings in `.lm`; the settings below are TOML keys under `[daemon]`, `[servers]` and `[sentry]` until then. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion of 2026-11-15; rows marked *proposal* follow from them and still need the same review. Measurements are from Lemma's own repository and from the six-repository bench workspace, on Linux.
 
 ## Problem
 
@@ -177,7 +177,11 @@ What sentry owns, all of it under one name:
 | A project's language servers started again when its files change | `[servers] warm_on_activity` |
 | The limit on directories watched | `[graph] watches` |
 
-With sentry off, none of these happen, and nothing is watched. The answers are the same; the first one after an edit pays for what changed.
+With sentry off, none of these happen. The answers are the same; the first one after an edit pays for what changed, and a graph across the workspace asks Git about each repository.
+
+One watcher is not sentry's (decided 2026-11-16): the daemon watches each indexed directory so that a lookup knows what changed without walking the tree. It does no work ahead of a request, and without it every lookup would check the files itself. It stays with the daemon whether sentry is attached or not.
+
+Checks and graphs still watch a workspace's repositories with a set of watchers each (decided 2026-11-16: merged later, as its own change, since it shares state between sentry's thread and the daemon's loop). A repository without a root module above it has no sentry, since sentry attaches to an entry module.
 
 Sentry lets go when the last client that asked for it disconnects (an MCP server or an editor's server that exits), on `lemma daemon sentry stop`, and when its daemon exits. A client asks by holding a connection open, which the daemon sees close however the client ends. Asked from the command line, sentry stays until stopped, or until no client holds it and no check has used it for `[servers] stop_after`, the time an idle language server is kept: no setting of its own.
 
