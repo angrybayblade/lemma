@@ -110,9 +110,10 @@ enum Followed {
 impl SentrySource {
     fn follow(args: &LanguageServerArgs, manifest: &Path, repositories: &[PathBuf]) -> Self {
         let (sender, events) = mpsc::channel();
+        let workspace = manifest.parent().unwrap_or(manifest).to_path_buf();
         if let Err(error) = std::thread::Builder::new()
             .name("lemma-lsp-sentry".to_owned())
-            .spawn(move || follow_journal(&sender))
+            .spawn(move || follow_journal(&workspace, &sender))
         {
             log::warn!("cannot follow sentry's journal: {error}");
         }
@@ -237,19 +238,21 @@ fn read_answer(stdout: &str) -> serde_json::Result<Checked> {
     })
 }
 
-/// Follows sentry's journal, reporting each repository whose own files
-/// changed, until the server stops listening or sentry goes away. Batches
-/// that touched only Git's files, which a check's own `git status`
-/// rewrites, are not changes to check.
-fn follow_journal(sender: &Sender<Followed>) {
+/// Follows the journal of the sentry attached to the workspace in
+/// `workspace`, reporting each repository whose own files changed, until
+/// the server stops listening or sentry goes away. Batches that touched
+/// only Git's files, which a check's own `git status` rewrites, are not
+/// changes to check.
+fn follow_journal(workspace: &Path, sender: &Sender<Followed>) {
     // The journal before now is history: the server checks what has
     // uncommitted changes when it starts.
-    let Some(mut token) = read_events(None, Duration::ZERO).map(|events| events.token) else {
+    let first = read_events(workspace, None, Duration::ZERO);
+    let Some(mut token) = first.map(|events| events.token) else {
         let _ = sender.send(Followed::Lost);
         return;
     };
     loop {
-        let Some(events) = read_events(Some(token.clone()), EVENTS_WAIT) else {
+        let Some(events) = read_events(workspace, Some(token.clone()), EVENTS_WAIT) else {
             let _ = sender.send(Followed::Lost);
             return;
         };
@@ -286,15 +289,16 @@ struct Event {
     bulk: bool,
 }
 
-/// The journal after `since`, waiting up to `wait` for an entry; `None`
-/// when no daemon answers or sentry is not attached.
-fn read_events(since: Option<String>, wait: Duration) -> Option<Events> {
+/// The journal of the workspace in `workspace` after `since`, waiting up
+/// to `wait` for an entry; `None` when no daemon answers or sentry is not
+/// attached.
+fn read_events(workspace: &Path, since: Option<String>, wait: Duration) -> Option<Events> {
     let action = crate::daemon::SentryAction::Events {
         since,
         wait_ms: u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
         json: true,
     };
-    let (stdout, _, exit_code) = crate::daemon::sentry_control(action).ok()??;
+    let (stdout, _, exit_code) = crate::daemon::sentry_control(workspace, action).ok()??;
     if exit_code != 0 {
         return None;
     }

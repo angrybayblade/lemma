@@ -242,14 +242,30 @@ pub(crate) struct DaemonArgs {
     /// instead of the configured `idle_exit`.
     #[arg(long)]
     pub idle_secs: Option<u64>,
+    /// When running: the root of the workspace to serve. Default: the
+    /// workspace the current directory belongs to.
+    #[arg(long, value_name = "DIRECTORY")]
+    pub root: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
 pub(crate) enum DaemonAction {
-    /// Show the daemon's language servers.
-    Status,
-    /// Stop the running daemon.
-    Stop,
+    /// Start the daemon of the workspace the current directory belongs to,
+    /// in the background, unless one already serves it.
+    Start,
+    /// Show the workspace this directory's daemon serves and its language
+    /// servers.
+    Status {
+        /// Every daemon of this user, not only this directory's.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Stop the daemon serving this directory.
+    Stop {
+        /// Every daemon of this user, not only this directory's.
+        #[arg(long)]
+        all: bool,
+    },
     /// List, start or stop the daemon's language servers for a repository
     /// or workspace. Without an action, lists them.
     Lsp(LspArgs),

@@ -26,6 +26,7 @@ mod sentry;
 mod trace;
 mod verify;
 mod watched;
+mod workspace;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -196,22 +197,35 @@ fn forward(_cwd: std::path::PathBuf, _declined_cloning: bool) -> Option<ExitCode
 
 #[cfg(unix)]
 fn run_daemon(args: &cli::DaemonArgs, logger: &'static logging::Logger) -> ExitCode {
+    let Ok(cwd) = std::env::current_dir() else {
+        eprintln!("error: could not read the current directory");
+        return ExitCode::FAILURE;
+    };
     let result = match args.action {
         // `main` forwards these to the daemon before getting here.
         Some(DaemonAction::Lsp(_)) => Err(anyhow::anyhow!("`lemma daemon lsp` needs the daemon")),
         Some(DaemonAction::Sentry(_)) => {
             Err(anyhow::anyhow!("`lemma daemon sentry` needs the daemon"))
         }
-        Some(DaemonAction::Stop) => daemon::stop().map(|was_running| {
-            if !was_running {
-                eprintln!("no lemma daemon is running");
+        Some(DaemonAction::Start) => {
+            daemon::start(&cwd).map(|started| println!("{}", said_of(&started)))
+        }
+        Some(DaemonAction::Stop { all }) => daemon::stop(&cwd, all).map(|stopped| {
+            if stopped == 0 {
+                eprintln!("{}", none_running(all));
             }
         }),
-        Some(DaemonAction::Status) => daemon::status().map(|status| match status {
-            Some(text) => print!("{text}"),
-            None => println!("no lemma daemon is running"),
+        Some(DaemonAction::Status { all }) => daemon::status(&cwd, all).map(|reports| {
+            if reports.is_empty() {
+                println!("{}", none_running(all));
+            }
+            print!("{}", reports.join("\n"));
         }),
-        None => daemon::serve(args.idle_secs.map(std::time::Duration::from_secs), logger),
+        None => daemon::serve(
+            args.root.as_deref(),
+            args.idle_secs.map(std::time::Duration::from_secs),
+            logger,
+        ),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -220,6 +234,29 @@ fn run_daemon(args: &cli::DaemonArgs, logger: &'static logging::Logger) -> ExitC
             ExitCode::FAILURE
         }
     }
+}
+
+/// What `lemma daemon start` says of a daemon's workspace root, if it has
+/// one, and whether it was already serving.
+#[cfg(unix)]
+fn said_of(started: &(Option<std::path::PathBuf>, bool)) -> String {
+    let serves = match &started.0 {
+        Some(root) => format!("serves {}", root.display()),
+        None => "serves every directory (LEMMA_DAEMON_SOCKET)".to_owned(),
+    };
+    if started.1 {
+        return format!("a lemma daemon already {serves}");
+    }
+    format!("started a lemma daemon: it {serves}")
+}
+
+/// What `status` and `stop` say when they find no daemon.
+#[cfg(unix)]
+fn none_running(all: bool) -> &'static str {
+    if all {
+        return "no lemma daemon is running";
+    }
+    "no lemma daemon serves this directory; `lemma daemon start` starts its workspace's"
 }
 
 #[cfg(unix)]
@@ -252,7 +289,12 @@ fn control_sentry(args: &cli::SentryArgs, json: bool) -> ExitCode {
             }
         }
     };
-    match daemon::sentry_control(action) {
+    let place = match &action {
+        daemon::SentryAction::Start { manifest } => manifest.parent().unwrap_or(&cwd),
+        _ => &cwd,
+    }
+    .to_path_buf();
+    match daemon::sentry_control(&place, action) {
         Ok(Some((stdout, stderr, exit_code))) => {
             print!("{stdout}");
             eprint!("{stderr}");

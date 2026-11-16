@@ -63,7 +63,7 @@ Lemma reuses a cached answer only when all of these match. Re-indexing after a c
 
 ## The daemon and warm language servers
 
-Starting a language server and letting it load a large project takes seconds; asking one that has loaded takes milliseconds. So every command runs in a per-user background daemon, which keeps servers running between lookups. After `lemma index` it starts the server for each indexed language in the background, opening a file from the densest part of the tree so the server loads the project most lookups will need. A lookup that arrives while a server is still starting waits for it.
+Starting a language server and letting it load a large project takes seconds; asking one that has loaded takes milliseconds. So every command runs in a background daemon, one for each workspace ([`lemma daemon`](commands.md#lemma-daemon)), which keeps servers running between lookups. After `lemma index` it starts the server for each indexed language in the background, opening a file from the densest part of the tree so the server loads the project most lookups will need. A lookup that arrives while a server is still starting waits for it.
 
 Before reusing a server, the daemon tells it which files were created, changed or deleted since its last lookup, using the differences between snapshots. Edits become visible to a warm server when you run `lemma index`. Files a server has open for earlier lookups are kept open, and updated or closed when they change.
 

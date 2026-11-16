@@ -33,11 +33,10 @@ use serde_json::{Value, json};
 
 use crate::cli::LanguageServerArgs;
 use crate::watched::BATCH_INTERVAL;
+use crate::workspace::{ROOT_MODULE, declares_workspace};
 use diagnostics::{ChangedFile, ChangedLine, CheckedChange, FileDiagnostics, LineDiagnostic};
 use source::{CheckFailure, Source};
 
-/// A repository's or workspace's root module.
-const ROOT_MODULE: &str = "mod.lm";
 /// The JSON-RPC code for a method the server does not know.
 const METHOD_NOT_FOUND: i64 = -32601;
 /// How long to wait for the editor to accept a progress report before
@@ -502,15 +501,6 @@ fn nearest_workspace_manifest(folder: &Path) -> Option<PathBuf> {
         .find(declares_workspace)
         .or_else(|| found.first())
         .cloned()
-}
-
-/// Whether a module's text declares a `workspace { ... }` block.
-fn declares_workspace(text: &str) -> bool {
-    text.lines().any(|line| {
-        let line = line.trim_start();
-        line.strip_prefix("workspace")
-            .is_some_and(|rest| rest.trim_start().starts_with('{'))
-    })
 }
 
 /// The name `--change` takes for the repository in `directory`: `self`

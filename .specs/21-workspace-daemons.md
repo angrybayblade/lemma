@@ -1,6 +1,6 @@
 # Workspace daemons: one daemon per workspace, its sentry and its clients
 
-**Status: designed, 2026-11-15. Not built.** The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion of 2026-11-15; rows marked *proposal* follow from them and still need the same review. Measurements are from Lemma's own repository and from the six-repository bench workspace, on Linux.
+**Status: designed, 2026-11-15; step 1 of [Build order](#build-order) built, 2026-11-16.** One daemon serves each workspace, found by walking up and started at the workspace's root, and it refuses directories it does not serve. Nothing after step 1 is built: checks still run in the client's process, sentry is still attached by hand, and settings are still TOML. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion of 2026-11-15; rows marked *proposal* follow from them and still need the same review. Measurements are from Lemma's own repository and from the six-repository bench workspace, on Linux.
 
 ## Problem
 
@@ -114,11 +114,13 @@ Starting at the workspace's root, and not in the client's directory, is what mak
 
 A daemon that is already running is used by every client under all three. `--no-daemon` and `LEMMA_NO_DAEMON=1` keep their meaning: this command runs in its own process even if a daemon is running. `never` is for a machine where nothing should stay in the background, such as CI.
 
-*Proposal.* Each daemon listens on a socket in the user's runtime directory, named by a hash of its root's canonical path, so a client can test each directory on the way up with one lookup and no file in the repository.
+Each daemon listens on a socket in the user's runtime directory (`$XDG_RUNTIME_DIR/lemma`, or `/tmp/lemma-<uid>` without one), named by a digest of its root's canonical path, so a client can test each directory on the way up with one lookup and no file in the repository. It is not in the directory `TMPDIR` names: a daemon does not keep the `TMPDIR` of the command that started it, and the two must look in the same place.
+
+`LEMMA_DAEMON_SOCKET` still names one daemon's socket outright. That daemon serves every directory, as before this spec, which is what the gates and the benchmarks run.
 
 ### Commands
 
-*Proposal.* `lemma daemon status` and `lemma daemon stop` act on the daemon serving the current directory, and take `--all` for every daemon of the user. Status says first which daemon would serve this directory and why (found running at a parent, or would be started at this root), so a person can see the route a client takes. After installing a new `lemma`, `lemma daemon stop --all` is what replaces the running ones.
+`lemma daemon status` and `lemma daemon stop` act on the daemon serving the current directory, and take `--all` for every daemon of the user. Status says first which workspace that daemon serves. A daemon of another build replaces itself when a command of the new build reaches it, so nothing has to be stopped after installing a new `lemma`.
 
 `lemma daemon install` and `uninstall` are removed (decided 2026-11-16): with no one daemon there is no one service to keep up at login. A daemon starts on a workspace's first request, or with `lemma daemon start` run in the workspace, which starts its daemon in the background and returns once it listens. `lemma daemon` alone still runs one in the foreground.
 

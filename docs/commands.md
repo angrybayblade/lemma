@@ -16,7 +16,7 @@ These work with every command.
 | `--no-daemon` | Run in this process instead of the background daemon. Slower, but nothing stays running. Setting `LEMMA_NO_DAEMON=1` does the same. |
 | `-l`, `--logging <level>` | Log what Lemma is doing to stderr: `error`, `warn`, `info`, `debug` or `trace`. Off by default. `info` shows each step and the choice made in it: whether the command ran in this process or the daemon (and why), which repositories and commits were read, what came from a cache and what was run, and the engines and language servers used, with timings. A command the daemon runs sends its lines back, marked `daemon`. Logs never go to stdout, so `--json` output stays parseable. |
 
-Every command runs in a background daemon that keeps the index open, watches indexed directories for changes, and keeps language servers warm; `lemma` itself only forwards the command. The first command starts the daemon. See [`lemma daemon`](#lemma-daemon).
+Every command runs in a background daemon that keeps the index open, watches indexed directories for changes, and keeps language servers warm; `lemma` itself only forwards the command. Each workspace has a daemon of its own, which the first command in the workspace starts. See [`lemma daemon`](#lemma-daemon).
 
 ## `lemma index [path]`
 
@@ -279,10 +279,19 @@ The workspace is the module given, or else the editor's `manifest` initializatio
 
 Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground. Language servers start when a lookup needs one, when `lemma index` runs (in the background), or with `lemma daemon lsp start`; there is one per indexed root and language, and the settings below pause and stop idle ones.
 
+**One daemon for each workspace.** A workspace is the nearest directory above a command with a `mod.lm` that declares a `workspace`, together with the repositories it names; otherwise the Git checkout the command runs in; otherwise the directory itself. A command walks up from where it runs to the nearest running daemon that serves it. If there is none, it starts one at the workspace's root, wherever in the workspace it was run, so the first command's directory does not matter.
+
+A daemon answers only about its own workspace. It serves a directory when that directory's Git checkout is the workspace's own or one of the repositories its `mod.lm` names. A Git worktree placed inside a checkout is a different checkout, so it gets a daemon of its own and is never answered about the files around it. `index <path>`, `check <mod.lm>` and `daemon lsp ... <path>` go to the daemon of the directory they name, not of the one they run in.
+
+A repository the `mod.lm` names outside the workspace's root (`local("../billing")`) is served, but commands run there walk up without reaching the daemon and start their own. `lemma daemon status` warns about each one; start Lemma from a directory that holds both, or move the repository under the root.
+
+`LEMMA_DAEMON_SOCKET` names one daemon's socket instead: that daemon serves every directory, and no walking up happens. It is for a benchmark or a test that wants a daemon to itself.
+
 | Command | Meaning |
 | --- | --- |
-| `lemma daemon status` | Its language servers: starting, running or paused, how long idle, and memory, and any passed over for being too slow (`[servers] when_slow`); and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. |
-| `lemma daemon stop` | Stop the running daemon; it returns once the daemon and its language servers have stopped. |
+| `lemma daemon start` | Start the daemon of the workspace the current directory belongs to, in the background, and return once it listens. It says which workspace the daemon serves, or that one already serves it. |
+| `lemma daemon status [--all]` | The workspace the daemon serving this directory serves, with a warning for each repository it names outside its root; then its language servers: starting, running or paused, how long idle, and memory, and any passed over for being too slow (`[servers] when_slow`); and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. With `--all`, every daemon of the user. |
+| `lemma daemon stop [--all]` | Stop the daemon serving this directory, or with `--all` every daemon of the user; it returns once each daemon and its language servers have stopped. |
 | `lemma daemon lsp [path]`, or `lemma daemon lsp list [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |
 | `lemma daemon lsp start [path] [--language <l>] [--provider <id>] [--wait]` | Start those servers in the daemon, in the background, or with `--wait` until each has loaded its project, reporting how long it took or why it failed (exit 1). A language's providers are tried in order, as a lookup tries them: when the first cannot start (typescript-language-server without a TypeScript it can use), the next serves. |
 | `lemma daemon lsp stop [path] [--language <l>] [--provider <id>]` | Stop those servers. |
@@ -291,6 +300,7 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 | `lemma daemon sentry status` | The workspace, the directories watched in each repository, and how many checks sentry answered and reused. |
 | `lemma daemon sentry events [--since <token>] [--wait <duration>]` | What happened since a token, a line each: repositories whose files changed, and checks answered (reused or checked, how long, and their counts), then the latest token. With `--wait`, it waits that long for an event when there is none yet, for a hook or a script to follow sentry. `--json` prints the events. |
 | `lemma daemon --idle-secs <n>` | Run in the foreground, exiting after this many seconds without a command instead of the configured `idle_exit`. |
+| `lemma daemon --root <directory>` | Run in the foreground for the workspace rooted at this directory, in place of the one the current directory belongs to. |
 
 Sentry is experimental and off unless you start it: its answers match a fresh check, but it can change or go away between releases.
 
