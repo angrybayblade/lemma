@@ -284,3 +284,72 @@ fn a_verify_the_daemon_answers_prints_what_one_in_its_own_process_prints() {
         Some(shop.display().to_string())
     );
 }
+
+/// What `lemma daemon status` in `directory` says about sentry, once it
+/// says what `wanted` accepts; what it said last if it never does.
+fn sentry_said(runtime: &Path, directory: &Path, wanted: impl Fn(&str) -> bool) -> String {
+    let mut said_last = String::new();
+    for _ in 0..100 {
+        let status = said(&lemma(runtime, directory, &["daemon", "status"]));
+        said_last = status
+            .lines()
+            .filter(|line| line.starts_with("sentry is "))
+            .collect();
+        if wanted(&said_last) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    said_last
+}
+
+#[test]
+fn sentry_asked_for_by_hand_starts_the_daemon_and_stays() {
+    let space = space();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let shop = runtime.join("shop");
+    shop_with_a_break(&shop);
+
+    let started = said(&lemma(&runtime, &shop, &["daemon", "sentry", "start"]));
+
+    assert!(started.contains("attached to"), "{started}");
+    assert_eq!(
+        served_root(&runtime, &shop),
+        Some(shop.display().to_string())
+    );
+    assert_eq!(
+        sentry_said(&runtime, &shop, |said| !said.is_empty()),
+        "sentry is asked for by hand"
+    );
+}
+
+#[test]
+fn sentry_an_mcp_server_asked_for_is_let_go_when_the_server_leaves() {
+    let space = space();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let shop = runtime.join("shop");
+    shop_with_a_break(&shop);
+    let mut server = Command::new(env!("CARGO_BIN_EXE_lemma"))
+        .arg("mcp")
+        .current_dir(&shop)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env_remove("LEMMA_DAEMON_SOCKET")
+        .env_remove("LEMMA_NO_DAEMON")
+        .env_remove("LEMMA_SENTRY")
+        .env_remove("CI")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let held = sentry_said(&runtime, &shop, |said| !said.is_empty());
+    drop(server.stdin.take());
+    server.wait().unwrap();
+    let after = sentry_said(&runtime, &shop, str::is_empty);
+
+    assert_eq!(held, "sentry is kept by 1 connected client");
+    assert_eq!(after, "");
+}
