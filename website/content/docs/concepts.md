@@ -87,7 +87,7 @@ What a user decides, and where:
 | Keep one command out of the daemon | `--no-daemon`, or `LEMMA_NO_DAEMON=1` | off |
 | Keep sentry out of one command | `LEMMA_SENTRY=off` | off |
 
-Without a daemon, a command does the same work in its own process and prints the same answer, more slowly. Without sentry, the daemon gives the same answer, and the first one after an edit pays for what changed. `lemma daemon status` shows the workspace a directory's daemon serves, its language servers, and who keeps sentry attached. The commands and settings are in [`lemma daemon`](commands.md#lemma-daemon).
+Inside a daemon, lookups that may ask a language server are answered one at a time; searching symbols, outlining a file, status and checks do not wait behind them. Without a daemon, a command does the same work in its own process and prints the same answer, more slowly. Without sentry, the daemon gives the same answer, and the first one after an edit pays for what changed. `lemma daemon status` shows the workspace a directory's daemon serves, its language servers, and who keeps sentry attached. The commands and settings are in [`lemma daemon`](commands.md#lemma-daemon).
 
 Three commands have "lsp" in their name, and they are different things: `lemma lsp` is Lemma serving an editor, `lemma daemon lsp` lists and manages the language servers Lemma itself uses, and `lm lsp` serves `.lm` modules to an editor.
 
