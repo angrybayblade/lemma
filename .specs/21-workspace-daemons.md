@@ -126,9 +126,11 @@ Each daemon listens on a socket in the user's runtime directory (`$XDG_RUNTIME_D
 
 ### When a daemon exits
 
-A daemon exits by itself once it holds nothing warm: no client is connected, no language server or runtime is running, and no sentry is attached. `[servers] stop_after` and `[runtime] stop_after` already let those go when idle, so a workspace nobody uses reaches that state without another setting. `daemon.idle_exit` stays as an upper bound for a user who wants one.
+A daemon exits by itself once it holds nothing warm (no language server running or starting, no warm runtime, no sentry attached, no workspace watched for graphs) and no command has come for as long as `[servers] stop_after`, the time an idle server is kept. `[servers] stop_after` and `[runtime] stop_after` already let servers and runtimes go when idle, so a workspace nobody uses reaches that state without another setting. With `stop_after = "never"` servers are kept, and so is the daemon. `daemon.idle_exit` stays as a limit of its own: the daemon exits after that long without a command, whatever it holds.
 
-This replaces the default of never exiting. It is a starting point: the cost of a daemon that exited too early is its language servers loading again (seconds, or over a minute for a large Python repository), and feedback decides whether the default should hold longer.
+A client that connects for one request cannot be told from one that has gone, so "no client is connected" is not part of the rule; the time since the last command stands in for it.
+
+This replaces the default of never exiting. It is a starting point: the cost of a daemon that exited too early is its language servers loading again (seconds, or over a minute for a large Python repository), and feedback decides whether the default should hold longer. Until sentry owns restarting servers on activity (step 4), a daemon that has exited no longer restarts them when files change; the next command does.
 
 ## What runs in the daemon
 
