@@ -297,8 +297,8 @@ fn control_sentry(args: &cli::SentryArgs, json: bool) -> ExitCode {
         }
         Ok(None) => {
             eprintln!(
-                "error: no lemma daemon is running; sentry attaches only to a running daemon \
-                 (it starts with the first lookup)"
+                "error: no lemma daemon serves this directory; `lemma daemon sentry start` \
+                 starts one unless `[daemon] autostart` keeps commands from it"
             );
             ExitCode::FAILURE
         }

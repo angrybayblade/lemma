@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -64,6 +64,10 @@ enum Request {
         place: PathBuf,
         /// The caller's `PATH`, as raw bytes.
         path_env: Option<Vec<u8>>,
+        /// Whether the command asks for sentry on its workspace
+        /// (`[sentry] autostart`).
+        #[serde(default)]
+        wants_sentry: bool,
     },
     /// Whether this daemon serves a directory; asked by a client walking
     /// up from it to find its daemon.
@@ -87,6 +91,10 @@ enum Request {
         cwd: PathBuf,
         /// The directory of the module the check starts from.
         place: PathBuf,
+        /// Whether the check asks for sentry on its workspace
+        /// (`[sentry] autostart`).
+        #[serde(default)]
+        wants_sentry: bool,
         /// The asking process's environment, for the commands a check runs.
         environment: BTreeMap<String, String>,
         /// A journal token whose changes the ask is about, from a client
@@ -100,6 +108,15 @@ enum Request {
         build: String,
         action: SentryAction,
     },
+    /// Attach sentry to the workspace of a module for a client that stays
+    /// running, and keep it for as long as the client keeps this connection
+    /// open: asked by the MCP server and the editor's server.
+    Hold {
+        build: String,
+        manifest: PathBuf,
+    },
+    /// A client that held sentry has gone; sent by the daemon to itself.
+    Released,
     /// Apply the idle policy; sent by the daemon's own timer.
     Maintain,
     /// Get ready for the next graph through the workspaces whose files
@@ -122,8 +139,10 @@ impl Request {
             Self::Sentry {
                 action: SentryAction::Start { manifest },
                 ..
-            } => manifest.parent(),
+            }
+            | Self::Hold { manifest, .. } => manifest.parent(),
             Self::Sentry { .. }
+            | Self::Released
             | Self::Maintain
             | Self::Prepare
             | Self::Status
@@ -196,6 +215,18 @@ pub(crate) enum Asker {
     Server,
 }
 
+/// Whether a request from `asker` asks for sentry on its workspace, by
+/// `[sentry] autostart`: a command does when any command may, unless its
+/// environment turns sentry off (`LEMMA_SENTRY=off`) or says it runs in CI.
+/// The MCP server and the editor's server ask once, when they start, and
+/// hold it ([`hold_sentry`]).
+fn asks_for_sentry(asker: Asker) -> bool {
+    asker == Asker::Command
+        && config::sentry_autostart() == Autostart::Always
+        && !crate::sentry::is_turned_off()
+        && std::env::var_os("CI").is_none()
+}
+
 /// Whether `asker` may start a daemon, by the `autostart` setting.
 fn may_start(autostart: Autostart, asker: Asker) -> bool {
     match autostart {
@@ -232,6 +263,7 @@ pub(crate) fn forward(args: Vec<String>, cwd: PathBuf, asker: Asker) -> Option<F
         cwd,
         place,
         path_env: std::env::var_os("PATH").map(OsString::into_vec),
+        wants_sentry: asks_for_sentry(asker),
     };
     log::debug!("forwarding to the daemon at {}", daemon.socket.display());
     let mut reply = exchange(&daemon, &request, starts).ok()?;
@@ -362,7 +394,7 @@ pub(crate) fn serve(
         return Ok(());
     };
     let mut settings = Settings::load(config::config_path().as_deref())?;
-    let mut engine = engine_with(&settings.config, &listener);
+    let mut engine = engine_with(&settings, &listener);
     let last_request = Arc::new(Mutex::new(Instant::now()));
     let idle_limit = idle_override.or(settings.config.idle_exit);
     if let Some(idle_limit) = idle_limit {
@@ -370,7 +402,7 @@ pub(crate) fn serve(
     }
     send_maintenance_ticks(socket.clone());
     send_prepare_ticks(socket.clone());
-    let mut sentry: Option<Sentry> = None;
+    let mut sentry = Attachment::new(socket.clone());
     let runtimes = start_runtimes(&socket);
 
     for stream in listener.incoming() {
@@ -388,22 +420,22 @@ pub(crate) fn serve(
         else {
             continue;
         };
+        settings.follow_sentry(sentry.sentry.is_some(), &mut engine);
         let is_status = matches!(request, Request::Status);
         let is_maintenance = matches!(request, Request::Maintain);
         if is_maintenance {
             maintain_runtimes(&runtimes, &mut engine, &settings.config);
         }
         let mut reply = reply_to(request, &mut engine, &mut settings, &last_request, logger);
-        if let (true, Reply::Done { stdout, .. }) = (is_status, &mut reply) {
-            stdout.insert_str(0, &serving.describe());
-            stdout.push_str(&runtimes.status());
-            stdout.push_str(&sentry.as_ref().map(Sentry::status).unwrap_or_default());
+        if is_status {
+            let after = runtimes.status() + &sentry.status();
+            complete_status(&mut reply, &serving.describe(), &after);
         }
         let is_exiting = matches!(reply, Reply::Stopping | Reply::Restart);
         // A caller that gave up is not a reason to stop serving others.
         let _ = send(&mut stream, &reply);
         let is_cold = is_maintenance
-            && sentry.is_none()
+            && sentry.sentry.is_none()
             && is_cold(&engine, &runtimes, &last_request, &settings.config);
         if is_exiting || is_cold {
             break;
@@ -421,6 +453,15 @@ pub(crate) fn serve(
     // the moment `lemma daemon stop` waits for.
     std::mem::forget(lock);
     Ok(())
+}
+
+/// Puts around the engine's status what the daemon serves, `before` it,
+/// and its warm runtimes and sentry, `after` it.
+fn complete_status(reply: &mut Reply, before: &str, after: &str) {
+    if let Reply::Done { stdout, .. } = reply {
+        stdout.insert_str(0, before);
+        stdout.push_str(after);
+    }
 }
 
 /// Whether, sentry aside, the daemon holds nothing warm and has been idle
@@ -448,11 +489,12 @@ fn has_nothing_to_stay_for(
     is_cold && stop_after.is_some_and(|kept| idle_for >= kept)
 }
 
-/// The daemon's engine with `config`'s settings, which gives way while a
+/// The daemon's engine with the settings in force, which gives way while a
 /// caller waits on `listener`.
-fn engine_with(config: &Config, listener: &UnixListener) -> Engine {
+fn engine_with(settings: &Settings, listener: &UnixListener) -> Engine {
+    let config = &settings.config;
     let mut engine = Engine::long_lived();
-    engine.set_graph_watches(config.graph_watches);
+    engine.set_graph_watches(settings.graph_watches());
     engine.set_graphs_kept_ready(config.graphs_kept_ready);
     engine.set_when_slow(config.when_slow);
     if let Ok(waited_on) = listener.try_clone() {
@@ -536,26 +578,22 @@ pub(crate) fn warm_runtime(directory: &Path) -> Option<lemma_graph::runtime::Run
 fn route_sentry(
     request: Request,
     mut stream: UnixStream,
-    sentry: &mut Option<Sentry>,
+    attachment: &mut Attachment,
     settings: &Settings,
 ) -> Option<(Request, UnixStream)> {
     match request {
-        Request::Check {
-            build,
-            args,
-            cwd,
-            environment,
-            as_of,
-            place: _,
+        Request::Run {
+            wants_sentry: true,
+            ref place,
+            ..
         } => {
-            let asked = Asked {
-                build,
-                args,
-                cwd,
-                environment,
-                as_of,
-            };
-            hand_check(asked, stream, sentry, settings);
+            attachment.use_for_commands(crate::workspace::entry_module_above(place));
+            Some((request, stream))
+        }
+        Request::Check { .. } => {
+            if let Some(asked) = Asked::of(request) {
+                hand_check(asked, stream, attachment);
+            }
             None
         }
         Request::Sentry {
@@ -566,8 +604,8 @@ fn route_sentry(
                     wait_ms,
                     json,
                 },
-        } if build == build_id() && sentry.is_some() => {
-            if let Some(attached) = sentry.as_ref() {
+        } if build == build_id() && attachment.sentry.is_some() => {
+            if let Some(attached) = attachment.sentry.as_ref() {
                 attached.events(crate::sentry::Wait {
                     since,
                     limit: Duration::from_millis(wait_ms),
@@ -578,17 +616,183 @@ fn route_sentry(
             None
         }
         Request::Sentry { build, action } => {
-            let reply = control_sentry(&build, action, sentry);
+            let reply = attachment.asked_by_hand(&build, action);
             let _ = send(&mut stream, &reply);
             None
         }
-        Request::Maintain if sentry.as_ref().is_some_and(Sentry::is_gone) => {
-            log::info!("sentry: the workspace is gone; detaching");
-            *sentry = None;
+        Request::Hold { build, manifest } => {
+            attachment.hold(&build, manifest, stream);
+            None
+        }
+        Request::Released => {
+            attachment.release();
+            let _ = send(&mut stream, &done(String::new()));
+            None
+        }
+        Request::Maintain => {
+            attachment.let_go_if_done(settings.config.idle_policy.stop_after);
             Some((Request::Maintain, stream))
         }
         other => Some((other, stream)),
     }
+}
+
+/// The daemon's sentry, and what keeps it attached: a client asked for it
+/// and is still connected, or it was asked for by hand and is in use.
+struct Attachment {
+    sentry: Option<Sentry>,
+    /// The clients that asked for it and are still connected: an MCP
+    /// server, the editor's server.
+    holders: usize,
+    /// Whether a command asked for it: `lemma daemon sentry start`, or any
+    /// command where `[sentry] autostart` has commands ask. It then stays
+    /// without a client, until no command has used it for as long as an
+    /// idle language server is kept.
+    is_kept_by_hand: bool,
+    /// When it was attached or a command last used it.
+    used: Instant,
+    /// An entry module it could not be attached to for a command, which is
+    /// not tried again until the daemon next looks after itself.
+    refused: Option<PathBuf>,
+    /// The daemon's own socket, to tell it that a client has gone.
+    socket: PathBuf,
+}
+
+impl Attachment {
+    fn new(socket: PathBuf) -> Self {
+        Self {
+            sentry: None,
+            holders: 0,
+            is_kept_by_hand: false,
+            used: Instant::now(),
+            refused: None,
+            socket,
+        }
+    }
+
+    /// Attaches sentry for a command that asks for it, to the workspace of
+    /// the entry module `manifest`, unless it is attached already, and
+    /// counts the command as using it. A module it cannot attach to, such
+    /// as one that does not load, is left for a while.
+    fn use_for_commands(&mut self, manifest: Option<PathBuf>) {
+        self.used = Instant::now();
+        let Some(manifest) = manifest.filter(|manifest| self.refused.as_ref() != Some(manifest))
+        else {
+            return;
+        };
+        if self.sentry.is_some() {
+            return;
+        }
+        match Sentry::attach(&manifest) {
+            Ok(attached) => {
+                log::info!("sentry: attached to {} for a command", manifest.display());
+                self.sentry = Some(attached);
+                self.is_kept_by_hand = true;
+            }
+            Err(error) => {
+                log::warn!(
+                    "sentry: could not attach to {}: {error:#}",
+                    manifest.display()
+                );
+                self.refused = Some(manifest);
+            }
+        }
+    }
+
+    /// Serves `lemma daemon sentry`: attaches, detaches or reports.
+    fn asked_by_hand(&mut self, build: &str, action: SentryAction) -> Reply {
+        let is_start = matches!(action, SentryAction::Start { .. });
+        let is_stop = matches!(action, SentryAction::Stop);
+        let reply = control_sentry(build, action, &mut self.sentry);
+        let is_done = matches!(reply, Reply::Done { exit_code: 0, .. });
+        if is_start && is_done {
+            self.is_kept_by_hand = true;
+            self.used = Instant::now();
+        }
+        if is_stop {
+            self.is_kept_by_hand = false;
+        }
+        reply
+    }
+
+    /// Attaches sentry to the workspace of `manifest` for the client on
+    /// `stream`, which is told whether it is attached, and keeps it until
+    /// that client closes the connection.
+    fn hold(&mut self, build: &str, manifest: PathBuf, mut stream: UnixStream) {
+        let reply = control_sentry(build, SentryAction::Start { manifest }, &mut self.sentry);
+        let is_attached = matches!(reply, Reply::Done { exit_code: 0, .. });
+        let is_told = send(&mut stream, &reply).is_ok();
+        if !is_attached {
+            return;
+        }
+        self.used = Instant::now();
+        self.holders += 1;
+        if !is_told || tell_when_gone(stream, self.socket.clone()).is_err() {
+            self.release();
+        }
+    }
+
+    /// A client that held sentry has gone: sentry is let go once no client
+    /// holds it, unless it was also asked for by hand.
+    fn release(&mut self) {
+        self.holders = self.holders.saturating_sub(1);
+        if self.holders == 0 && !self.is_kept_by_hand && self.sentry.take().is_some() {
+            log::info!("sentry: the clients that asked for it have gone; detaching");
+        }
+    }
+
+    /// Lets sentry go when its workspace is gone, or when no client holds
+    /// it and no check has used it for `kept`, the time an idle language
+    /// server is kept.
+    fn let_go_if_done(&mut self, kept: Option<Duration>) {
+        self.refused = None;
+        let Some(attached) = &self.sentry else {
+            return;
+        };
+        let is_unused = self.holders == 0 && kept.is_some_and(|kept| self.used.elapsed() >= kept);
+        if attached.is_gone() {
+            log::info!("sentry: the workspace is gone; detaching");
+        } else if is_unused {
+            log::info!("sentry: not used for a while by anyone; detaching");
+        } else {
+            return;
+        }
+        self.sentry = None;
+        self.is_kept_by_hand = false;
+    }
+
+    /// The lines of `lemma daemon status` about sentry and who keeps it.
+    fn status(&self) -> String {
+        let Some(attached) = &self.sentry else {
+            return String::new();
+        };
+        let clients = match self.holders {
+            1 => "1 connected client".to_owned(),
+            holders => format!("{holders} connected clients"),
+        };
+        let kept_by = match (self.holders, self.is_kept_by_hand) {
+            (0, _) => "kept for commands".to_owned(),
+            (_, false) => format!("kept by {clients}"),
+            (_, true) => format!("kept by {clients}, and for commands"),
+        };
+        format!("{}sentry is {kept_by}\n", attached.status())
+    }
+}
+
+/// Waits on another thread until the client on `stream` closes it, then
+/// tells the daemon listening on `socket`, which is this one, that a client
+/// holding sentry has gone.
+fn tell_when_gone(mut stream: UnixStream, socket: PathBuf) -> std::io::Result<()> {
+    let waiting = thread::Builder::new().name("sentry-holder".to_owned());
+    waiting.spawn(move || {
+        let mut read = [0_u8; 64];
+        while matches!(stream.read(&mut read), Ok(count) if count > 0) {}
+        if let Ok(mut daemon) = UnixStream::connect(&socket) {
+            let _ = send(&mut daemon, &Request::Released);
+            let _ = receive::<Reply>(&mut daemon);
+        }
+    })?;
+    Ok(())
 }
 
 /// A check asked of the daemon, before its arguments are read.
@@ -598,18 +802,40 @@ struct Asked {
     cwd: PathBuf,
     environment: BTreeMap<String, String>,
     as_of: Option<String>,
+    wants_sentry: bool,
+}
+
+impl Asked {
+    /// What a `Check` request asks; `None` for any other request.
+    fn of(request: Request) -> Option<Self> {
+        let Request::Check {
+            build,
+            args,
+            cwd,
+            environment,
+            as_of,
+            wants_sentry,
+            place: _,
+        } = request
+        else {
+            return None;
+        };
+        Some(Self {
+            build,
+            args,
+            cwd,
+            environment,
+            as_of,
+            wants_sentry,
+        })
+    }
 }
 
 /// Takes a `check` or a `verify` asked of the daemon. Either is answered
 /// on `stream` from elsewhere (sentry's thread, or a process of its own),
 /// so the daemon goes on serving lookups meanwhile. One from another build, or any other command, is left to its
 /// asker.
-fn hand_check(
-    asked: Asked,
-    mut stream: UnixStream,
-    sentry: &mut Option<Sentry>,
-    settings: &Settings,
-) {
+fn hand_check(asked: Asked, mut stream: UnixStream, attachment: &mut Attachment) {
     let words = std::iter::once("lemma".to_owned()).chain(asked.args.iter().cloned());
     let command = Cli::try_parse_from(words)
         .ok()
@@ -620,8 +846,7 @@ fn hand_check(
     };
     match command {
         Some(crate::cli::Command::Check(args)) => {
-            let may_attach = settings.config.sentry_auto_attach;
-            check_through(sentry, may_attach, Checked { asked, args, json }, stream);
+            check_through(attachment, Checked { asked, args, json }, stream);
         }
         Some(crate::cli::Command::Verify(_)) if send(&mut stream, &Reply::Accepted).is_ok() => {
             let alone = Alone {
@@ -645,16 +870,11 @@ struct Checked {
     json: bool,
 }
 
-/// Answers a check: through `sentry` when it is attached to the check's
-/// workspace, attaching it first if the user opted in to that (`may_attach`),
-/// and otherwise in a process of its own, with nothing kept from earlier
+/// Answers a check: through sentry when it is attached to the check's
+/// workspace and the asker has not turned it off (`LEMMA_SENTRY=off`), and
+/// otherwise in a process of its own, with nothing kept from earlier
 /// checks.
-fn check_through(
-    sentry: &mut Option<Sentry>,
-    may_attach: bool,
-    check: Checked,
-    mut stream: UnixStream,
-) {
+fn check_through(attachment: &mut Attachment, check: Checked, mut stream: UnixStream) {
     let Checked { asked, args, json } = check;
     let manifest = crate::check::entry_manifest_in(&asked.cwd, &args.manifest);
     let manifest = manifest.canonicalize().unwrap_or(manifest);
@@ -662,13 +882,25 @@ fn check_through(
         .environment
         .get("LEMMA_SENTRY")
         .is_none_or(|value| value != "off");
-    let wants_attach = uses_sentry && may_attach && !asked.environment.contains_key("CI");
-    if sentry.is_none() && wants_attach {
-        attach_for_check(sentry, &manifest);
+    if asked.wants_sentry && uses_sentry {
+        attachment.use_for_commands(Some(manifest.clone()));
     }
     if send(&mut stream, &Reply::Accepted).is_err() {
         return;
     }
+    let attached = attachment
+        .sentry
+        .as_ref()
+        .filter(|attached| uses_sentry && attached.manifest() == manifest);
+    let Some(attached) = attached else {
+        let alone = Alone {
+            args: asked.args,
+            cwd: asked.cwd,
+            environment: asked.environment,
+        };
+        return answer_alone(alone, stream);
+    };
+    attachment.used = Instant::now();
     let question = crate::sentry::Question {
         args,
         json,
@@ -677,30 +909,7 @@ fn check_through(
         environment: asked.environment,
         as_of: asked.as_of,
     };
-    let attached = sentry
-        .as_ref()
-        .filter(|attached| uses_sentry && attached.manifest() == manifest);
-    let Some(attached) = attached else {
-        let alone = Alone {
-            args: question.raw,
-            cwd: question.cwd,
-            environment: question.environment,
-        };
-        return answer_alone(alone, stream);
-    };
     attached.ask(crate::sentry::Ask { question, stream });
-}
-
-/// Attaches sentry to the workspace of `manifest` for a check that opted in
-/// to that; a workspace it cannot attach to is checked without it.
-fn attach_for_check(sentry: &mut Option<Sentry>, manifest: &Path) {
-    match Sentry::attach(manifest) {
-        Ok(attached) => *sentry = Some(attached),
-        Err(error) => log::warn!(
-            "sentry: could not attach to {}: {error:#}",
-            manifest.display()
-        ),
-    }
 }
 
 /// A command the daemon runs in a process of its own for whoever asked:
@@ -873,6 +1082,7 @@ pub(crate) fn ask_for_check_as_of(
         args: check.args,
         cwd: check.cwd,
         place,
+        wants_sentry: asks_for_sentry(asker),
         environment: check.environment,
         as_of: check.as_of,
     };
@@ -905,54 +1115,81 @@ fn read_reply(reader: &mut BufReader<UnixStream>) -> Option<Reply> {
     serde_json::from_str(&line).ok()
 }
 
-/// Attaches the daemon's sentry to the workspace whose manifest is
-/// `manifest` (absolute), starting a daemon, or replacing one of another
-/// build, if needed. For `lemma lsp`, whose editor setting is the person's
-/// opt-in; `lemma check` never starts a daemon for sentry. Whether sentry
-/// serves the workspace: not when it is attached to another.
-pub(crate) fn attach_sentry(manifest: &Path) -> anyhow::Result<bool> {
-    let manifest = &canonical(manifest);
+/// Sentry, kept attached for a client that stays running. The daemon lets
+/// go of sentry once every client that asked for it has dropped this, or
+/// has gone.
+pub(crate) struct SentryHold {
+    _connection: UnixStream,
+}
+
+/// Asks the daemon of the workspace whose entry module is `manifest` to
+/// attach sentry to it and keep it for this client, starting a daemon, or
+/// replacing one of another build, if needed and `[daemon] autostart`
+/// allows. `None` when sentry does not serve the workspace: no daemon may
+/// be started, or it could not attach.
+pub(crate) fn hold_sentry(manifest: &Path) -> anyhow::Result<Option<SentryHold>> {
+    let manifest = canonical(manifest);
     let starts = may_start(config::autostart(), Asker::Server);
-    let workspace = manifest.parent().unwrap_or(manifest);
+    let workspace = manifest.parent().unwrap_or(&manifest);
     let Some(daemon) = daemon_to_ask(workspace, starts) else {
-        return Ok(false);
+        return Ok(None);
     };
-    let request = Request::Sentry {
+    let request = Request::Hold {
         build: build_id(),
-        action: SentryAction::Start {
-            manifest: manifest.clone(),
-        },
+        manifest: manifest.clone(),
     };
-    let mut reply = exchange(&daemon, &request, starts)?;
+    let (mut reply, mut connection) = held(&daemon, &request, starts)?;
     if matches!(reply, Reply::Restart) {
         log::info!("the running daemon is another build; replacing it");
         wait_until_gone(&daemon.socket)?;
-        reply = exchange(&daemon, &request, true)?;
+        (reply, connection) = held(&daemon, &request, true)?;
     }
     match reply {
-        Reply::Done { exit_code: 0, .. } => Ok(true),
+        Reply::Done { exit_code: 0, .. } => Ok(Some(SentryHold {
+            _connection: connection,
+        })),
         Reply::Done { stderr, .. } => {
             log::info!(
                 "sentry does not serve {}: {}",
                 manifest.display(),
                 stderr.trim()
             );
-            Ok(false)
+            Ok(None)
         }
-        _ => Ok(false),
+        _ => Ok(None),
     }
 }
 
-/// Sends `action` to the sentry of the daemon serving `place`; `None` when
-/// no daemon serves it, since sentry only attaches to one already running.
+/// Sends `request` to `daemon` and reads its reply, keeping the connection.
+fn held(daemon: &Daemon, request: &Request, starts: bool) -> anyhow::Result<(Reply, UnixStream)> {
+    let mut stream = if starts {
+        connect_or_start(daemon)?
+    } else {
+        UnixStream::connect(&daemon.socket)?
+    };
+    send(&mut stream, request)?;
+    let reply = receive(&mut stream)?;
+    Ok((reply, stream))
+}
+
+/// Sends `action` to the sentry of the daemon serving `place`. Attaching
+/// starts the workspace's daemon if none serves it and `[daemon] autostart`
+/// lets a command start one. `None` when no daemon serves `place`.
 pub(crate) fn sentry_control(
     place: &Path,
     action: SentryAction,
 ) -> anyhow::Result<Option<(String, String, u8)>> {
-    let Some(daemon) = serving(&canonical(place)) else {
+    let is_start = matches!(action, SentryAction::Start { .. });
+    let starts = is_start && may_start(config::autostart(), Asker::Command);
+    let Some(daemon) = daemon_to_ask(&canonical(place), starts) else {
         return Ok(None);
     };
-    let Ok(mut stream) = UnixStream::connect(&daemon.socket) else {
+    let connected = if starts {
+        connect_or_start(&daemon).ok()
+    } else {
+        UnixStream::connect(&daemon.socket).ok()
+    };
+    let Some(mut stream) = connected else {
         return Ok(None);
     };
     send(
@@ -987,14 +1224,18 @@ fn reply_to(
     match request {
         Request::Shutdown => Reply::Stopping,
         // The accept loop serves these itself; a stray one is not served.
-        Request::Check { .. } | Request::Sentry { .. } | Request::Serves { .. } => Reply::NotServed,
+        Request::Check { .. }
+        | Request::Sentry { .. }
+        | Request::Hold { .. }
+        | Request::Released
+        | Request::Serves { .. } => Reply::NotServed,
         Request::Maintain => {
             settings.reload_if_changed(config::config_path().as_deref());
             let config = &settings.config;
-            engine.set_graph_watches(config.graph_watches);
+            engine.set_graph_watches(settings.graph_watches());
             engine.set_graphs_kept_ready(config.graphs_kept_ready);
             engine.set_when_slow(config.when_slow);
-            engine.maintain(&config.idle_policy, config.warms_up_on_activity);
+            engine.maintain(&config.idle_policy, settings.warms_up_on_activity());
             done(String::new())
         }
         Request::Prepare => {
@@ -1004,7 +1245,7 @@ fn reply_to(
             let asked_within = config.idle_policy.pause_after;
             Reply::Prepared {
                 is_any_kept_ready: engine.prepare_graphs(
-                    config.graph_prepare,
+                    settings.graph_prepare(),
                     asked_within,
                     Instant::now(),
                 ),
@@ -1060,6 +1301,10 @@ fn busy<T>(last_request: &Mutex<Instant>, work: impl FnOnce() -> T) -> T {
 struct Settings {
     config: Config,
     modified: Option<SystemTime>,
+    /// Whether sentry is attached. Work ahead of a request is sentry's:
+    /// without it no workspace is watched for graphs, no graph is got
+    /// ready, and no server is started again when files change.
+    is_sentry_attached: bool,
 }
 
 impl Settings {
@@ -1067,7 +1312,41 @@ impl Settings {
         Ok(Self {
             config: config::load(path)?,
             modified: config::modified(path),
+            is_sentry_attached: false,
         })
+    }
+
+    /// Has what sentry does ahead of a request start and stop with it:
+    /// `engine` watches workspaces for graphs only while it is attached.
+    fn follow_sentry(&mut self, is_attached: bool, engine: &mut Engine) {
+        if self.is_sentry_attached == is_attached {
+            return;
+        }
+        self.is_sentry_attached = is_attached;
+        engine.set_graph_watches(self.graph_watches());
+    }
+
+    /// How many watches graphs across a workspace may take: none without
+    /// sentry, when Git is asked about each repository at every graph.
+    fn graph_watches(&self) -> Option<usize> {
+        if self.is_sentry_attached {
+            return self.config.graph_watches;
+        }
+        Some(0)
+    }
+
+    /// How far the daemon gets ready for the next graph once files change:
+    /// not at all without sentry.
+    fn graph_prepare(&self) -> config::Prepare {
+        if self.is_sentry_attached {
+            return self.config.graph_prepare;
+        }
+        config::Prepare::Off
+    }
+
+    /// Whether stopped servers are started again when files change.
+    fn warms_up_on_activity(&self) -> bool {
+        self.is_sentry_attached && self.config.warms_up_on_activity
     }
 
     /// Picks up edits to the config file. A file that no longer parses
@@ -1686,6 +1965,7 @@ mod tests {
             cwd: PathBuf::from("/repo/src"),
             place: PathBuf::from("/repo"),
             path_env: Some(b"/usr/bin:/bin".to_vec()),
+            wants_sentry: false,
         };
 
         let line = serde_json::to_string(&request).unwrap();
@@ -1809,6 +2089,26 @@ mod tests {
         assert!(!has_nothing_to_stay_for(true, short, kept));
         assert!(!has_nothing_to_stay_for(false, long, kept));
         assert!(!has_nothing_to_stay_for(true, long, None));
+    }
+
+    #[test]
+    fn what_is_done_ahead_of_a_request_is_done_only_while_sentry_is_attached() {
+        let mut settings = Settings {
+            config: Config::default(),
+            modified: None,
+            is_sentry_attached: false,
+        };
+        let configured = settings.config.graph_watches;
+
+        assert_eq!(settings.graph_watches(), Some(0));
+        assert_eq!(settings.graph_prepare(), config::Prepare::Off);
+        assert!(!settings.warms_up_on_activity());
+
+        settings.is_sentry_attached = true;
+
+        assert_eq!(settings.graph_watches(), configured);
+        assert_eq!(settings.graph_prepare(), config::Prepare::Graph);
+        assert!(settings.warms_up_on_activity());
     }
 
     #[test]

@@ -60,8 +60,8 @@ pub(crate) enum CheckFailure {
 }
 
 /// The source to check `manifest`'s workspace with: sentry, if `asks_sentry`,
-/// attached by a daemon started for it if none runs, unless
-/// `LEMMA_SENTRY=off` or it is attached to another workspace; this process
+/// asked of the workspace's daemon and kept for as long as this server
+/// runs, unless `LEMMA_SENTRY=off` or no daemon may serve it; this process
 /// otherwise.
 pub(crate) fn open(
     args: &LanguageServerArgs,
@@ -69,12 +69,14 @@ pub(crate) fn open(
     repositories: &[PathBuf],
     asks_sentry: bool,
 ) -> anyhow::Result<Box<dyn Source>> {
-    if asks_sentry && !crate::sentry::is_turned_off() {
-        match crate::daemon::attach_sentry(manifest) {
-            Ok(true) => {
-                return Ok(Box::new(SentrySource::follow(args, manifest, repositories)));
+    let may_ask = crate::config::sentry_autostart() != crate::config::Autostart::Never;
+    if asks_sentry && may_ask && !crate::sentry::is_turned_off() {
+        match crate::daemon::hold_sentry(manifest) {
+            Ok(Some(hold)) => {
+                let followed = SentrySource::follow(args, manifest, repositories, hold);
+                return Ok(Box::new(followed));
             }
-            Ok(false) => {}
+            Ok(None) => {}
             Err(error) => log::info!("sentry is not used: {error:#}"),
         }
     }
@@ -96,6 +98,8 @@ struct SentrySource {
     /// changes up to it.
     as_of: Option<String>,
     is_lost: bool,
+    /// Keeps sentry attached while this server runs.
+    _hold: crate::daemon::SentryHold,
 }
 
 /// What following sentry's journal reports.
@@ -108,7 +112,12 @@ enum Followed {
 }
 
 impl SentrySource {
-    fn follow(args: &LanguageServerArgs, manifest: &Path, repositories: &[PathBuf]) -> Self {
+    fn follow(
+        args: &LanguageServerArgs,
+        manifest: &Path,
+        repositories: &[PathBuf],
+        hold: crate::daemon::SentryHold,
+    ) -> Self {
         let (sender, events) = mpsc::channel();
         let workspace = manifest.parent().unwrap_or(manifest).to_path_buf();
         if let Err(error) = std::thread::Builder::new()
@@ -132,6 +141,7 @@ impl SentrySource {
             changing: BTreeMap::new(),
             as_of: None,
             is_lost: false,
+            _hold: hold,
         }
     }
 
