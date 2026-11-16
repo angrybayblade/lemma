@@ -308,6 +308,16 @@ impl Engine {
         }
     }
 
+    /// An engine beside this one in the same process, for lookups that
+    /// ask no provider: it shares this one's indexes, and so answers from
+    /// an index that is up to date while this one waits for a provider.
+    pub fn beside(&self) -> Self {
+        let mut engine = Self::long_lived();
+        engine.live_indexes = Arc::clone(&self.live_indexes);
+        engine.searches = Arc::clone(&self.searches);
+        engine
+    }
+
     /// Has getting ready for graphs give way to commands: `is_waiting`
     /// says whether one is waiting to be served.
     pub fn give_way_when(&mut self, is_waiting: CommandWaiting) {
@@ -1497,7 +1507,7 @@ impl Engine {
     /// worktree deleted after use: their connections, watchers and servers.
     /// A long-lived daemon serving many short-lived directories otherwise
     /// keeps their files open until it runs out of file descriptors.
-    fn forget_vanished(&mut self) {
+    pub fn forget_vanished(&mut self) {
         let is_present = |db_path: &Path, root: &Path| db_path.exists() && root.exists();
         lock(&self.live_indexes).retain(|(db_path, root), _| is_present(db_path, root));
         self.origins

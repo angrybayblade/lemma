@@ -20,6 +20,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -29,7 +31,6 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 
 use lemma_query::UsesAnswer;
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use crate::anchors::UsesRequest;
 use crate::cli::Cli;
@@ -383,12 +384,16 @@ pub(crate) fn start(place: &Path) -> anyhow::Result<(Option<PathBuf>, bool)> {
 /// Serves the workspace rooted at `root`, or else the one the current
 /// directory belongs to, until idle for the configured time or
 /// `idle_override`. The config file is read again whenever it changes.
+///
+/// This thread only reads requests and passes each to the lane that
+/// answers it, so that a lookup waiting for a provider holds up no other
+/// kind of request: `.specs/21-workspace-daemons.md`, "Lanes".
 pub(crate) fn serve(
     root: Option<&Path>,
     idle_override: Option<Duration>,
     logger: &'static crate::logging::Logger,
 ) -> anyhow::Result<()> {
-    let (socket, mut serving) = Serving::open(root)?;
+    let (socket, serving) = Serving::open(root)?;
     let Some(lock) = take_lock(&socket)? else {
         // Another daemon serves, or won the race to start.
         return Ok(());
@@ -396,8 +401,7 @@ pub(crate) fn serve(
     let Some(listener) = bind(&socket)? else {
         return Ok(());
     };
-    let mut settings = Settings::load(config::config_path().as_deref())?;
-    let mut engine = engine_with(&settings, &listener);
+    let settings = Settings::load(config::config_path().as_deref())?;
     let last_request = Arc::new(Mutex::new(Instant::now()));
     let idle_limit = idle_override.or(settings.config.idle_exit);
     if let Some(idle_limit) = idle_limit {
@@ -405,42 +409,22 @@ pub(crate) fn serve(
     }
     send_maintenance_ticks(socket.clone());
     send_prepare_ticks(socket.clone());
-    let mut sentry = Attachment::new(socket.clone());
-    let runtimes = start_runtimes(&socket);
+    let lanes = Lanes::start(&settings, &socket, &last_request, logger)?;
+    let mut reader = Reader {
+        serving,
+        sentry: Attachment::new(socket.clone()),
+        settings,
+        lanes,
+    };
 
     for stream in listener.incoming() {
-        let Ok(mut stream) = stream else {
+        if reader.lanes.progress.is_over.load(Ordering::Relaxed) {
+            break;
+        }
+        let Ok(stream) = stream else {
             continue;
         };
-        let Ok(request) = receive::<Request>(&mut stream) else {
-            continue;
-        };
-        if let Some(reply) = reply_about_place(&request, &mut serving) {
-            let _ = send(&mut stream, &reply);
-            continue;
-        }
-        let Some((request, mut stream)) = route_sentry(request, stream, &mut sentry, &settings)
-        else {
-            continue;
-        };
-        settings.follow_sentry(sentry.sentry.is_some(), &mut engine);
-        let is_status = matches!(request, Request::Status);
-        let is_maintenance = matches!(request, Request::Maintain);
-        if is_maintenance {
-            maintain_runtimes(&runtimes, &mut engine, &settings.config);
-        }
-        let mut reply = reply_to(request, &mut engine, &mut settings, &last_request, logger);
-        if is_status {
-            let after = runtimes.status() + &sentry.status();
-            complete_status(&mut reply, &serving.describe(), &after);
-        }
-        let is_exiting = matches!(reply, Reply::Stopping | Reply::Restart);
-        // A caller that gave up is not a reason to stop serving others.
-        let _ = send(&mut stream, &reply);
-        let is_cold = is_maintenance
-            && sentry.sentry.is_none()
-            && is_cold(&engine, &runtimes, &last_request, &settings.config);
-        if is_exiting || is_cold {
+        if !reader.pass_on(stream) {
             break;
         }
     }
@@ -450,12 +434,325 @@ pub(crate) fn serve(
     drop(listener);
     let _ = fs::remove_file(&socket);
     let _ = fs::remove_file(crate::runtime::socket_beside(&socket));
+    let Reader { sentry, lanes, .. } = reader;
     drop(sentry);
-    engine.shutdown();
+    lanes.finish();
     // Held until the process ends, when the system lets go of it: that is
     // the moment `lemma daemon stop` waits for.
     std::mem::forget(lock);
     Ok(())
+}
+
+/// The thread that reads the daemon's requests: it answers what needs no
+/// engine itself and passes the rest to a lane.
+struct Reader {
+    serving: Serving,
+    sentry: Attachment,
+    /// Its own copy of the settings; the provider lane keeps another.
+    settings: Settings,
+    lanes: Lanes,
+}
+
+impl Reader {
+    /// Reads the request on `stream` and answers it or passes it on.
+    /// False once the provider lane has gone: the daemon is exiting.
+    fn pass_on(&mut self, mut stream: UnixStream) -> bool {
+        let Ok(request) = receive::<Request>(&mut stream) else {
+            return true;
+        };
+        if let Some(reply) = reply_about_place(&request, &mut self.serving) {
+            let _ = send(&mut stream, &reply);
+            return true;
+        }
+        if matches!(request, Request::Maintain) {
+            self.settings
+                .reload_if_changed(config::config_path().as_deref());
+        }
+        let routed = route_sentry(request, stream, &mut self.sentry, &self.settings);
+        let Some((request, mut stream)) = routed else {
+            return true;
+        };
+        let about = match request {
+            Request::Status => Around {
+                serving: self.serving.describe(),
+                sentry: self.sentry.status(),
+            },
+            _ => Around::default(),
+        };
+        let progress = &self.lanes.progress;
+        if let (Request::Status, Some(busy)) = (&request, progress.busy()) {
+            let status = format!("{}{busy}{}", about.serving, about.sentry);
+            let _ = send(&mut stream, &done(status));
+            return true;
+        }
+        let request = match (index_command(&request), request) {
+            (Some(cli), Request::Run { cwd, path_env, .. }) => {
+                let lookup = IndexLookup {
+                    cli,
+                    invocation: invocation(cwd, path_env),
+                    stream,
+                };
+                return self.lanes.to_index.send(lookup).is_ok();
+            }
+            (_, other) => other,
+        };
+        progress.waiting.fetch_add(1, Ordering::Relaxed);
+        let queued = Queued {
+            request,
+            stream,
+            is_sentry_attached: self.sentry.sentry.is_some(),
+            about,
+        };
+        self.lanes.to_providers.send(queued).is_ok()
+    }
+}
+
+/// The daemon's lanes: each answers its requests one at a time, in the
+/// order they came, on a thread of its own.
+struct Lanes {
+    /// To the provider lane: every request that may ask a provider, and
+    /// the daemon's upkeep.
+    to_providers: Sender<Queued>,
+    /// To the index lane: lookups answered from the index alone.
+    to_index: Sender<IndexLookup>,
+    progress: Arc<Progress>,
+    threads: Vec<thread::JoinHandle<()>>,
+}
+
+impl Lanes {
+    fn start(
+        settings: &Settings,
+        socket: &Path,
+        last_request: &Arc<Mutex<Instant>>,
+        logger: &'static crate::logging::Logger,
+    ) -> anyhow::Result<Self> {
+        let progress = Arc::new(Progress::default());
+        let engine = engine_with(settings, &progress);
+        let beside = engine.beside();
+        let provider_lane = ProviderLane {
+            engine,
+            settings: settings.clone(),
+            runtimes: start_runtimes(socket),
+            last_request: Arc::clone(last_request),
+            logger,
+            progress: Arc::clone(&progress),
+            socket: socket.to_path_buf(),
+        };
+        let (to_providers, for_providers) = mpsc::channel();
+        let with_providers = thread::Builder::new()
+            .name("provider-lane".to_owned())
+            .spawn(move || provider_lane.serve(&for_providers))?;
+        let (to_index, for_index) = mpsc::channel();
+        let last_request = Arc::clone(last_request);
+        let from_index = thread::Builder::new()
+            .name("index-lane".to_owned())
+            .spawn(move || serve_index_lane(beside, &for_index, &last_request, logger))?;
+        Ok(Self {
+            to_providers,
+            to_index,
+            progress,
+            threads: vec![with_providers, from_index],
+        })
+    }
+
+    /// Lets each lane finish what it is answering and shut its engine down.
+    fn finish(self) {
+        drop(self.to_providers);
+        drop(self.to_index);
+        for thread in self.threads {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// What the provider lane is doing, for the thread that reads requests.
+#[derive(Default)]
+struct Progress {
+    /// Requests passed to it that it has not taken up yet.
+    waiting: AtomicUsize,
+    /// The command it is answering, and since when.
+    answering: Mutex<Option<(String, Instant)>>,
+    /// Set once it has stopped serving: the daemon is exiting.
+    is_over: AtomicBool,
+}
+
+impl Progress {
+    /// What `lemma daemon status` says in place of the engine's lines
+    /// while a command is being answered: which, for how long, and how
+    /// many requests wait behind it. `None` when none is.
+    fn busy(&self) -> Option<String> {
+        let answering = lock(&self.answering);
+        let (command, since) = answering.as_ref()?;
+        Some(format!(
+            "busy with `lemma {command}` for {}s, {} waiting behind it; its language servers are listed once it is answered\n",
+            since.elapsed().as_secs(),
+            self.waiting.load(Ordering::Relaxed)
+        ))
+    }
+}
+
+/// What `lemma daemon status` says around the engine's own lines: what
+/// the daemon serves, before them, and its sentry, after.
+#[derive(Default)]
+struct Around {
+    serving: String,
+    sentry: String,
+}
+
+/// A request for the provider lane, with what the thread that read it
+/// knows and the lane does not.
+struct Queued {
+    request: Request,
+    stream: UnixStream,
+    is_sentry_attached: bool,
+    about: Around,
+}
+
+/// The provider lane: every request that may ask a language server, and
+/// the daemon's upkeep, one at a time in the order they came.
+struct ProviderLane {
+    engine: Engine,
+    settings: Settings,
+    runtimes: Arc<crate::runtime::Runtimes>,
+    last_request: Arc<Mutex<Instant>>,
+    logger: &'static crate::logging::Logger,
+    progress: Arc<Progress>,
+    socket: PathBuf,
+}
+
+impl ProviderLane {
+    /// Serves until the daemon is told to stop or holds nothing warm, then
+    /// has the thread reading requests stop too.
+    fn serve(mut self, queue: &Receiver<Queued>) {
+        for queued in queue {
+            self.progress.waiting.fetch_sub(1, Ordering::Relaxed);
+            if !self.answer(queued) {
+                break;
+            }
+        }
+        self.progress.is_over.store(true, Ordering::Relaxed);
+        // Wakes the thread reading requests, which is waiting for one.
+        drop(UnixStream::connect(&self.socket));
+        self.engine.shutdown();
+    }
+
+    /// Answers one request; false when the daemon is to exit after it.
+    fn answer(&mut self, queued: Queued) -> bool {
+        let Queued {
+            request,
+            mut stream,
+            is_sentry_attached,
+            about,
+        } = queued;
+        self.settings
+            .follow_sentry(is_sentry_attached, &mut self.engine);
+        let is_status = matches!(request, Request::Status);
+        let is_maintenance = matches!(request, Request::Maintain);
+        if is_maintenance {
+            maintain_runtimes(&self.runtimes, &mut self.engine, &self.settings.config);
+        }
+        let command = command_of(&request).map(|command| (command, Instant::now()));
+        *lock(&self.progress.answering) = command;
+        let mut reply = reply_to(
+            request,
+            &mut self.engine,
+            &mut self.settings,
+            &self.last_request,
+            self.logger,
+        );
+        *lock(&self.progress.answering) = None;
+        if is_status {
+            let after = self.runtimes.status() + &about.sentry;
+            complete_status(&mut reply, &about.serving, &after);
+        }
+        let is_exiting = matches!(reply, Reply::Stopping | Reply::Restart);
+        // A caller that gave up is not a reason to stop serving others.
+        let _ = send(&mut stream, &reply);
+        let config = &self.settings.config;
+        let is_cold = is_maintenance
+            && !is_sentry_attached
+            && is_cold(&self.engine, &self.runtimes, &self.last_request, config);
+        !(is_exiting || is_cold)
+    }
+}
+
+/// The command a request runs, as its caller wrote it; `None` for the
+/// daemon's own upkeep and for questions about the daemon.
+fn command_of(request: &Request) -> Option<String> {
+    match request {
+        Request::Run { args, .. } => Some(args.join(" ")),
+        Request::Uses { .. } => Some("check".to_owned()),
+        _ => None,
+    }
+}
+
+/// A lookup answered from the index alone: it asks no provider, and so
+/// need not wait behind one that does.
+struct IndexLookup {
+    cli: Cli,
+    invocation: Invocation,
+    stream: UnixStream,
+}
+
+/// The command `request` runs, when this build answers it from the index
+/// alone.
+fn index_command(request: &Request) -> Option<Cli> {
+    let Request::Run { build, args, .. } = request else {
+        return None;
+    };
+    if *build != build_id() {
+        return None;
+    }
+    answered_from_index(args)
+}
+
+/// The command `args` spell, when it is one answered from the index alone.
+fn answered_from_index(args: &[String]) -> Option<Cli> {
+    // Reading a command line costs about a millisecond, which a request
+    // for the provider lane is spared: its lane reads it once.
+    let may_be_one = args
+        .iter()
+        .any(|word| word == "symbols" || word == "outline");
+    if !may_be_one {
+        return None;
+    }
+    let arguments = std::iter::once("lemma".to_owned()).chain(args.iter().cloned());
+    let cli = Cli::try_parse_from(arguments).ok()?;
+    let is_one = matches!(
+        cli.command,
+        crate::cli::Command::Symbols(_) | crate::cli::Command::Outline { .. }
+    );
+    is_one.then_some(cli)
+}
+
+/// The index lane: answers lookups that ask no provider, one at a time,
+/// from `engine`, which shares its indexes with the provider lane's.
+fn serve_index_lane(
+    mut engine: Engine,
+    asked: &Receiver<IndexLookup>,
+    last_request: &Mutex<Instant>,
+    logger: &'static crate::logging::Logger,
+) {
+    let mut tidied = Instant::now();
+    for lookup in asked {
+        let IndexLookup {
+            cli,
+            invocation,
+            mut stream,
+        } = lookup;
+        let lines = Lines::OfThisThread(logger);
+        let reply = busy(last_request, || {
+            run_parsed(&mut engine, cli, &invocation, lines)
+        });
+        let _ = send(&mut stream, &reply);
+        // The provider lane's upkeep does not reach this engine, which
+        // would otherwise keep the files of deleted directories open.
+        if tidied.elapsed() >= MAINTENANCE_INTERVAL {
+            engine.forget_vanished();
+            tidied = Instant::now();
+        }
+    }
+    engine.shutdown();
 }
 
 /// Puts around the engine's status what the daemon serves, `before` it,
@@ -494,15 +791,16 @@ fn has_nothing_to_stay_for(
 
 /// The daemon's engine with the settings in force, which gives way while a
 /// caller waits on `listener`.
-fn engine_with(settings: &Settings, listener: &UnixListener) -> Engine {
+fn engine_with(settings: &Settings, progress: &Arc<Progress>) -> Engine {
     let config = &settings.config;
     let mut engine = Engine::long_lived();
     engine.set_graph_watches(settings.graph_watches());
     engine.set_graphs_kept_ready(config.graphs_kept_ready);
     engine.set_when_slow(config.when_slow);
-    if let Ok(waited_on) = listener.try_clone() {
-        engine.give_way_when(Arc::new(move || has_caller_waiting(&waited_on)));
-    }
+    let progress = Arc::clone(progress);
+    engine.give_way_when(Arc::new(move || {
+        progress.waiting.load(Ordering::Relaxed) > 0
+    }));
     engine
 }
 
@@ -514,18 +812,6 @@ fn reply_about_place(request: &Request, serving: &mut Serving) -> Option<Reply> 
         return Some(Reply::Served);
     }
     (!is_served).then_some(Reply::Outside)
-}
-
-/// Whether a caller has connected to `listener` and not been accepted
-/// yet: a command, or one of the daemon's own timers, waiting for what is
-/// being served to finish. False when the system cannot say.
-fn has_caller_waiting(listener: &UnixListener) -> bool {
-    let mut waited_on = [PollFd::new(listener, PollFlags::IN)];
-    let at_once = Timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    matches!(poll(&mut waited_on, Some(&at_once)), Ok(ready) if ready > 0)
 }
 
 /// The daemon's warm runtimes, listening for checks beside `socket`. One
@@ -1278,7 +1564,9 @@ fn reply_to(
             ..
         } => {
             let invocation = invocation(cwd, path_env);
-            busy(last_request, || run(engine, args, &invocation, logger))
+            busy(last_request, || {
+                run(engine, args, &invocation, Lines::OfTheCommand(logger))
+            })
         }
     }
 }
@@ -1301,6 +1589,7 @@ fn busy<T>(last_request: &Mutex<Instant>, work: impl FnOnce() -> T) -> T {
 }
 
 /// The config in force, and when its file last changed.
+#[derive(Clone)]
 struct Settings {
     config: Config,
     modified: Option<SystemTime>,
@@ -1423,33 +1712,58 @@ fn send_prepare_ticks(socket: PathBuf) {
     });
 }
 
+/// Whose log lines a command run in the daemon sends back to its caller.
+#[derive(Clone, Copy)]
+enum Lines<'a> {
+    /// Every thread's but those kept on their own: the command may ask
+    /// providers, whose lines come from other threads.
+    OfTheCommand(&'a crate::logging::Logger),
+    /// The lines of the thread it runs on, beside another command.
+    OfThisThread(&'a crate::logging::Logger),
+}
+
+impl Lines<'_> {
+    fn start(self, level: Option<crate::logging::LogLevel>) {
+        match self {
+            Self::OfTheCommand(logger) => logger.start_capture(level),
+            Self::OfThisThread(logger) => logger.start_capture_of_thread(level),
+        }
+    }
+
+    fn finish(self) -> String {
+        match self {
+            Self::OfTheCommand(logger) => logger.finish_capture(None),
+            Self::OfThisThread(logger) => logger.finish_capture_of_thread(),
+        }
+    }
+}
+
 /// Runs one forwarded command the way `main` would, capturing its output
 /// and, at the level it asks for, its log lines, which go before its own
 /// error output.
-fn run(
-    engine: &mut Engine,
-    args: Vec<String>,
-    invocation: &Invocation,
-    logger: &crate::logging::Logger,
-) -> Reply {
-    let mut stdout = Vec::new();
+fn run(engine: &mut Engine, args: Vec<String>, invocation: &Invocation, lines: Lines<'_>) -> Reply {
     let arguments = std::iter::once("lemma".to_owned()).chain(args);
-    let (stderr, exit_code, logs) = match Cli::try_parse_from(arguments) {
-        Err(error) => (
-            error.render().to_string(),
-            u8::try_from(error.exit_code()).unwrap_or(1),
-            String::new(),
-        ),
-        Ok(cli) => {
-            logger.start_capture(cli.logging);
-            log::info!("running in the daemon (pid {})", std::process::id());
-            let result = engine.execute(cli, invocation, &mut stdout);
-            let logs = logger.finish_capture(None);
-            match result {
-                Ok(code) => (String::new(), code, logs),
-                Err(error) => (format!("error: {error:#}\n"), 1, logs),
-            }
-        }
+    match Cli::try_parse_from(arguments) {
+        Ok(cli) => run_parsed(engine, cli, invocation, lines),
+        Err(error) => Reply::Done {
+            stdout: String::new(),
+            stderr: error.render().to_string(),
+            exit_code: u8::try_from(error.exit_code()).unwrap_or(1),
+            logs: String::new(),
+        },
+    }
+}
+
+/// Runs the command `cli` names, as [`run`] does one it has read.
+fn run_parsed(engine: &mut Engine, cli: Cli, invocation: &Invocation, lines: Lines<'_>) -> Reply {
+    let mut stdout = Vec::new();
+    lines.start(cli.logging);
+    log::info!("running in the daemon (pid {})", std::process::id());
+    let result = engine.execute(cli, invocation, &mut stdout);
+    let logs = lines.finish();
+    let (stderr, exit_code) = match result {
+        Ok(code) => (String::new(), code),
+        Err(error) => (format!("error: {error:#}\n"), 1),
     };
     Reply::Done {
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
@@ -1944,6 +2258,49 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 mod tests {
     use super::*;
 
+    fn words(command: &str) -> Vec<String> {
+        command.split(' ').map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn a_symbol_search_and_an_outline_are_answered_from_the_index() {
+        assert!(answered_from_index(&words("symbols price --exact")).is_some());
+        assert!(answered_from_index(&words("-l info outline src/m.py")).is_some());
+    }
+
+    #[test]
+    fn a_lookup_that_asks_a_provider_is_not_answered_from_the_index() {
+        assert!(answered_from_index(&words("refs price")).is_none());
+        assert!(answered_from_index(&words("graph price")).is_none());
+    }
+
+    #[test]
+    fn a_provider_lookup_for_a_name_like_a_command_is_not_one_from_the_index() {
+        assert!(answered_from_index(&words("refs symbols")).is_none());
+        assert!(answered_from_index(&words("definition outline")).is_none());
+    }
+
+    #[test]
+    fn a_command_line_that_does_not_read_is_left_to_the_lane_that_says_so() {
+        assert!(answered_from_index(&words("symbols --no-such-option")).is_none());
+    }
+
+    #[test]
+    fn status_names_the_command_being_answered_and_how_many_wait() {
+        let progress = Progress::default();
+        assert_eq!(progress.busy(), None);
+
+        *lock(&progress.answering) = Some(("refs price".to_owned(), Instant::now()));
+        progress.waiting.store(2, Ordering::Relaxed);
+
+        let busy = progress.busy().unwrap();
+        assert!(
+            busy.starts_with("busy with `lemma refs price` for "),
+            "{busy}"
+        );
+        assert!(busy.contains(", 2 waiting behind it"), "{busy}");
+    }
+
     #[test]
     fn a_daemon_keeps_who_and_where_but_not_a_shells_caches() {
         let variables = [
@@ -2004,7 +2361,7 @@ mod tests {
             &mut engine,
             vec!["no-such-command".to_owned()],
             &invocation,
-            &logger,
+            Lines::OfTheCommand(&logger),
         );
 
         let Reply::Done {
