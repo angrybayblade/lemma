@@ -13,7 +13,8 @@ use anyhow::{Context, bail};
 use lemma_query::{IdlePolicy, WhenSlow};
 use serde::Deserialize;
 
-/// Who may start a daemon for a workspace that has none.
+/// Who may start something for a workspace that has none: a daemon
+/// (`[daemon] autostart`), or the daemon's sentry (`[sentry] autostart`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Autostart {
@@ -21,9 +22,10 @@ pub(crate) enum Autostart {
     #[default]
     Always,
     /// The MCP server and the editor's server. A command run from a shell
-    /// does its work in its own process.
+    /// does not: it does its work in its own process, or without sentry.
     Clients,
-    /// Nothing: a daemon runs once `lemma daemon start` has started it.
+    /// Nothing: it runs once it has been started by hand, with
+    /// `lemma daemon start` or `lemma daemon sentry start`.
     Never,
 }
 
@@ -44,9 +46,8 @@ pub(crate) struct Config {
     /// What a lookup does about a language server that does not answer in
     /// time.
     pub when_slow: WhenSlow,
-    /// Whether the MCP server asks for sentry when it starts, as the
-    /// editor's server does. On unless the user turns it off.
-    pub sentry_for_mcp: bool,
+    /// Who asks for sentry without being told to.
+    pub sentry_autostart: Autostart,
     /// While sentry is attached: how many watches the workspaces graphs are
     /// traced through may take between them, where each directory takes
     /// one. `None` sets no limit; `Some(0)` watches nothing.
@@ -108,7 +109,7 @@ impl Default for Config {
             },
             warms_up_on_activity: true,
             when_slow: WhenSlow::default(),
-            sentry_for_mcp: true,
+            sentry_autostart: Autostart::default(),
             graph_watches: default_graph_watches(lemma_index::watch_limit()),
             graph_prepare: Prepare::default(),
             graphs_kept_ready: GRAPHS_KEPT_READY,
@@ -162,7 +163,7 @@ struct RuntimeSection {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct SentrySection {
-    mcp: Option<bool>,
+    autostart: Option<Autostart>,
     /// Whether a project's language servers are started again when its
     /// files change.
     servers: Option<bool>,
@@ -297,10 +298,11 @@ pub(crate) fn autostart() -> Autostart {
     load(config_path().as_deref()).map_or_else(|_| Autostart::default(), |config| config.autostart)
 }
 
-/// Whether the MCP server asks for sentry when it starts, by the user's
-/// config file; it does when the file cannot be read.
-pub(crate) fn sentry_for_mcp() -> bool {
-    load(config_path().as_deref()).map_or(true, |config| config.sentry_for_mcp)
+/// Who asks for sentry without being told to, by the user's config file;
+/// the default when the file cannot be read.
+pub(crate) fn sentry_autostart() -> Autostart {
+    load(config_path().as_deref())
+        .map_or_else(|_| Autostart::default(), |config| config.sentry_autostart)
 }
 
 /// What lookups in a command's own process do about a slow server, by the
@@ -422,7 +424,7 @@ fn parse(text: &str) -> anyhow::Result<Config> {
         },
         warms_up_on_activity: file.sentry.servers.unwrap_or(defaults.warms_up_on_activity),
         when_slow,
-        sentry_for_mcp: file.sentry.mcp.unwrap_or(defaults.sentry_for_mcp),
+        sentry_autostart: file.sentry.autostart.unwrap_or_default(),
         graph_watches: match &file.sentry.watches {
             Some(watches) => parse_watches(watches)?,
             None => defaults.graph_watches,
@@ -614,6 +616,22 @@ mod tests {
             Autostart::Never
         );
         assert!(who("[daemon]\nautostart = \"sometimes\"\n").is_err());
+    }
+
+    #[test]
+    fn any_command_asks_for_sentry_unless_the_file_says_who_does() {
+        let who = |text: &str| parse(text).map(|config| config.sentry_autostart);
+
+        assert_eq!(who("").unwrap(), Autostart::Always);
+        assert_eq!(
+            who("[sentry]\nautostart = \"clients\"\n").unwrap(),
+            Autostart::Clients
+        );
+        assert_eq!(
+            who("[sentry]\nautostart = \"never\"\n").unwrap(),
+            Autostart::Never
+        );
+        assert!(who("[sentry]\nmcp = true\n").is_err());
     }
 
     #[test]

@@ -199,7 +199,7 @@ Lists every configured language server, whether its command was found, and the o
 
 ## `lemma mcp`
 
-Serves Lemma to agents as an [MCP](https://modelcontextprotocol.io) server over stdin and stdout. Run it from the project directory, or have the agent's client start it there. Tool calls run in the daemon like any other command, so language servers stay warm across tool calls and terminal use. When it starts, the server asks the workspace's daemon for [sentry](#lemma-daemon), which then stays attached for as long as the server runs; `[sentry] mcp = false` or `LEMMA_SENTRY=off` keeps it from asking, and it does not ask when `CI` is set or where no `mod.lm` is above its directory.
+Serves Lemma to agents as an [MCP](https://modelcontextprotocol.io) server over stdin and stdout. Run it from the project directory, or have the agent's client start it there. Tool calls run in the daemon like any other command, so language servers stay warm across tool calls and terminal use. When it starts, the server asks the workspace's daemon for [sentry](#lemma-daemon), which then stays attached for as long as the server runs; `[sentry] autostart = "never"` or `LEMMA_SENTRY=off` keeps it from asking, and it does not ask when `CI` is set or where no `mod.lm` is above its directory.
 
 | Tool | Command it runs | Arguments |
 | --- | --- | --- |
@@ -306,7 +306,7 @@ A repository the `mod.lm` names outside the workspace's root (`local("../billing
 | `lemma daemon --idle-secs <n>` | Run in the foreground, exiting after this many seconds without a command instead of the configured `idle_exit`. |
 | `lemma daemon --root <directory>` | Run in the foreground for the workspace rooted at this directory, in place of the one the current directory belongs to. |
 
-Sentry is experimental: its answers match a fresh check, but it can change or go away between releases. It is attached when a client asks for it and no longer than that. The MCP server and the editor's server ask when they start, and sentry is let go once every such client has gone; `lemma daemon sentry start` asks by hand. `lemma daemon status` says who keeps it. A daemon has one sentry, for one entry module.
+Sentry is experimental: its answers match a fresh check, but it can change or go away between releases. It is attached when a client asks for it and no longer than that. The MCP server and the editor's server ask when they start, and it is let go once every such client has gone. A command asks too unless [`[sentry] autostart`](#settings) says otherwise, as `lemma daemon sentry start` does by hand, and sentry asked for by commands is let go once none has used it for `[servers] stop_after`. `lemma daemon status` says who keeps it. A daemon has one sentry, for one entry module.
 
 The daemon serves every later command, so it does not keep the environment of the command that happened to start it. It keeps only `HOME`, `USER`, `LOGNAME`, `PATH`, `SHELL`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `SSH_AUTH_SOCK`, the proxy variables and `LEMMA_*`. A shell's `GOCACHE`, `XDG_CACHE_HOME` or `TMPDIR` would otherwise redirect every later build and cache, and break them once that shell's directories are gone. Adapters and checkers that need a variable get it from their `env` settings. Set `LEMMA_NO_DAEMON=1` to run a command in its own process, with its own environment.
 
@@ -328,7 +328,7 @@ give_way_after = "60s"     # with "next": how long a server gets before the next
 try_again_after = "30m"    # with "next": how long the slow server is passed over in that repository
 
 [sentry]
-mcp = true                 # the MCP server asks for sentry when it starts
+autostart = "always"       # who asks for sentry unasked: "always", "clients" or "never"
 servers = true             # start a project's servers again when its files change
 graphs = "graph"           # after an edit, get ready for the next graph: "off", "index" or "graph"
 kept_ready = 4             # how many of the graphs last asked are answered ahead after an edit
@@ -354,6 +354,16 @@ stop_after = "30m"         # stop an idle warm runtime
 **A server too slow for a question.** A lookup waits `--timeout-secs` (60 unless given) for a language server. With `when_slow = "report"` one that does not answer in time fails the lookup, as any other failure does. With `"next"` the next installed server for the language is asked once the first has had `give_way_after` (the lookup's own wait unless set), and once it answers the slow one is passed over in that repository for `try_again_after`: `"0s"` asks it first every time, `"never"` leaves it for as long as the daemon runs. It is for very large repositories, where a server can be too slow for the most widely used names every time; the next server may hold much more memory. [Language servers](providers.md#when-a-server-is-too-slow) has the measurements and what the output shows. A command run in its own process reads these three settings too.
 
 **Warm runtimes.** While the daemon runs, `lemma check` asks it to run a repository's Python (a `json.command("{python} -m …")` or `{python} script.py` resolver, or a type read with Pydantic) in a process that has already imported the repository's dependencies, so a run pays only for the repository's own modules. It prints what a new interpreter would, and anything that goes wrong runs the command as before. `memory` is the trade: the more a runtime may hold, the less a run waits. On one service with about 1,700 dependency modules, a 1.6 s resolver ran in 1.2 s with `"24MB"`, 0.7 s with `"96MB"` and 0.2 s once it could hold all 140 MB. A project's `.lemma/config.toml` may set `[runtime]` too, and overrides this file setting by setting. `LEMMA_RUNTIME=off` keeps none warm. `lemma daemon status` lists each one with the memory it holds. A check never starts the daemon for this.
+
+**Who asks for sentry.** `[sentry] autostart` says who asks for sentry without being told to, in the words `[daemon] autostart` uses. `lemma daemon sentry start` always attaches it.
+
+| `autostart` | A command run from a shell | The MCP server and the editor's server |
+| --- | --- | --- |
+| `"always"` (the default) | Asks, for the workspace of the nearest `mod.lm` that declares one, or else the nearest `mod.lm`. | Ask when they start. |
+| `"clients"` | Does not ask: a check is answered with nothing kept, and a graph across the workspace asks Git about every repository. | Ask when they start. |
+| `"never"` | Does not ask. | Do not ask. |
+
+No command asks with `LEMMA_SENTRY=off` or when `CI` is set. On a workspace of six repositories, a graph asked after an edit took 0.03 to 0.10 s with sentry and 3.2 to 4.6 s without, because without it the daemon learns only that a repository changed and reads all of it again.
 
 **What sentry does ahead of a request.** Watching a workspace for graphs, getting ready for the next graph, and starting stopped servers again are sentry's: they happen while sentry is attached and not otherwise. Without sentry the answers are the same, and each graph asks Git about every repository, as with `watches = 0` below.
 
