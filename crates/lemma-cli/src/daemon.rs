@@ -373,7 +373,7 @@ pub(crate) fn serve(
         return Ok(());
     };
     let mut settings = Settings::load(config::config_path().as_deref())?;
-    let mut engine = engine_with(&settings.config, &listener);
+    let mut engine = engine_with(&settings, &listener);
     let last_request = Arc::new(Mutex::new(Instant::now()));
     let idle_limit = idle_override.or(settings.config.idle_exit);
     if let Some(idle_limit) = idle_limit {
@@ -399,16 +399,16 @@ pub(crate) fn serve(
         else {
             continue;
         };
+        settings.follow_sentry(sentry.sentry.is_some(), &mut engine);
         let is_status = matches!(request, Request::Status);
         let is_maintenance = matches!(request, Request::Maintain);
         if is_maintenance {
             maintain_runtimes(&runtimes, &mut engine, &settings.config);
         }
         let mut reply = reply_to(request, &mut engine, &mut settings, &last_request, logger);
-        if let (true, Reply::Done { stdout, .. }) = (is_status, &mut reply) {
-            stdout.insert_str(0, &serving.describe());
-            stdout.push_str(&runtimes.status());
-            stdout.push_str(&sentry.status());
+        if is_status {
+            let after = runtimes.status() + &sentry.status();
+            complete_status(&mut reply, &serving.describe(), &after);
         }
         let is_exiting = matches!(reply, Reply::Stopping | Reply::Restart);
         // A caller that gave up is not a reason to stop serving others.
@@ -432,6 +432,15 @@ pub(crate) fn serve(
     // the moment `lemma daemon stop` waits for.
     std::mem::forget(lock);
     Ok(())
+}
+
+/// Puts around the engine's status what the daemon serves, `before` it,
+/// and its warm runtimes and sentry, `after` it.
+fn complete_status(reply: &mut Reply, before: &str, after: &str) {
+    if let Reply::Done { stdout, .. } = reply {
+        stdout.insert_str(0, before);
+        stdout.push_str(after);
+    }
 }
 
 /// Whether, sentry aside, the daemon holds nothing warm and has been idle
@@ -459,11 +468,12 @@ fn has_nothing_to_stay_for(
     is_cold && stop_after.is_some_and(|kept| idle_for >= kept)
 }
 
-/// The daemon's engine with `config`'s settings, which gives way while a
+/// The daemon's engine with the settings in force, which gives way while a
 /// caller waits on `listener`.
-fn engine_with(config: &Config, listener: &UnixListener) -> Engine {
+fn engine_with(settings: &Settings, listener: &UnixListener) -> Engine {
+    let config = &settings.config;
     let mut engine = Engine::long_lived();
-    engine.set_graph_watches(config.graph_watches);
+    engine.set_graph_watches(settings.graph_watches());
     engine.set_graphs_kept_ready(config.graphs_kept_ready);
     engine.set_when_slow(config.when_slow);
     if let Ok(waited_on) = listener.try_clone() {
@@ -1139,10 +1149,10 @@ fn reply_to(
         Request::Maintain => {
             settings.reload_if_changed(config::config_path().as_deref());
             let config = &settings.config;
-            engine.set_graph_watches(config.graph_watches);
+            engine.set_graph_watches(settings.graph_watches());
             engine.set_graphs_kept_ready(config.graphs_kept_ready);
             engine.set_when_slow(config.when_slow);
-            engine.maintain(&config.idle_policy, config.warms_up_on_activity);
+            engine.maintain(&config.idle_policy, settings.warms_up_on_activity());
             done(String::new())
         }
         Request::Prepare => {
@@ -1152,7 +1162,7 @@ fn reply_to(
             let asked_within = config.idle_policy.pause_after;
             Reply::Prepared {
                 is_any_kept_ready: engine.prepare_graphs(
-                    config.graph_prepare,
+                    settings.graph_prepare(),
                     asked_within,
                     Instant::now(),
                 ),
@@ -1208,6 +1218,10 @@ fn busy<T>(last_request: &Mutex<Instant>, work: impl FnOnce() -> T) -> T {
 struct Settings {
     config: Config,
     modified: Option<SystemTime>,
+    /// Whether sentry is attached. Work ahead of a request is sentry's:
+    /// without it no workspace is watched for graphs, no graph is got
+    /// ready, and no server is started again when files change.
+    is_sentry_attached: bool,
 }
 
 impl Settings {
@@ -1215,7 +1229,41 @@ impl Settings {
         Ok(Self {
             config: config::load(path)?,
             modified: config::modified(path),
+            is_sentry_attached: false,
         })
+    }
+
+    /// Has what sentry does ahead of a request start and stop with it:
+    /// `engine` watches workspaces for graphs only while it is attached.
+    fn follow_sentry(&mut self, is_attached: bool, engine: &mut Engine) {
+        if self.is_sentry_attached == is_attached {
+            return;
+        }
+        self.is_sentry_attached = is_attached;
+        engine.set_graph_watches(self.graph_watches());
+    }
+
+    /// How many watches graphs across a workspace may take: none without
+    /// sentry, when Git is asked about each repository at every graph.
+    fn graph_watches(&self) -> Option<usize> {
+        if self.is_sentry_attached {
+            return self.config.graph_watches;
+        }
+        Some(0)
+    }
+
+    /// How far the daemon gets ready for the next graph once files change:
+    /// not at all without sentry.
+    fn graph_prepare(&self) -> config::Prepare {
+        if self.is_sentry_attached {
+            return self.config.graph_prepare;
+        }
+        config::Prepare::Off
+    }
+
+    /// Whether stopped servers are started again when files change.
+    fn warms_up_on_activity(&self) -> bool {
+        self.is_sentry_attached && self.config.warms_up_on_activity
     }
 
     /// Picks up edits to the config file. A file that no longer parses
@@ -1957,6 +2005,26 @@ mod tests {
         assert!(!has_nothing_to_stay_for(true, short, kept));
         assert!(!has_nothing_to_stay_for(false, long, kept));
         assert!(!has_nothing_to_stay_for(true, long, None));
+    }
+
+    #[test]
+    fn what_is_done_ahead_of_a_request_is_done_only_while_sentry_is_attached() {
+        let mut settings = Settings {
+            config: Config::default(),
+            modified: None,
+            is_sentry_attached: false,
+        };
+        let configured = settings.config.graph_watches;
+
+        assert_eq!(settings.graph_watches(), Some(0));
+        assert_eq!(settings.graph_prepare(), config::Prepare::Off);
+        assert!(!settings.warms_up_on_activity());
+
+        settings.is_sentry_attached = true;
+
+        assert_eq!(settings.graph_watches(), configured);
+        assert_eq!(settings.graph_prepare(), config::Prepare::Graph);
+        assert!(settings.warms_up_on_activity());
     }
 
     #[test]
