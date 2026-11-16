@@ -19,16 +19,26 @@ fn space() -> tempfile::TempDir {
         .unwrap()
 }
 
-/// Runs `lemma` in `directory`, with its daemons' sockets under `runtime`.
-fn lemma(runtime: &Path, directory: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_lemma"))
-        .args(args)
+/// `lemma` to run in `directory`, with its daemons' sockets under
+/// `runtime` and nothing of the machine the test runs on: no settings file,
+/// and none of the variables that turn the daemon or sentry off, `CI`
+/// among them, which a build server sets.
+fn command(runtime: &Path, directory: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_lemma"));
+    command
         .current_dir(directory)
         .env("XDG_RUNTIME_DIR", runtime)
+        .env("LEMMA_CONFIG", runtime.join("no-settings.toml"))
         .env_remove("LEMMA_DAEMON_SOCKET")
         .env_remove("LEMMA_NO_DAEMON")
-        .output()
-        .unwrap()
+        .env_remove("LEMMA_SENTRY")
+        .env_remove("CI");
+    command
+}
+
+/// Runs `lemma` in `directory`, with its daemons' sockets under `runtime`.
+fn lemma(runtime: &Path, directory: &Path, args: &[&str]) -> Output {
+    command(runtime, directory).args(args).output().unwrap()
 }
 
 fn said(output: &Output) -> String {
@@ -156,13 +166,9 @@ fn a_command_starts_no_daemon_when_only_clients_may() {
     let config = runtime.join("config.toml");
     fs::write(&config, "[daemon]\nautostart = \"clients\"\n").unwrap();
     let asked = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_lemma"))
+        command(&runtime, &app)
             .args(args)
-            .current_dir(&app)
-            .env("XDG_RUNTIME_DIR", &runtime)
             .env("LEMMA_CONFIG", &config)
-            .env_remove("LEMMA_DAEMON_SOCKET")
-            .env_remove("LEMMA_NO_DAEMON")
             .output()
             .unwrap()
     };
@@ -340,14 +346,8 @@ fn sentry_an_mcp_server_asked_for_is_let_go_when_the_server_leaves() {
     let _daemons = Daemons(&runtime);
     let shop = runtime.join("shop");
     shop_with_a_break(&shop);
-    let mut server = Command::new(env!("CARGO_BIN_EXE_lemma"))
+    let mut server = command(&runtime, &shop)
         .arg("mcp")
-        .current_dir(&shop)
-        .env("XDG_RUNTIME_DIR", &runtime)
-        .env_remove("LEMMA_DAEMON_SOCKET")
-        .env_remove("LEMMA_NO_DAEMON")
-        .env_remove("LEMMA_SENTRY")
-        .env_remove("CI")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -374,13 +374,9 @@ fn a_check_without_sentry_prints_what_one_in_its_own_process_prints() {
         "check", "--change", "billing", "--base", "HEAD~1", "--head", "HEAD",
     ];
     let alone: Vec<&str> = check.iter().copied().chain(["--no-daemon"]).collect();
-    let without_sentry = Command::new(env!("CARGO_BIN_EXE_lemma"))
+    let without_sentry = command(&runtime, &shop)
         .args(check)
-        .current_dir(&shop)
-        .env("XDG_RUNTIME_DIR", &runtime)
         .env("LEMMA_SENTRY", "off")
-        .env_remove("LEMMA_DAEMON_SOCKET")
-        .env_remove("LEMMA_NO_DAEMON")
         .output()
         .unwrap();
 
