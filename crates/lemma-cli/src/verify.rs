@@ -1,9 +1,11 @@
 //! `lemma verify`: whether a description still matches the code. See
 //! `.specs/16-verifying-descriptions.md`.
 
+use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use lemma_graph::description::{DescriptionReport, verify_description};
 use lemma_graph::{CheckOptions, Severity};
@@ -11,7 +13,7 @@ use lemma_logic::ReferenceEngine;
 use lemma_souffle::SouffleEngine;
 
 use crate::anchors::CheckReferences;
-use crate::check::LanguageServers;
+use crate::check::{LanguageServers, Streams};
 use crate::cli::VerifyArgs;
 
 /// Exit code when a finding is an error.
@@ -19,33 +21,96 @@ const EXIT_VIOLATED: u8 = 4;
 /// How many informational findings are listed without `--all`.
 const SHOWN_WITHOUT_ALL: usize = 10;
 
+/// Verifies as `args` ask and prints the report: in the workspace's daemon
+/// when one may serve it (`lsp.asks_daemon`), and in this process
+/// otherwise.
 pub(crate) fn run(args: &VerifyArgs, lsp: &LanguageServers, json: bool) -> ExitCode {
-    let report = match verify(args, lsp) {
+    #[cfg(unix)]
+    if lsp.asks_daemon {
+        if let Some(code) = crate::check::answered_by_daemon(std::env::args().skip(1).collect()) {
+            return code;
+        }
+    }
+    log::info!("verifying in this process");
+    let mut stdout = std::io::stdout().lock();
+    let mut stderr = std::io::stderr();
+    let mut streams = Streams {
+        out: &mut stdout,
+        err: &mut stderr,
+    };
+    ExitCode::from(answer(args, lsp, json, None, &mut streams))
+}
+
+/// Verifies as `args` ask, printing the report to `streams`; the exit
+/// code: 4 when a finding is an error. `environment` is the asker's, for
+/// the commands verifying runs, when a daemon verifies for it.
+fn answer(
+    args: &VerifyArgs,
+    lsp: &LanguageServers,
+    json: bool,
+    environment: Option<Environment>,
+    streams: &mut Streams<'_>,
+) -> u8 {
+    let report = match verify(args, lsp, environment) {
         Ok(report) => report,
         Err(error) => {
-            eprintln!("error: {error:#}");
-            return ExitCode::FAILURE;
+            let _ = writeln!(streams.err, "error: {error:#}");
+            return 1;
         }
     };
-    let mut stdout = std::io::stdout().lock();
     let printed = if json {
-        serde_json::to_writer_pretty(&mut stdout, &report)
+        serde_json::to_writer_pretty(&mut *streams.out, &report)
             .map_err(std::io::Error::other)
-            .and_then(|()| writeln!(stdout))
+            .and_then(|()| writeln!(streams.out))
     } else {
-        print_text(&mut stdout, &report, args)
+        print_text(streams.out, &report, args)
     };
     if printed.is_err() {
-        return ExitCode::FAILURE;
+        return 1;
     }
     let has_error = report
         .findings
         .iter()
         .any(|finding| finding.severity == Severity::Error);
-    ExitCode::from(if has_error { EXIT_VIOLATED } else { 0 })
+    if has_error { EXIT_VIOLATED } else { 0 }
 }
 
-fn verify(args: &VerifyArgs, lsp: &LanguageServers) -> anyhow::Result<DescriptionReport> {
+/// What verifying prints and returns when a daemon does it for an asker:
+/// the same as in the asker's own process. `args.module` and
+/// `providers_file` are resolved against the asker's directory, and
+/// `environment` is the asker's.
+#[cfg(unix)]
+pub(crate) fn answered_alone(
+    args: &VerifyArgs,
+    providers_file: Option<PathBuf>,
+    json: bool,
+    environment: BTreeMap<String, String>,
+) -> crate::sentry::Answer {
+    let lsp = LanguageServers {
+        asks_daemon: true,
+        providers_file,
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut streams = Streams {
+        out: &mut out,
+        err: &mut err,
+    };
+    let exit_code = answer(args, &lsp, json, Some(Arc::new(environment)), &mut streams);
+    crate::sentry::Answer {
+        stdout: String::from_utf8_lossy(&out).into_owned(),
+        stderr: String::from_utf8_lossy(&err).into_owned(),
+        exit_code,
+    }
+}
+
+/// The environment of whoever asked, for the commands verifying runs.
+type Environment = Arc<BTreeMap<String, String>>;
+
+fn verify(
+    args: &VerifyArgs,
+    lsp: &LanguageServers,
+    environment: Option<Environment>,
+) -> anyhow::Result<DescriptionReport> {
     let directory = entry_directory(&args.module);
     let options = CheckOptions {
         change: None,
@@ -61,7 +126,7 @@ fn verify(args: &VerifyArgs, lsp: &LanguageServers) -> anyhow::Result<Descriptio
         runs_base_checkers: false,
         select: None,
         warm: None,
-        environment: None,
+        environment,
         runtime: crate::daemon::warm_runtime(directory),
     };
     let mut references = CheckReferences::new(lsp.asks_daemon, lsp.providers_file.clone());

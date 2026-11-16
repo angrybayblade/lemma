@@ -250,3 +250,26 @@ fn a_check_the_daemon_answers_prints_what_one_in_its_own_process_prints() {
         "the check started the workspace's daemon"
     );
 }
+
+#[test]
+fn a_verify_the_daemon_answers_prints_what_one_in_its_own_process_prints() {
+    let space = tempfile::tempdir().unwrap();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let shop = runtime.join("shop");
+    shop_with_a_break(&shop);
+
+    for verify in [&["verify", "--links"][..], &["verify", "--json"][..]] {
+        let alone: Vec<&str> = verify.iter().copied().chain(["--no-daemon"]).collect();
+        let from_daemon = lemma(&runtime, &shop, verify);
+        let own_process = lemma(&runtime, &shop, &alone);
+
+        assert!(!said(&own_process).is_empty(), "{verify:?} printed nothing");
+        assert_eq!(said(&from_daemon), said(&own_process), "{verify:?}");
+        assert_eq!(from_daemon.status.code(), own_process.status.code());
+    }
+    assert_eq!(
+        served_root(&runtime, &shop),
+        Some(shop.display().to_string())
+    );
+}

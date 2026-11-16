@@ -78,8 +78,8 @@ enum Request {
         cwd: PathBuf,
         path_env: Option<Vec<u8>>,
     },
-    /// A check to answer: through sentry if it is attached to the check's
-    /// workspace, and by itself otherwise.
+    /// A `check` to answer, through sentry if it is attached to the check's
+    /// workspace and by itself otherwise, or a `verify`.
     Check {
         build: String,
         /// Arguments after the program name.
@@ -600,39 +600,62 @@ struct Asked {
     as_of: Option<String>,
 }
 
-/// Takes a check: gives it to sentry when it is attached to the check's
-/// workspace, attaching it first if the user opted in to that, and
-/// otherwise answers it with nothing kept from earlier checks. Either way
-/// the answer is written to `stream` from another thread, so the daemon
-/// goes on serving lookups meanwhile. A check from another build is left to
-/// its asker.
+/// Takes a `check` or a `verify` asked of the daemon. Either is answered
+/// on `stream` from another thread, so the daemon goes on serving lookups
+/// meanwhile. One from another build, or any other command, is left to its
+/// asker.
 fn hand_check(
     asked: Asked,
     mut stream: UnixStream,
     sentry: &mut Option<Sentry>,
     settings: &Settings,
 ) {
-    let not_served = |mut stream: UnixStream| {
-        let _ = send(&mut stream, &Reply::NotServed);
-    };
-    if asked.build != build_id() {
-        return not_served(stream);
-    }
     let words = std::iter::once("lemma".to_owned()).chain(asked.args.iter().cloned());
-    let Ok(cli) = Cli::try_parse_from(words) else {
-        return not_served(stream);
+    let command = Cli::try_parse_from(words)
+        .ok()
+        .filter(|_| asked.build == build_id());
+    let (command, json, providers) = match command {
+        Some(cli) => (Some(cli.command), cli.json, cli.providers),
+        None => (None, false, None),
     };
-    let crate::cli::Command::Check(args) = cli.command else {
-        return not_served(stream);
-    };
+    match command {
+        Some(crate::cli::Command::Check(args)) => {
+            let may_attach = settings.config.sentry_auto_attach;
+            check_through(sentry, may_attach, Checked { asked, args, json }, stream);
+        }
+        Some(crate::cli::Command::Verify(args)) => {
+            verify_alone(asked, args, json, providers, stream);
+        }
+        _ => {
+            let _ = send(&mut stream, &Reply::NotServed);
+        }
+    }
+}
+
+/// A check asked of the daemon, with its arguments read.
+struct Checked {
+    asked: Asked,
+    args: crate::cli::CheckArgs,
+    json: bool,
+}
+
+/// Answers a check: through `sentry` when it is attached to the check's
+/// workspace, attaching it first if the user opted in to that (`may_attach`),
+/// and otherwise with nothing kept from earlier checks.
+fn check_through(
+    sentry: &mut Option<Sentry>,
+    may_attach: bool,
+    check: Checked,
+    mut stream: UnixStream,
+) {
+    let Checked { asked, args, json } = check;
     let manifest = crate::check::entry_manifest_in(&asked.cwd, &args.manifest);
     let manifest = manifest.canonicalize().unwrap_or(manifest);
     let uses_sentry = asked
         .environment
         .get("LEMMA_SENTRY")
         .is_none_or(|value| value != "off");
-    let wants_attach =
-        uses_sentry && settings.config.sentry_auto_attach && !asked.environment.contains_key("CI");
+    let wants_attach = uses_sentry && may_attach && !asked.environment.contains_key("CI");
     if sentry.is_none() && wants_attach {
         attach_for_check(sentry, &manifest);
     }
@@ -641,7 +664,7 @@ fn hand_check(
     }
     let question = crate::sentry::Question {
         args,
-        json: cli.json,
+        json,
         raw: asked.args,
         cwd: asked.cwd,
         environment: asked.environment,
@@ -653,6 +676,34 @@ fn hand_check(
     match attached {
         Some(attached) => attached.ask(crate::sentry::Ask { question, stream }),
         None => check_alone(question, manifest, stream),
+    }
+}
+
+/// Answers a `verify` on a thread of its own, with the module and the
+/// providers file it names resolved against the asker's directory. If the
+/// thread cannot start or fails, the connection closes unanswered and the
+/// asker verifies by itself.
+fn verify_alone(
+    asked: Asked,
+    mut args: crate::cli::VerifyArgs,
+    json: bool,
+    providers: Option<PathBuf>,
+    mut stream: UnixStream,
+) {
+    if send(&mut stream, &Reply::Accepted).is_err() {
+        return;
+    }
+    args.module = asked.cwd.join(&args.module);
+    let providers = providers.map(|file| asked.cwd.join(file));
+    let verifying = thread::Builder::new()
+        .name("verify".to_owned())
+        .spawn(move || {
+            log::info!("verifying {} for a caller", args.module.display());
+            let answer = crate::verify::answered_alone(&args, providers, json, asked.environment);
+            reply_answer(stream, &answer);
+        });
+    if let Err(error) = verifying {
+        log::warn!("could not start a thread for a verify: {error}");
     }
 }
 
@@ -675,6 +726,10 @@ fn check_alone(question: crate::sentry::Question, manifest: PathBuf, stream: Uni
     let checking = thread::Builder::new()
         .name("check".to_owned())
         .spawn(move || {
+            log::info!(
+                "checking {} for a caller, without sentry",
+                manifest.display()
+            );
             let answer = crate::check::answered_alone(
                 &question.args,
                 question.json,
@@ -1457,6 +1512,7 @@ fn place_of(args: &[String], cwd: &Path) -> PathBuf {
     let named = match cli.command {
         Asked::Index { path, .. } => Some(path),
         Asked::Check(check) => Some(check.manifest),
+        Asked::Verify(verify) => Some(verify.module),
         Asked::Daemon(daemon) => match daemon.action {
             Some(DaemonAction::Lsp(servers)) => match servers.action {
                 Some(LspAction::List(target) | LspAction::Stop(target)) => target.path,

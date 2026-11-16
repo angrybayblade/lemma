@@ -814,8 +814,9 @@ fn today() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs() / 86_400)
 }
 
-/// Asks the workspace's daemon to answer a check from a shell, given its
-/// command line: through sentry when it is attached, by itself otherwise.
+/// Asks the workspace's daemon to answer a `check` or a `verify` from a
+/// shell, given its command line: a check through sentry when it is
+/// attached, and by itself otherwise.
 /// `None` when it cannot: no daemon serves the workspace and none may be
 /// started, or the command asks for logs, which only a check run here can
 /// print.
