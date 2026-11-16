@@ -43,9 +43,9 @@ pub(crate) struct Config {
     /// What a lookup does about a language server that does not answer in
     /// time.
     pub when_slow: WhenSlow,
-    /// Attach sentry to a workspace on its first `lemma check` while the
-    /// daemon runs. Off unless the user turns it on.
-    pub sentry_auto_attach: bool,
+    /// Whether the MCP server asks for sentry when it starts, as the
+    /// editor's server does. On unless the user turns it off.
+    pub sentry_for_mcp: bool,
     /// How many watches the workspaces graphs are traced through may take
     /// between them, where each directory takes one. `None` sets no limit;
     /// `Some(0)` watches nothing.
@@ -107,7 +107,7 @@ impl Default for Config {
             },
             warms_up_on_activity: true,
             when_slow: WhenSlow::default(),
-            sentry_auto_attach: false,
+            sentry_for_mcp: true,
             graph_watches: default_graph_watches(lemma_index::watch_limit()),
             graph_prepare: Prepare::default(),
             graphs_kept_ready: GRAPHS_KEPT_READY,
@@ -174,7 +174,7 @@ struct RuntimeSection {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct SentrySection {
-    auto_attach: Option<bool>,
+    mcp: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -299,6 +299,12 @@ pub(crate) fn autostart() -> Autostart {
     load(config_path().as_deref()).map_or_else(|_| Autostart::default(), |config| config.autostart)
 }
 
+/// Whether the MCP server asks for sentry when it starts, by the user's
+/// config file; it does when the file cannot be read.
+pub(crate) fn sentry_for_mcp() -> bool {
+    load(config_path().as_deref()).map_or(true, |config| config.sentry_for_mcp)
+}
+
 /// What lookups in a command's own process do about a slow server, by the
 /// user's config file: the daemon is told the same as part of its settings.
 pub(crate) fn when_slow_for_one_process() -> anyhow::Result<WhenSlow> {
@@ -421,10 +427,7 @@ fn parse(text: &str) -> anyhow::Result<Config> {
             .warm_on_activity
             .unwrap_or(defaults.warms_up_on_activity),
         when_slow,
-        sentry_auto_attach: file
-            .sentry
-            .auto_attach
-            .unwrap_or(defaults.sentry_auto_attach),
+        sentry_for_mcp: file.sentry.mcp.unwrap_or(defaults.sentry_for_mcp),
         graph_watches: match &file.graph.watches {
             Some(watches) => parse_watches(watches)?,
             None => defaults.graph_watches,

@@ -57,6 +57,9 @@ const TOOLS: &str = include_str!("mcp_tools.json");
 /// commands run in the daemon when one can be reached.
 pub(crate) fn serve(uses_daemon: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
+    if uses_daemon {
+        ask_for_sentry(&cwd);
+    }
     let mut runner = Runner::new(cwd, uses_daemon);
     let stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
@@ -174,6 +177,38 @@ impl Runner {
         }
     }
 }
+
+/// Asks the workspace's daemon for sentry for as long as this server runs,
+/// as the editor's server does, so that graphs and checks asked between an
+/// agent's edits are prepared ahead. Not when `[sentry] mcp` is off, with
+/// `LEMMA_SENTRY=off`, in CI, or where the directory has no root module
+/// above it. It is asked for on a thread of its own, since attaching
+/// starts watching every repository and no tool call should wait for that.
+#[cfg(unix)]
+fn ask_for_sentry(cwd: &std::path::Path) {
+    let is_wanted = crate::config::sentry_for_mcp()
+        && !crate::sentry::is_turned_off()
+        && std::env::var_os("CI").is_none();
+    let Some(manifest) = crate::workspace::entry_module_above(cwd).filter(|_| is_wanted) else {
+        return;
+    };
+    let asking = std::thread::Builder::new().name("sentry-hold".to_owned());
+    let asked = asking.spawn(move || match crate::daemon::hold_sentry(&manifest) {
+        // Kept until the server's process ends.
+        Ok(Some(hold)) => loop {
+            std::thread::park();
+            let _still_held = &hold;
+        },
+        Ok(None) => {}
+        Err(error) => log::info!("sentry is not used: {error:#}"),
+    });
+    if let Err(error) = asked {
+        log::info!("sentry is not asked for: {error}");
+    }
+}
+
+#[cfg(not(unix))]
+fn ask_for_sentry(_cwd: &std::path::Path) {}
 
 /// Whether a command runs in a process of its own, never in the daemon or
 /// a long-lived engine: `check` and `verify` read whole systems and run

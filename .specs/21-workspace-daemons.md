@@ -165,7 +165,7 @@ Sentry is the daemon's watcher for its workspace. It is off until a client asks 
 | Client | How it asks |
 | --- | --- |
 | Command line | `lemma daemon sentry start`, which starts the daemon first when `daemon.autostart` allows |
-| MCP server | *Proposal:* a `sentry` setting in `config`, read when the server starts; the agent does not have to call anything |
+| MCP server | When it starts, unless `[sentry] mcp` is off (decided 2026-11-16: on by default, since graphs prepared ahead would otherwise be lost to agents, who have them today). Not in CI, with `LEMMA_SENTRY=off`, or with no root module above its directory |
 | Editor's server | When it starts, for the workspace it was opened on |
 
 What sentry owns, all of it under one name:
@@ -179,7 +179,7 @@ What sentry owns, all of it under one name:
 
 With sentry off, none of these happen, and nothing is watched. The answers are the same; the first one after an edit pays for what changed.
 
-*Proposal.* Sentry lets go when the client that asked for it disconnects (an MCP server or an editor's server that exits), on `lemma daemon sentry stop`, and when its daemon exits. Asked from the command line, it stays until stopped or until `sentry.stop_after` passes without a request.
+Sentry lets go when the last client that asked for it disconnects (an MCP server or an editor's server that exits), on `lemma daemon sentry stop`, and when its daemon exits. A client asks by holding a connection open, which the daemon sees close however the client ends. Asked from the command line, sentry stays until stopped, or until no client holds it and no check has used it for `[servers] stop_after`, the time an idle language server is kept: no setting of its own.
 
 Spec 14's rule that sentry never evaluates rules, runs resolvers or runs checkers ahead of an ask stands. Its `auto_attach` setting goes: a client asking is the one way sentry turns on.
 

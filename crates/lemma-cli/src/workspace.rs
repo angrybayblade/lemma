@@ -123,6 +123,22 @@ pub(crate) fn checkout_of(directory: &Path) -> Option<&Path> {
         .find(|above| above.join(".git").exists())
 }
 
+/// The module a check of the code in `folder` starts from: the nearest
+/// root module at or above it that declares a workspace, or else the
+/// nearest root module.
+pub(crate) fn entry_module_above(folder: &Path) -> Option<PathBuf> {
+    let found: Vec<PathBuf> = folder
+        .ancestors()
+        .map(|directory| directory.join(ROOT_MODULE))
+        .filter(|manifest| manifest.is_file())
+        .collect();
+    found
+        .iter()
+        .find(|manifest| module_declares_workspace(manifest))
+        .or_else(|| found.first())
+        .cloned()
+}
+
 /// Whether the module in the file `manifest` declares a workspace; `false`
 /// when the file cannot be read.
 fn module_declares_workspace(manifest: &Path) -> bool {
