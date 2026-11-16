@@ -2672,9 +2672,12 @@ fn relative_to_root(snapshot: &StoredSnapshot, file: &Path) -> anyhow::Result<St
         .canonicalize()
         .with_context(|| format!("cannot read {}", file.display()))?;
     let root = Path::new(&snapshot.snapshot.root);
-    let relative = file.strip_prefix(root).with_context(|| {
+    // Never answered from a file of the same name here: the file's own
+    // repository has its own index, and its own daemon.
+    let relative = file.strip_prefix(root).ok().with_context(|| {
         format!(
-            "{} is outside the indexed directory {}",
+            "{} is outside the indexed directory {}; run the command in the repository that \
+             file is in",
             file.display(),
             root.display()
         )

@@ -266,6 +266,9 @@ pub(crate) fn forward(args: Vec<String>, cwd: PathBuf, asker: Asker) -> Option<F
         wants_sentry: asks_for_sentry(asker),
     };
     log::debug!("forwarding to the daemon at {}", daemon.socket.display());
+    if let Some(root) = &daemon.root {
+        log::info!("asking the daemon of the workspace {}", root.display());
+    }
     let mut reply = exchange(&daemon, &request, starts).ok()?;
     if matches!(reply, Reply::Restart) {
         // A daemon was wanted here, whoever started it: it is replaced.
@@ -1752,6 +1755,15 @@ fn daemon_to_ask(place: &Path, starts: bool) -> Option<Daemon> {
         return daemon_for(place).ok();
     }
     serving(place)
+}
+
+/// The root of the workspace `place` belongs to: where its daemon is, or
+/// would be started.
+pub(crate) fn workspace_root_of(place: &Path) -> PathBuf {
+    let place = canonical(place);
+    Workspace::of(&place, &named_repositories)
+        .root()
+        .to_path_buf()
 }
 
 /// The sockets of the daemons a `status` or `stop` is for: the one serving

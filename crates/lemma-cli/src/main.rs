@@ -207,12 +207,12 @@ fn run_daemon(args: &cli::DaemonArgs, logger: &'static logging::Logger) -> ExitC
         }
         Some(DaemonAction::Stop { all }) => daemon::stop(&cwd, all).map(|stopped| {
             if stopped == 0 {
-                eprintln!("{}", none_running(all));
+                eprintln!("{}", none_running(&cwd, all));
             }
         }),
         Some(DaemonAction::Status { all }) => daemon::status(&cwd, all).map(|reports| {
             if reports.is_empty() {
-                println!("{}", none_running(all));
+                println!("{}", none_running(&cwd, all));
             }
             print!("{}", reports.join("\n"));
         }),
@@ -245,13 +245,18 @@ fn said_of(started: &(Option<std::path::PathBuf>, bool)) -> String {
     format!("started a lemma daemon: it {serves}")
 }
 
-/// What `status` and `stop` say when they find no daemon.
+/// What `status` and `stop` say when they find no daemon: for `cwd`, with
+/// the workspace one would be started for.
 #[cfg(unix)]
-fn none_running(all: bool) -> &'static str {
+fn none_running(cwd: &std::path::Path, all: bool) -> String {
     if all {
-        return "no lemma daemon is running";
+        return "no lemma daemon is running".to_owned();
     }
-    "no lemma daemon serves this directory; `lemma daemon start` starts its workspace's"
+    format!(
+        "no lemma daemon serves this directory; `lemma daemon start` starts one for the \
+         workspace {}",
+        daemon::workspace_root_of(cwd).display()
+    )
 }
 
 #[cfg(unix)]
