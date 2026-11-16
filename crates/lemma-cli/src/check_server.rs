@@ -33,7 +33,6 @@ use serde_json::{Value, json};
 
 use crate::cli::LanguageServerArgs;
 use crate::watched::BATCH_INTERVAL;
-use crate::workspace::{ROOT_MODULE, declares_workspace};
 use diagnostics::{ChangedFile, ChangedLine, CheckedChange, FileDiagnostics, LineDiagnostic};
 use source::{CheckFailure, Source};
 
@@ -482,25 +481,7 @@ fn chosen_manifest(args: &LanguageServerArgs, params: &InitializeParams) -> Opti
         .and_then(|folders| folders.first())
         .and_then(|folder| folder.uri.to_file_path().ok())
         .or_else(|| std::env::current_dir().ok())?;
-    nearest_workspace_manifest(&folder)
-}
-
-/// The nearest `mod.lm` at or above `folder` that declares a workspace,
-/// or else the nearest `mod.lm`.
-fn nearest_workspace_manifest(folder: &Path) -> Option<PathBuf> {
-    let found: Vec<PathBuf> = folder
-        .ancestors()
-        .map(|directory| directory.join(ROOT_MODULE))
-        .filter(|manifest| manifest.is_file())
-        .collect();
-    let declares_workspace = |manifest: &&PathBuf| {
-        std::fs::read_to_string(manifest).is_ok_and(|text| declares_workspace(&text))
-    };
-    found
-        .iter()
-        .find(declares_workspace)
-        .or_else(|| found.first())
-        .cloned()
+    crate::workspace::entry_module_above(&folder)
 }
 
 /// The name `--change` takes for the repository in `directory`: `self`
@@ -856,15 +837,6 @@ mod tests {
                 (58, "++ a line that starts with pluses"),
             ]
         );
-    }
-
-    #[test]
-    fn a_module_with_a_workspace_block_declares_a_workspace() {
-        let workspace = "module shop\n\nworkspace {\n    repo a = local(\"a\")\n}\n";
-        let service = "module billing\n\nservice api { }\n";
-
-        assert!(declares_workspace(workspace));
-        assert!(!declares_workspace(service));
     }
 
     #[test]

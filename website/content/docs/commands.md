@@ -199,7 +199,7 @@ Lists every configured language server, whether its command was found, and the o
 
 ## `lemma mcp`
 
-Serves Lemma to agents as an [MCP](https://modelcontextprotocol.io) server over stdin and stdout. Run it from the project directory, or have the agent's client start it there. Tool calls run in the daemon like any other command, so language servers stay warm across tool calls and terminal use.
+Serves Lemma to agents as an [MCP](https://modelcontextprotocol.io) server over stdin and stdout. Run it from the project directory, or have the agent's client start it there. Tool calls run in the daemon like any other command, so language servers stay warm across tool calls and terminal use. When it starts, the server asks the workspace's daemon for [sentry](#lemma-daemon), which then stays attached for as long as the server runs; `[sentry] autostart = "never"` or `LEMMA_SENTRY=off` keeps it from asking, and it does not ask when `CI` is set or where no `mod.lm` is above its directory.
 
 | Tool | Command it runs | Arguments |
 | --- | --- | --- |
@@ -269,7 +269,7 @@ Exits with 0 when no finding is an error, 4 when one is, 5 when it finished but 
 
 Experimental. A language server for editors that shows what saved changes break, in every repository of the workspace. It speaks the Language Server Protocol over stdin and stdout; an editor starts it, and `lm lsp` serves `.lm` modules instead.
 
-It asks the daemon's sentry, starting the daemon if none runs, so the editor, `lemma check` and the MCP `check` tool share one watched workspace and each other's answers; when sentry is attached to another workspace it watches the workspace itself. When a repository's saved files change, it is checked as `lemma check --change` would, and each finding the change introduced becomes a diagnostic on the line of code it names, in whichever repository that is. Each file the working directory changed gets a summary linking to those lines. Findings that were there before the change are not shown. It reads files from disk, so it follows saves, by an editor or anything else, not typing.
+When it starts it asks the workspace's daemon for sentry, starting the daemon if none runs, and sentry stays attached for as long as the server runs. So the editor, `lemma check` and the MCP `check` tool share one watched workspace and each other's answers. Where no daemon may serve it (`[daemon] autostart = "never"`, or `LEMMA_SENTRY=off`) it watches the workspace itself. When a repository's saved files change, it is checked as `lemma check --change` would, and each finding the change introduced becomes a diagnostic on the line of code it names, in whichever repository that is. Each file the working directory changed gets a summary linking to those lines. Findings that were there before the change are not shown. It reads files from disk, so it follows saves, by an editor or anything else, not typing.
 
 The workspace is the module given, or else the editor's `manifest` initialization option, or else the nearest `mod.lm` above the editor's folder that declares a workspace. The VS Code extension runs it with `lemma.checkOnChange.enabled`.
 
@@ -299,14 +299,14 @@ A repository the `mod.lm` names outside the workspace's root (`local("../billing
 | `lemma daemon lsp [path]`, or `lemma daemon lsp list [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |
 | `lemma daemon lsp start [path] [--language <l>] [--provider <id>] [--wait]` | Start those servers in the daemon, in the background, or with `--wait` until each has loaded its project, reporting how long it took or why it failed (exit 1). A language's providers are tried in order, as a lookup tries them: when the first cannot start (typescript-language-server without a TypeScript it can use), the next serves. |
 | `lemma daemon lsp stop [path] [--language <l>] [--provider <id>]` | Stop those servers. |
-| `lemma daemon sentry start [manifest]` | Attach the daemon's sentry to a workspace (its `mod.lm`, by default the one in this directory). Sentry watches the workspace's repositories, and the daemon then answers `lemma check` on that workspace through it: what earlier checks read is kept and only what changed is read again, and a check is answered again at once when nothing it read changed. The report is the same as without sentry. It attaches only to a daemon already running, to one workspace at a time. |
+| `lemma daemon sentry start [manifest]` | Attach the daemon's sentry to a workspace (its `mod.lm`, by default the one in this directory). Sentry watches the workspace's repositories, and the daemon then answers `lemma check` on that workspace through it: what earlier checks read is kept and only what changed is read again, and a check is answered again at once when nothing it read changed. The report is the same as without sentry. It starts the workspace's daemon if none serves it. Asked for this way, sentry stays until `sentry stop`, or until no client holds it and no check has used it for `[servers] stop_after`. |
 | `lemma daemon sentry stop` | Detach sentry. It also detaches when the workspace's directory is gone and when the daemon exits. |
 | `lemma daemon sentry status` | The workspace, the directories watched in each repository, and how many checks sentry answered and reused. |
 | `lemma daemon sentry events [--since <token>] [--wait <duration>]` | What happened since a token, a line each: repositories whose files changed, and checks answered (reused or checked, how long, and their counts), then the latest token. With `--wait`, it waits that long for an event when there is none yet, for a hook or a script to follow sentry. `--json` prints the events. |
 | `lemma daemon --idle-secs <n>` | Run in the foreground, exiting after this many seconds without a command instead of the configured `idle_exit`. |
 | `lemma daemon --root <directory>` | Run in the foreground for the workspace rooted at this directory, in place of the one the current directory belongs to. |
 
-Sentry is experimental and off unless you start it: its answers match a fresh check, but it can change or go away between releases.
+Sentry is experimental: its answers match a fresh check, but it can change or go away between releases. It is attached when a client asks for it and no longer than that. The MCP server and the editor's server ask when they start, and it is let go once every such client has gone. A command asks too unless [`[sentry] autostart`](#settings) says otherwise, as `lemma daemon sentry start` does by hand, and sentry asked for by commands is let go once none has used it for `[servers] stop_after`. `lemma daemon status` says who keeps it. A daemon has one sentry, for one entry module.
 
 The daemon serves every later command, so it does not keep the environment of the command that happened to start it. It keeps only `HOME`, `USER`, `LOGNAME`, `PATH`, `SHELL`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `SSH_AUTH_SOCK`, the proxy variables and `LEMMA_*`. A shell's `GOCACHE`, `XDG_CACHE_HOME` or `TMPDIR` would otherwise redirect every later build and cache, and break them once that shell's directories are gone. Adapters and checkers that need a variable get it from their `env` settings. Set `LEMMA_NO_DAEMON=1` to run a command in its own process, with its own environment.
 
@@ -323,22 +323,20 @@ idle_exit = "never"        # stop the daemon after this long without a command, 
 pause_after = "10m"        # pause idle language servers
 stop_after = "2h"          # stop idle language servers
 memory_budget = "none"     # e.g. "2GB": stop the least recently used servers beyond this
-warm_on_activity = true    # start a project's servers again when its files change
 when_slow = "report"       # a server that does not answer in time: "report" it, or ask the "next"
 give_way_after = "60s"     # with "next": how long a server gets before the next is asked
 try_again_after = "30m"    # with "next": how long the slow server is passed over in that repository
 
 [sentry]
-auto_attach = false        # attach sentry to a workspace on its first `lemma check`
+autostart = "always"       # who asks for sentry unasked: "always", "clients" or "never"
+servers = true             # start a project's servers again when its files change
+graphs = "graph"           # after an edit, get ready for the next graph: "off", "index" or "graph"
+kept_ready = 4             # how many of the graphs last asked are answered ahead after an edit
+watches = 16384            # directories watched for graphs: 0 watches none, "none" sets no limit
 
 [runtime]
 memory = "512MB"           # what warm runtimes may hold: "0" keeps none, "none" sets no limit
 stop_after = "30m"         # stop an idle warm runtime
-
-[graph]
-watches = 16384            # directories watched for graphs: 0 watches none, "none" sets no limit
-prepare = "graph"          # after an edit, get ready for the next graph: "off", "index" or "graph"
-kept_ready = 4             # how many of the graphs last asked are answered ahead after an edit
 ```
 
 **Who starts a daemon.** `autostart` says what may start a daemon for a workspace that has none. A daemon that is already running is used by every command, whatever the setting, and `lemma daemon start` always starts one.
@@ -357,11 +355,23 @@ kept_ready = 4             # how many of the graphs last asked are answered ahea
 
 **Warm runtimes.** While the daemon runs, `lemma check` asks it to run a repository's Python (a `json.command("{python} -m …")` or `{python} script.py` resolver, or a type read with Pydantic) in a process that has already imported the repository's dependencies, so a run pays only for the repository's own modules. It prints what a new interpreter would, and anything that goes wrong runs the command as before. `memory` is the trade: the more a runtime may hold, the less a run waits. On one service with about 1,700 dependency modules, a 1.6 s resolver ran in 1.2 s with `"24MB"`, 0.7 s with `"96MB"` and 0.2 s once it could hold all 140 MB. A project's `.lemma/config.toml` may set `[runtime]` too, and overrides this file setting by setting. `LEMMA_RUNTIME=off` keeps none warm. `lemma daemon status` lists each one with the memory it holds. A check never starts the daemon for this.
 
-**Graphs across a workspace.** The first `lemma graph` in a workspace has the daemon watch each of its repositories and keep what following callers across them reads: file listings, API documents, and the routes and calls found in them. The next graph reads only what changed since, and `lemma daemon status` lists what is watched. On Linux a watcher takes one watch for each directory Git lists, out of a number the system limits per user (`fs.inotify.max_user_watches`) and that the indexes and your editor draw on too. `watches` is how many the daemon may take for graphs, over all workspaces: a quarter of the system's limit unless you set it, so the value above is only an example. The largest repositories that fit are watched. One that does not fit, or that the system will not watch, is checked when a graph is asked for: Git says whether its working directory is as it was at the last ask, and what was read of it is kept while it is. That costs one `git status` per such repository on every graph, so `watches` trades watches for time. On a workspace of six repositories and 9,155 directories, 5,672 of them in one repository, a repeated graph took 0.06 s with every repository watched, 0.11 s with `watches = 6000` (the largest watched, most of the others left to Git), 0.29 s with `watches = 4000` (the largest left to Git) and 0.33 s with `watches = 0`; with nothing kept it took 0.62 s. A workspace no graph has gone through for `[servers] stop_after` is let go, its watches included.
+**Who asks for sentry.** `[sentry] autostart` says who asks for sentry without being told to, in the words `[daemon] autostart` uses. `lemma daemon sentry start` always attaches it.
 
-**Ready before the next graph.** Once a graph has been asked through a workspace, the daemon gets ready for the next one whenever the workspace's files change and settle: 0.2 s after the last change, or 2 s into a run of them. `[graph] prepare` says how far, and trades work after every settled change for time at the next ask:
+| `autostart` | A command run from a shell | The MCP server and the editor's server |
+| --- | --- | --- |
+| `"always"` (the default) | Asks, for the workspace of the nearest `mod.lm` that declares one, or else the nearest `mod.lm`. | Ask when they start. |
+| `"clients"` | Does not ask: a check is answered with nothing kept, and a graph across the workspace asks Git about every repository. | Ask when they start. |
+| `"never"` | Does not ask. | Do not ask. |
 
-| `prepare` | What the daemon does once a change settles | First graph after an edit: the graph asked last | Another of the graphs kept ready |
+No command asks with `LEMMA_SENTRY=off` or when `CI` is set. On a workspace of six repositories, a graph asked after an edit took 0.03 to 0.10 s with sentry and 3.2 to 4.6 s without, because without it the daemon learns only that a repository changed and reads all of it again.
+
+**What sentry does ahead of a request.** Watching a workspace for graphs, getting ready for the next graph, and starting stopped servers again are sentry's: they happen while sentry is attached and not otherwise. Without sentry the answers are the same, and each graph asks Git about every repository, as with `watches = 0` below.
+
+**Graphs across a workspace.** With sentry attached, the first `lemma graph` in a workspace has the daemon watch each of its repositories and keep what following callers across them reads: file listings, API documents, and the routes and calls found in them. The next graph reads only what changed since, and `lemma daemon status` lists what is watched. On Linux a watcher takes one watch for each directory Git lists, out of a number the system limits per user (`fs.inotify.max_user_watches`) and that the indexes and your editor draw on too. `watches` is how many the daemon may take for graphs, over all workspaces: a quarter of the system's limit unless you set it, so the value above is only an example. The largest repositories that fit are watched. One that does not fit, or that the system will not watch, is checked when a graph is asked for: Git says whether its working directory is as it was at the last ask, and what was read of it is kept while it is. That costs one `git status` per such repository on every graph, so `watches` trades watches for time. On a workspace of six repositories and 9,155 directories, 5,672 of them in one repository, a repeated graph took 0.06 s with every repository watched, 0.11 s with `watches = 6000` (the largest watched, most of the others left to Git), 0.29 s with `watches = 4000` (the largest left to Git) and 0.33 s with `watches = 0`; with nothing kept it took 0.62 s. A workspace no graph has gone through for `[servers] stop_after` is let go, its watches included.
+
+**Ready before the next graph.** Once a graph has been asked through a workspace, the daemon gets ready for the next one whenever the workspace's files change and settle: 0.2 s after the last change, or 2 s into a run of them. `[sentry] graphs` says how far, and trades work after every settled change for time at the next ask:
+
+| `graphs` | What the daemon does once a change settles | First graph after an edit: the graph asked last | Another of the graphs kept ready |
 | --- | --- | --- | --- |
 | `"off"` | Nothing: the ask reads what changed. | 1.33 s | 1.25 s |
 | `"index"` | Brings the index up to date as the graphs last asked did: the changed files, the exports, and each adapter's document. | 1.11 s | 1.14 s |
@@ -373,7 +383,7 @@ For a working directory that is at its commit when it is prepared, as right afte
 
 Getting ready takes the time the asks would have taken, after every settled change, and gives way to any command: the daemon stops at the next language server it would ask, or stops waiting for the one it is asking, serves the command, and goes on after it. The server is not interrupted, so a graph asked meanwhile waits only for the answer already on its way. Between changes the daemon looks four times a second, which took 0.1% of one core. A repository past the watches graphs may take reports no changes, so the daemon asks Git about it instead, no more often than every 2 s and with fifty times what asking took in between. A workspace no graph was asked through for `[servers] pause_after` is no longer kept ready. `lemma daemon status` shows the graphs kept ready for each workspace, and how often and for how long the daemon got ready for them.
 
-Under each report it answers, sentry adds a line `sentry token: <token>`, and JSON output a `sentry` object; the findings and the exit code are the same as a check run on its own. A token stays the same while nothing a check reads changes. A check that asks for logs (`-l`) runs in its own process, and with `LEMMA_SENTRY=off` the daemon answers a check without sentry, keeping nothing from earlier ones. A check the daemon answers, with sentry or without, runs resolvers, adapters and checkers with the environment of the process that asked, as a check run in its own process does. `auto_attach` applies only in the user's own settings, and never when `CI` is set. `LEMMA_DAEMON_SOCKET` names another socket for the daemon, to run a separate one.
+Under each report it answers, sentry adds a line `sentry token: <token>`, and JSON output a `sentry` object; the findings and the exit code are the same as a check run on its own. A token stays the same while nothing a check reads changes. A check that asks for logs (`-l`) runs in its own process, and with `LEMMA_SENTRY=off` the daemon answers a check without sentry, keeping nothing from earlier ones. A check the daemon answers, with sentry or without, runs resolvers, adapters and checkers with the environment of the process that asked, as a check run in its own process does. `LEMMA_DAEMON_SOCKET` names another socket for the daemon, to run a separate one.
 
 Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `none`. The values above are the defaults, except `watches`, and `give_way_after`, which is the lookup's `--timeout-secs` unless set. The daemon rejects unknown settings, so a typo shows up instead of being ignored; a file that stops parsing while the daemon runs leaves the previous settings in force.
 

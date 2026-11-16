@@ -48,7 +48,7 @@ const LOOK_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Why a repository that would take more watches than are left is not
 /// watched.
-const OVER_BUDGET: &str = "the watches graphs may take are used up ([graph] watches)";
+const OVER_BUDGET: &str = "the watches graphs may take are used up ([sentry] watches)";
 
 /// The paths that changed together in one repository.
 pub(crate) struct Batch {

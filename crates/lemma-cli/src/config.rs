@@ -13,7 +13,8 @@ use anyhow::{Context, bail};
 use lemma_query::{IdlePolicy, WhenSlow};
 use serde::Deserialize;
 
-/// Who may start a daemon for a workspace that has none.
+/// Who may start something for a workspace that has none: a daemon
+/// (`[daemon] autostart`), or the daemon's sentry (`[sentry] autostart`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Autostart {
@@ -21,9 +22,10 @@ pub(crate) enum Autostart {
     #[default]
     Always,
     /// The MCP server and the editor's server. A command run from a shell
-    /// does its work in its own process.
+    /// does not: it does its work in its own process, or without sentry.
     Clients,
-    /// Nothing: a daemon runs once `lemma daemon start` has started it.
+    /// Nothing: it runs once it has been started by hand, with
+    /// `lemma daemon start` or `lemma daemon sentry start`.
     Never,
 }
 
@@ -37,21 +39,21 @@ pub(crate) struct Config {
     pub idle_exit: Option<Duration>,
     /// When to pause and stop idle language servers.
     pub idle_policy: IdlePolicy,
-    /// Start a project's servers again when its files change, if they were
-    /// stopped, so they are ready by the next lookup.
+    /// While sentry is attached: start a project's servers again when its
+    /// files change, if they were stopped, so they are ready by the next
+    /// lookup.
     pub warms_up_on_activity: bool,
     /// What a lookup does about a language server that does not answer in
     /// time.
     pub when_slow: WhenSlow,
-    /// Attach sentry to a workspace on its first `lemma check` while the
-    /// daemon runs. Off unless the user turns it on.
-    pub sentry_auto_attach: bool,
-    /// How many watches the workspaces graphs are traced through may take
-    /// between them, where each directory takes one. `None` sets no limit;
-    /// `Some(0)` watches nothing.
+    /// Who asks for sentry without being told to.
+    pub sentry_autostart: Autostart,
+    /// While sentry is attached: how many watches the workspaces graphs are
+    /// traced through may take between them, where each directory takes
+    /// one. `None` sets no limit; `Some(0)` watches nothing.
     pub graph_watches: Option<usize>,
-    /// How far the daemon gets ready for the next graph through a
-    /// workspace once its files change.
+    /// While sentry is attached: how far the daemon gets ready for the next
+    /// graph through a workspace once its files change.
     pub graph_prepare: Prepare,
     /// How many of the graphs last asked through a workspace are answered
     /// ahead once its files change, where graphs are answered ahead.
@@ -107,7 +109,7 @@ impl Default for Config {
             },
             warms_up_on_activity: true,
             when_slow: WhenSlow::default(),
-            sentry_auto_attach: false,
+            sentry_autostart: Autostart::default(),
             graph_watches: default_graph_watches(lemma_index::watch_limit()),
             graph_prepare: Prepare::default(),
             graphs_kept_ready: GRAPHS_KEPT_READY,
@@ -128,19 +130,6 @@ struct ConfigFile {
     repositories: RepositoriesSection,
     #[serde(default)]
     runtime: RuntimeSection,
-    #[serde(default)]
-    graph: GraphSection,
-}
-
-/// What the daemon may take to keep graphs across a workspace quick. The
-/// watches are a point between graphs that ask Git about every repository
-/// each time (`watches = 0`) and graphs that are told of every change.
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct GraphSection {
-    watches: Option<Watches>,
-    prepare: Option<Prepare>,
-    kept_ready: Option<usize>,
 }
 
 /// A number of watches, or `"none"` for no limit.
@@ -174,7 +163,18 @@ struct RuntimeSection {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct SentrySection {
-    auto_attach: Option<bool>,
+    autostart: Option<Autostart>,
+    /// Whether a project's language servers are started again when its
+    /// files change.
+    servers: Option<bool>,
+    /// How far sentry gets ready for the next graph once files change.
+    graphs: Option<Prepare>,
+    /// How many of the graphs last asked are answered ahead.
+    kept_ready: Option<usize>,
+    /// How many watches graphs across the workspace may take: a point
+    /// between graphs that ask Git about every repository each time
+    /// (`watches = 0`) and graphs that are told of every change.
+    watches: Option<Watches>,
 }
 
 #[derive(Deserialize, Default)]
@@ -235,7 +235,6 @@ struct ServersSection {
     pause_after: Option<String>,
     stop_after: Option<String>,
     memory_budget: Option<String>,
-    warm_on_activity: Option<bool>,
     when_slow: Option<SlowServer>,
     give_way_after: Option<String>,
     try_again_after: Option<String>,
@@ -297,6 +296,13 @@ fn parse_give_way_after(text: &str) -> anyhow::Result<Duration> {
 /// the file cannot be read, which whatever starts then reports.
 pub(crate) fn autostart() -> Autostart {
     load(config_path().as_deref()).map_or_else(|_| Autostart::default(), |config| config.autostart)
+}
+
+/// Who asks for sentry without being told to, by the user's config file;
+/// the default when the file cannot be read.
+pub(crate) fn sentry_autostart() -> Autostart {
+    load(config_path().as_deref())
+        .map_or_else(|_| Autostart::default(), |config| config.sentry_autostart)
 }
 
 /// What lookups in a command's own process do about a slow server, by the
@@ -416,21 +422,15 @@ fn parse(text: &str) -> anyhow::Result<Config> {
                 None => defaults.idle_policy.memory_budget_bytes,
             },
         },
-        warms_up_on_activity: file
-            .servers
-            .warm_on_activity
-            .unwrap_or(defaults.warms_up_on_activity),
+        warms_up_on_activity: file.sentry.servers.unwrap_or(defaults.warms_up_on_activity),
         when_slow,
-        sentry_auto_attach: file
-            .sentry
-            .auto_attach
-            .unwrap_or(defaults.sentry_auto_attach),
-        graph_watches: match &file.graph.watches {
+        sentry_autostart: file.sentry.autostart.unwrap_or_default(),
+        graph_watches: match &file.sentry.watches {
             Some(watches) => parse_watches(watches)?,
             None => defaults.graph_watches,
         },
-        graph_prepare: file.graph.prepare.unwrap_or(defaults.graph_prepare),
-        graphs_kept_ready: file.graph.kept_ready.unwrap_or(defaults.graphs_kept_ready),
+        graph_prepare: file.sentry.graphs.unwrap_or(defaults.graph_prepare),
+        graphs_kept_ready: file.sentry.kept_ready.unwrap_or(defaults.graphs_kept_ready),
     })
 }
 
@@ -505,10 +505,10 @@ mod tests {
     fn the_watches_graphs_may_take_are_a_number_or_none() {
         let watches = |text: &str| parse(text).map(|config| config.graph_watches);
 
-        assert_eq!(watches("[graph]\nwatches = 0\n").unwrap(), Some(0));
-        assert_eq!(watches("[graph]\nwatches = 5000\n").unwrap(), Some(5000));
-        assert_eq!(watches("[graph]\nwatches = \"none\"\n").unwrap(), None);
-        assert!(watches("[graph]\nwatches = \"many\"\n").is_err());
+        assert_eq!(watches("[sentry]\nwatches = 0\n").unwrap(), Some(0));
+        assert_eq!(watches("[sentry]\nwatches = 5000\n").unwrap(), Some(5000));
+        assert_eq!(watches("[sentry]\nwatches = \"none\"\n").unwrap(), None);
+        assert!(watches("[sentry]\nwatches = \"many\"\n").is_err());
     }
 
     #[test]
@@ -516,9 +516,9 @@ mod tests {
         let kept_ready = |text: &str| parse(text).map(|config| config.graphs_kept_ready);
 
         assert_eq!(kept_ready("").unwrap(), 4);
-        assert_eq!(kept_ready("[graph]\nkept_ready = 1\n").unwrap(), 1);
-        assert_eq!(kept_ready("[graph]\nkept_ready = 0\n").unwrap(), 0);
-        assert!(kept_ready("[graph]\nkept_ready = \"all\"\n").is_err());
+        assert_eq!(kept_ready("[sentry]\nkept_ready = 1\n").unwrap(), 1);
+        assert_eq!(kept_ready("[sentry]\nkept_ready = 0\n").unwrap(), 0);
+        assert!(kept_ready("[sentry]\nkept_ready = \"all\"\n").is_err());
     }
 
     #[test]
@@ -582,18 +582,18 @@ mod tests {
 
         assert_eq!(prepare("").unwrap(), Prepare::Graph);
         assert_eq!(
-            prepare("[graph]\nprepare = \"index\"\n").unwrap(),
+            prepare("[sentry]\ngraphs = \"index\"\n").unwrap(),
             Prepare::Index
         );
         assert_eq!(
-            prepare("[graph]\nprepare = \"off\"\n").unwrap(),
+            prepare("[sentry]\ngraphs = \"off\"\n").unwrap(),
             Prepare::Off
         );
         assert_eq!(
-            prepare("[graph]\nprepare = \"graph\"\n").unwrap(),
+            prepare("[sentry]\ngraphs = \"graph\"\n").unwrap(),
             Prepare::Graph
         );
-        assert!(prepare("[graph]\nprepare = \"everything\"\n").is_err());
+        assert!(prepare("[sentry]\ngraphs = \"everything\"\n").is_err());
     }
 
     #[test]
@@ -619,6 +619,22 @@ mod tests {
     }
 
     #[test]
+    fn any_command_asks_for_sentry_unless_the_file_says_who_does() {
+        let who = |text: &str| parse(text).map(|config| config.sentry_autostart);
+
+        assert_eq!(who("").unwrap(), Autostart::Always);
+        assert_eq!(
+            who("[sentry]\nautostart = \"clients\"\n").unwrap(),
+            Autostart::Clients
+        );
+        assert_eq!(
+            who("[sentry]\nautostart = \"never\"\n").unwrap(),
+            Autostart::Never
+        );
+        assert!(who("[sentry]\nmcp = true\n").is_err());
+    }
+
+    #[test]
     fn an_empty_file_gives_the_defaults() {
         assert_eq!(parse("").unwrap(), Config::default());
     }
@@ -626,7 +642,7 @@ mod tests {
     #[test]
     fn every_setting_can_be_changed() {
         let config = parse(
-            "[daemon]\nidle_exit = \"30m\"\n\n[servers]\npause_after = \"never\"\nstop_after = \"1d\"\nmemory_budget = \"2GB\"\nwarm_on_activity = false\n",
+            "[daemon]\nidle_exit = \"30m\"\n\n[servers]\npause_after = \"never\"\nstop_after = \"1d\"\nmemory_budget = \"2GB\"\n\n[sentry]\nservers = false\n",
         )
         .unwrap();
 
