@@ -164,3 +164,89 @@ fn a_command_starts_no_daemon_when_only_clients_may() {
     let started = said(&asked(&["daemon", "start"]));
     assert!(started.contains("started a lemma daemon"), "{started}");
 }
+
+fn git(directory: &Path, args: &[&str]) {
+    let done = Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(done.status.success(), "git {args:?}: {}", said(&done));
+}
+
+/// A workspace of a service and the code calling it, where the service's
+/// last commit removed a response field the caller reads.
+fn shop_with_a_break(shop: &Path) {
+    let document = |fields: &str| {
+        format!(
+            r#"{{"openapi":"3.0.0","info":{{"title":"Billing","version":"1"}},"paths":{{"/v1/charges":{{"post":{{"operationId":"createCharge","responses":{{"200":{{"content":{{"application/json":{{"schema":{{"type":"object","properties":{{{fields}}}}}}}}}}}}}}}}}}}}}"#
+        )
+    };
+    let (billing, web) = (shop.join("billing"), shop.join("web"));
+    fs::create_dir_all(web.join("src")).unwrap();
+    fs::create_dir_all(&billing).unwrap();
+    fs::write(
+        shop.join("mod.lm"),
+        "module shop\n\nworkspace {\n    repo billing = local(\"billing\")\n    repo web = local(\"web\")\n    config: { level: check }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        billing.join("mod.lm"),
+        "module billing\n\nimport * as http from lemma.http\n\nexport service api {\n    operations: http.openapi(\"openapi.json\")\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        web.join("mod.lm"),
+        "module web\n\nexport service web {\n    index: { include: [\"src\"] }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        web.join("src/charge.ts"),
+        "export async function charge(): Promise<string> {\n  const response = await fetch(\"/v1/charges\", { method: \"POST\" });\n  const body = await response.json();\n  return body.receipt_url;\n}\n",
+    )
+    .unwrap();
+    let both = r#""id":{"type":"string"},"receipt_url":{"type":"string"}"#;
+    fs::write(billing.join("openapi.json"), document(both)).unwrap();
+    for repository in [&billing, &web] {
+        git(repository, &["init", "-q"]);
+        git(repository, &["add", "."]);
+        git(repository, &["commit", "-q", "-m", "first"]);
+    }
+    fs::write(
+        billing.join("openapi.json"),
+        document(r#""id":{"type":"string"}"#),
+    )
+    .unwrap();
+    git(&billing, &["commit", "-q", "-a", "-m", "drop receipt_url"]);
+}
+
+#[test]
+fn a_check_the_daemon_answers_prints_what_one_in_its_own_process_prints() {
+    let space = tempfile::tempdir().unwrap();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let shop = runtime.join("shop");
+    shop_with_a_break(&shop);
+    let check = [
+        "check", "--change", "billing", "--base", "HEAD~1", "--head", "HEAD",
+    ];
+    let alone: Vec<&str> = check.iter().copied().chain(["--no-daemon"]).collect();
+
+    let from_daemon = lemma(&runtime, &shop, &check);
+    let own_process = lemma(&runtime, &shop, &alone);
+
+    assert!(
+        said(&own_process).contains("receipt_url"),
+        "{}",
+        said(&own_process)
+    );
+    assert_eq!(said(&from_daemon), said(&own_process));
+    assert_eq!(from_daemon.status.code(), own_process.status.code());
+    assert_eq!(
+        served_root(&runtime, &shop),
+        Some(shop.display().to_string()),
+        "the check started the workspace's daemon"
+    );
+}

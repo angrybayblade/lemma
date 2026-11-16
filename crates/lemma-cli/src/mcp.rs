@@ -95,10 +95,10 @@ impl Runner {
 
     fn run(&mut self, args: Vec<String>) -> Finished {
         if runs_in_own_process(&args) {
-            // A check sentry serves needs no process of its own: asking it
-            // here saves starting one only for it to ask.
+            // A check the workspace's daemon answers needs no process of
+            // its own.
             if self.uses_daemon
-                && let Some(finished) = ask_sentry(&args, &self.cwd)
+                && let Some(finished) = ask_daemon_to_check(&args, &self.cwd)
             {
                 return finished;
             }
@@ -197,16 +197,19 @@ fn forward(_args: Vec<String>, _cwd: PathBuf) -> Option<Finished> {
     None
 }
 
-/// A `check` answered by the daemon's sentry, as the command run in `cwd`
-/// would be; `None` when sentry does not serve it, or for any other command.
+/// A `check` answered by the workspace's daemon, as the command run in
+/// `cwd` would be; `None` when no daemon serves it, or for any other
+/// command.
 #[cfg(unix)]
-fn ask_sentry(args: &[String], cwd: &std::path::Path) -> Option<Finished> {
+fn ask_daemon_to_check(args: &[String], cwd: &std::path::Path) -> Option<Finished> {
     let is_check = args.first().map(String::as_str) == Some("check");
-    if !is_check || crate::sentry::is_turned_off() {
+    if !is_check {
         return None;
     }
     let environment = std::env::vars().collect();
-    let answer = crate::daemon::ask_sentry(args.to_vec(), cwd.to_path_buf(), environment)?;
+    let asker = crate::daemon::Asker::Server;
+    let answer =
+        crate::daemon::ask_for_check(args.to_vec(), cwd.to_path_buf(), environment, asker)?;
     Some(Finished {
         stdout: answer.stdout,
         stderr: answer.stderr,
@@ -215,7 +218,7 @@ fn ask_sentry(args: &[String], cwd: &std::path::Path) -> Option<Finished> {
 }
 
 #[cfg(not(unix))]
-fn ask_sentry(_args: &[String], _cwd: &std::path::Path) -> Option<Finished> {
+fn ask_daemon_to_check(_args: &[String], _cwd: &std::path::Path) -> Option<Finished> {
     None
 }
 
