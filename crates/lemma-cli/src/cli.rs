@@ -31,6 +31,12 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub no_daemon: bool,
 
+    /// Do a `check`'s or a `verify`'s work in this process and do not ask
+    /// the daemon to, while still using the daemon's warm servers and
+    /// runtimes: how the daemon runs one for whoever asked it.
+    #[arg(long, global = true, hide = true)]
+    pub in_own_process: bool,
+
     /// Log what Lemma is doing to stderr, at this level: `error`, `warn`,
     /// `info` (each step: in this process or the daemon, what is read,
     /// cached or run), `debug` or `trace`. Off when not given.

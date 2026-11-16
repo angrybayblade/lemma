@@ -144,13 +144,17 @@ Every operation, when a daemon serves the client:
 | `verify` | Client's process | Daemon |
 | The editor's server's checks | Sentry, or the server's own process | Daemon, on each save the editor reports, or as sentry reports changes. Not built: it still watches the workspace in its own process when sentry is not attached to it (step 4) |
 
-A check sends the client's directory, arguments and environment, as an ask to sentry does today, so an adapter or checker runs with the toolchain of the shell that asked. The daemon gives the check to sentry when sentry is attached to its workspace, and otherwise answers it on a thread of its own with nothing kept from earlier checks: the report a check gives in its own process. A check that asks for logs runs in the client's process, since the daemon cannot yet tell one check's log lines from another's; so does a check the daemon's thread fails on, because the connection then closes unanswered and the client checks by itself.
+A check sends the client's directory, arguments and environment, as an ask to sentry does today, so an adapter or checker runs with the toolchain of the shell that asked. The daemon gives the check to sentry when sentry is attached to its workspace. Otherwise it runs the check in a short-lived process of its own, from the asker's directory with the asker's environment, and passes on what it prints: the report a check gives when its asker runs it. `verify` is answered the same way.
+
+That process is deliberate. Answered on a thread of the daemon's instead, a check's memory stayed in the daemon: after 214 checks of the gates' workspace the daemon held 1.35 GB, and after the 100,000-file workspace 614 MB (2026-11-16). A process gives everything back when it ends. Sentry keeps what it reads on purpose, and is the one way a check's state stays in the daemon.
+
+A check that asks for logs runs in the client's process, since the daemon does not pass one command's log lines on. So does one the daemon cannot run, because the connection then closes unanswered and the client does the work itself.
 
 The path without a daemon is the same code run in the client's process. It is a fallback, not a second behaviour: [Guardrails](#guardrails) requires its answers to equal the daemon's.
 
 ### A request does not wait behind another
 
-A check handed to sentry is already answered on its own thread while the daemon's loop goes on serving lookups. A check that moves into the daemon is handed off the same way, so a lookup does not wait behind a check.
+A check handed to sentry is answered on sentry's thread, and any other check or verify in a process of its own, while the daemon's loop goes on serving lookups. So a lookup does not wait behind a check.
 
 *Proposal.* What remains is a lookup behind a long lookup in the same workspace: a first `refs` waiting for a language server to load holds up a symbol search that would take a millisecond. One daemon per workspace removes the waiting between workspaces; inside one, lookups that need different language servers, or none, should be served side by side. It is measured before it is built, since it only matters while a server is loading.
 

@@ -67,11 +67,11 @@ fn main() -> ExitCode {
             asks_daemon: !cli.no_daemon && !daemon_disabled_by_environment(),
             providers_file: cli.providers.clone(),
         };
-        return verify::run(args, &lsp, cli.json);
+        return verify::run(args, &lsp, !cli.in_own_process, cli.json);
     }
     if let Command::Check(args) = &cli.command {
         let asks_daemon = !cli.no_daemon && !daemon_disabled_by_environment();
-        return check::run(args, asks_daemon, cli.json);
+        return check::run(args, asks_daemon && !cli.in_own_process, cli.json);
     }
     if matches!(cli.command, Command::Mcp) {
         let uses_daemon = !cli.no_daemon && !daemon_disabled_by_environment();

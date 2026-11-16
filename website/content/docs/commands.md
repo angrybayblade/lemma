@@ -228,7 +228,7 @@ Other clients take the same command, `lemma mcp`, started in the project directo
 
 Compares a description with the code at one snapshot: patterns that match no file, documents that do not exist, anchors that do not resolve, links that no longer hold. It does not compare commits or report contract disagreements. See [Verifying descriptions](verify.md).
 
-Like `lemma check`, it runs in the workspace's daemon, and in the command's own process with `--no-daemon`, with `--logging`, or when no daemon serves the workspace and none may be started. The report is the same either way.
+Like `lemma check`, it is answered by the workspace's daemon, in a short-lived process the daemon runs for it, and in the command's own process with `--no-daemon`, with `--logging`, or when no daemon serves the workspace and none may be started. The report is the same either way.
 
 | Option | Meaning |
 | --- | --- |
@@ -242,7 +242,7 @@ Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
 Checks a change against every repository the entry module composes: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Check links](check.md). The entry module's own requirements run beside the HTTP contracts, its behaviors run (with their checkers), and its allowances apply, as its `check main` selects them. See [The `.lm` language](language.md).
 
-The check runs in the daemon of the workspace the entry module is in, which it starts as any command does ([`autostart`](#settings)); lookups asked meanwhile are not held up. It runs in the command's own process instead with `--no-daemon`, with `--logging`, whose lines only that process can print, or when no daemon serves the workspace and none may be started. The report and the exit code are the same either way.
+The check is answered by the daemon of the workspace the entry module is in, which it starts as any command does ([`autostart`](#settings)): through sentry when sentry is attached, and otherwise in a short-lived process the daemon runs for it, with the directory and environment of whoever asked. Lookups asked meanwhile are not held up. It runs in the command's own process instead with `--no-daemon`, with `--logging`, whose lines only that process can print, or when no daemon serves the workspace and none may be started. The report and the exit code are the same either way.
 
 | Option | Meaning |
 | --- | --- |
