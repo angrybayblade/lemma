@@ -20,9 +20,10 @@ const EXIT_VIOLATED: u8 = 4;
 /// Exit code when the check finished without covering every repository.
 const EXIT_INCOMPLETE: u8 = 5;
 
-/// Checks as `args` ask and prints the report: in the workspace's daemon
-/// when one may serve it (`asks_daemon`), which answers through sentry if
-/// it is attached, and in this process otherwise.
+/// Checks as `args` ask and prints the report. When a daemon may serve it
+/// (`asks_daemon`), the workspace's daemon answers: through sentry if it is
+/// attached, and otherwise by running the check in a process of its own.
+/// Otherwise the check runs in this process.
 pub(crate) fn run(args: &CheckArgs, asks_daemon: bool, json: bool) -> ExitCode {
     #[cfg(unix)]
     if asks_daemon {
@@ -73,35 +74,6 @@ fn answer_alone(
         );
     }
     exit_code
-}
-
-/// What a check prints and returns when a daemon with no sentry for it
-/// answers: the same as run by itself, with nothing kept from earlier
-/// checks. `manifest` is resolved against the asker's directory, and
-/// `environment` is the asker's, for the commands the check runs.
-#[cfg(unix)]
-pub(crate) fn answered_alone(
-    args: &CheckArgs,
-    json: bool,
-    manifest: &Path,
-    environment: BTreeMap<String, String>,
-) -> crate::sentry::Answer {
-    let served = Served {
-        manifest,
-        warm: Arc::default(),
-        environment: Arc::new(environment),
-    };
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    let mut streams = Streams {
-        out: &mut out,
-        err: &mut err,
-    };
-    let exit_code = answer_alone(args, json, Some(&served), &mut streams);
-    crate::sentry::Answer {
-        stdout: String::from_utf8_lossy(&out).into_owned(),
-        stderr: String::from_utf8_lossy(&err).into_owned(),
-        exit_code,
-    }
 }
 
 /// Where a check prints its report and its errors.

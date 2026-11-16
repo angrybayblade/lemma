@@ -601,8 +601,8 @@ struct Asked {
 }
 
 /// Takes a `check` or a `verify` asked of the daemon. Either is answered
-/// on `stream` from another thread, so the daemon goes on serving lookups
-/// meanwhile. One from another build, or any other command, is left to its
+/// on `stream` from elsewhere (sentry's thread, or a process of its own),
+/// so the daemon goes on serving lookups meanwhile. One from another build, or any other command, is left to its
 /// asker.
 fn hand_check(
     asked: Asked,
@@ -614,18 +614,24 @@ fn hand_check(
     let command = Cli::try_parse_from(words)
         .ok()
         .filter(|_| asked.build == build_id());
-    let (command, json, providers) = match command {
-        Some(cli) => (Some(cli.command), cli.json, cli.providers),
-        None => (None, false, None),
+    let (command, json) = match command {
+        Some(cli) => (Some(cli.command), cli.json),
+        None => (None, false),
     };
     match command {
         Some(crate::cli::Command::Check(args)) => {
             let may_attach = settings.config.sentry_auto_attach;
             check_through(sentry, may_attach, Checked { asked, args, json }, stream);
         }
-        Some(crate::cli::Command::Verify(args)) => {
-            verify_alone(asked, args, json, providers, stream);
+        Some(crate::cli::Command::Verify(_)) if send(&mut stream, &Reply::Accepted).is_ok() => {
+            let alone = Alone {
+                args: asked.args,
+                cwd: asked.cwd,
+                environment: asked.environment,
+            };
+            answer_alone(alone, stream);
         }
+        Some(crate::cli::Command::Verify(_)) => {}
         _ => {
             let _ = send(&mut stream, &Reply::NotServed);
         }
@@ -641,7 +647,8 @@ struct Checked {
 
 /// Answers a check: through `sentry` when it is attached to the check's
 /// workspace, attaching it first if the user opted in to that (`may_attach`),
-/// and otherwise with nothing kept from earlier checks.
+/// and otherwise in a process of its own, with nothing kept from earlier
+/// checks.
 fn check_through(
     sentry: &mut Option<Sentry>,
     may_attach: bool,
@@ -673,38 +680,15 @@ fn check_through(
     let attached = sentry
         .as_ref()
         .filter(|attached| uses_sentry && attached.manifest() == manifest);
-    match attached {
-        Some(attached) => attached.ask(crate::sentry::Ask { question, stream }),
-        None => check_alone(question, manifest, stream),
-    }
-}
-
-/// Answers a `verify` on a thread of its own, with the module and the
-/// providers file it names resolved against the asker's directory. If the
-/// thread cannot start or fails, the connection closes unanswered and the
-/// asker verifies by itself.
-fn verify_alone(
-    asked: Asked,
-    mut args: crate::cli::VerifyArgs,
-    json: bool,
-    providers: Option<PathBuf>,
-    mut stream: UnixStream,
-) {
-    if send(&mut stream, &Reply::Accepted).is_err() {
-        return;
-    }
-    args.module = asked.cwd.join(&args.module);
-    let providers = providers.map(|file| asked.cwd.join(file));
-    let verifying = thread::Builder::new()
-        .name("verify".to_owned())
-        .spawn(move || {
-            log::info!("verifying {} for a caller", args.module.display());
-            let answer = crate::verify::answered_alone(&args, providers, json, asked.environment);
-            reply_answer(stream, &answer);
-        });
-    if let Err(error) = verifying {
-        log::warn!("could not start a thread for a verify: {error}");
-    }
+    let Some(attached) = attached else {
+        let alone = Alone {
+            args: question.raw,
+            cwd: question.cwd,
+            environment: question.environment,
+        };
+        return answer_alone(alone, stream);
+    };
+    attached.ask(crate::sentry::Ask { question, stream });
 }
 
 /// Attaches sentry to the workspace of `manifest` for a check that opted in
@@ -719,28 +703,57 @@ fn attach_for_check(sentry: &mut Option<Sentry>, manifest: &Path) {
     }
 }
 
-/// Answers a check no sentry serves, on a thread of its own: the report the
-/// check gives run by itself. If the thread cannot start or fails, the
-/// connection closes unanswered and the asker checks by itself.
-fn check_alone(question: crate::sentry::Question, manifest: PathBuf, stream: UnixStream) {
-    let checking = thread::Builder::new()
-        .name("check".to_owned())
-        .spawn(move || {
-            log::info!(
-                "checking {} for a caller, without sentry",
-                manifest.display()
-            );
-            let answer = crate::check::answered_alone(
-                &question.args,
-                question.json,
-                &manifest,
-                question.environment,
-            );
-            reply_answer(stream, &answer);
+/// A command the daemon runs in a process of its own for whoever asked:
+/// its arguments, and the directory and environment it was asked from.
+struct Alone {
+    args: Vec<String>,
+    cwd: PathBuf,
+    environment: BTreeMap<String, String>,
+}
+
+/// Answers a `check` no sentry serves, or a `verify`, by running it in a
+/// process of its own, as its asker would have, and passing on what it
+/// prints. The daemon waits for it on another thread, so lookups go on.
+///
+/// A process, not a thread of the daemon's: what a check allocates is given
+/// back only when its process ends. Answering 214 checks of a large
+/// workspace on threads left the daemon holding 1.3 GB. If the process
+/// cannot be run, the connection closes unanswered and the asker does the
+/// work itself.
+fn answer_alone(alone: Alone, stream: UnixStream) {
+    let waiting = thread::Builder::new()
+        .name("alone".to_owned())
+        .spawn(move || match run_alone(&alone) {
+            Ok(answer) => reply_answer(stream, &answer),
+            Err(error) => log::warn!("could not run `lemma {}`: {error:#}", alone.args.join(" ")),
         });
-    if let Err(error) = checking {
-        log::warn!("could not start a thread for a check: {error}");
+    if let Err(error) = waiting {
+        log::warn!("could not start a thread to wait for a command: {error}");
     }
+}
+
+/// Runs `alone` to its end: what it printed and returned.
+fn run_alone(alone: &Alone) -> anyhow::Result<crate::sentry::Answer> {
+    let executable = std::env::current_exe().context("could not find the lemma executable")?;
+    log::info!("running `lemma {}` for a caller", alone.args.join(" "));
+    let output = Command::new(executable)
+        .args(&alone.args)
+        .arg("--in-own-process")
+        .current_dir(&alone.cwd)
+        .env_clear()
+        .envs(&alone.environment)
+        .stdin(Stdio::null())
+        .output()
+        .context("could not start it")?;
+    let exit_code = output
+        .status
+        .code()
+        .and_then(|code| u8::try_from(code).ok());
+    Ok(crate::sentry::Answer {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: exit_code.unwrap_or(1),
+    })
 }
 
 /// Attaches, detaches or reports on sentry, for `lemma daemon sentry`.
