@@ -469,3 +469,57 @@ fn a_file_in_another_checkout_is_refused_and_never_answered_from_this_one() {
     );
     assert!(!answer.contains("in_the_app"), "{answer}");
 }
+
+/// A language server that answers `initialize`, the first request a client
+/// sends, and nothing after it. It is `/bin/sh`, so that the tests need
+/// nothing installed.
+const SILENT_SERVER: &str = r#"#!/bin/sh
+read -r header
+body='{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"referencesProvider":true}}}'
+printf 'Content-Length: %s\r\n\r\n%s' "${#body}" "$body"
+exec cat > /dev/null
+"#;
+
+/// A checkout defining `price` in Python, whose language server starts and
+/// then never answers.
+fn checkout_with_a_silent_server(runtime: &Path, directory: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    checkout_defining(runtime, directory, "price");
+    let server = directory.join(".lemma/silent-server");
+    fs::write(&server, SILENT_SERVER).unwrap();
+    fs::set_permissions(&server, fs::Permissions::from_mode(0o755)).unwrap();
+    let providers = format!(
+        "[[provider]]\nid = \"pyright\"\nlanguages = [\"python\"]\ncommand = \"{}\"\n",
+        server.display()
+    );
+    fs::write(directory.join(".lemma/providers.toml"), providers).unwrap();
+}
+
+#[test]
+fn a_lookup_waits_for_its_server_as_long_as_it_was_told_and_no_longer() {
+    let space = space();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let app = runtime.join("app");
+    checkout_with_a_silent_server(&runtime, &app);
+    // Indexing through the daemon starts the server ahead of any lookup,
+    // with the long wait that starting is allowed.
+    let indexed = lemma(&runtime, &app, &["index", "."]);
+    assert!(indexed.status.success(), "{}", said(&indexed));
+
+    let asked = lemma(
+        &runtime,
+        &app,
+        &["refs", "price", "--refresh", "--timeout-secs", "2"],
+    );
+
+    let answer = said(&asked);
+    assert!(!asked.status.success(), "{answer}");
+    let waited = answer
+        .split("timed out after ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|seconds| seconds.parse::<u64>().ok());
+    assert!(waited.is_some_and(|seconds| seconds <= 2), "{answer}");
+}

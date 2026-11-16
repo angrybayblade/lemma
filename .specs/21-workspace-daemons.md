@@ -158,6 +158,12 @@ A check handed to sentry is answered on sentry's thread, and any other check or 
 
 *Proposal.* What remains is a lookup behind a long lookup in the same workspace: a first `refs` waiting for a language server to load holds up a symbol search that would take a millisecond. One daemon per workspace removes the waiting between workspaces; inside one, lookups that need different language servers, or none, should be served side by side. It is measured before it is built, since it only matters while a server is loading.
 
+#### A lookup's own wait
+
+*Fixed in step 6.* A lookup waits `--timeout-secs` (60 unless given) for a provider. A session started ahead of any lookup, as `lemma index` does through the daemon, is started with the five minutes that loading a large workspace may take, and a lookup that found such a session waited those five minutes instead of its own: `refs --timeout-secs 12` took 300 s. Every ask now gets what its lookup allows.
+
+A provider that does not answer in time is stopped, as it always was after its own wait: it may be stuck, and the next lookup starts it again. For a repository whose server needs longer than a minute for some names, that is what `[servers] when_slow = "next"` and a longer `--timeout-secs` are for.
+
 ## Sentry
 
 Sentry is the daemon's watcher for its workspace. It is off until a client asks for it.

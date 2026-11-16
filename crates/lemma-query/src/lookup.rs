@@ -369,7 +369,9 @@ fn ask_provider<A: Ask>(
     };
     let version = session.version();
     let started = Instant::now();
-    session.answer_within(within);
+    // A session started ahead of a lookup waits as long as starting takes;
+    // an answer gets what this lookup allows.
+    session.answer_within(Some(within.unwrap_or(options.request_timeout)));
     let asked = open_projects(&*store, snapshot, at, asking, session)
         .and_then(|()| asking.ask(session, at));
     session.answer_within(None);
