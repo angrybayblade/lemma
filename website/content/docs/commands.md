@@ -281,10 +281,8 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 
 | Command | Meaning |
 | --- | --- |
-| `lemma daemon status` | Whether it runs as a login service; its language servers: starting, running or paused, how long idle, and memory, and any passed over for being too slow (`[servers] when_slow`); and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. |
+| `lemma daemon status` | Its language servers: starting, running or paused, how long idle, and memory, and any passed over for being too slow (`[servers] when_slow`); and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. |
 | `lemma daemon stop` | Stop the running daemon; it returns once the daemon and its language servers have stopped. |
-| `lemma daemon install` | Run the daemon as a login service (launchd on macOS, systemd on Linux), so it is already up when an agent asks its first question. It is restarted only if it crashes, and a command that finds it stopped starts it through the service. The service keeps the `PATH` of the shell that installed it; run `install` again after installing a toolchain elsewhere. |
-| `lemma daemon uninstall` | Remove the login service and stop its daemon. |
 | `lemma daemon lsp [path]`, or `lemma daemon lsp list [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |
 | `lemma daemon lsp start [path] [--language <l>] [--provider <id>] [--wait]` | Start those servers in the daemon, in the background, or with `--wait` until each has loaded its project, reporting how long it took or why it failed (exit 1). A language's providers are tried in order, as a lookup tries them: when the first cannot start (typescript-language-server without a TypeScript it can use), the next serves. |
 | `lemma daemon lsp stop [path] [--language <l>] [--provider <id>]` | Stop those servers. |
@@ -296,9 +294,7 @@ Runs commands for `lemma` with warm state: open databases, watchers on indexed d
 
 Sentry is experimental and off unless you start it: its answers match a fresh check, but it can change or go away between releases.
 
-On Linux, `install` uses a systemd user unit. On a server you reach over SSH there may be no user session to run it in; `sudo loginctl enable-linger $USER` gives you one that starts at boot and outlives your logins.
-
-The daemon serves every later command, so it does not keep the environment of the command that happened to start it. Without a service, it keeps only `HOME`, `USER`, `LOGNAME`, `PATH`, `SHELL`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `SSH_AUTH_SOCK`, the proxy variables and `LEMMA_*`. A shell's `GOCACHE`, `XDG_CACHE_HOME` or `TMPDIR` would otherwise redirect every later build and cache, and break them once that shell's directories are gone. Adapters and checkers that need a variable get it from their `env` settings. Set `LEMMA_NO_DAEMON=1` to run a command in its own process, with its own environment.
+The daemon serves every later command, so it does not keep the environment of the command that happened to start it. It keeps only `HOME`, `USER`, `LOGNAME`, `PATH`, `SHELL`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `SSH_AUTH_SOCK`, the proxy variables and `LEMMA_*`. A shell's `GOCACHE`, `XDG_CACHE_HOME` or `TMPDIR` would otherwise redirect every later build and cache, and break them once that shell's directories are gone. Adapters and checkers that need a variable get it from their `env` settings. Set `LEMMA_NO_DAEMON=1` to run a command in its own process, with its own environment.
 
 ### Settings
 

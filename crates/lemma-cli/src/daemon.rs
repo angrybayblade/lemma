@@ -928,20 +928,7 @@ fn connect_or_start(socket: &Path) -> anyhow::Result<UnixStream> {
 }
 
 /// The daemon is never waited for: it outlives this command on purpose.
-/// An installed service starts it; otherwise it is started here, with the
-/// environment the service would give it.
 fn start_daemon() -> anyhow::Result<()> {
-    // The login service runs the daemon of the usual socket, not of one
-    // `LEMMA_DAEMON_SOCKET` names.
-    if std::env::var_os("LEMMA_DAEMON_SOCKET").is_none() {
-        match crate::service::start() {
-            Ok(true) => return Ok(()),
-            Ok(false) => {}
-            Err(error) => {
-                log::info!("could not start the daemon's service, so starting it here: {error:#}");
-            }
-        }
-    }
     let executable = std::env::current_exe().context("could not find the lemma executable")?;
     Command::new(executable)
         .arg("daemon")

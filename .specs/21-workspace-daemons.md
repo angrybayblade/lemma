@@ -120,7 +120,7 @@ A daemon that is already running is used by every client under all three. `--no-
 
 *Proposal.* `lemma daemon status` and `lemma daemon stop` act on the daemon serving the current directory, and take `--all` for every daemon of the user. Status says first which daemon would serve this directory and why (found running at a parent, or would be started at this root), so a person can see the route a client takes. After installing a new `lemma`, `lemma daemon stop --all` is what replaces the running ones.
 
-*Proposal.* `lemma daemon install` can no longer mean one service already up at login, since there is no one daemon. It is removed; a daemon starts on a workspace's first request.
+`lemma daemon install` and `uninstall` are removed (decided 2026-11-16): with no one daemon there is no one service to keep up at login. A daemon starts on a workspace's first request, or with `lemma daemon start` run in the workspace, which starts its daemon in the background and returns once it listens. `lemma daemon` alone still runs one in the foreground.
 
 ### When a daemon exits
 

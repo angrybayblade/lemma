@@ -179,7 +179,7 @@ Checks are deterministic (see CONTRIBUTING), so a reused answer is the answer a 
 ## 6. Lifecycle and configuration
 
 - **Attaching by hand.** `lemma daemon sentry start [MANIFEST]` attaches sentry to a workspace's `lemma.yaml` or `mod.lm`, by default the `lemma.yaml` in the current directory. It fails in two cases:
-  - No daemon is running. The daemon starts with the first lookup, or at login after `lemma daemon install`.
+  - No daemon is running. The daemon starts with the first lookup.
   - Another workspace is attached. The error names it.
 - **Attaching automatically.** This happens only if the user opted in, with `auto_attach = true` under `[sentry]` in `~/.config/lemma/config.toml`.
   - Then the first `lemma check` in a workspace, while the daemon runs and nothing is attached, attaches sentry and becomes its first ask. Its warm-up is that check, done once instead of twice.
