@@ -31,6 +31,12 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub no_daemon: bool,
 
+    /// Do a `check`'s or a `verify`'s work in this process and do not ask
+    /// the daemon to, while still using the daemon's warm servers and
+    /// runtimes: how the daemon runs one for whoever asked it.
+    #[arg(long, global = true, hide = true)]
+    pub in_own_process: bool,
+
     /// Log what Lemma is doing to stderr, at this level: `error`, `warn`,
     /// `info` (each step: in this process or the daemon, what is read,
     /// cached or run), `debug` or `trace`. Off when not given.
@@ -242,19 +248,30 @@ pub(crate) struct DaemonArgs {
     /// instead of the configured `idle_exit`.
     #[arg(long)]
     pub idle_secs: Option<u64>,
+    /// When running: the root of the workspace to serve. Default: the
+    /// workspace the current directory belongs to.
+    #[arg(long, value_name = "DIRECTORY")]
+    pub root: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
 pub(crate) enum DaemonAction {
-    /// Show the daemon's language servers and whether it runs as a service.
-    Status,
-    /// Stop the running daemon.
-    Stop,
-    /// Run the daemon as a login service (launchd on macOS, systemd on
-    /// Linux), so it is already running when the first command arrives.
-    Install,
-    /// Remove the login service and stop its daemon.
-    Uninstall,
+    /// Start the daemon of the workspace the current directory belongs to,
+    /// in the background, unless one already serves it.
+    Start,
+    /// Show the workspace this directory's daemon serves and its language
+    /// servers.
+    Status {
+        /// Every daemon of this user, not only this directory's.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Stop the daemon serving this directory.
+    Stop {
+        /// Every daemon of this user, not only this directory's.
+        #[arg(long)]
+        all: bool,
+    },
     /// List, start or stop the daemon's language servers for a repository
     /// or workspace. Without an action, lists them.
     Lsp(LspArgs),
@@ -515,15 +532,31 @@ mod tests {
     /// The MCP tools `lemma mcp` serves, which the reference lists too.
     const MCP_TOOLS: &str = include_str!("mcp_tools.json");
 
-    /// Each subcommand under `command` (named `path`) and each long option
-    /// of it and below that the reference does not mention.
-    fn unmentioned(command: &clap::Command, path: &str, missing: &mut Vec<String>) {
+    /// The reference's section under the heading that starts with
+    /// `heading`, up to the next heading of that level; empty when there is
+    /// no such heading.
+    fn section(heading: &str) -> &'static str {
+        let Some(start) = REFERENCE.find(heading) else {
+            return "";
+        };
+        let body = &REFERENCE[start + heading.len()..];
+        body.find("\n## ").map_or(body, |end| &body[..end])
+    }
+
+    /// Each long option of `command` (named `path`) that `section` does not
+    /// mention, and each subcommand below it that `section` does not name,
+    /// with its options. Options every command takes are left to the
+    /// section on global options.
+    fn unmentioned(command: &clap::Command, path: &str, section: &str, missing: &mut Vec<String>) {
         for argument in command.get_arguments() {
-            let Some(long) = argument.get_long().filter(|_| !argument.is_hide_set()) else {
+            if argument.is_hide_set() || argument.is_global_set() {
+                continue;
+            }
+            let Some(long) = argument.get_long() else {
                 continue;
             };
             let option = format!("--{long}");
-            if !["--help", "--version"].contains(&option.as_str()) && !REFERENCE.contains(&option) {
+            if !["--help", "--version"].contains(&option.as_str()) && !section.contains(&option) {
                 missing.push(format!("{path} {option}"));
             }
         }
@@ -532,18 +565,40 @@ mod tests {
                 continue;
             }
             let named = format!("{path} {}", subcommand.get_name());
-            if !REFERENCE.contains(&named) {
+            if !section.contains(&named) {
                 missing.push(named.clone());
             }
-            unmentioned(subcommand, &named, missing);
+            unmentioned(subcommand, &named, section, missing);
         }
     }
 
-    #[test]
-    fn every_command_and_option_is_in_the_command_reference() {
-        let mut missing = Vec::new();
+    /// The global options `section` does not mention.
+    fn unmentioned_global_options(command: &clap::Command, section: &str) -> Vec<String> {
+        command
+            .get_arguments()
+            .filter(|argument| argument.is_global_set() && !argument.is_hide_set())
+            .filter_map(clap::Arg::get_long)
+            .map(|long| format!("--{long}"))
+            .filter(|option| !section.contains(option))
+            .collect()
+    }
 
-        unmentioned(&Cli::command(), "lemma", &mut missing);
+    #[test]
+    fn every_command_and_option_is_in_its_section_of_the_command_reference() {
+        let cli = Cli::command();
+        let mut missing = unmentioned_global_options(&cli, section("## Global options"));
+
+        for command in cli.get_subcommands() {
+            if command.is_hide_set() || command.get_name() == "help" {
+                continue;
+            }
+            let named = format!("lemma {}", command.get_name());
+            let of_command = section(&format!("## `{named}"));
+            if of_command.is_empty() {
+                missing.push(format!("{named}: no section"));
+            }
+            unmentioned(command, &named, of_command, &mut missing);
+        }
 
         assert_eq!(
             missing,

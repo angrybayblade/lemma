@@ -86,15 +86,23 @@ mod tests {
     /// and option.
     const REFERENCE: &str = include_str!("../../../docs/commands.md");
 
-    /// Each subcommand under `command` (named `path`) and each long option
-    /// of it and below that the reference does not mention.
-    fn unmentioned(command: &clap::Command, path: &str, missing: &mut Vec<String>) {
+    /// The reference's section on `lm`, which is its last.
+    fn section() -> &'static str {
+        REFERENCE
+            .find("## `lm`")
+            .map_or("", |start| &REFERENCE[start..])
+    }
+
+    /// Each long option of `command` (named `path`) that `section` does not
+    /// mention, and each subcommand below it that `section` does not name,
+    /// with its options.
+    fn unmentioned(command: &clap::Command, path: &str, section: &str, missing: &mut Vec<String>) {
         for argument in command.get_arguments() {
             let Some(long) = argument.get_long().filter(|_| !argument.is_hide_set()) else {
                 continue;
             };
             let option = format!("--{long}");
-            if !["--help", "--version"].contains(&option.as_str()) && !REFERENCE.contains(&option) {
+            if !["--help", "--version"].contains(&option.as_str()) && !section.contains(&option) {
                 missing.push(format!("{path} {option}"));
             }
         }
@@ -103,18 +111,18 @@ mod tests {
                 continue;
             }
             let named = format!("{path} {}", subcommand.get_name());
-            if !REFERENCE.contains(&named) {
+            if !section.contains(&named) {
                 missing.push(named.clone());
             }
-            unmentioned(subcommand, &named, missing);
+            unmentioned(subcommand, &named, section, missing);
         }
     }
 
     #[test]
-    fn every_command_and_option_is_in_the_command_reference() {
+    fn every_command_and_option_is_in_the_reference_section_on_lm() {
         let mut missing = Vec::new();
 
-        unmentioned(&Cli::command(), "lm", &mut missing);
+        unmentioned(&Cli::command(), "lm", section(), &mut missing);
 
         assert_eq!(
             missing,

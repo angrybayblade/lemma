@@ -48,8 +48,9 @@ Then ask again with `lemma refs <symbol> --refresh`, because the earlier answer 
 
 ## The daemon misbehaves
 
-- `lemma daemon stop` stops it; the next command starts a fresh one.
-- `--no-daemon`, or `LEMMA_NO_DAEMON=1`, runs a command in-process.
+- `lemma daemon status` says which workspace the daemon serving this directory serves, and `lemma daemon status --all` lists every daemon.
+- `lemma daemon stop` stops this directory's daemon, and `--all` every one; the next command starts a fresh one.
+- `--no-daemon`, or `LEMMA_NO_DAEMON=1`, runs a command in-process. `[daemon] autostart` says which commands may start a daemon at all ([settings](commands.md#settings)).
 - Lemma finds language servers on the `PATH` of the command you run, but a server already running keeps its environment. After changing a server's environment, stop the daemon.
 - A warm server learns about edits when they are indexed, which every query does first.
 

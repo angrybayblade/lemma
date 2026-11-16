@@ -1499,6 +1499,13 @@ impl Engine {
 
     /// A line per running language server: what it serves, how long it has
     /// been idle, whether it is paused, and its memory.
+    /// Whether nothing is kept warm: no language server runs or is
+    /// starting, and no workspace is watched for graphs.
+    pub fn holds_nothing_warm(&self) -> bool {
+        let is_watching = self.traced_workspaces.values().any(Option::is_some);
+        self.pool.is_empty() && !self.pool.is_warming() && !is_watching
+    }
+
     /// The memory the language servers hold, as far as it can be read.
     pub fn servers_memory_bytes(&mut self) -> u64 {
         self.pool

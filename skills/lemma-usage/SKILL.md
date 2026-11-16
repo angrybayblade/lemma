@@ -1,6 +1,6 @@
 ---
 name: lemma-usage
-description: Use Lemma to navigate and change code safely - find references, definitions, implementations and signatures through language servers instead of text search, and read `lemma check` findings about what a change breaks in other repositories. Use whenever a task involves where a symbol is used, the impact of renaming or changing something, or checking a service change against its callers, in TypeScript, JavaScript, Python, Go or Rust.
+description: Use Lemma to navigate and change code safely - find references, definitions, implementations and signatures through language servers instead of text search, and read `lemma check` findings about what a change breaks in other repositories. Use whenever a task involves where a symbol is used, the impact of renaming or changing something, or checking a service change against its callers, in TypeScript, Python, Go or Rust.
 ---
 
 # Using Lemma

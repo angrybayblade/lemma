@@ -27,7 +27,7 @@ Run `lemma providers` and install what the repositories need:
 
 | Language | Install |
 | --- | --- |
-| TypeScript, JavaScript | `npm install -g typescript typescript-language-server` |
+| TypeScript | `npm install -g typescript typescript-language-server` |
 | Python | `uv tool install ty` or `npm install -g pyright` |
 | Go | `go install golang.org/x/tools/gopls@latest` |
 | Rust | `rustup component add rust-analyzer` |

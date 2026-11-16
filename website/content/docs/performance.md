@@ -94,7 +94,6 @@ Warm servers make lookups fast, so the daemon keeps them and looks after them wh
 | Resuming a paused gopls on the next lookup | About 45 ms (115 ms against 70 ms for a running server) |
 | Paused server's CPU use | None; the whole process group is stopped with `SIGSTOP` |
 | Starting servers again after an edit in a project whose servers were stopped | Ready about 20 s later, before the next lookup in most agent loops |
-| Login service on Linux (systemd user unit) | Starts at login, restarts after a crash, stays stopped after `lemma daemon stop` |
 
 ## Python servers measured
 

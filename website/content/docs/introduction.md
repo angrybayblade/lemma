@@ -7,10 +7,10 @@ Lemma gives a coding agent what an IDE gives a person, without an editor open. I
 
 ## What an agent does with it
 
-1. **Find code.** `lemma refs`, `lemma definition` and `lemma implementations` answer from the language server, so they skip other symbols with the same name and mentions in comments and strings, and follow imports and aliases. A cached answer takes 1 to 3 ms and a symbol's first lookup tens of milliseconds ([performance](performance.md)).
+1. **Find code.** `lemma refs`, `lemma definition` and `lemma implementations` answer from the language server, so they skip other symbols with the same name and mentions in comments and strings, and follow imports and aliases. Inside one repository a cached answer takes 1 to 3 ms and a symbol's first lookup tens of milliseconds ([performance](performance.md)).
 2. **Trace it.** `lemma graph <symbol>` shows what calls a function and what it calls, each with its file and line, across the repositories of a workspace.
 3. **Catch a break.** `lemma check --change <repository>` reports what a change breaks in the code that depends on it: a response field a client still reads, a parameter now required that a caller never sends, an operation that no longer exists. Those breaks cross HTTP calls and generated clients, where the compiler cannot see them. A check reads only the code the change can reach, so it fits in the loop.
-4. **Gate the work.** A stop gate runs the check when the agent tries to finish, and sends it back if its change introduced errors (the [`lemma-verify`](../skills/lemma-verify/SKILL.md) skill). [Behaviors](tutorials/4-behaviors.md) (beta) add checks that run the real code.
+4. **Gate the work.** A stop gate, which a project turns on, runs the check when the agent tries to finish, and sends it back if its change introduced errors (the [`lemma-verify`](../skills/lemma-verify/SKILL.md) skill). [Behaviors](tutorials/4-behaviors.md) (beta) add checks that run the real code.
 
 Agents reach all of it as MCP tools (`lemma mcp`), and the [agent skills](../skills/README.md) teach them when to use which.
 

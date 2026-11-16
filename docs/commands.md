@@ -16,7 +16,7 @@ These work with every command.
 | `--no-daemon` | Run in this process instead of the background daemon. Slower, but nothing stays running. Setting `LEMMA_NO_DAEMON=1` does the same. |
 | `-l`, `--logging <level>` | Log what Lemma is doing to stderr: `error`, `warn`, `info`, `debug` or `trace`. Off by default. `info` shows each step and the choice made in it: whether the command ran in this process or the daemon (and why), which repositories and commits were read, what came from a cache and what was run, and the engines and language servers used, with timings. A command the daemon runs sends its lines back, marked `daemon`. Logs never go to stdout, so `--json` output stays parseable. |
 
-Every command runs in a background daemon that keeps the index open, watches indexed directories for changes, and keeps language servers warm; `lemma` itself only forwards the command. The first command starts the daemon. See [`lemma daemon`](#lemma-daemon).
+Every command runs in a background daemon that keeps the index open, watches indexed directories for changes, and keeps language servers warm; `lemma` itself only forwards the command. Each workspace has a daemon of its own, which the first command in the workspace starts. See [`lemma daemon`](#lemma-daemon).
 
 ## `lemma index [path]`
 
@@ -108,7 +108,7 @@ Each definition shows its location and, when it is an indexed symbol, its qualif
 
 ## `lemma implementations <symbol>`
 
-Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters work as for `refs`, and so do `--refresh` and `--timeout-secs`. When a name is ambiguous, only symbols that can have implementations count (interfaces, classes, structs, enums, type aliases and methods), so a field named after its type (`store Store`) does not make `Store` ambiguous. Implementations in the repository are listed before those in libraries.
+Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters (`--kind`, `--language`, `--path`) work as for `refs`, and so do `--refresh` and `--timeout-secs`. When a name is ambiguous, only symbols that can have implementations count (interfaces, classes, structs, enums, type aliases and methods), so a field named after its type (`store Store`) does not make `Store` ambiguous. Implementations in the repository are listed before those in libraries.
 
 Lemma indexes interface methods as symbols qualified by their interface (`Shape.area`), so `<symbol>` names them directly. Support varies by server: gopls, rust-analyzer and the TypeScript servers answer; pyright and ty say they do not support it (`does not support implementation lookup`), which is not the same as finding none.
 
@@ -119,7 +119,7 @@ Shows a symbol's declaration and what its language server says about it. These c
 - The **declaration** is the definition's header as written, without its body, such as `def delete(self, id: str) -> None:`. It comes from the index and needs no server. It is left out if the file changed since it was indexed.
 - The **description** is the server's hover text, usually Markdown: the signature with inferred types, and the documentation comment. It is display text; Lemma does not parse it into types.
 
-It exits with 0 if either part was found, and 3 if neither was.
+`<symbol>` and its filters (`--kind`, `--language`, `--path`) work as for `refs`, and so do `--refresh` and `--timeout-secs`, which apply to the description. It exits with 0 if either part was found, and 3 if neither was.
 
 ## `lemma graph <symbol>`
 
@@ -148,6 +148,7 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | `--only <kinds>` | Only symbols of these kinds besides the symbol itself, comma-separated: `--only function,method` shows the calls without the fields, types and constants a body uses. The top level of a file always counts as a caller. |
 | `--workspace <mod.lm>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations. See below. |
 | `--across <calls>` | Across a workspace, how many calls from other code to follow: `1` (the default) stops at the code calling the operations the handlers serve; each more goes on through that code to its own operations and their callers. |
+| `--kind`, `--language`, `--path` | Narrow an ambiguous `<symbol>`, as for `lemma refs`. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
 
 References from a file's top-level code appear as the file; imports are left out. A function defined inside another is a caller under its own name, and what it is defined inside comes next without counting as a use further away. A symbol implementing an export that a graph of `Link` links to another operation uses that operation, which appears by address (`linked operation`). The graph lists questions the server could not answer, such as a stale file or a missing server, as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
@@ -188,7 +189,7 @@ Code reached in other repositories is a `caller`: it was found by the requests i
 
 - The index's directory must be inside one of the repositories the workspace composes.
 - Within the symbol's repository, callers come from `--source`. From there to a route's handler (a constructor registered for a handler type, say), and within every other repository, they are followed by name: approximate, within one language, skipping names several functions share.
-- Operations and their callers come from inference over the whole system, as `lemma check` finds them, so the command runs in its own process and takes about as long. Routes whose paths are built at run time are not found, and the trace stops there.
+- Operations and their callers come from inference over the whole system, as `lemma check` finds them, so the command takes about as long. It runs in the workspace's daemon like any other graph. Routes whose paths are built at run time are not found, and the trace stops there.
 
 Render a drawing with Graphviz (`lemma graph X --format dot | dot -Tsvg > graph.svg`) or paste Mermaid into a Markdown file.
 
@@ -227,6 +228,8 @@ Other clients take the same command, `lemma mcp`, started in the project directo
 
 Compares a description with the code at one snapshot: patterns that match no file, documents that do not exist, anchors that do not resolve, links that no longer hold. It does not compare commits or report contract disagreements. See [Verifying descriptions](verify.md).
 
+Like `lemma check`, it is answered by the workspace's daemon, in a short-lived process the daemon runs for it, and in the command's own process with `--no-daemon`, with `--logging`, or when no daemon serves the workspace and none may be started. The report is the same either way.
+
 | Option | Meaning |
 | --- | --- |
 | `--all` | List every informational finding, not just the first ten. |
@@ -238,6 +241,8 @@ Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 ## `lemma check [mod.lm]`
 
 Checks a change against every repository the entry module composes: declared links (persistence and schema agreement), links inferred from OpenAPI documents and code, and what each problem affects further up. See [Check links](check.md). The entry module's own requirements run beside the HTTP contracts, its behaviors run (with their checkers), and its allowances apply, as its `check main` selects them. See [The `.lm` language](language.md).
+
+The check is answered by the daemon of the workspace the entry module is in, which it starts as any command does ([`autostart`](#settings)): through sentry when sentry is attached, and otherwise in a short-lived process the daemon runs for it, with the directory and environment of whoever asked. Lookups asked meanwhile are not held up. It runs in the command's own process instead with `--no-daemon`, with `--logging`, whose lines only that process can print, or when no daemon serves the workspace and none may be started. The report and the exit code are the same either way.
 
 | Option | Meaning |
 | --- | --- |
@@ -278,26 +283,32 @@ The workspace is the module given, or else the editor's `manifest` initializatio
 
 Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground. Language servers start when a lookup needs one, when `lemma index` runs (in the background), or with `lemma daemon lsp start`; there is one per indexed root and language, and the settings below pause and stop idle ones.
 
+**One daemon for each workspace.** A workspace is the nearest directory above a command with a `mod.lm` that declares a `workspace`, together with the repositories it names; otherwise the Git checkout the command runs in; otherwise the directory itself. A command walks up from where it runs to the nearest running daemon that serves it. If there is none, it starts one at the workspace's root, wherever in the workspace it was run, so the first command's directory does not matter.
+
+A daemon answers only about its own workspace. It serves a directory when that directory's Git checkout is the workspace's own or one of the repositories its `mod.lm` names. A Git worktree placed inside a checkout is a different checkout, so it gets a daemon of its own and is never answered about the files around it. `index <path>`, `check <mod.lm>` and `daemon lsp ... <path>` go to the daemon of the directory they name, not of the one they run in.
+
+A repository the `mod.lm` names outside the workspace's root (`local("../billing")`) is served, but commands run there walk up without reaching the daemon and start their own. `lemma daemon status` warns about each one; start Lemma from a directory that holds both, or move the repository under the root.
+
+`LEMMA_DAEMON_SOCKET` names one daemon's socket instead: that daemon serves every directory, and no walking up happens. It is for a benchmark or a test that wants a daemon to itself.
+
 | Command | Meaning |
 | --- | --- |
-| `lemma daemon status` | Whether it runs as a login service; its language servers: starting, running or paused, how long idle, and memory, and any passed over for being too slow (`[servers] when_slow`); and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. |
-| `lemma daemon stop` | Stop the running daemon; it returns once the daemon and its language servers have stopped. |
-| `lemma daemon install` | Run the daemon as a login service (launchd on macOS, systemd on Linux), so it is already up when an agent asks its first question. It is restarted only if it crashes, and a command that finds it stopped starts it through the service. The service keeps the `PATH` of the shell that installed it; run `install` again after installing a toolchain elsewhere. |
-| `lemma daemon uninstall` | Remove the login service and stop its daemon. |
+| `lemma daemon start` | Start the daemon of the workspace the current directory belongs to, in the background, and return once it listens. It says which workspace the daemon serves, or that one already serves it. |
+| `lemma daemon status [--all]` | The workspace the daemon serving this directory serves, with a warning for each repository it names outside its root; then its language servers: starting, running or paused, how long idle, and memory, and any passed over for being too slow (`[servers] when_slow`); and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. With `--all`, every daemon of the user. |
+| `lemma daemon stop [--all]` | Stop the daemon serving this directory, or with `--all` every daemon of the user; it returns once each daemon and its language servers have stopped. |
 | `lemma daemon lsp [path]`, or `lemma daemon lsp list [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |
 | `lemma daemon lsp start [path] [--language <l>] [--provider <id>] [--wait]` | Start those servers in the daemon, in the background, or with `--wait` until each has loaded its project, reporting how long it took or why it failed (exit 1). A language's providers are tried in order, as a lookup tries them: when the first cannot start (typescript-language-server without a TypeScript it can use), the next serves. |
 | `lemma daemon lsp stop [path] [--language <l>] [--provider <id>]` | Stop those servers. |
-| `lemma daemon sentry start [manifest]` | Attach the daemon's sentry to a workspace (its `mod.lm`, by default the one in this directory). Sentry watches the workspace's repositories, and `lemma check` on that workspace is then answered by the daemon: what earlier checks read is kept and only what changed is read again, and a check is answered again at once when nothing it read changed. The report is the same as a check run on its own. It attaches only to a daemon already running, to one workspace at a time. |
+| `lemma daemon sentry start [manifest]` | Attach the daemon's sentry to a workspace (its `mod.lm`, by default the one in this directory). Sentry watches the workspace's repositories, and the daemon then answers `lemma check` on that workspace through it: what earlier checks read is kept and only what changed is read again, and a check is answered again at once when nothing it read changed. The report is the same as without sentry. It attaches only to a daemon already running, to one workspace at a time. |
 | `lemma daemon sentry stop` | Detach sentry. It also detaches when the workspace's directory is gone and when the daemon exits. |
 | `lemma daemon sentry status` | The workspace, the directories watched in each repository, and how many checks sentry answered and reused. |
 | `lemma daemon sentry events [--since <token>] [--wait <duration>]` | What happened since a token, a line each: repositories whose files changed, and checks answered (reused or checked, how long, and their counts), then the latest token. With `--wait`, it waits that long for an event when there is none yet, for a hook or a script to follow sentry. `--json` prints the events. |
 | `lemma daemon --idle-secs <n>` | Run in the foreground, exiting after this many seconds without a command instead of the configured `idle_exit`. |
+| `lemma daemon --root <directory>` | Run in the foreground for the workspace rooted at this directory, in place of the one the current directory belongs to. |
 
 Sentry is experimental and off unless you start it: its answers match a fresh check, but it can change or go away between releases.
 
-On Linux, `install` uses a systemd user unit. On a server you reach over SSH there may be no user session to run it in; `sudo loginctl enable-linger $USER` gives you one that starts at boot and outlives your logins.
-
-The daemon serves every later command, so it does not keep the environment of the command that happened to start it. Without a service, it keeps only `HOME`, `USER`, `LOGNAME`, `PATH`, `SHELL`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `SSH_AUTH_SOCK`, the proxy variables and `LEMMA_*`. A shell's `GOCACHE`, `XDG_CACHE_HOME` or `TMPDIR` would otherwise redirect every later build and cache, and break them once that shell's directories are gone. Adapters and checkers that need a variable get it from their `env` settings. Set `LEMMA_NO_DAEMON=1` to run a command in its own process, with its own environment.
+The daemon serves every later command, so it does not keep the environment of the command that happened to start it. It keeps only `HOME`, `USER`, `LOGNAME`, `PATH`, `SHELL`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `SSH_AUTH_SOCK`, the proxy variables and `LEMMA_*`. A shell's `GOCACHE`, `XDG_CACHE_HOME` or `TMPDIR` would otherwise redirect every later build and cache, and break them once that shell's directories are gone. Adapters and checkers that need a variable get it from their `env` settings. Set `LEMMA_NO_DAEMON=1` to run a command in its own process, with its own environment.
 
 ### Settings
 
@@ -305,7 +316,8 @@ The daemon reads `~/.config/lemma/config.toml` (or `$XDG_CONFIG_HOME/lemma/confi
 
 ```toml
 [daemon]
-idle_exit = "never"        # stop the daemon after this long without a command
+autostart = "always"       # who may start a daemon: "always", "clients" or "never"
+idle_exit = "never"        # stop the daemon after this long without a command, whatever it holds
 
 [servers]
 pause_after = "10m"        # pause idle language servers
@@ -329,6 +341,18 @@ prepare = "graph"          # after an edit, get ready for the next graph: "off",
 kept_ready = 4             # how many of the graphs last asked are answered ahead after an edit
 ```
 
+**Who starts a daemon.** `autostart` says what may start a daemon for a workspace that has none. A daemon that is already running is used by every command, whatever the setting, and `lemma daemon start` always starts one.
+
+| `autostart` | A command run from a shell | The MCP server and the editor's server (`lemma lsp`) |
+| --- | --- | --- |
+| `"always"` (the default) | Starts a daemon. | Start a daemon. |
+| `"clients"` | Does its work in its own process: the same answers, with nothing kept warm for the next command. | Start a daemon. |
+| `"never"` | Does its work in its own process. | Do their work in their own process. |
+
+`"clients"` is for a person who wants a daemon only where an agent or an editor is at work; `"never"` for a machine where nothing should stay in the background, such as CI. `--no-daemon` and `LEMMA_NO_DAEMON=1` are different: they keep one command out of a daemon that is running.
+
+**When a daemon exits.** A daemon exits by itself once it holds nothing warm (no language server running or starting, no warm runtime, no sentry, no workspace watched for graphs) and no command has come for as long as `[servers] stop_after`. So a workspace nobody is using has no daemon; its next command starts one. With `stop_after = "never"` servers are kept, and so is the daemon. `idle_exit` is a limit of its own: the daemon exits after that long without a command, whatever it holds.
+
 **A server too slow for a question.** A lookup waits `--timeout-secs` (60 unless given) for a language server. With `when_slow = "report"` one that does not answer in time fails the lookup, as any other failure does. With `"next"` the next installed server for the language is asked once the first has had `give_way_after` (the lookup's own wait unless set), and once it answers the slow one is passed over in that repository for `try_again_after`: `"0s"` asks it first every time, `"never"` leaves it for as long as the daemon runs. It is for very large repositories, where a server can be too slow for the most widely used names every time; the next server may hold much more memory. [Language servers](providers.md#when-a-server-is-too-slow) has the measurements and what the output shows. A command run in its own process reads these three settings too.
 
 **Warm runtimes.** While the daemon runs, `lemma check` asks it to run a repository's Python (a `json.command("{python} -m …")` or `{python} script.py` resolver, or a type read with Pydantic) in a process that has already imported the repository's dependencies, so a run pays only for the repository's own modules. It prints what a new interpreter would, and anything that goes wrong runs the command as before. `memory` is the trade: the more a runtime may hold, the less a run waits. On one service with about 1,700 dependency modules, a 1.6 s resolver ran in 1.2 s with `"24MB"`, 0.7 s with `"96MB"` and 0.2 s once it could hold all 140 MB. A project's `.lemma/config.toml` may set `[runtime]` too, and overrides this file setting by setting. `LEMMA_RUNTIME=off` keeps none warm. `lemma daemon status` lists each one with the memory it holds. A check never starts the daemon for this.
@@ -349,7 +373,7 @@ For a working directory that is at its commit when it is prepared, as right afte
 
 Getting ready takes the time the asks would have taken, after every settled change, and gives way to any command: the daemon stops at the next language server it would ask, or stops waiting for the one it is asking, serves the command, and goes on after it. The server is not interrupted, so a graph asked meanwhile waits only for the answer already on its way. Between changes the daemon looks four times a second, which took 0.1% of one core. A repository past the watches graphs may take reports no changes, so the daemon asks Git about it instead, no more often than every 2 s and with fifty times what asking took in between. A workspace no graph was asked through for `[servers] pause_after` is no longer kept ready. `lemma daemon status` shows the graphs kept ready for each workspace, and how often and for how long the daemon got ready for them.
 
-Under each report it answers, sentry adds a line `sentry token: <token>`, and JSON output a `sentry` object; the findings and the exit code are the same as a check run on its own. A token stays the same while nothing a check reads changes. Sentry answers a check only from a daemon already running; `lemma check` never starts one for it. A check that asks for logs (`-l`) or for anchors (`--anchors`) runs in its own process, and `LEMMA_SENTRY=off` keeps every check there. A check sentry answers runs resolvers, adapters and checkers with the environment of the process that asked, as a check run on its own does. `auto_attach` applies only in the user's own settings, and never when `CI` is set. `LEMMA_DAEMON_SOCKET` names another socket for the daemon, to run a separate one.
+Under each report it answers, sentry adds a line `sentry token: <token>`, and JSON output a `sentry` object; the findings and the exit code are the same as a check run on its own. A token stays the same while nothing a check reads changes. A check that asks for logs (`-l`) runs in its own process, and with `LEMMA_SENTRY=off` the daemon answers a check without sentry, keeping nothing from earlier ones. A check the daemon answers, with sentry or without, runs resolvers, adapters and checkers with the environment of the process that asked, as a check run in its own process does. `auto_attach` applies only in the user's own settings, and never when `CI` is set. `LEMMA_DAEMON_SOCKET` names another socket for the daemon, to run a separate one.
 
 Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `none`. The values above are the defaults, except `watches`, and `give_way_after`, which is the lookup's `--timeout-secs` unless set. The daemon rejects unknown settings, so a typo shows up instead of being ignored; a file that stops parsing while the daemon runs leaves the previous settings in force.
 
@@ -384,7 +408,7 @@ clone = "ask"              # "ask", "always" or "never"
 `.lm` modules have their own command, `lm`, installed beside `lemma`. It checks and formats modules and serves them to editors; `lemma check` and `lemma verify` use what they declare. Every `lm` command runs in its own process, without Lemma's daemon or index.
 
 ```text
-lm [--json] [-l <level>] <command>
+lm [--json] [--logging <level>] <command>
 ```
 
 See [The `.lm` language](language.md).

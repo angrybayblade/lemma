@@ -48,6 +48,7 @@ These notes consolidate the design discussion leading to Lemma. They include acc
 18. [Behavior harnesses and language packs](18-behavior-harnesses.md)
 19. [Generated documents](19-generated-documents.md)
 20. [Warm runtimes](20-warm-runtimes.md)
+21. [Workspace daemons: one daemon per workspace, its sentry and its clients](21-workspace-daemons.md)
 
 ## Status conventions
 
