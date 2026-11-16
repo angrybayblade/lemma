@@ -133,3 +133,34 @@ fn a_directory_no_daemon_serves_is_told_how_to_start_one() {
     );
     assert!(status.contains("lemma daemon start"), "{status}");
 }
+
+#[test]
+fn a_command_starts_no_daemon_when_only_clients_may() {
+    let space = tempfile::tempdir().unwrap();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let app = runtime.join("app");
+    checkout(&app);
+    fs::write(app.join("m.py"), "def greet():\n    return 1\n").unwrap();
+    let config = runtime.join("config.toml");
+    fs::write(&config, "[daemon]\nautostart = \"clients\"\n").unwrap();
+    let asked = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_lemma"))
+            .args(args)
+            .current_dir(&app)
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("LEMMA_CONFIG", &config)
+            .env_remove("LEMMA_DAEMON_SOCKET")
+            .env_remove("LEMMA_NO_DAEMON")
+            .output()
+            .unwrap()
+    };
+
+    asked(&["index", "."]);
+    let found = said(&asked(&["symbols", "greet"]));
+
+    assert!(found.contains("greet"), "{found}");
+    assert_eq!(served_root(&runtime, &app), None);
+    let started = said(&asked(&["daemon", "start"]));
+    assert!(started.contains("started a lemma daemon"), "{started}");
+}

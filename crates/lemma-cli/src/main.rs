@@ -94,7 +94,7 @@ fn main() -> ExitCode {
     if let Some(code) = forward(cwd.clone(), declined_cloning) {
         return code;
     }
-    log::warn!("no daemon could be reached; running in this process");
+    log::info!("no daemon serves this directory, and none was started; running in this process");
     run_in_process(cli, cwd)
 }
 
@@ -112,7 +112,10 @@ fn manage_servers(cli: &Cli) -> ExitCode {
     if let Some(code) = forward(cwd, false) {
         return code;
     }
-    eprintln!("error: no lemma daemon could be reached or started");
+    eprintln!(
+        "error: no lemma daemon serves this directory, and none was started; \
+         `lemma daemon start` starts its workspace's"
+    );
     ExitCode::FAILURE
 }
 
@@ -183,7 +186,7 @@ fn forward(cwd: std::path::PathBuf, declined_cloning: bool) -> Option<ExitCode> 
     if declined_cloning {
         args.push("--no-clone".to_owned());
     }
-    let finished = daemon::forward(args, cwd)?;
+    let finished = daemon::forward(args, cwd, daemon::Asker::Command)?;
     // Output that cannot be written (a closed pipe) is not worth reporting.
     let _ = std::io::stdout().write_all(finished.stdout.as_bytes());
     let _ = std::io::stderr().write_all(finished.stderr.as_bytes());

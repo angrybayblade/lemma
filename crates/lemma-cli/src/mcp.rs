@@ -184,7 +184,7 @@ fn runs_in_own_process(args: &[String]) -> bool {
 
 #[cfg(unix)]
 fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
-    let finished = crate::daemon::forward(args, cwd)?;
+    let finished = crate::daemon::forward(args, cwd, crate::daemon::Asker::Server)?;
     Some(Finished {
         stdout: finished.stdout,
         stderr: finished.stderr,
