@@ -232,8 +232,7 @@ impl Engine {
         providers: &[String],
     ) -> anyhow::Result<Vec<Planned>> {
         let key = (root.db_path.clone(), root.directory.clone());
-        let indexed = self
-            .live_indexes
+        let indexed = super::lock(&self.live_indexes)
             .get(&key)
             .map(super::LiveIndex::languages)
             .unwrap_or_default();

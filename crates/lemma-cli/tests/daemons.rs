@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 /// A directory for a test's checkouts and its daemons' sockets. It is made
 /// in `/tmp`, not the system's temporary directory, whose path on macOS is
@@ -468,4 +468,106 @@ fn a_file_in_another_checkout_is_refused_and_never_answered_from_this_one() {
         "{answer}"
     );
     assert!(!answer.contains("in_the_app"), "{answer}");
+}
+
+/// A language server that answers `initialize`, the first request a client
+/// sends, and nothing after it. It is `/bin/sh`, so that the tests need
+/// nothing installed.
+const SILENT_SERVER: &str = r#"#!/bin/sh
+read -r header
+body='{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"referencesProvider":true}}}'
+printf 'Content-Length: %s\r\n\r\n%s' "${#body}" "$body"
+exec cat > /dev/null
+"#;
+
+/// A checkout defining `price` in Python, whose language server starts and
+/// then never answers.
+fn checkout_with_a_silent_server(runtime: &Path, directory: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    checkout_defining(runtime, directory, "price");
+    let server = directory.join(".lemma/silent-server");
+    fs::write(&server, SILENT_SERVER).unwrap();
+    fs::set_permissions(&server, fs::Permissions::from_mode(0o755)).unwrap();
+    let providers = format!(
+        "[[provider]]\nid = \"pyright\"\nlanguages = [\"python\"]\ncommand = \"{}\"\n",
+        server.display()
+    );
+    fs::write(directory.join(".lemma/providers.toml"), providers).unwrap();
+}
+
+/// The line of `lemma daemon status` in `directory` saying which command
+/// the daemon is answering, once it says so; `None` if it never does.
+fn busy_with(runtime: &Path, directory: &Path) -> Option<String> {
+    for _ in 0..200 {
+        let status = said(&lemma(runtime, directory, &["daemon", "status"]));
+        if let Some(busy) = status.lines().find(|line| line.starts_with("busy with ")) {
+            return Some(busy.to_owned());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    None
+}
+
+#[test]
+fn a_lookup_from_the_index_is_answered_while_another_waits_for_its_server() {
+    let space = space();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let app = runtime.join("app");
+    checkout_with_a_silent_server(&runtime, &app);
+    let waiting = ["refs", "price", "--refresh", "--timeout-secs", "10"];
+    let mut references = command(&runtime, &app)
+        .args(waiting)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let before = busy_with(&runtime, &app);
+
+    let found = said(&lemma(&runtime, &app, &["symbols", "price"]));
+    fs::write(
+        app.join("src/new.py"),
+        "def added_meanwhile():\n    return 2\n",
+    )
+    .unwrap();
+    let found_new = said(&lemma(&runtime, &app, &["symbols", "added_meanwhile"]));
+    let outlined = said(&lemma(&runtime, &app, &["outline", "src/new.py"]));
+    let after = said(&lemma(&runtime, &app, &["daemon", "status"]));
+
+    references.wait().unwrap();
+    let before = before.unwrap_or_default();
+    assert!(before.contains("`lemma refs price"), "{before}");
+    assert!(found.contains("src/m.py"), "{found}");
+    assert!(found_new.contains("src/new.py"), "{found_new}");
+    assert!(outlined.contains("added_meanwhile"), "{outlined}");
+    assert!(after.contains("busy with `lemma refs price"), "{after}");
+}
+
+#[test]
+fn a_lookup_waits_for_its_server_as_long_as_it_was_told_and_no_longer() {
+    let space = space();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let app = runtime.join("app");
+    checkout_with_a_silent_server(&runtime, &app);
+    // Indexing through the daemon starts the server ahead of any lookup,
+    // with the long wait that starting is allowed.
+    let indexed = lemma(&runtime, &app, &["index", "."]);
+    assert!(indexed.status.success(), "{}", said(&indexed));
+
+    let asked = lemma(
+        &runtime,
+        &app,
+        &["refs", "price", "--refresh", "--timeout-secs", "2"],
+    );
+
+    let answer = said(&asked);
+    assert!(!asked.status.success(), "{answer}");
+    let waited = answer
+        .split("timed out after ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|seconds| seconds.parse::<u64>().ok());
+    assert!(waited.is_some_and(|seconds| seconds <= 2), "{answer}");
 }

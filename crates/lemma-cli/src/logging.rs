@@ -8,8 +8,10 @@
 //! marked as the daemon's, so the caller sees them as if it had run the
 //! command itself.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::thread::{self, ThreadId};
 use std::time::Instant;
 
 use log::{LevelFilter, Log, Metadata, Record};
@@ -51,11 +53,52 @@ pub(crate) struct Logger {
 }
 
 struct State {
-    /// What times are measured from: the process start, or the start of
-    /// the command being captured.
+    /// What the process's own lines are timed from: its start.
     started: Instant,
-    /// Lines kept for a caller, while a command is captured.
-    captured: Option<Vec<String>>,
+    /// How much the process logs for itself, to stderr.
+    level: LevelFilter,
+    /// Lines kept for a caller, while a command is captured: those of
+    /// every thread that keeps none of its own.
+    captured: Option<Capture>,
+    /// Lines kept for the callers of commands that run beside that one,
+    /// each on one thread: only that thread's lines.
+    captured_by_thread: HashMap<ThreadId, Capture>,
+}
+
+/// The lines one command logs, kept for its caller.
+struct Capture {
+    /// What its lines are timed from: the start of the command.
+    started: Instant,
+    level: LevelFilter,
+    lines: Vec<String>,
+}
+
+impl Capture {
+    fn at(level: Option<LogLevel>) -> Self {
+        Self {
+            started: Instant::now(),
+            level: level.map_or(LevelFilter::Off, LogLevel::filter),
+            lines: Vec::new(),
+        }
+    }
+
+    fn text(self) -> String {
+        let mut text = String::new();
+        for line in self.lines {
+            let _ = writeln!(text, "{line}");
+        }
+        text
+    }
+}
+
+impl State {
+    /// The most any command being captured, or the process, logs: what the
+    /// `log` facade lets through, each line then held to its own level.
+    fn most_detailed(&self) -> LevelFilter {
+        let captured = self.captured.iter().map(|capture| capture.level);
+        let by_thread = self.captured_by_thread.values().map(|kept| kept.level);
+        captured.chain(by_thread).fold(self.level, Ord::max)
+    }
 }
 
 /// Installs the logger for this process, logging at `level` (nothing when
@@ -66,7 +109,10 @@ pub(crate) fn init(level: Option<LogLevel>) -> &'static Logger {
     let logger: &'static Logger = Box::leak(Box::new(Logger::new()));
     // Only fails if a logger is already set, which `main` never does twice.
     let _ = log::set_logger(logger);
-    log::set_max_level(level.map_or(LevelFilter::Off, LogLevel::filter));
+    let mut state = logger.lock();
+    state.level = level.map_or(LevelFilter::Off, LogLevel::filter);
+    log::set_max_level(state.level);
+    drop(state);
     logger
 }
 
@@ -76,7 +122,9 @@ impl Logger {
         Self {
             state: Mutex::new(State {
                 started: Instant::now(),
+                level: LevelFilter::Off,
                 captured: None,
+                captured_by_thread: HashMap::new(),
             }),
         }
     }
@@ -85,21 +133,39 @@ impl Logger {
     /// from now, until [`Logger::finish_capture`].
     pub(crate) fn start_capture(&self, level: Option<LogLevel>) {
         let mut state = self.lock();
-        state.started = Instant::now();
-        state.captured = Some(Vec::new());
-        log::set_max_level(level.map_or(LevelFilter::Off, LogLevel::filter));
+        state.captured = Some(Capture::at(level));
+        log::set_max_level(state.most_detailed());
+    }
+
+    /// Starts keeping the lines this thread logs at `level` for the caller
+    /// of a command that runs on it alone, beside the one
+    /// [`Logger::start_capture`] keeps lines for, until
+    /// [`Logger::finish_capture_of_thread`].
+    pub(crate) fn start_capture_of_thread(&self, level: Option<LogLevel>) {
+        let mut state = self.lock();
+        state
+            .captured_by_thread
+            .insert(thread::current().id(), Capture::at(level));
+        log::set_max_level(state.most_detailed());
+    }
+
+    /// The lines this thread logged since
+    /// [`Logger::start_capture_of_thread`], each ending in a newline.
+    pub(crate) fn finish_capture_of_thread(&self) -> String {
+        let mut state = self.lock();
+        let kept = state.captured_by_thread.remove(&thread::current().id());
+        log::set_max_level(state.most_detailed());
+        kept.map(Capture::text).unwrap_or_default()
     }
 
     /// The lines kept since [`Logger::start_capture`], each ending in a
     /// newline; logging goes back to `level` for the process itself.
     pub(crate) fn finish_capture(&self, level: Option<LogLevel>) -> String {
-        let lines = self.lock().captured.take().unwrap_or_default();
-        log::set_max_level(level.map_or(LevelFilter::Off, LogLevel::filter));
-        let mut text = String::new();
-        for line in lines {
-            let _ = writeln!(text, "{line}");
-        }
-        text
+        let mut state = self.lock();
+        let kept = state.captured.take();
+        state.level = level.map_or(LevelFilter::Off, LogLevel::filter);
+        log::set_max_level(state.most_detailed());
+        kept.map(Capture::text).unwrap_or_default()
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -119,19 +185,28 @@ impl Log for Logger {
             return;
         }
         let mut state = self.lock();
-        let elapsed = state.started.elapsed().as_secs_f64();
-        let is_captured = state.captured.is_some();
-        let line = format_line(
-            elapsed,
-            record.level(),
-            record.target(),
-            is_captured,
-            &record.args().to_string(),
-        );
-        match &mut state.captured {
-            Some(lines) => lines.push(line),
-            None => eprintln!("{line}"),
+        let State {
+            started,
+            level,
+            captured,
+            captured_by_thread,
+        } = &mut *state;
+        let of_thread = captured_by_thread.get_mut(&thread::current().id());
+        let message = record.args().to_string();
+        let Some(capture) = of_thread.or(captured.as_mut()) else {
+            if record.level() <= *level {
+                let elapsed = started.elapsed().as_secs_f64();
+                let line = format_line(elapsed, record.level(), record.target(), false, &message);
+                eprintln!("{line}");
+            }
+            return;
+        };
+        if record.level() > capture.level {
+            return;
         }
+        let elapsed = capture.started.elapsed().as_secs_f64();
+        let line = format_line(elapsed, record.level(), record.target(), true, &message);
+        capture.lines.push(line);
     }
 
     fn flush(&self) {}
@@ -206,6 +281,27 @@ mod tests {
 
         assert_eq!(captured.lines().count(), 1);
         assert!(captured.ends_with("INFO  daemon graph::check: kept\n"));
+    }
+
+    #[test]
+    fn a_command_beside_another_keeps_only_its_own_threads_lines() {
+        let logger = Logger::new();
+        logger.start_capture(Some(LogLevel::Info));
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                logger.start_capture_of_thread(Some(LogLevel::Debug));
+                record(log::Level::Debug, "of the thread", &logger);
+                let own = logger.finish_capture_of_thread();
+                assert_eq!(own.lines().count(), 1, "{own}");
+                assert!(own.ends_with("of the thread\n"), "{own}");
+            });
+        });
+        record(log::Level::Info, "of the command", &logger);
+        let captured = logger.finish_capture(None);
+
+        assert_eq!(captured.lines().count(), 1, "{captured}");
+        assert!(captured.ends_with("of the command\n"), "{captured}");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Workspace daemons: one daemon per workspace, its sentry and its clients
 
-**Status: designed, 2026-11-15; steps 1 to 5 of [Build order](#build-order) built, 2026-11-16.** One daemon serves each workspace, found by walking up and started at the workspace's root, and it refuses directories it does not serve; `[daemon] autostart` says who may start one; the daemon answers `check`, through sentry or by itself, and `verify` and `graph --workspace`. Sentry is attached when a client asks and let go when it leaves, and it owns graph preparation and restarting servers. Not built: lookups side by side, the page that states the three roles, and settings in `.lm`; the settings below are TOML keys under `[daemon]`, `[servers]` and `[sentry]` until then. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion of 2026-11-15; rows marked *proposal* follow from them and still need the same review. Measurements are from Lemma's own repository and from the six-repository bench workspace, on Linux.
+**Status: designed, 2026-11-15; steps 1 to 6 of [Build order](#build-order) built, 2026-11-16.** One daemon serves each workspace, found by walking up and started at the workspace's root, and it refuses directories it does not serve; `[daemon] autostart` says who may start one; the daemon answers `check`, through sentry or by itself, and `verify` and `graph --workspace`. Sentry is attached when a client asks and let go when it leaves, and it owns graph preparation and restarting servers. Lookups answered from the index, status and checks no longer wait behind a lookup that waits for a language server. Not built: a lane per language server, the names of the three `lsp` commands, and settings in `.lm`; the settings below are TOML keys under `[daemon]`, `[servers]` and `[sentry]` until then. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion of 2026-11-15; rows marked *proposal* follow from them and still need the same review. Measurements are from Lemma's own repository and from the six-repository bench workspace, on Linux.
 
 ## Problem
 
@@ -76,7 +76,7 @@ With sentry off, every client gets the same answers from the daemon, without the
 | How the two combine | `config { … } \| load("config.lm")`: a merge, key by key, the right side winning | decided |
 | Language server configuration | Part of `config`, replacing `.lemma/providers.toml` | decided |
 | Memory limits | Per workspace, since each daemon has its own settings | decided |
-| Requests inside one daemon | A check is handed off as sentry's are, so lookups go on; lookups that need different language servers are served side by side | proposal |
+| Requests inside one daemon | A check is handed off as sentry's are, so lookups go on; lookups answered from the index, status and the handing over of checks do not wait behind a lookup that waits for a language server ([Lanes](#lanes)); `lemma daemon stop` waits for a lookup in flight | decided |
 | When sentry lets go | When the client that asked disconnects, on `sentry stop`, or when its daemon exits | proposal |
 
 ## The workspace
@@ -154,9 +154,73 @@ The path without a daemon is the same code run in the client's process. It is a 
 
 ### A request does not wait behind another
 
-A check handed to sentry is answered on sentry's thread, and any other check or verify in a process of its own, while the daemon's loop goes on serving lookups. So a lookup does not wait behind a check.
+A check handed to sentry is answered on sentry's thread, and any other check or verify in a process of its own. So a lookup never waited behind a check.
 
-*Proposal.* What remains is a lookup behind a long lookup in the same workspace: a first `refs` waiting for a language server to load holds up a symbol search that would take a millisecond. One daemon per workspace removes the waiting between workspaces; inside one, lookups that need different language servers, or none, should be served side by side. It is measured before it is built, since it only matters while a server is loading.
+What did wait, until step 6, was everything behind a lookup. The daemon read one request at a time and answered it before reading the next, so while a lookup waited for a language server no other request was even read: not a symbol search, not `lemma daemon status`, not a check being handed to sentry, and not the question every command asks first, whether this daemon serves its directory. Measured on 2026-11-16 with a language server that never answers, a symbol search that takes 0.01 s by itself took 299 s behind a `refs` in the same daemon.
+
+#### Lanes
+
+*Built in step 6.* One thread only reads requests. It answers what needs no engine itself, and passes every other request to a **lane**: a thread that answers its requests one at a time, in the order they came.
+
+| Who answers | What |
+| --- | --- |
+| The reading thread | Whether the daemon serves a directory; handing a check to sentry or to its own process; attaching and letting go of sentry; `lemma daemon status` while the provider lane is answering a command |
+| The index lane | `symbols` and `outline`: lookups answered from the index alone |
+| The provider lane | Every lookup that may ask a language server (`refs`, `definition`, `implementations`, `signature`, `graph`, the editor's lookups), `index`, the daemon's upkeep, `lemma daemon stop`, and `lemma daemon status` when it is idle |
+
+Three rules keep the answers what they were:
+
+- **An index lookup is never stale.** `symbols` and `outline` still bring the index up to date before they answer. Each lane has its own engine, and the two share the indexes they keep up to date and the in-memory name search, behind a lock held only while an index is being brought up to date, never while a provider is awaited. A directory is still watched once and read once. Reading needs nothing new: the store already takes one writer and any number of readers.
+- **The provider lane is as it was.** Its requests are answered one at a time in the order they came, so nothing about a language server's session, the graphs kept ready or the upkeep changes. Getting ready for a graph gives way to a request waiting for this lane, as it gave way to one waiting to be read.
+- **Stopping waits.** `lemma daemon stop` goes through the provider lane, so a lookup in flight is answered before the daemon exits (decided 2026-11-16).
+
+While the provider lane answers a command, `lemma daemon status` says so in place of the lines about its language servers, which only that lane can give:
+
+```text
+busy with `lemma refs price` for 42s, 2 waiting behind it; its language servers are listed once it is answered
+```
+
+A command's log lines (`--logging`) are kept for its caller per lane: the provider lane's command keeps the lines of every thread but the index lane's, since providers log from threads of their own, and an index lookup keeps the lines of the thread it runs on.
+
+Measured on 2026-11-16, on Lemma's development machine:
+
+| Case | Before | With lanes |
+| --- | --- | --- |
+| `symbols` while `refs` waits on a server that never answers | 299 s | 0.01 s |
+| `symbols`, median, while a real pyright answers `refs` again and again, each answer held back 2 s (60 s run) | 2.15 s | 0.012 s |
+| Index lookups answered in those 60 s, with a file added before each | 13 | 3,038 |
+| Wrong answers among them (a name just added not found, one just removed still found) | 0 | 0 |
+| `refs` answers equal to the one a process of its own gives | 29 of 29 | 27 of 27 |
+| `symbols` by itself, median of 900 | 3.98 ms | 4.24 ms |
+| `refs` from a stored answer, median of 900 | 4.97 ms | 5.09 ms |
+| The daemon's memory after the same commands | 12 to 13 MB | 14 MB |
+
+The cost is the hand-over between threads: about 0.2 ms a command, and two more threads.
+
+And on the six-repository bench workspace, with its real language servers, each build alone:
+
+| Case | Before | With lanes |
+| --- | --- | --- |
+| `symbols` while one of 11 graphs is being answered, median of two rounds | 1.9 s and 2.1 s | 0.018 s |
+| The same, the longest | 30.1 s and 15.6 s | 0.40 s and 0.09 s |
+| A name added during the first graph | found once the graph was answered, after 7.8 s and 1.7 s | found in 0.03 s, the graph still being answered |
+| The 11 graphs' answers | | the same |
+| A graph after an edit, asked at once, median | 3.72 s and 4.02 s | 3.92 s and 3.77 s |
+| A graph after an edit, asked 6 s later, when sentry has got ready, median | 42 ms and 50 ms | 49 ms and 45 ms |
+| The daemon's memory after every benchmark graph three times | 294 MB | 290 MB |
+| Its inotify watches | 20,165 | 20,165 |
+
+The gates held: the editor's differential in all 84 cases, sentry's settled and raced and checks without sentry in all 214 each, the 54 replayed changes and 30 mutations the same as before, and recall 47 of 47 and 33 of 33.
+
+Not built: a lane per language server, so that a Python lookup is answered while a Go server loads. The provider lane's requests still wait for each other. It needs the engine's sessions split by provider, and waits for a measured need.
+
+One thing still runs on the reading thread that can take time: attaching sentry to a workspace for the first command that asks, which sets up its watches. It happens once per daemon.
+
+#### A lookup's own wait
+
+*Fixed in step 6.* A lookup waits `--timeout-secs` (60 unless given) for a provider. A session started ahead of any lookup, as `lemma index` does through the daemon, is started with the five minutes that loading a large workspace may take, and a lookup that found such a session waited those five minutes instead of its own: `refs --timeout-secs 12` took 300 s. Every ask now gets what its lookup allows.
+
+A provider that does not answer in time is stopped, as it always was after its own wait: it may be stuck, and the next lookup starts it again. For a repository whose server needs longer than a minute for some names, that is what `[servers] when_slow = "next"` and a longer `--timeout-secs` are for.
 
 ## Sentry
 
@@ -313,7 +377,7 @@ Each step leaves every gate passing.
 3. **Checks in the daemon.** `check`, `verify` and `graph --workspace` move in, handed off as sentry's asks are; sentry stops being what answers a check.
 4. **Sentry asked for by clients,** owning graph preparation and server restarts.
 5. **The remaining guardrails:** the source in every answer, and the differential gate.
-6. **Lookups side by side,** if measuring a lookup behind a loading server shows it is worth building.
+6. **Lookups side by side.** Measured first: a symbol search waited 299 s behind a lookup whose server never answered. Built as [lanes](#lanes); a lane per language server is left until it is measured to matter.
 7. **Documentation and names:** one page that states the three roles, and the outcome of open question 1.
 8. **`config` in `.lm`:** the declaration, `load`, `|`, the typed settings, language servers; TOML reading removed. Last: the settings above are TOML keys until then.
 
