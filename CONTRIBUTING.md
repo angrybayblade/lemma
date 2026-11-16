@@ -141,6 +141,7 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | allowance | An `allow`: findings of one requirement that its condition selects are reported as allowed, with a reason, until a date | exception, suppression, waiver |
 | workspace | What one daemon serves: a Git checkout, or the directory of a root module that declares a `workspace` with the repositories it names | project, root, session |
 | sentry | The daemon's attachment to one workspace: it listens to file changes and keeps the inputs of that workspace's checks prepared between asks | watch mode, monitor, sentinel |
+| lane | A thread of the daemon that answers its requests one at a time, in the order they came: the provider lane for lookups that may ask a provider, the index lane for those answered from the index alone | queue, worker, pool |
 | stop gate | The opt-in hook that runs `lemma check` when an agent tries to finish, and sends it back once if its change introduced errors | stop hook, guard, finish check |
 | ask | One `lemma check`, or `check` tool call, that sentry answers | query, request |
 | batch | File changes that arrived together and are prepared together | tick, chunk, flush |
