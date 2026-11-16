@@ -19,7 +19,22 @@ const EXIT_VIOLATED: u8 = 4;
 /// How many informational findings are listed without `--all`.
 const SHOWN_WITHOUT_ALL: usize = 10;
 
-pub(crate) fn run(args: &VerifyArgs, lsp: &LanguageServers, json: bool) -> ExitCode {
+/// Verifies as `args` ask and prints the report: in a process the
+/// workspace's daemon runs for it, when a daemon may serve it and it is to
+/// be asked (`asks_daemon_to`), and in this process otherwise.
+pub(crate) fn run(
+    args: &VerifyArgs,
+    lsp: &LanguageServers,
+    asks_daemon_to: bool,
+    json: bool,
+) -> ExitCode {
+    #[cfg(unix)]
+    if lsp.asks_daemon && asks_daemon_to {
+        if let Some(code) = crate::check::answered_by_daemon(std::env::args().skip(1).collect()) {
+            return code;
+        }
+    }
+    log::info!("verifying in this process");
     let report = match verify(args, lsp) {
         Ok(report) => report,
         Err(error) => {

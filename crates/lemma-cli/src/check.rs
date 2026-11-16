@@ -20,15 +20,18 @@ const EXIT_VIOLATED: u8 = 4;
 /// Exit code when the check finished without covering every repository.
 const EXIT_INCOMPLETE: u8 = 5;
 
+/// Checks as `args` ask and prints the report. When a daemon may serve it
+/// (`asks_daemon`), the workspace's daemon answers: through sentry if it is
+/// attached, and otherwise by running the check in a process of its own.
+/// Otherwise the check runs in this process.
 pub(crate) fn run(args: &CheckArgs, asks_daemon: bool, json: bool) -> ExitCode {
     #[cfg(unix)]
     if asks_daemon {
-        if let Some(answered) = crate::sentry::ask(asked_arguments(args)) {
-            let _ = std::io::stdout().write_all(answered.stdout.as_bytes());
-            let _ = std::io::stderr().write_all(answered.stderr.as_bytes());
-            return ExitCode::from(answered.exit_code);
+        if let Some(code) = answered_by_daemon(asked_arguments(args)) {
+            return code;
         }
     }
+    log::info!("checking in this process");
     let mut stdout = std::io::stdout().lock();
     // Not locked for the whole check, as stdout is: log lines go to stderr
     // from any thread, and one waiting on a lock the check holds while the
@@ -38,7 +41,31 @@ pub(crate) fn run(args: &CheckArgs, asks_daemon: bool, json: bool) -> ExitCode {
         out: &mut stdout,
         err: &mut stderr,
     };
-    let exit_code = answer(args, json, None, &mut streams);
+    ExitCode::from(answer_alone(args, json, None, &mut streams))
+}
+
+/// Asks the workspace's daemon to answer the `check` or `verify` whose
+/// command line is `raw`, and prints what it answers; `None` when no daemon
+/// answers and the command is to be run here.
+#[cfg(unix)]
+pub(crate) fn answered_by_daemon(raw: Vec<String>) -> Option<ExitCode> {
+    let answered = crate::sentry::ask(raw)?;
+    log::info!("answered by the daemon");
+    let _ = std::io::stdout().write_all(answered.stdout.as_bytes());
+    let _ = std::io::stderr().write_all(answered.stderr.as_bytes());
+    Some(ExitCode::from(answered.exit_code))
+}
+
+/// Checks with no sentry, as [`answer`] does, and says so when the check
+/// asked for what changed `--since` an earlier answer, which only sentry
+/// keeps.
+fn answer_alone(
+    args: &CheckArgs,
+    json: bool,
+    served: Option<&Served<'_>>,
+    streams: &mut Streams<'_>,
+) -> u8 {
+    let exit_code = answer(args, json, served, streams);
     if args.since.is_some() {
         let _ = writeln!(
             streams.err,
@@ -46,7 +73,7 @@ pub(crate) fn run(args: &CheckArgs, asks_daemon: bool, json: bool) -> ExitCode {
              (`lemma daemon sentry start`); the whole report is above"
         );
     }
-    ExitCode::from(exit_code)
+    exit_code
 }
 
 /// Where a check prints its report and its errors.

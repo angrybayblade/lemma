@@ -26,7 +26,7 @@ const PARSE_ERROR: i64 = -32700;
 /// Told to the agent once, when it connects.
 const INSTRUCTIONS: &str = "Lemma is your IDE here, without an editor. It answers \"where is this \
 used, defined or implemented\" and \"what calls this\" from each language's own language server \
-(TypeScript, JavaScript, Python, Go and Rust), exactly where text search guesses: it leaves out other \
+(TypeScript, Python, Go and Rust), exactly where text search guesses: it leaves out other \
 symbols with the same name and mentions in comments and strings, and follows imports and aliases. \
 Once its servers are warm an answer takes milliseconds, so ask on every step, especially for common \
 names; use text search for strings, configuration and other files.\n\n\
@@ -95,10 +95,10 @@ impl Runner {
 
     fn run(&mut self, args: Vec<String>) -> Finished {
         if runs_in_own_process(&args) {
-            // A check sentry serves needs no process of its own: asking it
-            // here saves starting one only for it to ask.
+            // A check or a verify the workspace's daemon answers needs no
+            // process of its own.
             if self.uses_daemon
-                && let Some(finished) = ask_sentry(&args, &self.cwd)
+                && let Some(finished) = ask_daemon_to_check(&args, &self.cwd)
             {
                 return finished;
             }
@@ -184,7 +184,7 @@ fn runs_in_own_process(args: &[String]) -> bool {
 
 #[cfg(unix)]
 fn forward(args: Vec<String>, cwd: PathBuf) -> Option<Finished> {
-    let finished = crate::daemon::forward(args, cwd)?;
+    let finished = crate::daemon::forward(args, cwd, crate::daemon::Asker::Server)?;
     Some(Finished {
         stdout: finished.stdout,
         stderr: finished.stderr,
@@ -197,16 +197,18 @@ fn forward(_args: Vec<String>, _cwd: PathBuf) -> Option<Finished> {
     None
 }
 
-/// A `check` answered by the daemon's sentry, as the command run in `cwd`
-/// would be; `None` when sentry does not serve it, or for any other command.
+/// A `check` or a `verify` answered by the workspace's daemon, as the
+/// command run in `cwd` would be; `None` when no daemon serves it, or for
+/// any other command.
 #[cfg(unix)]
-fn ask_sentry(args: &[String], cwd: &std::path::Path) -> Option<Finished> {
-    let is_check = args.first().map(String::as_str) == Some("check");
-    if !is_check || crate::sentry::is_turned_off() {
+fn ask_daemon_to_check(args: &[String], cwd: &std::path::Path) -> Option<Finished> {
+    if !runs_in_own_process(args) {
         return None;
     }
     let environment = std::env::vars().collect();
-    let answer = crate::daemon::ask_sentry(args.to_vec(), cwd.to_path_buf(), environment)?;
+    let asker = crate::daemon::Asker::Server;
+    let answer =
+        crate::daemon::ask_for_check(args.to_vec(), cwd.to_path_buf(), environment, asker)?;
     Some(Finished {
         stdout: answer.stdout,
         stderr: answer.stderr,
@@ -215,7 +217,7 @@ fn ask_sentry(args: &[String], cwd: &std::path::Path) -> Option<Finished> {
 }
 
 #[cfg(not(unix))]
-fn ask_sentry(_args: &[String], _cwd: &std::path::Path) -> Option<Finished> {
+fn ask_daemon_to_check(_args: &[String], _cwd: &std::path::Path) -> Option<Finished> {
     None
 }
 

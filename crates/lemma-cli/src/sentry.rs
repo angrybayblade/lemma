@@ -814,24 +814,24 @@ fn today() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs() / 86_400)
 }
 
-/// Asks the running daemon's sentry to answer a check, given its command
-/// line. `None` when it cannot: no daemon runs (none is started for this),
-/// sentry is turned off or attached elsewhere, or the command asks for
-/// logs, which only a check run here can print.
+/// Asks the workspace's daemon to answer a `check` or a `verify` from a
+/// shell, given its command line: a check through sentry when it is
+/// attached, and by itself otherwise.
+/// `None` when it cannot: no daemon serves the workspace and none may be
+/// started, or the command asks for logs, which only a check run here can
+/// print.
 pub(crate) fn ask(raw: Vec<String>) -> Option<Answer> {
-    if is_turned_off()
-        || raw
-            .iter()
-            .any(|arg| arg == "-l" || arg.starts_with("--logging"))
-    {
+    let asks_for_logs = |arg: &String| arg == "-l" || arg.starts_with("--logging");
+    if raw.iter().any(asks_for_logs) {
         return None;
     }
     let cwd = std::env::current_dir().ok()?;
     let environment: BTreeMap<String, String> = std::env::vars().collect();
-    crate::daemon::ask_sentry(raw, cwd, environment)
+    crate::daemon::ask_for_check(raw, cwd, environment, crate::daemon::Asker::Command)
 }
 
-/// Whether `LEMMA_SENTRY=off` turns sentry off for this process.
+/// Whether `LEMMA_SENTRY=off` turns sentry off for this process: its checks
+/// are then answered with nothing kept from earlier ones.
 pub(crate) fn is_turned_off() -> bool {
     std::env::var("LEMMA_SENTRY").is_ok_and(|value| value == "off")
 }

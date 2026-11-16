@@ -139,7 +139,9 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | check | A named entry point selecting the requirements to evaluate | suite, target |
 | outcome | What evaluating a requirement or behavior established: satisfied, violated, unknown or stale | result, status, verdict |
 | allowance | An `allow`: findings of one requirement that its condition selects are reported as allowed, with a reason, until a date | exception, suppression, waiver |
+| workspace | What one daemon serves: a Git checkout, or the directory of a root module that declares a `workspace` with the repositories it names | project, root, session |
 | sentry | The daemon's attachment to one workspace: it listens to file changes and keeps the inputs of that workspace's checks prepared between asks | watch mode, monitor, sentinel |
+| stop gate | The opt-in hook that runs `lemma check` when an agent tries to finish, and sends it back once if its change introduced errors | stop hook, guard, finish check |
 | ask | One `lemma check`, or `check` tool call, that sentry answers | query, request |
 | batch | File changes that arrived together and are prepared together | tick, chunk, flush |
 | bulk state | A repository changing too much at once to prepare file by file, as during a checkout or a rebase | storm, burst |

@@ -283,6 +283,11 @@ impl SessionPool {
         self.sessions.is_empty()
     }
 
+    /// Whether a server is being started in the background.
+    pub fn is_warming(&self) -> bool {
+        !self.warming.is_empty()
+    }
+
     /// Whether a server for this root is running or starting.
     pub fn serves_root(&self, root: &Path) -> bool {
         self.sessions

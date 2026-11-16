@@ -41,7 +41,7 @@ Install the language server for each language your code uses:
 
 | Language | Install | Command Lemma runs |
 | --- | --- | --- |
-| TypeScript, TSX, JavaScript | `npm install -g typescript typescript-language-server` | `typescript-language-server` |
+| TypeScript, TSX | `npm install -g typescript typescript-language-server` | `typescript-language-server` |
 | Python | `uv tool install ty` (fastest) or `npm install -g pyright` | `ty` or `pyright-langserver` |
 | Go | `go install golang.org/x/tools/gopls@latest` | `gopls` |
 | Rust | `rustup component add rust-analyzer` | `rust-analyzer` |
@@ -82,7 +82,7 @@ The release includes these skills for agents that support them (Claude Code read
 | --- | --- |
 | `lemma-mode` | `/lemma-mode`: the workflow for a change other code depends on, ending in proof. See [Lemma mode](lemma-mode.md) |
 | `lemma-impact` | Mapping every use and caller before a change |
-| `lemma-verify` | Proving a change with `lemma check`, and an opt-in Stop hook |
+| `lemma-verify` | Proving a change with `lemma check`, and the opt-in stop gate |
 | `lemma-behavior` | Proving a runtime claim by running the real handler (beta) |
 | `lemma-usage` | Choosing between Lemma and text search, navigating code, reading `lemma check` findings |
 | `lemma-onboarding` | Setting Lemma up for a set of repositories: install, index, write the descriptions, add CI |
