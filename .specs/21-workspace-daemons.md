@@ -197,6 +197,21 @@ Measured on 2026-11-16, on Lemma's development machine:
 
 The cost is the hand-over between threads: about 0.2 ms a command, and two more threads.
 
+And on the six-repository bench workspace, with its real language servers, each build alone:
+
+| Case | Before | With lanes |
+| --- | --- | --- |
+| `symbols` while one of 11 graphs is being answered, median of two rounds | 1.9 s and 2.1 s | 0.018 s |
+| The same, the longest | 30.1 s and 15.6 s | 0.40 s and 0.09 s |
+| A name added during the first graph | found once the graph was answered, after 7.8 s and 1.7 s | found in 0.03 s, the graph still being answered |
+| The 11 graphs' answers | | the same |
+| A graph after an edit, asked at once, median | 3.72 s and 4.02 s | 3.92 s and 3.77 s |
+| A graph after an edit, asked 6 s later, when sentry has got ready, median | 42 ms and 50 ms | 49 ms and 45 ms |
+| The daemon's memory after every benchmark graph three times | 294 MB | 290 MB |
+| Its inotify watches | 20,165 | 20,165 |
+
+The gates held: the editor's differential in all 84 cases, sentry's settled and raced and checks without sentry in all 214 each, the 54 replayed changes and 30 mutations the same as before, and recall 47 of 47 and 33 of 33.
+
 Not built: a lane per language server, so that a Python lookup is answered while a Go server loads. The provider lane's requests still wait for each other. It needs the engine's sessions split by provider, and waits for a measured need.
 
 One thing still runs on the reading thread that can take time: attaching sentry to a workspace for the first command that asks, which sets up its watches. It happens once per daemon.
