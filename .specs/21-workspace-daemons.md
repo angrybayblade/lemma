@@ -1,6 +1,6 @@
 # Workspace daemons: one daemon per workspace, its sentry and its clients
 
-**Status: designed, 2026-11-15; steps 1 and 2 of [Build order](#build-order) built, and step 3 for `check`, 2026-11-16.** One daemon serves each workspace, found by walking up and started at the workspace's root, and it refuses directories it does not serve; `[daemon] autostart` says who may start one; the daemon answers a check, through sentry or by itself. Not built: `verify` and `graph --workspace` still run in the client's process, sentry is still attached by hand, and settings are still TOML. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion of 2026-11-15; rows marked *proposal* follow from them and still need the same review. Measurements are from Lemma's own repository and from the six-repository bench workspace, on Linux.
+**Status: designed, 2026-11-15; steps 1 to 3 of [Build order](#build-order) built, 2026-11-16.** One daemon serves each workspace, found by walking up and started at the workspace's root, and it refuses directories it does not serve; `[daemon] autostart` says who may start one; the daemon answers `check`, through sentry or by itself, and `verify` and `graph --workspace`. Not built: sentry is still attached by hand, and settings are still TOML. The rows marked *decided* under [Decisions](#decisions) were settled in the design discussion of 2026-11-15; rows marked *proposal* follow from them and still need the same review. Measurements are from Lemma's own repository and from the six-repository bench workspace, on Linux.
 
 ## Problem
 
@@ -142,7 +142,7 @@ Every operation, when a daemon serves the client:
 | `graph --workspace` | Client's process | Daemon |
 | `check` | Client's process; daemon only with sentry attached | Daemon |
 | `verify` | Client's process | Daemon |
-| The editor's server's checks | Sentry, or the server's own process | Daemon, on each save the editor reports, or as sentry reports changes |
+| The editor's server's checks | Sentry, or the server's own process | Daemon, on each save the editor reports, or as sentry reports changes. Not built: it still watches the workspace in its own process when sentry is not attached to it (step 4) |
 
 A check sends the client's directory, arguments and environment, as an ask to sentry does today, so an adapter or checker runs with the toolchain of the shell that asked. The daemon gives the check to sentry when sentry is attached to its workspace, and otherwise answers it on a thread of its own with nothing kept from earlier checks: the report a check gives in its own process. A check that asks for logs runs in the client's process, since the daemon cannot yet tell one check's log lines from another's; so does a check the daemon's thread fails on, because the connection then closes unanswered and the client checks by itself.
 

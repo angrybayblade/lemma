@@ -26,11 +26,8 @@ const EXIT_INCOMPLETE: u8 = 5;
 pub(crate) fn run(args: &CheckArgs, asks_daemon: bool, json: bool) -> ExitCode {
     #[cfg(unix)]
     if asks_daemon {
-        if let Some(answered) = crate::sentry::ask(asked_arguments(args)) {
-            log::info!("checked in the daemon");
-            let _ = std::io::stdout().write_all(answered.stdout.as_bytes());
-            let _ = std::io::stderr().write_all(answered.stderr.as_bytes());
-            return ExitCode::from(answered.exit_code);
+        if let Some(code) = answered_by_daemon(asked_arguments(args)) {
+            return code;
         }
     }
     log::info!("checking in this process");
@@ -44,6 +41,18 @@ pub(crate) fn run(args: &CheckArgs, asks_daemon: bool, json: bool) -> ExitCode {
         err: &mut stderr,
     };
     ExitCode::from(answer_alone(args, json, None, &mut streams))
+}
+
+/// Asks the workspace's daemon to answer the `check` or `verify` whose
+/// command line is `raw`, and prints what it answers; `None` when no daemon
+/// answers and the command is to be run here.
+#[cfg(unix)]
+pub(crate) fn answered_by_daemon(raw: Vec<String>) -> Option<ExitCode> {
+    let answered = crate::sentry::ask(raw)?;
+    log::info!("answered by the daemon");
+    let _ = std::io::stdout().write_all(answered.stdout.as_bytes());
+    let _ = std::io::stderr().write_all(answered.stderr.as_bytes());
+    Some(ExitCode::from(answered.exit_code))
 }
 
 /// Checks with no sentry, as [`answer`] does, and says so when the check

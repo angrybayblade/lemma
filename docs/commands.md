@@ -189,7 +189,7 @@ Code reached in other repositories is a `caller`: it was found by the requests i
 
 - The index's directory must be inside one of the repositories the workspace composes.
 - Within the symbol's repository, callers come from `--source`. From there to a route's handler (a constructor registered for a handler type, say), and within every other repository, they are followed by name: approximate, within one language, skipping names several functions share.
-- Operations and their callers come from inference over the whole system, as `lemma check` finds them, so the command runs in its own process and takes about as long. Routes whose paths are built at run time are not found, and the trace stops there.
+- Operations and their callers come from inference over the whole system, as `lemma check` finds them, so the command takes about as long. It runs in the workspace's daemon like any other graph. Routes whose paths are built at run time are not found, and the trace stops there.
 
 Render a drawing with Graphviz (`lemma graph X --format dot | dot -Tsvg > graph.svg`) or paste Mermaid into a Markdown file.
 
@@ -227,6 +227,8 @@ Other clients take the same command, `lemma mcp`, started in the project directo
 ## `lemma verify [mod.lm]`
 
 Compares a description with the code at one snapshot: patterns that match no file, documents that do not exist, anchors that do not resolve, links that no longer hold. It does not compare commits or report contract disagreements. See [Verifying descriptions](verify.md).
+
+Like `lemma check`, it runs in the workspace's daemon, and in the command's own process with `--no-daemon`, with `--logging`, or when no daemon serves the workspace and none may be started. The report is the same either way.
 
 | Option | Meaning |
 | --- | --- |

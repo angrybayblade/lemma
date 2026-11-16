@@ -95,8 +95,8 @@ impl Runner {
 
     fn run(&mut self, args: Vec<String>) -> Finished {
         if runs_in_own_process(&args) {
-            // A check the workspace's daemon answers needs no process of
-            // its own.
+            // A check or a verify the workspace's daemon answers needs no
+            // process of its own.
             if self.uses_daemon
                 && let Some(finished) = ask_daemon_to_check(&args, &self.cwd)
             {
@@ -197,13 +197,12 @@ fn forward(_args: Vec<String>, _cwd: PathBuf) -> Option<Finished> {
     None
 }
 
-/// A `check` answered by the workspace's daemon, as the command run in
-/// `cwd` would be; `None` when no daemon serves it, or for any other
-/// command.
+/// A `check` or a `verify` answered by the workspace's daemon, as the
+/// command run in `cwd` would be; `None` when no daemon serves it, or for
+/// any other command.
 #[cfg(unix)]
 fn ask_daemon_to_check(args: &[String], cwd: &std::path::Path) -> Option<Finished> {
-    let is_check = args.first().map(String::as_str) == Some("check");
-    if !is_check {
+    if !runs_in_own_process(args) {
         return None;
     }
     let environment = std::env::vars().collect();

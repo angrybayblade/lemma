@@ -63,7 +63,6 @@ fn main() -> ExitCode {
     }
     let declined_cloning = cloning::ask_before_cloning(&mut cli);
     if let Command::Verify(args) = &cli.command {
-        log::info!("running in this process: verify always does");
         let lsp = check::LanguageServers {
             asks_daemon: !cli.no_daemon && !daemon_disabled_by_environment(),
             providers_file: cli.providers.clone(),
@@ -83,10 +82,7 @@ fn main() -> ExitCode {
         eprintln!("error: could not read the current directory");
         return ExitCode::FAILURE;
     };
-    // Tracing through a workspace runs inference over every repository,
-    // which runs in its own process, as `lemma check` does.
-    let traces_workspace = matches!(&cli.command, Command::Graph(args) if args.workspace.is_some());
-    if let Some(reason) = in_process_reason(&cli, traces_workspace) {
+    if let Some(reason) = in_process_reason(&cli) {
         log::info!("running in this process: {reason}");
         return run_in_process(cli, cwd);
     }
@@ -119,15 +115,12 @@ fn manage_servers(cli: &Cli) -> ExitCode {
 }
 
 /// Why a command runs in this process rather than the daemon, if it does.
-fn in_process_reason(cli: &Cli, traces_workspace: bool) -> Option<&'static str> {
+fn in_process_reason(cli: &Cli) -> Option<&'static str> {
     if cli.no_daemon {
         return Some("--no-daemon");
     }
     if daemon_disabled_by_environment() {
         return Some("LEMMA_NO_DAEMON is set");
-    }
-    if traces_workspace {
-        return Some("graph --workspace runs inference over every repository");
     }
     None
 }
