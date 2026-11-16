@@ -366,7 +366,8 @@ pub(crate) fn serve(
             continue;
         };
         let is_status = matches!(request, Request::Status);
-        if matches!(request, Request::Maintain) {
+        let is_maintenance = matches!(request, Request::Maintain);
+        if is_maintenance {
             maintain_runtimes(&runtimes, &mut engine, &settings.config);
         }
         let mut reply = reply_to(request, &mut engine, &mut settings, &last_request, logger);
@@ -378,7 +379,10 @@ pub(crate) fn serve(
         let is_exiting = matches!(reply, Reply::Stopping | Reply::Restart);
         // A caller that gave up is not a reason to stop serving others.
         let _ = send(&mut stream, &reply);
-        if is_exiting {
+        let is_cold = is_maintenance
+            && sentry.is_none()
+            && is_cold(&engine, &runtimes, &last_request, &settings.config);
+        if is_exiting || is_cold {
             break;
         }
     }
@@ -394,6 +398,31 @@ pub(crate) fn serve(
     // the moment `lemma daemon stop` waits for.
     std::mem::forget(lock);
     Ok(())
+}
+
+/// Whether, sentry aside, the daemon holds nothing warm and has been idle
+/// long enough to exit by itself.
+fn is_cold(
+    engine: &Engine,
+    runtimes: &crate::runtime::Runtimes,
+    last_request: &Mutex<Instant>,
+    config: &Config,
+) -> bool {
+    let holds_nothing = runtimes.status().is_empty() && engine.holds_nothing_warm();
+    let idle_for = lock(last_request).elapsed();
+    has_nothing_to_stay_for(holds_nothing, idle_for, config.idle_policy.stop_after)
+}
+
+/// Whether a daemon exits by itself: it holds nothing warm, and no command
+/// has come for as long as an idle language server is kept before it is
+/// stopped. A workspace nobody is using then has no daemon. With
+/// `stop_after` unset servers are kept, and so is the daemon.
+fn has_nothing_to_stay_for(
+    is_cold: bool,
+    idle_for: Duration,
+    stop_after: Option<Duration>,
+) -> bool {
+    is_cold && stop_after.is_some_and(|kept| idle_for >= kept)
 }
 
 /// The daemon's engine with `config`'s settings, which gives way while a
@@ -1614,6 +1643,18 @@ mod tests {
             other
         );
         assert_eq!(place_of(&arguments(&["not-a-command"]), &cwd), cwd);
+    }
+
+    #[test]
+    fn a_daemon_exits_once_nothing_is_warm_and_it_was_idle_as_long_as_servers_are_kept() {
+        let kept = Some(Duration::from_secs(7200));
+        let long = Duration::from_secs(7200);
+        let short = Duration::from_secs(60);
+
+        assert!(has_nothing_to_stay_for(true, long, kept));
+        assert!(!has_nothing_to_stay_for(true, short, kept));
+        assert!(!has_nothing_to_stay_for(false, long, kept));
+        assert!(!has_nothing_to_stay_for(true, long, None));
     }
 
     #[test]

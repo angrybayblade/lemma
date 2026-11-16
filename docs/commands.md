@@ -312,7 +312,7 @@ The daemon reads `~/.config/lemma/config.toml` (or `$XDG_CONFIG_HOME/lemma/confi
 
 ```toml
 [daemon]
-idle_exit = "never"        # stop the daemon after this long without a command
+idle_exit = "never"        # stop the daemon after this long without a command, whatever it holds
 
 [servers]
 pause_after = "10m"        # pause idle language servers
@@ -335,6 +335,8 @@ watches = 16384            # directories watched for graphs: 0 watches none, "no
 prepare = "graph"          # after an edit, get ready for the next graph: "off", "index" or "graph"
 kept_ready = 4             # how many of the graphs last asked are answered ahead after an edit
 ```
+
+**When a daemon exits.** A daemon exits by itself once it holds nothing warm (no language server running or starting, no warm runtime, no sentry, no workspace watched for graphs) and no command has come for as long as `[servers] stop_after`. So a workspace nobody is using has no daemon; its next command starts one. With `stop_after = "never"` servers are kept, and so is the daemon. `idle_exit` is a limit of its own: the daemon exits after that long without a command, whatever it holds.
 
 **A server too slow for a question.** A lookup waits `--timeout-secs` (60 unless given) for a language server. With `when_slow = "report"` one that does not answer in time fails the lookup, as any other failure does. With `"next"` the next installed server for the language is asked once the first has had `give_way_after` (the lookup's own wait unless set), and once it answers the slow one is passed over in that repository for `try_again_after`: `"0s"` asks it first every time, `"never"` leaves it for as long as the daemon runs. It is for very large repositories, where a server can be too slow for the most widely used names every time; the next server may hold much more memory. [Language servers](providers.md#when-a-server-is-too-slow) has the measurements and what the output shows. A command run in its own process reads these three settings too.
 
