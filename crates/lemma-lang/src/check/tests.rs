@@ -639,3 +639,13 @@ fn proof_is_an_alternative_checker_engine() {
         single("module example\nchecker prove(): Evidence<Json> {\n    engine: \"magic\"\n}\n");
     assert_error(&unknown, "unknown checker engine");
 }
+
+#[test]
+fn a_proof_checker_refuses_fields_that_shape_a_program_run() {
+    for field in ["    setup: [\"make\"]\n", "    directory: \"tools\"\n"] {
+        let result = single(&format!(
+            "module example\nchecker prove(handler: Operation, contract: Json): Evidence<Json> {{\n    engine: \"proof\"\n{field}}}\n"
+        ));
+        assert_error(&result, "runs no program");
+    }
+}

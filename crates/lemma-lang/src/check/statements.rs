@@ -156,6 +156,30 @@ impl Checker<'_> {
         columns
     }
 
+    /// Reports `setup` and `directory` on a proof checker: it runs no program,
+    /// so either would be silently ignored, or run for nothing.
+    fn has_program_fields(
+        &mut self,
+        module: &str,
+        checker: &ast::CheckerDeclaration,
+        values: &BTreeMap<String, Value>,
+    ) -> bool {
+        let Some(unused) = ["setup", "directory"]
+            .into_iter()
+            .find(|field| values.contains_key(*field))
+        else {
+            return false;
+        };
+        self.error(
+            module,
+            field_span(checker, unused),
+            format!(
+                "a checker with `engine: \"proof\"` runs no program, so `{unused}` has no effect"
+            ),
+        );
+        true
+    }
+
     fn checker_runner(
         &mut self,
         module: &str,
@@ -171,7 +195,12 @@ impl Checker<'_> {
                 );
                 return None;
             }
-            (None, Some(Value::Text(engine))) if engine == "proof" => model::CheckerRunner::Proof,
+            (None, Some(Value::Text(engine))) if engine == "proof" => {
+                if self.has_program_fields(module, checker, values) {
+                    return None;
+                }
+                model::CheckerRunner::Proof
+            }
             (None, Some(Value::Text(engine))) => {
                 self.error(
                     module,
