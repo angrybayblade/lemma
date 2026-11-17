@@ -728,10 +728,15 @@ impl Engine {
             lemma_graph::compose::composition(lemma_path, &cache, indexing.cloning())?;
         let members = composition.members;
         if matches!(indexing, Indexing::FilesOnly) {
+            let mut located = Vec::new();
             for member in &members {
                 let indexed_root = member_root(member, &cache)?;
                 let db_path = default_index_path(&member.root)?;
                 self.index_files(&db_path, &indexed_root, Some(&member.file))?;
+                located.push(stored_member(member, &indexed_root, &db_path));
+            }
+            if request.db.is_none() {
+                self.mount_moved_members(&default_index_path(root)?, &located)?;
             }
             return Ok(0);
         }
@@ -826,14 +831,32 @@ impl Engine {
         let db_path = default_index_path(&member.root)?;
         let states = kept.and_then(|kept| kept.of(&indexed_root));
         let indexed = self.index_repository(&db_path, &indexed_root, Some(&member.file), states)?;
-        let stored = StoredMember {
-            name: member.name.clone(),
-            root: member.root.display().to_string(),
-            revision: member.commit.clone(),
-            indexed_root: indexed_root.display().to_string(),
-            database: db_path.display().to_string(),
-        };
-        Ok((stored, indexed))
+        Ok((stored_member(member, &indexed_root, &db_path), indexed))
+    }
+
+    /// Mounts a workspace's members where they are now, when its index at
+    /// `db_path` still has one of them somewhere else.
+    ///
+    /// The index records each member's directory, so a workspace that was
+    /// renamed, or copied with its index, names directories that are gone or
+    /// are another workspace's. Lookups read members from that record:
+    /// left alone, they would find nothing, or answer about the other
+    /// workspace's code.
+    fn mount_moved_members(
+        &mut self,
+        db_path: &Path,
+        located: &[StoredMember],
+    ) -> anyhow::Result<()> {
+        // Nothing is mounted before the first `lemma index` of a workspace.
+        if !db_path.exists() {
+            return Ok(());
+        }
+        let mounted = open_store(&mut self.stores, db_path)?.workspace_members()?;
+        if !any_member_moved(&mounted, located) {
+            return Ok(());
+        }
+        store_for_writing(&mut self.stores, db_path)?.mount_workspace(located)?;
+        Ok(())
     }
 
     fn symbols(
@@ -1797,6 +1820,31 @@ impl Indexing {
             Indexing::Refresh | Indexing::FilesOnly => lemma_graph::repos::Cloning::Forbidden,
         }
     }
+}
+
+/// A member as a workspace's index records it: where its files and its
+/// own index are.
+fn stored_member(
+    member: &lemma_graph::compose::Member,
+    indexed_root: &Path,
+    db_path: &Path,
+) -> StoredMember {
+    StoredMember {
+        name: member.name.clone(),
+        root: member.root.display().to_string(),
+        revision: member.commit.clone(),
+        indexed_root: indexed_root.display().to_string(),
+        database: db_path.display().to_string(),
+    }
+}
+
+/// Whether a member a workspace's index has `mounted` is now `located`
+/// somewhere else. A member only one side names has not moved: adding and
+/// dropping members is the full index's to record, with their exports.
+fn any_member_moved(mounted: &[StoredMember], located: &[StoredMember]) -> bool {
+    mounted
+        .iter()
+        .any(|was| located.iter().any(|now| now.name == was.name && now != was))
 }
 
 /// What indexing one repository produced.
