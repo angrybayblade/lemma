@@ -625,7 +625,14 @@ impl SessionPool {
         }
         let current = files()?;
         let changes = changes_between(&pooled.synced_files, &current);
-        if pooled.session.files_changed(&changes).is_ok() {
+        if is_bulk_change(changes.len()) {
+            log::info!(
+                "replacing {} on {}: {} files changed at once",
+                key.provider_id,
+                key.root.display(),
+                changes.len()
+            );
+        } else if pooled.session.files_changed(&changes).is_ok() {
             fingerprint.clone_into(&mut pooled.synced_fingerprint);
             pooled.synced_files = current;
             return Ok(());
@@ -896,6 +903,22 @@ fn file_hashes(store: &dyn FactStore, snapshot: &StoredSnapshot) -> Result<FileH
         .collect())
 }
 
+/// Most files a running server is told have changed. Past it the root is
+/// in bulk state, as after a checkout or a rebase; the number is the one
+/// sentry uses for a batch (`.specs/14-sentry.md`).
+const BULK_CHANGE_FILES: usize = 1000;
+
+/// Whether `changed` files are too many to tell a running server about.
+///
+/// A server told of thousands of files goes on reading them while it
+/// answers, from whichever it has read so far, and nothing says when it has
+/// finished: references asked right after a large checkout came back
+/// without the uses in files it had not reached. A server started afresh
+/// reads every file as it is before it answers.
+fn is_bulk_change(changed: usize) -> bool {
+    changed > BULK_CHANGE_FILES
+}
+
 /// What a server that saw `before` needs to hear to see `after`, sorted by
 /// path.
 fn changes_between(
@@ -929,6 +952,13 @@ mod tests {
             .iter()
             .map(|(path, hash)| ((*path).to_owned(), (*hash).to_owned()))
             .collect()
+    }
+
+    #[test]
+    fn a_checkouts_worth_of_changes_is_a_bulk_change_and_an_edits_is_not() {
+        assert!(!is_bulk_change(1));
+        assert!(!is_bulk_change(BULK_CHANGE_FILES));
+        assert!(is_bulk_change(BULK_CHANGE_FILES + 1));
     }
 
     #[test]
