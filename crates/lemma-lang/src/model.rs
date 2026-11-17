@@ -292,8 +292,8 @@ pub struct Checker {
     pub parameters: Vec<Column>,
     /// The type of what it observes: the `T` of its `Evidence<T>`.
     pub observes: Type,
-    /// The argument list that runs it, without a shell.
-    pub command: Vec<String>,
+    /// What produces its evidence.
+    pub runner: CheckerRunner,
     /// Where it runs, relative to its repository's root.
     pub directory: Option<String>,
     /// A command run once per tree before the first run.
@@ -312,6 +312,15 @@ pub struct Checker {
     pub is_concurrent: bool,
     /// Its declaration as written, part of its evidence's key.
     pub text: String,
+}
+
+/// How a checker produces evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckerRunner {
+    /// An external program and its arguments, run without a shell.
+    Command(Vec<String>),
+    /// A source-backed contract checked with an SMT solver.
+    Proof,
 }
 
 /// A statement of a behavior or function.

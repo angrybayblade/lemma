@@ -54,3 +54,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Tests that need Soufflé or language servers are ignored by default.
       - run: cargo test --workspace --locked
+
+  # Keep actual proof and mutation checks mandatory without making Z3 a
+  # prerequisite for the ordinary offline Rust suite.
+  source-contracts:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install z3-solver==4.15.4.0
+      - run: z3 -version
+      - run: cargo test -p lemma-graph --lib --locked proof::tests -- --ignored
+      - run: cargo test -p lemma-graph --test source_contracts --locked -- --ignored

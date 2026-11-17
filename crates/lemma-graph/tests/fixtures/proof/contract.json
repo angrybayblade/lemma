@@ -1,0 +1,30 @@
+{
+  "inputs": {
+    "request": { "allowed": "Bool", "enabled": "Bool", "project": "Text", "epoch": "Text" },
+    "lease": { "rejected": "Bool" }
+  },
+  "parameters": ["request"],
+  "models": {
+    "commitStatus": {
+      "assumption": "commitStatus atomically checks the scoped lease; rejected writes leave storage unchanged; the call has no other effects",
+      "parameters": ["project", "enabled", "epoch"],
+      "returns": { "rejected": { "expr": "lease.rejected" } },
+      "effect": {
+        "name": "commit",
+        "fields": {
+          "project": { "expr": "project" },
+          "enabled": { "expr": "enabled" },
+          "epoch": { "expr": "epoch" }
+        }
+      }
+    }
+  },
+  "ensures": [
+    { "name": "success_requires_permission_and_accepted_lease", "condition": "result.success == (request.allowed && !lease.rejected)" },
+    { "name": "permission_before_write", "condition": "!effects.commit.called || request.allowed" },
+    { "name": "project_scope", "condition": "!effects.commit.called || effects.commit.last.project == request.project" },
+    { "name": "lease_epoch", "condition": "!effects.commit.called || effects.commit.last.epoch == request.epoch" },
+    { "name": "requested_status", "condition": "!effects.commit.called || effects.commit.last.enabled == request.enabled" },
+    { "name": "write_before_success", "condition": "!result.success || effects.commit.called" }
+  ]
+}

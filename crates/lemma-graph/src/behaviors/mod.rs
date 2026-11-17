@@ -463,6 +463,63 @@ impl CheckWorld<'_> {
         Ok(roots)
     }
 
+    fn bind_proof_source(
+        &self,
+        arguments: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let handler = arguments
+            .get_mut("handler")
+            .ok_or("proof checker needs a handler argument")?;
+        let repository = handler["repository"]
+            .as_str()
+            .ok_or("proof handler must be an Operation")?;
+        let checkout = self
+            .checkouts
+            .get(repository)
+            .ok_or("proof handler repository is not checked out")?;
+        let root = self.store.files_of(checkout)?;
+        crate::proof::bind_source(&root, handler)
+    }
+
+    fn evidence_reads(
+        &mut self,
+        checker: &lemma_lang::model::Checker,
+        arguments: &serde_json::Value,
+    ) -> (Vec<String>, BTreeMap<String, Option<String>>) {
+        let is_proof = checker.runner == lemma_lang::model::CheckerRunner::Proof;
+        let mut read: Vec<String> = if checker.reads.is_empty() {
+            vec![checker.repository.clone()]
+        } else {
+            checker.reads.clone()
+        };
+        if is_proof {
+            read.push(checker.repository.clone());
+            if let Some(repository) = arguments
+                .get("handler")
+                .and_then(|h| h.get("repository"))
+                .and_then(serde_json::Value::as_str)
+            {
+                read.push(repository.to_owned());
+            }
+            read.sort();
+            read.dedup();
+        }
+        let reads: BTreeMap<String, Option<String>> = read
+            .iter()
+            .map(|name| {
+                (
+                    name.clone(),
+                    if is_proof {
+                        self.place(name).and_then(|place| place.state)
+                    } else {
+                        self.read_state(name, arguments)
+                    },
+                )
+            })
+            .collect();
+        (read, reads)
+    }
+
     /// Where repository `name` is read, and the state of its code.
     fn place(&mut self, name: &str) -> Option<Place> {
         if let Some(found) = self.places.get(name) {
@@ -492,21 +549,19 @@ impl World for CheckWorld<'_> {
                 checker.repository
             ));
         };
-        let arguments: serde_json::Map<String, serde_json::Value> = demand
+        let mut arguments: serde_json::Map<String, serde_json::Value> = demand
             .arguments
             .iter()
             .map(|(name, value)| (name.clone(), self.encoder.encode(value)))
             .collect();
-        let read: Vec<String> = if checker.reads.is_empty() {
-            vec![checker.repository.clone()]
-        } else {
-            checker.reads.clone()
-        };
+        if checker.runner == lemma_lang::model::CheckerRunner::Proof {
+            if let Err(why) = self.bind_proof_source(&mut arguments) {
+                return eval::Evidence::Unavailable(why);
+            }
+        }
         let encoded = serde_json::Value::Object(arguments.clone());
-        let reads: BTreeMap<String, Option<String>> = read
-            .iter()
-            .map(|name| (name.clone(), self.read_state(name, &encoded)))
-            .collect();
+        let (read, reads) = self.evidence_reads(checker, &encoded);
+        let engine_key = self.store.engine_key(checker);
         // Kept evidence needs no checkout of what the checker reads; only a
         // run does, and for a commit that means a worktree.
         let none = BTreeMap::new();
@@ -517,6 +572,7 @@ impl World for CheckWorld<'_> {
             reads: reads.clone(),
             place: &place,
             roots: &none,
+            engine_key: engine_key.clone(),
         };
         // Before what is kept: evidence that ran for this check was kept
         // too, and would be reported as reused.
@@ -540,6 +596,7 @@ impl World for CheckWorld<'_> {
             reads,
             place: &place,
             roots: &roots,
+            engine_key,
         };
         if let Some(recorded) = &mut self.recorded {
             recorded.push(RecordedDemand::of(&request));

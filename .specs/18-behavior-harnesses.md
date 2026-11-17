@@ -4,6 +4,14 @@
 
 This builds on behaviors and checkers ([document 13](13-lm-grammar.md), sections 9 and 10) and changes neither their semantics nor the checker protocol.
 
+## Relationship to source proofs (reviewed 2026-11-17)
+
+[Document 22](22-source-contracts.md) implements a symbolic checker on the existing behavior/checker/evidence machinery from document 13. It does not implement this document's replay case, harness lifecycle, service setup, call interception, or installable language packs. This proposal remains parked.
+
+The two evidence producers are siblings: a runtime harness observes concrete executions; a source backend checks symbolic obligations under explicit input shapes and dependency assumptions. Neither result substitutes for the other's coverage. In particular, a modeled dependency call is not evidence that a runtime replacement was reached.
+
+There is a packaging difference to resolve before expanding language providers: document 22 currently compiles its source readers into core, whereas this document's decided runtime architecture installs language knowledge separately. That is a prototype tradeoff, not an implementation of the language-pack decision. A future provider design should share operation/dependency identities, versioned capability discovery and evidence provenance, while keeping `replay` and symbolic contracts distinct. No new provider installation/selection system is introduced by document 22.
+
 ## Problem
 
 A behavior proves a runtime claim by running code: run an operation's handler, answer one of its outbound calls with a chosen value, and observe what the handler returns. The checker protocol (`LEMMA_INPUT`, `LEMMA_OUTPUT`) is already language-neutral. What is Python-only is the code that does the running. `lm new behavior` writes a complete checker script only for Python. For TypeScript it leaves the replaced call as a `TODO`, and for Go it writes a script that exits 1 ([pre-release](../docs/pre-release.md#behaviors-beta)).

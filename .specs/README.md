@@ -49,6 +49,7 @@ These notes consolidate the design discussion leading to Lemma. They include acc
 19. [Generated documents](19-generated-documents.md)
 20. [Warm runtimes](20-warm-runtimes.md)
 21. [Workspace daemons: one daemon per workspace, its sentry and its clients](21-workspace-daemons.md)
+22. [Source-backed verification contracts](22-source-contracts.md)
 
 ## Status conventions
 
