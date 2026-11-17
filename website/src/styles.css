@@ -26,7 +26,7 @@ h2,.workflow-step h3{font-size:var(--page-heading);line-height:1.08;letter-spaci
 .hero-grid{display:grid;grid-template-columns:7fr 5fr;gap:0;align-items:center}
 .hero-copy{padding:32px 32px 32px 0}
 .hero h1{margin-bottom:28px}
-.hero-description{font-size:18px;line-height:1.5;letter-spacing:-.015em;max-width:41ch;margin:0 0 28px}
+.hero-description{font-size:18px;line-height:1.5;letter-spacing:-.015em;max-width:44ch;margin:0 0 28px}
 .hero-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px 24px}.hero-art{margin:0;background:transparent;min-width:0;display:flex;flex-direction:column;padding:16px 0;overflow:hidden}
 .hero-art>.diagram-svg{width:100%;height:auto;margin:auto 0;display:block;overflow:visible}
 
