@@ -178,6 +178,80 @@ fn a_workspace_module_indexes_each_repository_it_composes() {
     assert_eq!(store.workspace_members().unwrap().len(), 1);
 }
 
+/// A workspace in `root` that composes one repository, `billing`.
+fn shop(root: &Path) {
+    let billing = root.join("billing");
+    code(&billing);
+    write(&billing.join("mod.lm"), MODULE);
+    write(
+        &root.join("mod.lm"),
+        "module shop\n\nworkspace {\n    repo billing = local(\"billing\")\n}\n",
+    );
+    for directory in [root, billing.as_path()] {
+        git_init(directory);
+    }
+}
+
+/// Copies a directory and everything in it.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_renamed_workspace_finds_its_symbols_where_it_is_now() {
+    let scratch = tempfile::tempdir().unwrap();
+    let before = scratch.path().join("shop");
+    shop(&before);
+    let output = lemma(&before, &["index"]);
+    assert!(output.status.success(), "{}", text(&output));
+    let after = scratch.path().join("renamed");
+    std::fs::rename(&before, &after).unwrap();
+
+    let found = lemma(&after, &["symbols", "createCharge"]);
+    let outline = lemma(&after, &["outline", "billing/src/charges.ts"]);
+
+    assert!(text(&found).contains("src/charges.ts"), "{}", text(&found));
+    assert!(
+        text(&outline).contains("createCharge"),
+        "{}",
+        text(&outline)
+    );
+}
+
+#[test]
+fn a_copied_workspace_answers_from_its_own_files() {
+    let scratch = tempfile::tempdir().unwrap();
+    let original = scratch.path().join("shop");
+    shop(&original);
+    let output = lemma(&original, &["index"]);
+    assert!(output.status.success(), "{}", text(&output));
+    let copy = scratch.path().join("copy");
+    copy_tree(&original, &copy);
+    write(
+        &copy.join("billing/src/refunds.ts"),
+        "export function refundCharge() {}\n",
+    );
+
+    let found = lemma(&copy, &["symbols", "refundCharge"]);
+    let elsewhere = lemma(&original, &["symbols", "refundCharge"]);
+
+    assert!(text(&found).contains("src/refunds.ts"), "{}", text(&found));
+    assert!(
+        text(&elsewhere).contains("no matching symbols"),
+        "{}",
+        text(&elsewhere)
+    );
+}
+
 #[test]
 fn a_workspace_search_lists_exact_names_from_every_member_first() {
     let scratch = tempfile::tempdir().unwrap();
