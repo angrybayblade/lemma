@@ -233,6 +233,7 @@ fn run_case(index: usize, case: &Case, output: &Path) -> Json {
             base: None,
             added: &BTreeMap::new(),
         },
+        &super::Digests::default(),
         30000,
     );
     let actual = evidence["observed"]["status"]

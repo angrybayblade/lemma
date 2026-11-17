@@ -43,16 +43,24 @@ pub(super) struct Assertion {
     pub condition: String,
 }
 
-/// An explicitly assumed interpretation of a dependency.
+/// An explicitly assumed interpretation of a called function.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CallModel {
     pub assumption: String,
     #[serde(default)]
     pub parameters: Vec<String>,
+    /// Values chosen afresh for every call, read in templates as
+    /// `outcome.<name>`: what may differ between two calls to the same
+    /// function.
+    #[serde(default)]
+    pub outcomes: BTreeMap<String, Input>,
     pub returns: Value,
     #[serde(default)]
     pub effect: Option<Effect>,
+    /// The function returns a promise or coroutine, so a call must be awaited.
+    #[serde(default, rename = "async")]
+    pub is_async: bool,
 }
 
 /// One modeled effect, recorded with the arguments of its call.
@@ -110,15 +118,20 @@ impl CallModel {
                 return Err(format!("model `{name}` needs distinct parameter names"));
             }
         }
+        for outcome in self.outcomes.keys() {
+            if !identifier(outcome) || parameters.contains(outcome) {
+                return Err(format!(
+                    "model `{name}` needs outcome names distinct from its parameters"
+                ));
+            }
+        }
         if let Some(effect) = &self.effect {
             if !identifier(&effect.name) {
                 return Err(format!("invalid effect name `{}`", effect.name));
             }
         }
         if self.assumption.trim().is_empty() {
-            return Err(format!(
-                "dependency model `{name}` needs a named assumption"
-            ));
+            return Err(format!("call model `{name}` needs a named assumption"));
         }
         Ok(())
     }

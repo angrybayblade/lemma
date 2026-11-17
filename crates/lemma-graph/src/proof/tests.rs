@@ -128,6 +128,7 @@ fn check_source(file: &str, source_text: &str, symbol: &str, contract: &Json) ->
             base: None,
             added: &std::collections::BTreeMap::default(),
         },
+        &Digests::default(),
         30000,
     )
 }
@@ -218,7 +219,7 @@ fn mutations(language: source::Language, text: &str) -> Vec<String> {
 
 #[test]
 #[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
-fn pure_implementations_are_proved_without_dependency_assumptions() {
+fn pure_implementations_are_proved_without_call_model_assumptions() {
     let contract = json!({
         "inputs": {"request": {"enabled": "Bool"}},
         "ensures": [{"name": "returns_requested_value", "condition": "result == request.enabled"}],
@@ -285,4 +286,92 @@ fn python_docstrings_are_metadata_but_formatted_expressions_are_not() {
     ] {
         assert!(source::read("x.py", source, "f").is_err());
     }
+}
+
+fn async_contract() -> Contract {
+    let mut contract = contract(source::Language::TypeScript);
+    contract.models.get_mut("commitStatus").unwrap().is_async = true;
+    contract
+}
+
+#[test]
+fn an_unawaited_call_to_an_async_model_is_refused() {
+    let awaited = TYPESCRIPT
+        .replace("export function", "export async function")
+        .replace(
+            "const write = commitStatus",
+            "const write = await commitStatus",
+        );
+    let (_, function) = source::read("x.ts", &awaited, "setStatus").unwrap();
+    assert!(symbolic::execute(&function, &async_contract()).is_ok());
+    let forgotten = TYPESCRIPT.replace("export function", "export async function");
+    let (_, function) = source::read("x.ts", &forgotten, "setStatus").unwrap();
+    let error = symbolic::execute(&function, &async_contract())
+        .err()
+        .unwrap();
+    assert!(error.contains("not awaited"), "{error}");
+}
+
+#[test]
+fn awaiting_a_model_that_is_not_async_is_refused() {
+    let source = "async def f(request):\n    write = await commit_status(request['project'], request['enabled'], request['epoch'])\n    return {'success': not write['rejected']}\n";
+    let (_, function) = source::read("x.py", source, "f").unwrap();
+    let error = symbolic::execute(&function, &contract(source::Language::Python))
+        .err()
+        .unwrap();
+    assert!(error.contains("not `async`"), "{error}");
+}
+
+const TWO_WRITES: &str = "def set_status(request):\n    if not request[\"allowed\"]:\n        return {\"success\": False}\n    probe = commit_status(request[\"project\"], request[\"enabled\"], request[\"epoch\"])\n    commit_status(request[\"project\"], request[\"enabled\"], request[\"epoch\"])\n    if probe[\"rejected\"]:\n        return {\"success\": False}\n    return {\"success\": True}\n";
+
+#[test]
+fn a_second_call_to_a_model_reading_specification_inputs_is_refused() {
+    let (_, function) = source::read("x.py", TWO_WRITES, "set_status").unwrap();
+    let error = symbolic::execute(&function, &contract(source::Language::Python))
+        .err()
+        .unwrap();
+    assert!(error.contains("more than once"), "{error}");
+}
+
+fn per_call_contract() -> Json {
+    json!({
+        "inputs": {"request": {"allowed": "Bool", "enabled": "Bool", "project": "Text", "epoch": "Text"}},
+        "parameters": ["request"],
+        "models": {"commit_status": {
+            "assumption": "commit_status answers whether this write was rejected; rejected writes change nothing",
+            "parameters": ["project", "enabled", "epoch"],
+            "outcomes": {"rejected": "Bool"},
+            "returns": {"rejected": {"expr": "outcome.rejected"}},
+            "effect": {"name": "commit", "fields": {"rejected": {"expr": "outcome.rejected"}}}
+        }},
+        "ensures": [{"name": "success_requires_an_accepted_last_write", "condition": "!result.success || (effects.commit.called && !effects.commit.last.rejected)"}]
+    })
+}
+
+#[test]
+fn outcomes_give_every_call_its_own_answer() {
+    let contract: Contract = serde_json::from_value(per_call_contract()).unwrap();
+    contract.validate().unwrap();
+    let (_, function) = source::read("x.py", TWO_WRITES, "set_status").unwrap();
+    let execution = symbolic::execute(&function, &contract).unwrap();
+    assert!(
+        execution
+            .symbols
+            .contains_key("calls.commit_status.1.rejected")
+    );
+    assert!(
+        execution
+            .symbols
+            .contains_key("calls.commit_status.2.rejected")
+    );
+}
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn checking_one_call_and_succeeding_after_another_is_violated() {
+    let contract = per_call_contract();
+    let violated = check_source("x.py", TWO_WRITES, "set_status", &contract);
+    assert_eq!(violated["observed"]["status"], "violated", "{violated}");
+    let checked = check_source("x.py", PYTHON, "set_status", &contract);
+    assert_eq!(checked["observed"]["status"], "conditional", "{checked}");
 }

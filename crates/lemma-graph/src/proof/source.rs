@@ -169,7 +169,11 @@ impl<'a> Reader<'a> {
                 kind: Stmt::Return(self.expression(body)?),
             }]
         };
-        Ok(Function { parameters, body })
+        Ok(Function {
+            parameters,
+            is_async: is_async(node),
+            body,
+        })
     }
 
     fn function_body(&self, node: Node<'_>) -> Result<Vec<Statement>, String> {
@@ -259,7 +263,7 @@ impl<'a> Reader<'a> {
                 }
                 if !matches!(
                     expression.kind(),
-                    "call" | "call_expression" | "await_expression"
+                    "call" | "call_expression" | "await_expression" | "await"
                 ) {
                     return self.unsupported(expression);
                 }
@@ -352,12 +356,12 @@ impl<'a> Reader<'a> {
             "number" | "integer" | "int_literal" => self.integer(node)?,
             "string" | "interpreted_string_literal" => Expr::Text(self.string(node)?),
             "parenthesized_expression" | "literal_element" => self.expression(only(node)?)?,
-            "await_expression" => {
+            "await_expression" | "await" => {
                 let inner = only(node)?;
                 if !matches!(inner.kind(), "call" | "call_expression") {
                     return self.unsupported(node);
                 }
-                self.expression(inner)?
+                Expr::Await(Box::new(self.expression(inner)?))
             }
             "member_expression" | "selector_expression" => self.member(node)?,
             // Python records are ordinary dictionaries. Attribute reads could
@@ -537,6 +541,14 @@ impl<'a> Reader<'a> {
         }
         Ok(value.to_owned())
     }
+}
+
+/// Whether a function is declared `async`: the keyword is an unnamed child
+/// of the declaration in every supported grammar.
+fn is_async(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .any(|child| child.kind() == "async")
 }
 
 fn only(node: Node<'_>) -> Result<Node<'_>, String> {

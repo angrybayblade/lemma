@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use lemma_lang::syntax::ast::BinaryOperator as Op;
 use serde_json::Value as Json;
 
-use super::contract::{Contract, Input};
+use super::contract::{CallModel, Contract, Input};
 use super::ir::{self, Branch, Expression as Expr, Function, Statement, StatementKind as Stmt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +94,8 @@ pub(super) struct State {
     pub guard: Term,
     pub branches: Vec<Branch>,
     effects: BTreeMap<String, Vec<Value>>,
+    /// How often each model was called on this path.
+    calls: BTreeMap<String, usize>,
     pub result: Option<Value>,
 }
 
@@ -114,6 +116,8 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
     let mut evaluator = Evaluator {
         contract,
         inputs: &inputs,
+        is_async: function.is_async,
+        symbols,
         assumptions: BTreeSet::new(),
         calls: 0,
     };
@@ -125,7 +129,7 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
         return Err("a source path falls through without an explicit return".to_owned());
     }
     Ok(Execution {
-        symbols,
+        symbols: evaluator.symbols,
         requires,
         paths,
         assumptions: evaluator.assumptions,
@@ -142,6 +146,7 @@ fn prepare(
         guard: Term::boolean(true),
         branches: Vec::new(),
         effects: BTreeMap::new(),
+        calls: BTreeMap::new(),
         result: None,
     };
     for (name, template) in &evaluator.contract.bindings {
@@ -196,7 +201,7 @@ fn bind_parameters(
     state.env.retain(|name, _| !inputs.contains_key(name));
     for (name, value) in function.parameters.iter().zip(values) {
         if state.env.contains_key(name) && !inputs.contains_key(name) {
-            return Err(format!("parameter `{name}` shadows a dependency"));
+            return Err(format!("parameter `{name}` shadows a called function"));
         }
         state.env.insert(name.clone(), value);
     }
@@ -244,6 +249,8 @@ impl Execution {
         Evaluator {
             contract,
             inputs: &self.inputs,
+            is_async: false,
+            symbols: BTreeMap::new(),
             assumptions: BTreeSet::new(),
             calls: 0,
         }
@@ -313,6 +320,10 @@ fn insert_model(env: &mut BTreeMap<String, Value>, path: &str, name: &str) -> Re
 struct Evaluator<'a> {
     contract: &'a Contract,
     inputs: &'a BTreeMap<String, Value>,
+    /// Whether the function under check is `async`, where `await` is allowed.
+    is_async: bool,
+    /// Every symbolic value: the contract's inputs, then each call's outcomes.
+    symbols: BTreeMap<String, (String, Sort)>,
     assumptions: BTreeSet<String>,
     calls: usize,
 }
@@ -438,15 +449,15 @@ impl Evaluator<'_> {
                     _ => merge(&test, self.pure(then, state)?, self.pure(otherwise, state)?)?,
                 }
             }
-            Expr::Call(callee, arguments) => {
-                let Value::Model(name) = self.expression(callee, state)? else {
-                    return Err("call target has no dependency model".to_owned());
+            Expr::Call(callee, arguments) => self.call(callee, arguments, false, state)?,
+            Expr::Await(inner) => {
+                if !self.is_async {
+                    return Err("`await` outside an async function".to_owned());
+                }
+                let Expr::Call(callee, arguments) = inner.as_ref() else {
+                    return Err("only a call can be awaited".to_owned());
                 };
-                let arguments = arguments
-                    .iter()
-                    .map(|argument| self.expression(argument, state))
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.call(&name, arguments, state)?
+                self.call(callee, arguments, true, state)?
             }
         })
     }
@@ -481,28 +492,57 @@ impl Evaluator<'_> {
 
     fn call(
         &mut self,
-        name: &str,
-        arguments: Vec<Value>,
+        callee: &Expr,
+        arguments: &[Expr],
+        is_awaited: bool,
         state: &mut State,
     ) -> Result<Value, String> {
+        let Value::Model(name) = self.expression(callee, state)? else {
+            return Err("call target has no call model".to_owned());
+        };
+        let arguments = arguments
+            .iter()
+            .map(|argument| self.expression(argument, state))
+            .collect::<Result<Vec<_>, _>>()?;
         self.calls += 1;
         if self.calls > 16384 {
-            return Err("dependency call limit exceeded".to_owned());
+            return Err("call limit exceeded".to_owned());
         }
         let model = self
             .contract
             .models
-            .get(name)
+            .get(&name)
             .ok_or_else(|| format!("missing model `{name}`"))?
             .clone();
+        check_awaiting(&name, model.is_async, is_awaited)?;
         if model.parameters.len() != arguments.len() {
             return Err(format!("model `{name}` has a different argument count"));
         }
+        let count = state.calls.entry(name.clone()).or_default();
+        *count += 1;
+        if *count > 1 && reads_inputs(&model, self.inputs)? {
+            // A specification input names one value. Two calls reading it
+            // would be assumed to answer alike, which the model never said.
+            return Err(format!(
+                "model `{name}` is called more than once on a path, and its templates read specification inputs; declare `outcomes` for what may differ between calls"
+            ));
+        }
+        let call_number = *count;
         self.assumptions.insert(model.assumption.clone());
         let mut local = state.clone();
         local.env = self.inputs.clone();
         for (parameter, argument) in model.parameters.iter().zip(arguments) {
             local.env.insert(parameter.clone(), argument);
+        }
+        if !model.outcomes.is_empty() {
+            let mut outcome = BTreeMap::new();
+            for (field, shape) in &model.outcomes {
+                let path = format!("calls.{name}.{call_number}.{field}");
+                outcome.insert(field.clone(), input(shape, &path, &mut self.symbols)?);
+            }
+            local
+                .env
+                .insert("outcome".to_owned(), Value::Record(outcome));
         }
         if let Some(effect) = model.effect {
             let fields = effect
@@ -564,6 +604,79 @@ impl Evaluator<'_> {
     }
 }
 
+fn check_awaiting(name: &str, is_async: bool, is_awaited: bool) -> Result<(), String> {
+    if is_async && !is_awaited {
+        return Err(format!(
+            "the call to async `{name}` is not awaited, so its result is a pending promise or coroutine"
+        ));
+    }
+    if !is_async && is_awaited {
+        return Err(format!("`{name}` is awaited, but its model is not `async`"));
+    }
+    Ok(())
+}
+
+/// Whether a model's templates read a specification input, rather than only
+/// its own arguments and outcomes.
+fn reads_inputs(model: &CallModel, inputs: &BTreeMap<String, Value>) -> Result<bool, String> {
+    let mut names = BTreeSet::new();
+    template_names(&model.returns, &mut names)?;
+    if let Some(effect) = &model.effect {
+        for template in effect.fields.values() {
+            template_names(template, &mut names)?;
+        }
+    }
+    Ok(names
+        .iter()
+        .any(|name| inputs.contains_key(name) && !model.parameters.contains(name)))
+}
+
+fn template_names(template: &Json, names: &mut BTreeSet<String>) -> Result<(), String> {
+    let Json::Object(fields) = template else {
+        return Ok(());
+    };
+    if let (1, Some(Json::String(text))) = (fields.len(), fields.get("expr")) {
+        expression_names(&ir::condition(text)?, names);
+        return Ok(());
+    }
+    for value in fields.values() {
+        template_names(value, names)?;
+    }
+    Ok(())
+}
+
+fn expression_names(expression: &Expr, names: &mut BTreeSet<String>) {
+    match expression {
+        Expr::Name(name) => {
+            names.insert(name.clone());
+        }
+        Expr::Member(inner, _) | Expr::Not(inner) | Expr::Await(inner) => {
+            expression_names(inner, names);
+        }
+        Expr::Binary(_, left, right) => {
+            expression_names(left, names);
+            expression_names(right, names);
+        }
+        Expr::Conditional(test, then, otherwise) => {
+            for part in [test, then, otherwise] {
+                expression_names(part, names);
+            }
+        }
+        Expr::Record(fields) => {
+            for value in fields.values() {
+                expression_names(value, names);
+            }
+        }
+        Expr::Call(callee, arguments) => {
+            expression_names(callee, names);
+            for argument in arguments {
+                expression_names(argument, names);
+            }
+        }
+        Expr::Bool(_) | Expr::Text(_) | Expr::Integer(_) | Expr::Undefined => {}
+    }
+}
+
 fn compare(operator: Op, left: Value, right: Value) -> Result<Value, String> {
     let (Value::Scalar(left), Value::Scalar(right)) = (left, right) else {
         return Err("only scalar comparisons are supported".to_owned());
@@ -608,7 +721,7 @@ fn merge(test: &Term, then: Value, otherwise: Value) -> Result<Value, String> {
 
 fn is_pure(expression: &Expr) -> bool {
     match expression {
-        Expr::Call(_, _) => false,
+        Expr::Call(_, _) | Expr::Await(_) => false,
         Expr::Not(inner) | Expr::Member(inner, _) => is_pure(inner),
         Expr::Binary(_, left, right) => is_pure(left) && is_pure(right),
         Expr::Conditional(test, then, otherwise) => {

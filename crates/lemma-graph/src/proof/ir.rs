@@ -8,6 +8,9 @@ use serde::Serialize;
 #[derive(Debug, Clone)]
 pub(super) struct Function {
     pub parameters: Vec<String>,
+    /// An `async` function: a call it makes to an async function must be
+    /// awaited, or the value it reads is a pending promise or coroutine.
+    pub is_async: bool,
     pub body: Vec<Statement>,
 }
 
@@ -38,6 +41,8 @@ pub(super) enum Expression {
     Binary(BinaryOperator, Box<Self>, Box<Self>),
     Conditional(Box<Self>, Box<Self>, Box<Self>),
     Call(Box<Self>, Vec<Self>),
+    /// `await` of a call; any other awaited value is refused.
+    Await(Box<Self>),
 }
 
 /// One source-level decision in a witness path.

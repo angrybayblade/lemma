@@ -18,8 +18,12 @@ use contract::Contract;
 use solver::{Answer, Solver};
 use symbolic::Term;
 
-pub(crate) fn identity(environment: Environment<'_>) -> Option<String> {
-    solver::identity(environment)
+pub(crate) use solver::Digests;
+
+/// The identity of the verifier and the solver it would run, or `None` when
+/// either cannot be read.
+pub(crate) fn identity(environment: Environment<'_>, digests: &Digests) -> Option<String> {
+    solver::identity(environment, digests)
 }
 
 /// Produce the existing checker protocol, including on an incomplete check.
@@ -27,9 +31,10 @@ pub(crate) fn run(
     given: &Json,
     directory: &Path,
     environment: Environment<'_>,
+    digests: &Digests,
     timeout_ms: u64,
 ) -> Json {
-    match verify(given, directory, environment, timeout_ms) {
+    match verify(given, directory, environment, digests, timeout_ms) {
         Ok(observed) => json!({"observed": observed}),
         Err(reason) => json!({"unavailable": format!("proof unavailable: {reason}")}),
     }
@@ -39,9 +44,10 @@ fn verify(
     given: &Json,
     directory: &Path,
     environment: Environment<'_>,
+    digests: &Digests,
     timeout_ms: u64,
 ) -> Result<Json, String> {
-    let toolchain = identity(environment);
+    let toolchain = identity(environment, digests);
     if given["engine_key"]
         .as_str()
         .is_some_and(|expected| Some(expected) != toolchain.as_deref())
@@ -70,7 +76,7 @@ fn verify(
         return Err("no reachable normal return; refusing a vacuous proof".to_owned());
     }
     let (holds, assertions) = check_postconditions(&execution, &contract, &mut solver)?;
-    if toolchain != identity(environment) {
+    if toolchain != identity(environment, digests) {
         return Err("proof toolchain changed during verification".to_owned());
     }
     let status = if !holds {
@@ -93,7 +99,7 @@ fn verify(
             "semantics": "immutable Bool/Text records; exact integer constants; every normal return",
             "paths": execution.paths.len(),
             "queries": solver.queries,
-            "excludes": ["exceptions", "termination", "heap mutation", "concurrency", "dependency implementations", "language typechecking"],
+            "excludes": ["exceptions", "termination", "heap mutation", "concurrency", "called function implementations", "language typechecking"],
         },
         "artifacts": directory.display().to_string(),
     }))

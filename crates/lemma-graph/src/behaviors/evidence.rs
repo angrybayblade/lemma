@@ -44,6 +44,8 @@ pub(crate) struct Store {
     /// Held while a `setup` runs: demands running at once share one, which
     /// runs once and before any of them.
     setting_up: Mutex<()>,
+    /// Digests of the proof verifier and solvers, read once per check.
+    digests: crate::proof::Digests,
 }
 
 /// Where a repository's code is read, and the state of that code: `None`
@@ -141,6 +143,7 @@ impl Store {
             environment: None,
             states: Arc::default(),
             setting_up: Mutex::new(()),
+            digests: crate::proof::Digests::default(),
         }
     }
 
@@ -215,10 +218,13 @@ impl Store {
         if checker.runner != CheckerRunner::Proof {
             return None;
         }
-        crate::proof::identity(repos::Environment {
-            base: self.environment.as_deref(),
-            added: &checker.env,
-        })
+        crate::proof::identity(
+            repos::Environment {
+                base: self.environment.as_deref(),
+                added: &checker.env,
+            },
+            &self.digests,
+        )
     }
 
     /// Where a checkout's files are: the clone for a working directory, a
@@ -347,7 +353,8 @@ impl Store {
                     .map_err(|error| format!("the checker failed: {}", describe(&error)))?;
             }
             CheckerRunner::Proof => {
-                let result = crate::proof::run(&given, &run, environment, timeout_ms);
+                let result =
+                    crate::proof::run(&given, &run, environment, &self.digests, timeout_ms);
                 write_json(&output, &result)?;
             }
         }
