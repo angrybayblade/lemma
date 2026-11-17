@@ -1,6 +1,6 @@
 # Verify an implementation against a contract
 
-**Experimental.** Lemma can check a small, explicit subset of existing TypeScript, Python and Go code against the same contract representation. This checks the selected function body. A dependency model is an assumption, and the result names it.
+**Experimental.** Lemma can check a small, explicit subset of existing TypeScript, Python and Go code against the same contract representation. This checks the selected function body. A call model is an assumption, and the result names it.
 
 Start with the [working example](../examples/source-contracts/mod.lm). It binds three independently written handlers to one contract and checks six properties: permission before a write, project scope, lease epoch, requested status, write before success, and success only after an accepted write.
 
@@ -48,32 +48,34 @@ The complete example supplies these contract fields as an ordinary `.lm` record:
 | `parameters` | Input names, in the source function's parameter order; defaults to the source names |
 | `requires` | Optional list of Boolean expressions constraining inputs |
 | `ensures` | Nonempty list of `{ name, condition }` postconditions |
-| `models` | Source call names mapped to dependency summaries |
+| `models` | Source call names mapped to call models |
 | `bindings` | Optional explicit assumed constants for source globals |
 | `max_paths` | Optional source path limit, default 256, maximum 4096 |
 
 Expressions use `.lm` syntax: `!`, `&&`, `||`, `==`, `!=`, record fields and exact integer constants. `result` is the returned value. Integer ordering can compare constants such as effect counts; symbolic numeric inputs and arithmetic are unsupported.
 
-Inputs not listed in `parameters` are specification inputs. For example, `lease.rejected` describes an arbitrary outcome from the lease dependency. It is available to summaries and postconditions, not injected into the source function's local variables.
+Inputs not listed in `parameters` are specification inputs. For example, `lease.rejected` describes an arbitrary answer from the lease check. It is available to call models and postconditions, not injected into the source function's local variables. A specification input names one value, so a call model whose templates read one may be called at most once on a path; a second call is refused rather than assumed to answer alike.
 
-Each dependency summary declares:
+Each call model declares:
 
 - `assumption`: a nonempty description of the assumed semantics, including which effects it can have.
 - `parameters`: positional argument names used inside its templates.
 - `returns`: a return-value template.
-- Optional `effect: { name, fields }`: an event recording selected call arguments.
+- Optional `outcomes`: sorts of values chosen afresh for every call, read in templates as `outcome.<name>`. Use them for whatever may differ between two calls, such as whether each write was rejected.
+- Optional `effect: { name, fields }`: an event recording selected call arguments and outcomes.
+- Optional `async: true`: the function returns a promise or coroutine. A call to it must be awaited, and awaiting a model without `async` is refused, so a forgotten `await` cannot pass.
 
-Templates are literal Booleans, strings, exact integer constants and records. A record containing only `{ expr: "expression" }` evaluates that expression against specification inputs and modeled call arguments. Models can use different source names for the same summary; the example maps both `commitStatus` and `commit_status` to the shared `commit` record.
+Templates are literal Booleans, strings, exact integer constants and records. A record containing only `{ expr: "expression" }` evaluates that expression against specification inputs, the call's arguments and its outcomes. Models can use different source names for the same call model; the example maps both `commitStatus` and `commit_status` to the shared `commit` record.
 
-`effects.commit.called`, `.count`, and `.last` describe **attempts to call the modeled dependency**. They do not mean a successful database commit. Guard `.last` with `.called`; it is absent before any such call. Calls without a summary are refused. A used summary is always reported as an assumption, even when the source of that dependency happens to be in the same file.
+`effects.commit.called`, `.count`, and `.last` describe **attempts to call the modeled function**. They do not mean a successful database commit. Guard `.last` with `.called`; it is absent before any such call. Calls without a call model are refused. A used call model is always reported as an assumption, even when the called function's source happens to be in the same file.
 
 ## Read the evidence
 
 | Result | What was established |
 | --- | --- |
 | `proved`, `holds: true` | Every normal return satisfies the postconditions in the supported semantics, without modeled dependencies or assumed constants |
-| `conditional`, `holds: true` | The same statement under the listed dependency/constant assumptions |
-| `violated`, `holds: false` | A violating input exists in those semantics; dependency assumptions still apply |
+| `conditional`, `holds: true` | The same statement under the listed call model and constant assumptions |
+| `violated`, `holds: false` | A violating input exists in those semantics; call model assumptions still apply |
 | Unavailable evidence | Unsupported code, missing binding or solver, solver error/`unknown`, exceeded limits, inconsistent preconditions, or no reachable normal return |
 
 `--level strict` fails on unavailable evidence. Never accept `conditional` without reviewing its assumptions. A behavior may explicitly assert the expected assumption list, as the example does.
@@ -96,13 +98,13 @@ All three support explicit returns and records of immutable values. Input shapes
 
 The checker refuses loops, mutable heap updates, destructuring, callbacks, decorators, exceptions/`defer`, implicit Boolean coercion, JavaScript coercive equality, numeric arithmetic, string escapes/interpolation, and other unhandled syntax. It does not follow local helpers or imports automatically; an external helper needs an explicit model.
 
-For an async function, `result` means the completed body return; it assumes the caller awaits completion. Promise/coroutine scheduling is outside these semantics. The result concerns normal returns. It does **not** establish absence of exceptions, termination, concurrency safety, dependency correctness, source typechecking, module initialization, dynamic function replacement, or that a framework routes requests to the bound function. Keep normal compiler checks and runtime tests. Route-registration callbacks are outside this first subset.
+For an async function, `result` means the completed body return; it assumes the caller awaits completion. Promise/coroutine scheduling is outside these semantics. The result concerns normal returns. It does **not** establish absence of exceptions, termination, concurrency safety, correctness of called functions, source typechecking, module initialization, dynamic function replacement, or that a framework routes requests to the bound function. Keep normal compiler checks and runtime tests. Route-registration callbacks are outside this first subset.
 
 The frontends and SMT encoding are trusted implementation components, not verified compilers. This is a usable first slice with explicit coverage, not a claim that arbitrary TypeScript, Python or Go programs are now formally verified.
 
 ## What remains manual
 
-You define the intended behavior, runtime input shapes, which operation implements it, argument mapping, and dependency assumptions. Lemma reads that source and generates the path obligations and counterexamples. You do not write a new symbolic executor for every endpoint.
+You define the intended behavior, runtime input shapes, which operation implements it, argument mapping, and call model assumptions. Lemma reads that source and generates the path obligations and counterexamples. You do not write a new symbolic executor for every endpoint.
 
 The [design note](../.specs/22-source-contracts.md) compares the chosen architecture with Boogie, Viper, Why3, Gillian, JML and ACSL. Heap, ownership and concurrency extensions should reuse established backends where possible. A future state-machine contract would still need this connection to source; checking the machine alone cannot establish implementation conformance.
 

@@ -30,17 +30,17 @@ The native checker runs at the selected checkout, uses the same evidence and `--
 
 Inputs declare symbolic Boolean and text values or records of such values. Integer literals such as HTTP status codes are supported. Arithmetic, mutable heap reasoning and concurrent schedules require a later, explicitly specified extension.
 
-Parameters bind the implementation's arguments to declared inputs. Preconditions constrain the input domain. Every normal return must satisfy each named postcondition. Expressions use the existing `.lm` expression syntax. `result` names the returned value. `effects.<name>.called`, `.count`, and `.last` describe modeled dependency calls.
+Parameters bind the implementation's arguments to declared inputs. Preconditions constrain the input domain. Every normal return must satisfy each named postcondition. Expressions use the existing `.lm` expression syntax. `result` names the returned value. `effects.<name>.called`, `.count`, and `.last` describe modeled calls.
 
-Dependency models declare their argument names, return-value templates, optional effect fields and a named assumption. Expression templates use `{ expr: "..." }`; ordinary values are literal templates. Every used dependency summary is reported as an assumption. Callback invocation is outside the initial subset. Calls without a source interpretation or an explicit summary are unsupported.
+call models declare their argument names, return-value templates, optional effect fields and a named assumption. Expression templates use `{ expr: "..." }`; ordinary values are literal templates. Every used call model is reported as an assumption. Callback invocation is outside the initial subset. Calls without a source interpretation or an explicit summary are unsupported.
 
 Models summarize effects on the verification state. They do not prove database, cryptographic, network or runtime implementations. Source mutation outside the supported value subset is refused, rather than silently assuming a frame condition. Models must name the assumption under which their summarized effects are complete.
 
 ## Outcomes and trust
 
-- `proved`: no violating input exists in the supported source semantics and no dependency summary was assumed.
-- `conditional`: the properties hold under the listed, used dependency assumptions.
-- `violated`: a satisfiable violating path exists in those semantics; the result includes a witness and source locations. With dependency assumptions, that witness is conditional too.
+- `proved`: no violating input exists in the supported source semantics and no call model was assumed.
+- `conditional`: the properties hold under the listed, used call model assumptions.
+- `violated`: a satisfiable violating path exists in those semantics; the result includes a witness and source locations. With call model assumptions, that witness is conditional too.
 - Unavailable evidence: unsupported syntax, unresolved or ambiguous binding, missing tools, solver errors or `unknown`, path limits, inconsistent assumptions, or no reachable return. `lemma check --level strict` fails on this existing unknown outcome.
 
 The source readers and logical encoding are trusted implementation components, not independently verified compilers. The supported semantics and exclusions are part of every result. Solver input and output are retained beside the checker's evidence. The checker build and resolved solver executable contribute to cache identity. Native proof checkers read the full state of every repository they name, avoiding the impact walk's narrower assumptions. Their operation arguments also carry a digest of the bound source bytes, so ignored source cannot escape invalidation. Source and toolchain identities are checked again while producing evidence. Solver selection uses an absolute executable or the absolute entries of PATH.
@@ -51,7 +51,7 @@ Use one contract on actual, independently written source functions in TypeScript
 
 ## First slice and next boundaries
 
-Implemented: the native checker, strict Tree-sitter readers for all three languages, shared symbolic execution, dependency summaries with explicit assumptions and effects, feasibility checks, replayable SMT-LIB, counterexamples, and evidence integration. The worked example is `examples/source-contracts/mod.lm`; `docs/source-contracts.md` defines the supported syntax and manual obligations.
+Implemented: the native checker, strict Tree-sitter readers for all three languages, shared symbolic execution, call models with explicit assumptions and effects, feasibility checks, replayable SMT-LIB, counterexamples, and evidence integration. The worked example is `examples/source-contracts/mod.lm`; `docs/source-contracts.md` defines the supported syntax and manual obligations.
 
 The first slice intentionally handles top-level named function bodies and TypeScript arrow bindings, rather than route-registration callbacks. Python records are ordinary dictionaries read with literal string keys; Go records are keyed struct literals and field reads. Source typechecking, module initialization, dynamic replacement of functions and framework routing are outside the proof. Parameter shapes and dependency interpretations remain explicit obligations. No claim is made that arbitrary production endpoints can be verified unchanged.
 

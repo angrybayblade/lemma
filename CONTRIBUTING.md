@@ -157,6 +157,9 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | language pack | An installable directory holding a manifest and a harness for one language; always written in full, never "pack", which names no Lemma concept | plugin, extension, package |
 | generator | A command Lemma runs to write an `OpenAPI` document from code, `command(...)` or a built-in adapter, kept by its inputs | script, hook, builder |
 | inputs | The paths a generator's document depends on, which key the document it writes; declared by the user and not checked | triggers, cache keys, watch list |
+| contract | What a proof checker checks one function against: its inputs, preconditions, postconditions and call models | spec, specification |
+| call model | An assumed meaning for a function the checked code calls, with the assumption it rests on; a proof that uses one reports it | mock, stub, summary, dependency model |
+| proof status | What a proof checker's observation says: proved, conditional or violated; a behavior reads it, and it is not an outcome | verdict, result |
 
 Extend this table when a new domain concept appears, in the same change that introduces it.
 

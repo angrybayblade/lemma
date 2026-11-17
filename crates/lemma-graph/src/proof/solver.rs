@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::repos::{self, Environment};
 
@@ -80,15 +81,12 @@ const BUILD_INPUTS: &[&str] = &[
 
 /// Include both the running verifier and the selected solver in evidence keys.
 /// Missing identities disable reuse rather than falling back to a weaker key.
-pub(super) fn identity(environment: Environment<'_>) -> Option<String> {
-    let verifier = std::fs::read(std::env::current_exe().ok()?).ok()?;
-    let resolved = executable(environment).ok()?;
-    let solver = std::fs::read(resolved).ok()?;
+pub(super) fn identity(environment: Environment<'_>, digests: &Digests) -> Option<String> {
+    let verifier = digests.of(&std::env::current_exe().ok()?)?;
+    let solver = digests.of(&executable(environment).ok()?)?;
     Some(lemma_model::content_hash(
         format!(
-            "{}:{}:{}",
-            lemma_model::content_hash(&verifier),
-            lemma_model::content_hash(&solver),
+            "{verifier}:{solver}:{}",
             BUILD_INPUTS
                 .iter()
                 .map(|source| lemma_model::content_hash(source.as_bytes()))
@@ -97,6 +95,30 @@ pub(super) fn identity(environment: Environment<'_>) -> Option<String> {
         )
         .as_bytes(),
     ))
+}
+
+/// Digests of executables, kept while their size and modification time stay
+/// the same: the verifier and solver are large, and a check asks for their
+/// identity once per case.
+#[derive(Debug, Default)]
+pub(crate) struct Digests {
+    known: Mutex<BTreeMap<PathBuf, (u64, SystemTime, String)>>,
+}
+
+impl Digests {
+    fn of(&self, path: &Path) -> Option<String> {
+        let metadata = std::fs::metadata(path).ok()?;
+        let stamp = (metadata.len(), metadata.modified().ok()?);
+        let mut known = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((size_bytes, modified, digest)) = known.get(path) {
+            if (*size_bytes, *modified) == stamp {
+                return Some(digest.clone());
+            }
+        }
+        let digest = lemma_model::content_hash(&std::fs::read(path).ok()?);
+        known.insert(path.to_path_buf(), (stamp.0, stamp.1, digest.clone()));
+        Some(digest)
+    }
 }
 
 impl Solver<'_> {
@@ -116,7 +138,7 @@ impl Solver<'_> {
         if !matches!(answer.trim(), "sat" | "unsat" | "unknown") {
             return Err(format!("invalid solver check-sat output: {answer}"));
         }
-        match verdict(&answer)? {
+        match answer_of(&answer)? {
             "unsat" => Ok(Answer::Unsat),
             "sat" => {
                 // Retain a separately replayable query that includes the model.
@@ -129,7 +151,7 @@ impl Solver<'_> {
                     &model,
                 )
                 .map_err(|e| e.to_string())?;
-                if verdict(&model)? != "sat" {
+                if answer_of(&model)? != "sat" {
                     return Err("solver changed its answer while requesting a witness".to_owned());
                 }
                 if !model
@@ -173,7 +195,7 @@ impl Solver<'_> {
     }
 }
 
-fn verdict(output: &str) -> Result<&str, String> {
+fn answer_of(output: &str) -> Result<&str, String> {
     if output.contains("(error") {
         return Err(format!("solver reported an error: {output}"));
     }
@@ -238,8 +260,8 @@ mod tests {
             added: &added,
         };
         std::fs::write(&program, "first solver").unwrap();
-        let before = identity(environment).unwrap();
+        let before = identity(environment, &Digests::default()).unwrap();
         std::fs::write(&program, "different solver").unwrap();
-        assert_ne!(before, identity(environment).unwrap());
+        assert_ne!(before, identity(environment, &Digests::default()).unwrap());
     }
 }
