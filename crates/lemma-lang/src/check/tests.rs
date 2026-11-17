@@ -622,3 +622,20 @@ fn a_missing_member_outside_a_link_still_stops_a_check() {
             .any(|line| line.contains("gone"))
     );
 }
+
+#[test]
+fn proof_is_an_alternative_checker_engine() {
+    let result = single(
+        "module example\nchecker prove(handler: Operation, contract: Json): Evidence<Json> {\n    engine: \"proof\"\n}\n",
+    );
+    assert_clean(&result);
+    assert_eq!(
+        result.model.checkers[0].runner,
+        crate::model::CheckerRunner::Proof
+    );
+    let both = checker_with("    engine: \"proof\"\n");
+    assert_error(&both, "either `command` or `engine`");
+    let unknown =
+        single("module example\nchecker prove(): Evidence<Json> {\n    engine: \"magic\"\n}\n");
+    assert_error(&unknown, "unknown checker engine");
+}

@@ -15,7 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use lemma_lang::eval::Evidence;
-use lemma_lang::model::Checker;
+use lemma_lang::model::{Checker, CheckerRunner};
 use serde_json::{Value as Json, json};
 
 use super::encode::{Decoded, decode_output};
@@ -77,6 +77,7 @@ pub(crate) struct RecordedDemand {
     reads: BTreeMap<String, Option<String>>,
     place: Place,
     roots: BTreeMap<String, String>,
+    engine_key: Option<String>,
 }
 
 impl RecordedDemand {
@@ -89,6 +90,7 @@ impl RecordedDemand {
             reads: request.reads.clone(),
             place: request.place.clone(),
             roots: request.roots.clone(),
+            engine_key: request.engine_key.clone(),
         }
     }
 
@@ -100,6 +102,7 @@ impl RecordedDemand {
             reads: self.reads.clone(),
             place: &self.place,
             roots: &self.roots,
+            engine_key: self.engine_key.clone(),
         }
     }
 }
@@ -117,6 +120,8 @@ pub(crate) struct Request<'r> {
     /// snapshot checked, which the checker is told but the key leaves out,
     /// so evidence holds on any machine.
     pub(crate) roots: &'r BTreeMap<String, String>,
+    /// Native verifier and solver identity; absence disables proof reuse.
+    pub(crate) engine_key: Option<String>,
 }
 
 impl Request<'_> {
@@ -205,6 +210,17 @@ impl Store {
         self
     }
 
+    /// Identity of the native proof toolchain, when it can be resolved.
+    pub(crate) fn engine_key(&self, checker: &Checker) -> Option<String> {
+        if checker.runner != CheckerRunner::Proof {
+            return None;
+        }
+        crate::proof::identity(repos::Environment {
+            base: self.environment.as_deref(),
+            added: &checker.env,
+        })
+    }
+
     /// Where a checkout's files are: the clone for a working directory, a
     /// worktree in the cache for a commit.
     pub(crate) fn files_of(&self, checkout: &Checkout) -> Result<PathBuf, String> {
@@ -219,7 +235,9 @@ impl Store {
     /// of the request's roots, which only running needs.
     pub(crate) fn reusable(&self, request: &Request<'_>) -> Option<Evidence> {
         let key = evidence_key(request);
-        let is_reusable = request.checker.is_cached && request.reads.values().all(Option::is_some);
+        let is_reusable = request.checker.is_cached
+            && request.reads.values().all(Option::is_some)
+            && (request.checker.runner != CheckerRunner::Proof || request.engine_key.is_some());
         if !is_reusable {
             return None;
         }
@@ -238,7 +256,9 @@ impl Store {
         if let Some(stored) = self.reusable(request) {
             return stored;
         }
-        let is_reusable = request.checker.is_cached && request.reads.values().all(Option::is_some);
+        let is_reusable = request.checker.is_cached
+            && request.reads.values().all(Option::is_some)
+            && (request.checker.runner != CheckerRunner::Proof || request.engine_key.is_some());
         if !self.may_run {
             return self.not_run(&case, &key);
         }
@@ -308,6 +328,7 @@ impl Store {
             "root": root.display().to_string(),
             "roots": request.roots,
             "arguments": request.arguments,
+            "engine_key": request.engine_key,
         });
         write_json(&input, &given)?;
         let mut env = checker.env.clone();
@@ -320,8 +341,16 @@ impl Store {
             base: self.environment.as_deref(),
             added: &env,
         };
-        repos::run_program(&directory, &checker.command, environment, Some(timeout_ms))
-            .map_err(|error| format!("the checker failed: {}", describe(&error)))?;
+        match &checker.runner {
+            CheckerRunner::Command(command) => {
+                repos::run_program(&directory, command, environment, Some(timeout_ms))
+                    .map_err(|error| format!("the checker failed: {}", describe(&error)))?;
+            }
+            CheckerRunner::Proof => {
+                let result = crate::proof::run(&given, &run, environment, timeout_ms);
+                write_json(&output, &result)?;
+            }
+        }
         read_output(&output, checker)
     }
 
@@ -400,7 +429,7 @@ impl Store {
 // checker read (reported, or declared as paths) instead.
 fn evidence_key(request: &Request<'_>) -> String {
     let checker = request.checker;
-    let described = json!({
+    let mut described = json!({
         "protocol": PROTOCOL,
         "checker": checker.address.to_string(),
         "declaration": checker.text,
@@ -408,14 +437,23 @@ fn evidence_key(request: &Request<'_>) -> String {
         "reads": request.reads,
         "env": checker.env,
     });
+    if checker.runner == CheckerRunner::Proof {
+        described["engine"] = json!(request.engine_key);
+    }
     lemma_model::content_hash(described.to_string().as_bytes())
 }
 
 /// The key of a case: a checker and its arguments, whatever the code.
 fn case_key(request: &Request<'_>) -> String {
+    let mut arguments = request.arguments.clone();
+    if request.checker.runner == CheckerRunner::Proof {
+        if let Some(implementation) = arguments["handler"]["implementation"].as_object_mut() {
+            implementation.remove("source_hash");
+        }
+    }
     let described = json!({
         "checker": request.checker.address.to_string(),
-        "arguments": request.arguments,
+        "arguments": arguments,
     });
     lemma_model::content_hash(described.to_string().as_bytes())
 }

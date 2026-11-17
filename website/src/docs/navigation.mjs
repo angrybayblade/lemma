@@ -17,6 +17,7 @@ export const sections = [
   {title:'Check a system', pages:[
     {slug:'check', title:'Check links', source:'docs/check.md'},
     {slug:'verify', title:'Verify a description', source:'docs/verify.md'},
+    {slug:'source-contracts', title:'Verify an implementation', source:'docs/source-contracts.md', badge:'Experimental'},
     {slug:'grammar', title:'Requirements and rules', source:'docs/grammar.md'},
     {slug:'adapters', title:'Read contracts from code', source:'docs/adapters.md'},
   ]},
