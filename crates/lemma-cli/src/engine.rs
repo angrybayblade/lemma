@@ -117,6 +117,10 @@ pub(crate) struct Engine {
     /// The workspace the graph being answered was traced through, if it
     /// was traced through one this process keeps.
     traced_through: Option<PathBuf>,
+    /// The repository and language the last lookup answered from the
+    /// index was about, for whoever runs the engine to have that
+    /// repository's server started; see [`Engine::take_touched`].
+    touched: Option<Touched>,
     /// What building exports read, so building them again after an edit
     /// parses only what changed. Made when exports are first built: routes
     /// are kept on disk too, in a directory found then.
@@ -234,6 +238,14 @@ struct OpenStore {
     inode: Option<u64>,
 }
 
+/// A repository's code in one language, which a lookup was about.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Touched {
+    /// The repository's directory.
+    pub root: PathBuf,
+    pub language: Language,
+}
+
 impl Engine {
     /// An engine for a single command.
     pub fn one_shot() -> Self {
@@ -252,6 +264,7 @@ impl Engine {
             is_command_waiting: None,
             got_ready: HashMap::new(),
             traced_through: None,
+            touched: None,
             kept_for_exports: None,
         }
     }
@@ -273,6 +286,7 @@ impl Engine {
             is_command_waiting: None,
             got_ready: HashMap::new(),
             traced_through: None,
+            touched: None,
             kept_for_exports: None,
         }
     }
@@ -316,6 +330,16 @@ impl Engine {
         engine.live_indexes = Arc::clone(&self.live_indexes);
         engine.searches = Arc::clone(&self.searches);
         engine
+    }
+
+    /// The repository and language the last symbol search or outline was
+    /// about, once. Such a lookup is answered from the index, and is
+    /// usually followed by one that asks the repository's language server:
+    /// started now, the server loads the project while the answer is being
+    /// read. A long-lived engine records it; one made for a single command
+    /// would not be there for the next.
+    pub fn take_touched(&mut self) -> Option<Touched> {
+        self.touched.take()
     }
 
     /// Has getting ready for graphs give way to commands: `is_waiting`
@@ -881,6 +905,10 @@ impl Engine {
         };
         if !members.is_empty() {
             let found = self.workspace_symbols(&members, &filter)?;
+            self.touched = found
+                .first()
+                .filter(|_| self.warms_up_after_index)
+                .and_then(|best| touched_member(&members, best));
             output::symbols(out, &found, request.format)?;
             return Ok(0);
         }
@@ -896,6 +924,13 @@ impl Engine {
             Some(found) => found,
             None => store.find_symbols(snapshot.id, &filter)?,
         };
+        self.touched = found
+            .first()
+            .filter(|_| self.warms_up_after_index)
+            .map(|best| Touched {
+                root: PathBuf::from(&snapshot.snapshot.root),
+                language: best.language,
+            });
         output::symbols(out, &found, request.format)?;
         Ok(0)
     }
@@ -910,6 +945,13 @@ impl Engine {
         let found = self.index_of_file(request.find_index()?, &file)?;
         let store = open_store(&mut self.stores, &found.db_path)?;
         let mut symbols = lemma_query::symbols_in_file(store, found.snapshot.id, &found.relative)?;
+        self.touched = symbols
+            .first()
+            .filter(|_| self.warms_up_after_index)
+            .map(|first| Touched {
+                root: PathBuf::from(&found.snapshot.snapshot.root),
+                language: first.language,
+            });
         let Some(member) = found.member else {
             output::outline(out, &found.relative, &symbols, request.format)?;
             return Ok(0);
@@ -1836,6 +1878,25 @@ fn stored_member(
         indexed_root: indexed_root.display().to_string(),
         database: db_path.display().to_string(),
     }
+}
+
+/// The member a symbol found in a workspace is in, and the symbol's
+/// language. `None` for a member pinned to a commit: nobody is working in
+/// its worktree, so its server is started when one is asked, not ahead.
+fn touched_member(members: &[StoredMember], symbol: &StoredSymbol) -> Option<Touched> {
+    let member = members.iter().find(|member| {
+        symbol
+            .path
+            .strip_prefix(member.name.as_str())
+            .is_some_and(|rest| rest.starts_with(':'))
+    })?;
+    if member.revision.is_some() {
+        return None;
+    }
+    Some(Touched {
+        root: PathBuf::from(&member.indexed_root),
+        language: symbol.language,
+    })
 }
 
 /// Whether a member a workspace's index has `mounted` is now `located`

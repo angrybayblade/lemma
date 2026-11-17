@@ -281,7 +281,7 @@ The workspace is the module given, or else the editor's `manifest` initializatio
 
 ## `lemma daemon`
 
-Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground. Language servers start when a lookup needs one, when `lemma index` runs (in the background), or with `lemma daemon lsp start`; there is one per indexed root and language, and the settings below pause and stop idle ones.
+Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground. Language servers start when a lookup needs one, in the background when `lemma symbols` or `lemma outline` finds code of theirs or `lemma index` runs on a repository, or with `lemma daemon lsp start`; there is one per indexed root and language, and the settings below pause and stop idle ones.
 
 **One daemon for each workspace.** A workspace is the nearest directory above a command with a `mod.lm` that declares a `workspace`, together with the repositories it names; otherwise the Git checkout the command runs in; otherwise the directory itself. A command walks up from where it runs to the nearest running daemon that serves it. If there is none, it starts one at the workspace's root, wherever in the workspace it was run, so the first command's directory does not matter.
 

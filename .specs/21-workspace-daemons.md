@@ -174,6 +174,10 @@ Three rules keep the answers what they were:
 - **The provider lane is as it was.** Its requests are answered one at a time in the order they came, so nothing about a language server's session, the graphs kept ready or the upkeep changes. Getting ready for a graph gives way to a request waiting for this lane, as it gave way to one waiting to be read.
 - **Stopping waits.** `lemma daemon stop` goes through the provider lane, so a lookup in flight is answered before the daemon exits (decided 2026-11-16).
 
+**A lookup from the index gives a server a head start (2026-11-17).** A task usually starts in a directory no daemon has served: a new worktree, a clone, a build server. Its first `symbols` or `outline` is answered from the index at once, and the lookup that follows, `refs` or `graph`, used to be the one that started the language server and waited while it loaded the project. So a `symbols` that finds something, or an `outline` of a file with symbols, now has the server for that code started: the repository the best match is in, and that match's language. Only that one is started, not every server of the workspace, because each holds its project in memory and a task rarely reaches every repository. A member pinned to a commit is left until a lookup asks it.
+
+The servers are the provider lane's, so the index lane asks for one as a person would, by sending the daemon `lemma daemon lsp start <repository> --language <language>` and not waiting for the answer. It asks once for a repository and language, and again after the next upkeep, since the server may have been stopped for being idle in between. A server that cannot start is reported by the lookup that needs it, as before.
+
 While the provider lane answers a command, `lemma daemon status` says so in place of the lines about its language servers, which only that lane can give:
 
 ```text
