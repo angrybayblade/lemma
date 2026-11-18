@@ -5,8 +5,28 @@ use std::collections::BTreeMap;
 use lemma_lang::syntax::ast::{self, BinaryOperator, UnaryOperator};
 use serde::Serialize;
 
+/// A source language: what decides the few meanings the languages do not
+/// share, such as how a value is spelled inside a formatted string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Language {
+    TypeScript,
+    Python,
+    Go,
+}
+
+impl Language {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::TypeScript => "typescript",
+            Self::Python => "python",
+            Self::Go => "go",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct Function {
+    pub language: Language,
     pub parameters: Vec<Parameter>,
     /// An `async` function: a call it makes to an async function must be
     /// awaited, or the value it reads is a pending promise or coroutine.
@@ -66,10 +86,21 @@ pub(super) enum Expression {
     Binary(BinaryOperator, Box<Self>, Box<Self>),
     /// JavaScript `a ?? b`: `b` where `a` is null or undefined.
     Coalesce(Box<Self>, Box<Self>),
+    /// Integer negation, `-a`.
+    Negate(Box<Self>),
+    /// A formatted string: Python's f-string, a JavaScript template literal.
+    Template(Vec<Part>),
     Conditional(Box<Self>, Box<Self>, Box<Self>),
     Call(Box<Self>, Vec<Argument>),
     /// `await` of a call; any other awaited value is refused.
     Await(Box<Self>),
+}
+
+/// A piece of a formatted string.
+#[derive(Debug, Clone)]
+pub(super) enum Part {
+    Text(String),
+    Value(Expression),
 }
 
 /// One source-level decision in a witness path.
@@ -103,6 +134,9 @@ fn lower(expression: &ast::Expression) -> Result<Expression, String> {
     Ok(match &expression.kind {
         Kind::Boolean(value) => Expression::Bool(*value),
         Kind::Text(value) => Expression::Text(value.clone()),
+        Kind::Integer(value) if *value < 0 => {
+            Expression::Negate(Box::new(Expression::Integer(value.saturating_neg())))
+        }
         Kind::Integer(value) => Expression::Integer(*value),
         Kind::Null => Expression::Null,
         Kind::Name(name) => Expression::Name(name.clone()),
