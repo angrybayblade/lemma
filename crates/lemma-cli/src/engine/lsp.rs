@@ -109,32 +109,35 @@ impl Engine {
     ) -> anyhow::Result<u8> {
         let roots = self.lsp_roots(request, target)?;
         let languages = chosen_languages(target)?;
-        let mut failed = false;
+        let asked_at = Instant::now();
+        // Every server is asked to start before any is waited for, so they
+        // load side by side: the wait is the slowest one's, not all of
+        // theirs added up.
+        let mut asked = Vec::new();
         for root in &roots {
             let plan = self.server_plan(request, root, languages.as_ref(), &target.providers)?;
             let snapshot = self.lsp_snapshot(root)?;
             for planned in plan {
-                let (line, has_failed) = self.start_server(root, &snapshot, &planned, wait);
-                failed |= has_failed;
-                writeln!(out, "{line}")?;
+                self.ask_to_start(root, &snapshot, &planned);
+                asked.push((root, snapshot.clone(), planned));
             }
+        }
+        let waited_since = wait.then_some(asked_at);
+        let mut failed = false;
+        for (root, snapshot, planned) in &asked {
+            let (line, has_failed) = self.started_server(root, snapshot, planned, waited_since);
+            failed |= has_failed;
+            writeln!(out, "{line}")?;
         }
         Ok(u8::from(failed))
     }
 
-    /// Starts the server `planned` names on `root`, waiting for it with
-    /// `wait`; what happened, and whether it failed.
-    fn start_server(
-        &mut self,
-        root: &Root,
-        snapshot: &StoredSnapshot,
-        planned: &Planned,
-        wait: bool,
-    ) -> (String, bool) {
+    /// Asks for the server `planned` names on `root` to be started in the
+    /// background; nothing when no provider for it is installed.
+    fn ask_to_start(&mut self, root: &Root, snapshot: &StoredSnapshot, planned: &Planned) {
         if planned.candidates.is_empty() {
-            return (planned.row(&root.directory, &[]).describe(), false);
+            return;
         }
-        let started = Instant::now();
         self.pool.warm_up(WarmUp {
             db_path: root.db_path.clone(),
             snapshot: snapshot.clone(),
@@ -142,12 +145,27 @@ impl Engine {
             language: planned.languages[0],
             request_timeout: WARM_UP_TIMEOUT,
         });
-        if wait {
+    }
+
+    /// What became of the server `planned` names on `root`, and whether it
+    /// failed. With `waited_since`, the moment the servers were asked for,
+    /// it is waited for first.
+    fn started_server(
+        &mut self,
+        root: &Root,
+        snapshot: &StoredSnapshot,
+        planned: &Planned,
+        waited_since: Option<Instant>,
+    ) -> (String, bool) {
+        if planned.candidates.is_empty() {
+            return (planned.row(&root.directory, &[]).describe(), false);
+        }
+        if waited_since.is_some() {
             self.pool.wait_for(snapshot, &planned.candidates);
         }
         let statuses = self.pool.status(Instant::now());
         let row = planned.row(&root.directory, &statuses);
-        let took = wait.then(|| started.elapsed());
+        let took = waited_since.map(|since| since.elapsed());
         (describe_start(&row, took), row.state == "failed")
     }
 
@@ -394,8 +412,9 @@ impl ServerRow {
     }
 }
 
-/// What `start` did for one server: started (and how long it took to
-/// load, when waited for), already running, or failed.
+/// What `start` did for one server: started (and, when waited for, how
+/// long after the servers were asked for it was ready), already running,
+/// or failed.
 fn describe_start(row: &ServerRow, took: Option<Duration>) -> String {
     let provider = row.provider.as_deref().unwrap_or("-");
     let languages = row.languages.join(",");
