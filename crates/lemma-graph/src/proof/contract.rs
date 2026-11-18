@@ -10,8 +10,10 @@ use serde_json::Value;
 #[serde(deny_unknown_fields)]
 pub(super) struct Contract {
     pub inputs: BTreeMap<String, Input>,
+    /// Inputs given to the function's parameters in order; `null` leaves a
+    /// parameter out, so its default applies.
     #[serde(default)]
-    pub parameters: Vec<String>,
+    pub parameters: Vec<Option<String>>,
     #[serde(default)]
     pub bindings: BTreeMap<String, Value>,
     #[serde(default)]
@@ -99,7 +101,7 @@ impl Contract {
             .inputs
             .keys()
             .chain(self.bindings.keys())
-            .chain(self.parameters.iter())
+            .chain(self.parameters.iter().flatten())
         {
             if !identifier(name) {
                 return Err(format!("invalid contract name `{name}`"));

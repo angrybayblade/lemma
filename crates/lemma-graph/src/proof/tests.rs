@@ -399,7 +399,12 @@ fn methods_are_read_by_qualified_name_with_their_receiver_first() {
         ),
     ] {
         let (_, function) = source::read(file, text, symbol).unwrap();
-        assert_eq!(function.parameters, [receiver, "request"], "{file}");
+        let names: Vec<&str> = function
+            .parameters
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(names, [receiver, "request"], "{file}");
     }
 }
 
@@ -500,4 +505,41 @@ fn overload_signatures_are_not_the_implementation() {
     let text = "from typing import overload\n@overload\ndef f(x: int) -> int: ...\n@overload\ndef f(x: str) -> str: ...\ndef f(x):\n    return x\n";
     let (_, function) = source::read("x.py", text, "f").unwrap();
     assert_eq!(function.decorators, Vec::<String>::new());
+}
+
+#[test]
+fn keyword_arguments_bind_model_parameters_by_name() {
+    let text = "def set_status(request):\n    write = commit_status(request['project'], epoch=request['epoch'], enabled=request['enabled'])\n    return {'success': not write['rejected']}\n";
+    let (_, function) = source::read("x.py", text, "set_status").unwrap();
+    assert!(symbolic::execute(&function, &contract(source::Language::Python)).is_ok());
+    for wrong in [
+        "commit_status(request['project'], request['enabled'], request['epoch'], enabled=True)",
+        "commit_status(request['project'], colour=True)",
+    ] {
+        let text = format!(
+            "def set_status(request):\n    write = {wrong}\n    return {{'success': True}}\n"
+        );
+        let (_, function) = source::read("x.py", &text, "set_status").unwrap();
+        assert!(
+            symbolic::execute(&function, &contract(source::Language::Python)).is_err(),
+            "{wrong}"
+        );
+    }
+}
+
+#[test]
+fn a_left_out_parameter_takes_its_default() {
+    let text = "def f(request, *, strict=True):\n    return request['allowed'] and strict\n";
+    let (_, function) = source::read("x.py", text, "f").unwrap();
+    let mut contract: Contract = serde_json::from_value(json!({
+        "inputs": {"request": {"allowed": "Bool"}},
+        "parameters": ["request", null],
+        "ensures": [{"name": "allowed", "condition": "result == request.allowed"}],
+    }))
+    .unwrap();
+    let execution = symbolic::execute(&function, &contract).unwrap();
+    assert_eq!(execution.paths.len(), 1);
+    contract.parameters = vec![None, None];
+    let error = symbolic::execute(&function, &contract).err().unwrap();
+    assert!(error.contains("no default"), "{error}");
 }
