@@ -204,13 +204,11 @@ fn survey_repository(
             .iter()
             .filter(|symbol| matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method))
         {
-            let answer = if symbol.kind == SymbolKind::Method
-                || symbol.qualified_name != symbol.name
-            {
-                Err("entry: method or nested function is outside the current backend".to_owned())
-            } else {
-                super::source::read(&path.to_string_lossy(), &text, &symbol.name).map(|_| ())
-            };
+            // Methods and nested functions are read by their qualified name;
+            // the reader decides which of them it can translate.
+            let answer =
+                super::source::read(&path.to_string_lossy(), &text, &symbol.qualified_name)
+                    .map(|_| ());
             rows.push(json!({
                 "repository": repository, "file": path, "symbol": symbol.qualified_name,
                 "line": symbol.name_span.start.line + 1, "language": language,

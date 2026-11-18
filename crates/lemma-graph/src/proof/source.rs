@@ -50,15 +50,16 @@ pub(super) fn read(file: &str, source: &str, symbol: &str) -> Result<(Language, 
         );
     }
     let reader = Reader { source, language };
-    let mut found = Vec::new();
-    reader.declarations(tree.root_node(), symbol, &mut found)?;
-    let [function] = found.as_slice() else {
-        return Err(format!(
-            "expected one top-level function `{symbol}`, found {}",
-            found.len()
-        ));
-    };
-    Ok((language, reader.function(*function)?))
+    let definition = reader.lookup(tree.root_node(), symbol)?;
+    Ok((language, reader.function(&definition)?))
+}
+
+/// A function body found for a symbol, and the name its receiver has inside
+/// it: `this` for a TypeScript method, the receiver of a Go method. Python
+/// methods name their receiver as an ordinary first parameter.
+struct Definition<'t> {
+    node: Node<'t>,
+    receiver: Option<String>,
 }
 
 struct Reader<'a> {
@@ -71,6 +72,23 @@ fn children(node: Node<'_>) -> Vec<Node<'_>> {
     node.named_children(&mut cursor)
         .filter(|n| !matches!(n.kind(), "comment" | "type_annotation"))
         .collect()
+}
+
+/// Declarations at the top of a file, looking through `export` and variable
+/// declarations to what they declare.
+fn top_level(node: Node<'_>) -> Vec<Node<'_>> {
+    let mut found = Vec::new();
+    for child in children(node) {
+        if matches!(
+            child.kind(),
+            "export_statement" | "lexical_declaration" | "variable_declaration"
+        ) {
+            found.extend(top_level(child));
+        } else {
+            found.push(child);
+        }
+    }
+    found
 }
 
 fn field<'a>(node: Node<'a>, name: &str) -> Result<Node<'a>, String> {
@@ -97,46 +115,55 @@ impl<'a> Reader<'a> {
         ))
     }
 
-    fn declarations<'t>(
-        &self,
-        node: Node<'t>,
-        symbol: &str,
-        found: &mut Vec<Node<'t>>,
-    ) -> Result<(), String> {
-        for child in children(node) {
-            if matches!(
-                child.kind(),
-                "export_statement" | "lexical_declaration" | "variable_declaration"
-            ) {
-                self.declarations(child, symbol, found)?;
-            } else if let Some(function) = self.named_declaration(child, symbol)? {
-                found.push(function);
+    /// Finds the one definition `symbol` names: a top-level function, or a
+    /// method written `Container.method`, where Python classes may nest.
+    fn lookup<'t>(&self, root: Node<'t>, symbol: &str) -> Result<Definition<'t>, String> {
+        let segments: Vec<&str> = symbol.split('.').collect();
+        let found = match segments.as_slice() {
+            [name] => top_level(root)
+                .into_iter()
+                .map(|node| self.function_named(node, name))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .map(|node| Definition {
+                    node,
+                    receiver: None,
+                })
+                .collect(),
+            [container, name] if self.language == Language::Go => {
+                self.go_methods(root, container, name)?
             }
+            [containers @ .., name] => self.class_methods(root, containers, name)?,
+            [] => Vec::new(),
+        };
+        let mut found: Vec<Definition<'t>> = found;
+        if found.len() != 1 {
+            return Err(format!(
+                "expected one function or method `{symbol}`, found {}",
+                found.len()
+            ));
         }
-        Ok(())
+        Ok(found.remove(0))
     }
 
-    fn named_declaration<'t>(
-        &self,
-        node: Node<'t>,
-        symbol: &str,
-    ) -> Result<Option<Node<'t>>, String> {
+    fn function_named<'t>(&self, node: Node<'t>, name: &str) -> Result<Option<Node<'t>>, String> {
         match node.kind() {
             "function_declaration" | "function_definition"
                 if node
                     .child_by_field_name("name")
-                    .is_some_and(|n| self.text(n) == symbol) =>
+                    .is_some_and(|n| self.text(n) == name) =>
             {
                 Ok(Some(node))
             }
-            "variable_declarator" if self.text(field(node, "name")?) == symbol => {
+            "variable_declarator" if self.text(field(node, "name")?) == name => {
                 let value = field(node, "value")?;
                 if !matches!(value.kind(), "arrow_function" | "function_expression") {
                     return self.unsupported(value);
                 }
                 Ok(Some(value))
             }
-            "decorated_definition" if self.text(node).contains(&format!("def {symbol}(")) => Err(
+            "decorated_definition" if self.decorated_name(node) == Some(name) => Err(
                 "decorated Python functions need a decorator model and are not supported yet"
                     .to_owned(),
             ),
@@ -144,22 +171,162 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn function(&self, node: Node<'_>) -> Result<Function, String> {
+    /// The name of the function or class a Python decorator list wraps.
+    fn decorated_name(&self, node: Node<'_>) -> Option<&'a str> {
+        let definition = node.child_by_field_name("definition")?;
+        Some(self.text(definition.child_by_field_name("name")?))
+    }
+
+    /// Go methods `name` whose receiver's type is `container`.
+    fn go_methods<'t>(
+        &self,
+        root: Node<'t>,
+        container: &str,
+        name: &str,
+    ) -> Result<Vec<Definition<'t>>, String> {
+        let mut found = Vec::new();
+        for node in children(root) {
+            if node.kind() != "method_declaration"
+                || node
+                    .child_by_field_name("name")
+                    .is_none_or(|n| self.text(n) != name)
+            {
+                continue;
+            }
+            let receiver = only(field(node, "receiver")?)?;
+            let receiver_type = self.text(field(receiver, "type")?);
+            let receiver_type = receiver_type.trim_start_matches('*');
+            let receiver_type = receiver_type.split('[').next().unwrap_or(receiver_type);
+            if receiver_type != container {
+                continue;
+            }
+            // An unnamed receiver cannot be read; it still takes a place.
+            let receiver_name = receiver
+                .child_by_field_name("name")
+                .map_or("_", |n| self.text(n));
+            found.push(Definition {
+                node,
+                receiver: Some(receiver_name.to_owned()),
+            });
+        }
+        Ok(found)
+    }
+
+    /// Methods `name` of the class reached through `containers`.
+    fn class_methods<'t>(
+        &self,
+        root: Node<'t>,
+        containers: &[&str],
+        name: &str,
+    ) -> Result<Vec<Definition<'t>>, String> {
+        let mut scope = top_level(root);
+        for container in containers {
+            let classes: Vec<Node<'t>> = scope
+                .into_iter()
+                .map(|node| self.class_named(node, container))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect();
+            let [class] = classes.as_slice() else {
+                return Err(format!(
+                    "expected one class `{container}`, found {}",
+                    classes.len()
+                ));
+            };
+            scope = children(field(*class, "body")?);
+        }
+        let mut found = Vec::new();
+        for node in scope {
+            if let Some(method) = self.method_named(node, name)? {
+                found.push(method);
+            }
+        }
+        Ok(found)
+    }
+
+    fn class_named<'t>(&self, node: Node<'t>, name: &str) -> Result<Option<Node<'t>>, String> {
+        let is_class = matches!(
+            node.kind(),
+            "class_declaration" | "abstract_class_declaration" | "class_definition"
+        );
+        if is_class
+            && node
+                .child_by_field_name("name")
+                .is_some_and(|n| self.text(n) == name)
+        {
+            return Ok(Some(node));
+        }
+        if node.kind() == "decorated_definition" && self.decorated_name(node) == Some(name) {
+            return Err(
+                "decorated Python classes need a decorator model and are not supported yet"
+                    .to_owned(),
+            );
+        }
+        if matches!(node.kind(), "function_declaration" | "function_definition")
+            && node
+                .child_by_field_name("name")
+                .is_some_and(|n| self.text(n) == name)
+        {
+            return Err(
+                "a nested function reads its enclosing function's variables, which proof does not model"
+                    .to_owned(),
+            );
+        }
+        Ok(None)
+    }
+
+    fn method_named<'t>(
+        &self,
+        node: Node<'t>,
+        name: &str,
+    ) -> Result<Option<Definition<'t>>, String> {
+        let receiver = match self.language {
+            Language::TypeScript => Some("this".to_owned()),
+            Language::Python | Language::Go => None,
+        };
+        let named = |n: Node<'_>| self.text(n) == name;
+        match node.kind() {
+            "method_definition" | "function_definition"
+                if node.child_by_field_name("name").is_some_and(named) =>
+            {
+                Ok(Some(Definition { node, receiver }))
+            }
+            // A class field holding an arrow function binds `this` to the
+            // instance, as a method does.
+            "public_field_definition" if node.child_by_field_name("name").is_some_and(named) => {
+                let value = field(node, "value")?;
+                if value.kind() != "arrow_function" {
+                    return self.unsupported(value);
+                }
+                Ok(Some(Definition {
+                    node: value,
+                    receiver,
+                }))
+            }
+            "decorated_definition" if self.decorated_name(node) == Some(name) => Err(
+                "decorated Python functions need a decorator model and are not supported yet"
+                    .to_owned(),
+            ),
+            _ => Ok(None),
+        }
+    }
+
+    fn function(&self, definition: &Definition<'_>) -> Result<Function, String> {
+        let node = definition.node;
         let parameter_node = node
             .child_by_field_name("parameters")
             .or_else(|| node.child_by_field_name("parameter"))
             .ok_or("function has no parameter list")?;
-        let parameters = if parameter_node.kind() == "identifier" {
-            vec![self.identifier(parameter_node)?]
+        // A method's receiver is its first parameter in every language.
+        let mut parameters: Vec<String> = definition.receiver.iter().cloned().collect();
+        if parameter_node.kind() == "identifier" {
+            parameters.push(self.identifier(parameter_node)?);
         } else {
-            children(parameter_node)
-                .into_iter()
-                .map(|parameter| self.parameter(parameter))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect()
-        };
+            for parameter in children(parameter_node) {
+                parameters.extend(self.parameter(parameter)?);
+            }
+        }
         let body = field(node, "body")?;
         let body = if matches!(body.kind(), "statement_block" | "block") {
             self.function_body(body)?
@@ -352,7 +519,7 @@ impl<'a> Reader<'a> {
         Ok(match node.kind() {
             "true" => Expr::Bool(true),
             "false" => Expr::Bool(false),
-            "identifier" => Expr::Name(self.text(node).to_owned()),
+            "identifier" | "this" => Expr::Name(self.text(node).to_owned()),
             "number" | "integer" | "int_literal" => self.integer(node)?,
             "string" | "interpreted_string_literal" => Expr::Text(self.string(node)?),
             "parenthesized_expression" | "literal_element" => self.expression(only(node)?)?,

@@ -375,3 +375,72 @@ fn checking_one_call_and_succeeding_after_another_is_violated() {
     let checked = check_source("x.py", PYTHON, "set_status", &contract);
     assert_eq!(checked["observed"]["status"], "conditional", "{checked}");
 }
+
+#[test]
+fn methods_are_read_by_qualified_name_with_their_receiver_first() {
+    for (file, text, symbol, receiver) in [
+        (
+            "x.ts",
+            "export class Gate {\n  allows(request: Request) {\n    return this.open && request.allowed;\n  }\n}\n",
+            "Gate.allows",
+            "this",
+        ),
+        (
+            "x.py",
+            "class Gate:\n    def allows(self, request):\n        return request['allowed']\n",
+            "Gate.allows",
+            "self",
+        ),
+        (
+            "x.go",
+            "package p\ntype Gate struct{ open bool }\nfunc (g *Gate) allows(request Request) bool { return g.open && request.allowed }\n",
+            "Gate.allows",
+            "g",
+        ),
+    ] {
+        let (_, function) = source::read(file, text, symbol).unwrap();
+        assert_eq!(function.parameters, [receiver, "request"], "{file}");
+    }
+}
+
+#[test]
+fn nested_functions_and_unknown_containers_are_refused() {
+    let nested = "def outer(request):\n    def inner():\n        return request['allowed']\n    return inner()\n";
+    let error = source::read("x.py", nested, "outer.inner").err().unwrap();
+    assert!(error.contains("enclosing"), "{error}");
+    assert!(
+        source::read(
+            "x.py",
+            "class A:\n    def m(self):\n        return True\n",
+            "B.m"
+        )
+        .is_err()
+    );
+}
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn a_method_is_proved_with_its_receiver_bound_to_an_input() {
+    let contract = json!({
+        "inputs": {"gate": {"open": "Bool"}, "request": {"allowed": "Bool"}},
+        "parameters": ["gate", "request"],
+        "ensures": [{"name": "open_and_allowed", "condition": "result == (gate.open && request.allowed)"}],
+    });
+    for (file, text) in [
+        (
+            "x.ts",
+            "export class Gate {\n  allows(request: Request) {\n    return this.open && request.allowed;\n  }\n}\n",
+        ),
+        (
+            "x.py",
+            "class Gate:\n    def allows(self, request):\n        return self['open'] and request['allowed']\n",
+        ),
+        (
+            "x.go",
+            "package p\ntype Gate struct{ open bool }\nfunc (g *Gate) allows(request Request) bool { return g.open && request.allowed }\n",
+        ),
+    ] {
+        let result = check_source(file, text, "Gate.allows", &contract);
+        assert_eq!(result["observed"]["status"], "proved", "{file}: {result}");
+    }
+}
