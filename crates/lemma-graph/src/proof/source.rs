@@ -6,7 +6,8 @@ use lemma_lang::syntax::ast::BinaryOperator as Op;
 use tree_sitter::{Node, Parser};
 
 use super::ir::{
-    Argument, Expression as Expr, Function, Parameter, Part, Statement, StatementKind as Stmt,
+    Argument, Expression as Expr, Function, Parameter, Part, Pattern, Statement,
+    StatementKind as Stmt,
 };
 
 pub(super) use super::ir::Language;
@@ -536,7 +537,7 @@ impl<'a> Reader<'a> {
                 return self.block(node);
             }
             "variable_declarator" => Stmt::Bind(
-                self.identifier(field(node, "name")?)?,
+                self.pattern(field(node, "name")?)?,
                 self.expression(field(node, "value")?)?,
             ),
             "short_var_declaration" | "assignment_statement" | "assignment" => {
@@ -593,15 +594,54 @@ impl<'a> Reader<'a> {
         {
             return self.unsupported(node);
         }
-        let mut left = field(node, "left")?;
-        let mut right = field(node, "right")?;
-        if left.kind() == "expression_list" {
-            left = only(left)?;
+        let left = field(node, "left")?;
+        let right = field(node, "right")?;
+        Ok(Stmt::Bind(self.pattern(left)?, self.expression(right)?))
+    }
+
+    /// What a binding's left side names.
+    fn pattern(&self, node: Node<'_>) -> Result<Pattern, String> {
+        Ok(match node.kind() {
+            "identifier" if self.language == Language::Go && self.text(node) == "_" => {
+                Pattern::Ignore
+            }
+            "identifier" => Pattern::Name(self.text(node).to_owned()),
+            "expression_list" if children(node).len() == 1 => self.pattern(only(node)?)?,
+            "expression_list" | "pattern_list" | "tuple_pattern" | "list_pattern"
+            | "array_pattern" => Pattern::Sequence(
+                children(node)
+                    .into_iter()
+                    .map(|part| self.pattern(part))
+                    .collect::<Result<_, _>>()?,
+            ),
+            "object_pattern" => Pattern::Record(
+                children(node)
+                    .into_iter()
+                    .map(|part| self.record_pattern(part))
+                    .collect::<Result<_, _>>()?,
+            ),
+            _ => return self.unsupported(node),
+        })
+    }
+
+    /// One field of a TypeScript object pattern.
+    fn record_pattern(&self, node: Node<'_>) -> Result<(String, Pattern), String> {
+        match node.kind() {
+            "shorthand_property_identifier_pattern" => {
+                let name = self.text(node).to_owned();
+                Ok((name.clone(), Pattern::Name(name)))
+            }
+            "pair_pattern" => {
+                let key = field(node, "key")?;
+                let key = if key.kind() == "string" {
+                    self.string(key)?
+                } else {
+                    self.identifier(key)?
+                };
+                Ok((key, self.pattern(field(node, "value")?)?))
+            }
+            _ => self.unsupported(node),
         }
-        if right.kind() == "expression_list" {
-            right = only(right)?;
-        }
-        Ok(Stmt::Bind(self.identifier(left)?, self.expression(right)?))
     }
 
     fn return_value(&self, node: Node<'_>) -> Result<Expr, String> {
@@ -610,7 +650,6 @@ impl<'a> Reader<'a> {
             [] if self.language == Language::Go => self.unsupported(node),
             [] if self.language == Language::Python => Ok(Expr::Null),
             [] => Ok(Expr::Undefined),
-            [value] if value.kind() == "expression_list" => self.expression(only(*value)?),
             [value] => self.expression(*value),
             _ => self.unsupported(node),
         }
@@ -683,7 +722,7 @@ impl<'a> Reader<'a> {
             // A field read, in every language, under the precondition that the
             // value is plain data: no getter, descriptor or `__getattr__` runs.
             "member_expression" | "selector_expression" | "attribute" => self.member(node)?,
-            "subscript" | "subscript_expression" => self.index(node)?,
+            "subscript" | "subscript_expression" | "index_expression" => self.index(node)?,
             "unary_expression" | "not_operator" | "unary_operator" => self.unary(node)?,
             "binary_expression"
             | "boolean_operator"
@@ -695,6 +734,13 @@ impl<'a> Reader<'a> {
                 Box::new(self.expression(field(node, "alternative")?)?),
             ),
             "object" | "dictionary" | "composite_literal" => self.record(node)?,
+            "expression_list" if children(node).len() == 1 => self.expression(only(node)?)?,
+            "list" | "tuple" | "array" | "expression_list" => Expr::Sequence(
+                children(node)
+                    .into_iter()
+                    .map(|element| self.expression(element))
+                    .collect::<Result<_, _>>()?,
+            ),
             "call_expression" | "call" if has_optional_chain(node) => {
                 return self.unsupported(node);
             }
@@ -744,17 +790,43 @@ impl<'a> Reader<'a> {
         let target = node
             .child_by_field_name("value")
             .or_else(|| node.child_by_field_name("object"))
+            .or_else(|| node.child_by_field_name("operand"))
             .ok_or("missing index target")?;
         let key = node
             .child_by_field_name("subscript")
             .or_else(|| node.child_by_field_name("index"))
             .ok_or("missing index")?;
         let target = Box::new(self.expression(target)?);
+        // Only constant keys: a variable key may name a field the contract
+        // never declared, whose value nothing gives.
+        if let Some(position) = self.constant_integer(key) {
+            if has_optional_chain(node) {
+                return self.unsupported(node);
+            }
+            return Ok(Expr::Index(target, position));
+        }
         let key = self.string(key)?;
         if has_optional_chain(node) {
             return Ok(Expr::OptionalMember(target, key));
         }
         Ok(Expr::Member(target, key))
+    }
+
+    /// An integer literal, possibly negated.
+    fn constant_integer(&self, node: Node<'_>) -> Option<i64> {
+        match node.kind() {
+            "integer" | "number" | "int_literal" => match self.integer(node).ok()? {
+                Expr::Integer(value) => Some(value),
+                _ => None,
+            },
+            "unary_operator" | "unary_expression"
+                if self.source[node.byte_range()].trim_start().starts_with('-') =>
+            {
+                let operand = children(node).last().copied()?;
+                self.constant_integer(operand).map(i64::wrapping_neg)
+            }
+            _ => None,
+        }
     }
 
     fn unary(&self, node: Node<'_>) -> Result<Expr, String> {
@@ -800,6 +872,9 @@ impl<'a> Reader<'a> {
         {
             return self.unsupported(node);
         }
+        if let Some(membership) = self.membership(operator_text, left, right)? {
+            return Ok(membership);
+        }
         let operator = match operator_text {
             "&&" | "and" => Op::And,
             "||" | "or" => Op::Or,
@@ -821,6 +896,26 @@ impl<'a> Reader<'a> {
             Box::new(self.expression(left)?),
             Box::new(self.expression(right)?),
         ))
+    }
+
+    /// Python's `in` and `not in`.
+    fn membership(
+        &self,
+        operator: &str,
+        left: Node<'_>,
+        right: Node<'_>,
+    ) -> Result<Option<Expr>, String> {
+        if self.language != Language::Python || !matches!(operator, "in" | "not in") {
+            return Ok(None);
+        }
+        let contains = Expr::Contains(
+            Box::new(self.expression(left)?),
+            Box::new(self.expression(right)?),
+        );
+        if operator == "in" {
+            return Ok(Some(contains));
+        }
+        Ok(Some(Expr::Not(Box::new(contains))))
     }
 
     fn record(&self, node: Node<'_>) -> Result<Expr, String> {

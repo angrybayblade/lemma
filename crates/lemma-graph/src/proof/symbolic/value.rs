@@ -106,6 +106,8 @@ impl Term {
 pub(in crate::proof) enum Value {
     Scalar(Term),
     Record(BTreeMap<String, Value>),
+    /// A tuple, list or array of known length.
+    Sequence(Vec<Value>),
     /// A function a call model stands for.
     Model(String),
     /// Python `None`, JavaScript `null` and Go `nil`.
@@ -183,7 +185,9 @@ pub(in crate::proof) fn read_field(
             let fails = test.and(&then_fails).or(&test.not().and(&otherwise_fails));
             Ok((Value::choice(test, then, otherwise), fails))
         }
-        Value::Scalar(_) | Value::Model(_) => Err(format!("cannot read `{name}` on a non-record")),
+        Value::Scalar(_) | Value::Model(_) | Value::Sequence(_) => {
+            Err(format!("cannot read `{name}` on a non-record"))
+        }
     }
 }
 
@@ -225,6 +229,65 @@ fn equal_terms(left: &Term, right: &Term) -> Result<Term, String> {
         return Ok(Term::boolean(false));
     }
     Err("comparing a Boolean with a number differs between languages".to_owned())
+}
+
+/// The element of a sequence at a constant position: the element, and
+/// whether the position is outside it, where Python and Go raise and
+/// JavaScript reads undefined. Python counts negative positions from the end.
+pub(in crate::proof) fn element(
+    value: &Value,
+    position: i64,
+    language: Language,
+) -> Result<(Value, Term), String> {
+    match value {
+        Value::Sequence(items) => {
+            let length = i64::try_from(items.len()).map_err(|e| e.to_string())?;
+            let index = if position < 0 && language == Language::Python {
+                position + length
+            } else {
+                position
+            };
+            let found = usize::try_from(index)
+                .ok()
+                .and_then(|index| items.get(index));
+            match (found, language) {
+                (Some(item), _) => Ok((item.clone(), Term::boolean(false))),
+                (None, Language::TypeScript) => Ok((Value::Undefined, Term::boolean(false))),
+                (None, _) => Ok((Value::Unreachable, Term::boolean(true))),
+            }
+        }
+        Value::Null | Value::Undefined => Ok((Value::Unreachable, Term::boolean(true))),
+        Value::Unreachable => Ok((Value::Unreachable, Term::boolean(false))),
+        Value::Choice(test, then, otherwise) => {
+            let (then, then_fails) = element(then, position, language)?;
+            let (otherwise, otherwise_fails) = element(otherwise, position, language)?;
+            let fails = test.and(&then_fails).or(&test.not().and(&otherwise_fails));
+            Ok((Value::choice(test, then, otherwise), fails))
+        }
+        _ => Err("only a sequence has elements at positions".to_owned()),
+    }
+}
+
+/// Python's `needle in haystack`: equality with some element of a
+/// sequence, or a substring of a text.
+pub(in crate::proof) fn contains(needle: &Value, haystack: &Value) -> Result<Term, String> {
+    match haystack {
+        Value::Sequence(items) => items.iter().try_fold(Term::boolean(false), |any, item| {
+            Ok(any.or(&equal(needle, item)?))
+        }),
+        Value::Scalar(text) if text.sort == Sort::Text => match needle {
+            Value::Scalar(part) if part.sort == Sort::Text => Ok(Term {
+                sort: Sort::Bool,
+                code: format!("(str.contains {} {})", text.code, part.code),
+            }),
+            _ => Err("only a text can be found in a text".to_owned()),
+        },
+        Value::Choice(test, then, otherwise) => {
+            Ok(test.ite(&contains(needle, then)?, &contains(needle, otherwise)?))
+        }
+        Value::Unreachable => Ok(Term::boolean(false)),
+        _ => Err("`in` is read over sequences and texts".to_owned()),
+    }
 }
 
 /// An ordering of two integers.

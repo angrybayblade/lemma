@@ -141,8 +141,14 @@ fn expression_names(expression: &Expr, names: &mut BTreeSet<String>) {
         | Expr::OptionalMember(inner, _)
         | Expr::Not(inner)
         | Expr::Negate(inner)
+        | Expr::Index(inner, _)
         | Expr::Await(inner) => {
             expression_names(inner, names);
+        }
+        Expr::Sequence(items) => {
+            for item in items {
+                expression_names(item, names);
+            }
         }
         Expr::Template(parts) => {
             for part in parts {
@@ -151,7 +157,9 @@ fn expression_names(expression: &Expr, names: &mut BTreeSet<String>) {
                 }
             }
         }
-        Expr::Binary(_, left, right) | Expr::Coalesce(left, right) => {
+        Expr::Binary(_, left, right)
+        | Expr::Coalesce(left, right)
+        | Expr::Contains(left, right) => {
             expression_names(left, names);
             expression_names(right, names);
         }
