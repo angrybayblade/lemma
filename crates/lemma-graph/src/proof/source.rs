@@ -60,6 +60,8 @@ pub(super) fn read(file: &str, source: &str, symbol: &str) -> Result<(Language, 
 struct Definition<'t> {
     node: Node<'t>,
     receiver: Option<String>,
+    /// Decorators of the function and of the classes around it, as written.
+    decorators: Vec<String>,
 }
 
 struct Reader<'a> {
@@ -126,10 +128,6 @@ impl<'a> Reader<'a> {
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .flatten()
-                .map(|node| Definition {
-                    node,
-                    receiver: None,
-                })
                 .collect(),
             [container, name] if self.language == Language::Go => {
                 self.go_methods(root, container, name)?
@@ -137,7 +135,10 @@ impl<'a> Reader<'a> {
             [containers @ .., name] => self.class_methods(root, containers, name)?,
             [] => Vec::new(),
         };
-        let mut found: Vec<Definition<'t>> = found;
+        let mut found: Vec<Definition<'t>> = found
+            .into_iter()
+            .filter(|definition| !definition.decorators.iter().any(|d| is_overload(d)))
+            .collect();
         if found.len() != 1 {
             return Err(format!(
                 "expected one function or method `{symbol}`, found {}",
@@ -147,28 +148,61 @@ impl<'a> Reader<'a> {
         Ok(found.remove(0))
     }
 
-    fn function_named<'t>(&self, node: Node<'t>, name: &str) -> Result<Option<Node<'t>>, String> {
+    fn function_named<'t>(
+        &self,
+        node: Node<'t>,
+        name: &str,
+    ) -> Result<Option<Definition<'t>>, String> {
+        let plain = |node| Definition {
+            node,
+            receiver: None,
+            decorators: Vec::new(),
+        };
         match node.kind() {
             "function_declaration" | "function_definition"
                 if node
                     .child_by_field_name("name")
                     .is_some_and(|n| self.text(n) == name) =>
             {
-                Ok(Some(node))
+                Ok(Some(Definition {
+                    decorators: self.decorators(node),
+                    ..plain(node)
+                }))
             }
             "variable_declarator" if self.text(field(node, "name")?) == name => {
                 let value = field(node, "value")?;
                 if !matches!(value.kind(), "arrow_function" | "function_expression") {
                     return self.unsupported(value);
                 }
-                Ok(Some(value))
+                Ok(Some(plain(value)))
             }
-            "decorated_definition" if self.decorated_name(node) == Some(name) => Err(
-                "decorated Python functions need a decorator model and are not supported yet"
-                    .to_owned(),
-            ),
+            "decorated_definition" if self.decorated_name(node) == Some(name) => {
+                let definition = field(node, "definition")?;
+                if definition.kind() != "function_definition" {
+                    return Ok(None);
+                }
+                Ok(Some(Definition {
+                    decorators: self.decorators(node),
+                    ..plain(definition)
+                }))
+            }
             _ => Ok(None),
         }
+    }
+
+    /// The decorators written on a declaration, without their `@`. Python
+    /// puts them on a wrapping node; TypeScript on the declaration itself.
+    fn decorators(&self, node: Node<'_>) -> Vec<String> {
+        let mut cursor = node.walk();
+        node.children(&mut cursor)
+            .filter(|child| child.kind() == "decorator")
+            .map(|decorator| self.decorator_text(decorator))
+            .collect()
+    }
+
+    fn decorator_text(&self, decorator: Node<'_>) -> String {
+        let text = self.text(decorator).trim_start_matches('@');
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     /// The name of the function or class a Python decorator list wraps.
@@ -207,6 +241,7 @@ impl<'a> Reader<'a> {
             found.push(Definition {
                 node,
                 receiver: Some(receiver_name.to_owned()),
+                decorators: Vec::new(),
             });
         }
         Ok(found)
@@ -219,54 +254,96 @@ impl<'a> Reader<'a> {
         containers: &[&str],
         name: &str,
     ) -> Result<Vec<Definition<'t>>, String> {
-        let mut scope = top_level(root);
+        let mut scope = self.with_decorators(top_level(root));
+        let mut class_decorators = Vec::new();
         for container in containers {
-            let classes: Vec<Node<'t>> = scope
-                .into_iter()
-                .map(|node| self.class_named(node, container))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect();
-            let [class] = classes.as_slice() else {
+            let classes = self.classes_named(scope, container)?;
+            let [(class, decorators)] = classes.as_slice() else {
                 return Err(format!(
                     "expected one class `{container}`, found {}",
                     classes.len()
                 ));
             };
-            scope = children(field(*class, "body")?);
+            class_decorators.extend(decorators.iter().cloned());
+            scope = self.with_decorators(children(field(*class, "body")?));
         }
         let mut found = Vec::new();
-        for node in scope {
-            if let Some(method) = self.method_named(node, name)? {
+        for (node, written) in scope {
+            if let Some(mut method) = self.method_named(node, name)? {
+                method.decorators.extend(written);
+                method.decorators.extend(class_decorators.iter().cloned());
                 found.push(method);
             }
         }
         Ok(found)
     }
 
-    fn class_named<'t>(&self, node: Node<'t>, name: &str) -> Result<Option<Node<'t>>, String> {
-        let is_class = matches!(
-            node.kind(),
-            "class_declaration" | "abstract_class_declaration" | "class_definition"
-        );
-        if is_class
-            && node
-                .child_by_field_name("name")
-                .is_some_and(|n| self.text(n) == name)
-        {
-            return Ok(Some(node));
+    /// The classes named `name` among `scope`, each with its decorators.
+    fn classes_named<'t>(
+        &self,
+        scope: Vec<(Node<'t>, Vec<String>)>,
+        name: &str,
+    ) -> Result<Vec<(Node<'t>, Vec<String>)>, String> {
+        let mut classes = Vec::new();
+        for (node, written) in scope {
+            let Some((class, mut decorators)) = self.class_named(node, name)? else {
+                continue;
+            };
+            decorators.extend(written);
+            classes.push((class, decorators));
         }
-        if node.kind() == "decorated_definition" && self.decorated_name(node) == Some(name) {
-            return Err(
-                "decorated Python classes need a decorator model and are not supported yet"
-                    .to_owned(),
-            );
+        Ok(classes)
+    }
+
+    /// Pairs each declaration with the TypeScript decorators written before
+    /// it as siblings, as a class body and an `export` hold them.
+    fn with_decorators<'t>(&self, nodes: Vec<Node<'t>>) -> Vec<(Node<'t>, Vec<String>)> {
+        let mut paired = Vec::new();
+        let mut pending = Vec::new();
+        for node in nodes {
+            if node.kind() == "decorator" {
+                pending.push(self.decorator_text(node));
+                continue;
+            }
+            paired.push((node, std::mem::take(&mut pending)));
         }
-        if matches!(node.kind(), "function_declaration" | "function_definition")
-            && node
-                .child_by_field_name("name")
+        paired
+    }
+
+    /// A class named `name`, with its decorators.
+    fn class_named<'t>(
+        &self,
+        node: Node<'t>,
+        name: &str,
+    ) -> Result<Option<(Node<'t>, Vec<String>)>, String> {
+        let is_class = |node: Node<'_>| {
+            matches!(
+                node.kind(),
+                "class_declaration" | "abstract_class_declaration" | "class_definition"
+            )
+        };
+        let is_named = |node: Node<'_>| {
+            node.child_by_field_name("name")
                 .is_some_and(|n| self.text(n) == name)
+        };
+        if is_class(node) && is_named(node) {
+            return Ok(Some((node, self.decorators(node))));
+        }
+        if node.kind() == "decorated_definition" {
+            let definition = field(node, "definition")?;
+            if is_class(definition) && is_named(definition) {
+                return Ok(Some((definition, self.decorators(node))));
+            }
+        }
+        let wrapped = if node.kind() == "decorated_definition" {
+            field(node, "definition")?
+        } else {
+            node
+        };
+        if matches!(
+            wrapped.kind(),
+            "function_declaration" | "function_definition"
+        ) && is_named(wrapped)
         {
             return Err(
                 "a nested function reads its enclosing function's variables, which proof does not model"
@@ -290,7 +367,11 @@ impl<'a> Reader<'a> {
             "method_definition" | "function_definition"
                 if node.child_by_field_name("name").is_some_and(named) =>
             {
-                Ok(Some(Definition { node, receiver }))
+                Ok(Some(Definition {
+                    node,
+                    receiver,
+                    decorators: self.decorators(node),
+                }))
             }
             // A class field holding an arrow function binds `this` to the
             // instance, as a method does.
@@ -302,12 +383,20 @@ impl<'a> Reader<'a> {
                 Ok(Some(Definition {
                     node: value,
                     receiver,
+                    decorators: self.decorators(node),
                 }))
             }
-            "decorated_definition" if self.decorated_name(node) == Some(name) => Err(
-                "decorated Python functions need a decorator model and are not supported yet"
-                    .to_owned(),
-            ),
+            "decorated_definition" if self.decorated_name(node) == Some(name) => {
+                let definition = field(node, "definition")?;
+                if definition.kind() != "function_definition" {
+                    return Ok(None);
+                }
+                Ok(Some(Definition {
+                    node: definition,
+                    receiver,
+                    decorators: self.decorators(node),
+                }))
+            }
             _ => Ok(None),
         }
     }
@@ -339,6 +428,7 @@ impl<'a> Reader<'a> {
         Ok(Function {
             parameters,
             is_async: is_async(node),
+            decorators: definition.decorators.clone(),
             body,
         })
     }
@@ -708,6 +798,15 @@ impl<'a> Reader<'a> {
         }
         Ok(value.to_owned())
     }
+}
+
+/// Whether a decorator marks an `@overload` signature, which the function
+/// defined after it replaces at runtime.
+fn is_overload(decorator: &str) -> bool {
+    matches!(
+        decorator,
+        "overload" | "typing.overload" | "typing_extensions.overload"
+    )
 }
 
 /// Whether a function is declared `async`: the keyword is an unnamed child

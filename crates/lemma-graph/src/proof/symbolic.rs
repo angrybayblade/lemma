@@ -121,6 +121,7 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
         assumptions: BTreeSet::new(),
         calls: 0,
     };
+    assume_decorators(&function.decorators, contract, &mut evaluator.assumptions)?;
     let (mut state, requires) = prepare(&inputs, &mut evaluator)?;
     bind_parameters(function, contract, &inputs, &mut state)?;
     state.guard = requires.clone();
@@ -134,6 +135,53 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
         paths,
         assumptions: evaluator.assumptions,
         inputs,
+    })
+}
+
+/// Decorators the languages define to return the function they decorate, or
+/// to mark it without changing how a call runs.
+const UNCHANGED_BY: &[&str] = &[
+    "staticmethod",
+    "classmethod",
+    "property",
+    "abstractmethod",
+    "abc.abstractmethod",
+    "override",
+    "typing.override",
+    "typing_extensions.override",
+    "final",
+    "typing.final",
+    "dataclass",
+    "dataclasses.dataclass",
+];
+
+/// Requires a decorator model for every decorator the language does not
+/// define, and records its assumption.
+fn assume_decorators(
+    decorators: &[String],
+    contract: &Contract,
+    assumptions: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    for decorator in decorators {
+        let callee = decorator.split('(').next().unwrap_or(decorator).trim();
+        if UNCHANGED_BY.contains(&decorator.as_str()) || is_property_accessor(decorator) {
+            continue;
+        }
+        let assumption = contract
+            .decorators
+            .get(decorator)
+            .or_else(|| contract.decorators.get(callee))
+            .ok_or_else(|| format!("decorator `{decorator}` needs a decorator model"))?;
+        assumptions.insert(assumption.clone());
+    }
+    Ok(())
+}
+
+/// `@<property>.setter`, `.getter` and `.deleter` register an accessor of a
+/// property and return it; the accessor's body is what runs.
+fn is_property_accessor(decorator: &str) -> bool {
+    decorator.split_once('.').is_some_and(|(owner, accessor)| {
+        !owner.contains(['(', ' ']) && matches!(accessor, "setter" | "getter" | "deleter")
     })
 }
 

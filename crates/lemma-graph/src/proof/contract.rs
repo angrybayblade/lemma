@@ -16,6 +16,11 @@ pub(super) struct Contract {
     pub bindings: BTreeMap<String, Value>,
     #[serde(default)]
     pub models: BTreeMap<String, CallModel>,
+    /// Decorators, by their text or their callee, mapped to the assumption
+    /// that the decorated function runs its body with the same arguments and
+    /// returns its result.
+    #[serde(default)]
+    pub decorators: BTreeMap<String, String>,
     #[serde(default)]
     pub requires: Vec<String>,
     pub ensures: Vec<Assertion>,
@@ -98,6 +103,13 @@ impl Contract {
         {
             if !identifier(name) {
                 return Err(format!("invalid contract name `{name}`"));
+            }
+        }
+        for (decorator, assumption) in &self.decorators {
+            if assumption.trim().is_empty() {
+                return Err(format!(
+                    "decorator model `{decorator}` needs a named assumption"
+                ));
             }
         }
         for (name, model) in &self.models {
