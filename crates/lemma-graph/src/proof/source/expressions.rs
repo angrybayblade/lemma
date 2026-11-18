@@ -181,7 +181,12 @@ impl Reader<'_> {
         if has_optional_chain(node) {
             return Ok(Expr::OptionalMember(target, key));
         }
-        Ok(Expr::Member(target, key))
+        // JavaScript's `a["b"]` is `a.b`. A Python dict keeps its entries
+        // apart from its attributes, and Go indexes only maps and sequences.
+        if self.language == Language::TypeScript {
+            return Ok(Expr::Member(target, key));
+        }
+        Ok(Expr::Subscript(target, Box::new(Expr::Text(key))))
     }
 
     /// An integer literal, possibly negated.

@@ -326,17 +326,22 @@ impl Reader<'_> {
             left
         };
         if let Some((name, key)) = self.field_target(left)? {
+            let is_entry = self.language == Language::Python && left.kind() == "subscript";
+            let current = if is_entry {
+                Expr::Subscript(
+                    Box::new(Expr::Name(name.clone())),
+                    Box::new(Expr::Text(key.clone())),
+                )
+            } else {
+                Expr::Member(Box::new(Expr::Name(name.clone())), key.clone())
+            };
             let value = match operator {
-                Some(operator) => Expr::Binary(
-                    operator,
-                    Box::new(Expr::Member(
-                        Box::new(Expr::Name(name.clone())),
-                        key.clone(),
-                    )),
-                    Box::new(value),
-                ),
+                Some(operator) => Expr::Binary(operator, Box::new(current), Box::new(value)),
                 None => value,
             };
+            if is_entry {
+                return Ok(Stmt::SetEntry(name, key, value));
+            }
             return Ok(Stmt::SetField(name, key, value));
         }
         if let Some(operator) = operator {
@@ -366,8 +371,13 @@ impl Reader<'_> {
         if !is_member && !is_item {
             return Ok(None);
         }
-        let Expr::Member(target, key) = self.expression(node)? else {
-            return self.unsupported(node);
+        let (target, key) = match self.expression(node)? {
+            Expr::Member(target, key) => (target, key),
+            Expr::Subscript(target, key) => match *key {
+                Expr::Text(key) => (target, key),
+                _ => return self.unsupported(node),
+            },
+            _ => return self.unsupported(node),
         };
         let Expr::Name(name) = *target else {
             return self.unsupported(node);

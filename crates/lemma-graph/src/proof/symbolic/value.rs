@@ -270,6 +270,23 @@ impl Missing {
     }
 }
 
+/// The properties a JavaScript object inherits from `Object.prototype`:
+/// reading one of an object that has no field of that name is not undefined.
+const INHERITED: &[&str] = &[
+    "__defineGetter__",
+    "__defineSetter__",
+    "__lookupGetter__",
+    "__lookupSetter__",
+    "__proto__",
+    "constructor",
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "toLocaleString",
+    "toString",
+    "valueOf",
+];
+
 /// A field read: the value read, and the condition under which the read
 /// raises, as reading a field of null does in every language. An optional
 /// read yields undefined there instead, as JavaScript's `?.` does.
@@ -288,6 +305,9 @@ pub(in crate::proof) fn read_field(
         Value::Object(fields) => match (fields.get(name), missing) {
             (Some(field), _) => Ok((field.clone(), Term::boolean(false))),
             (None, Missing::Raises) => Ok((Value::Unreachable, Term::boolean(true))),
+            (None, Missing::IsUndefined) if INHERITED.contains(&name) => Err(format!(
+                "`{name}` is a property every JavaScript object inherits, which is not read here"
+            )),
             (None, Missing::IsUndefined) => Ok((Value::Undefined, Term::boolean(false))),
             (None, Missing::IsUnsupported) => Err(format!(
                 "the object has no field `{name}`, whose zero value is unknown"

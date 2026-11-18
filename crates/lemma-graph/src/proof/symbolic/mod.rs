@@ -540,7 +540,7 @@ impl Evaluator<'_> {
             Stmt::Update(name, operator, expression) => {
                 self.update(name, *operator, expression, &mut state)?;
             }
-            Stmt::SetField(name, field, expression) => {
+            Stmt::SetField(name, field, expression) | Stmt::SetEntry(name, field, expression) => {
                 let value = self.expression(expression, &mut state)?;
                 set_field(name, field, value, &mut state)?;
             }

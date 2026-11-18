@@ -72,9 +72,12 @@ pub(super) enum StatementKind {
     Assign(Pattern, Expression),
     /// `name op= value` on a variable.
     Update(String, BinaryOperator, Expression),
-    /// `name.field = value` or `name["field"] = value`, on a variable whose
-    /// value nothing else can see.
+    /// `name.field = value`, on a variable whose value nothing else can see;
+    /// in JavaScript also `name["field"] = value`, which means the same.
     SetField(String, String, Expression),
+    /// Python's `name["key"] = value`: an entry of a dict, which is not an
+    /// attribute of it.
+    SetEntry(String, String, Expression),
     If(Expression, Vec<Statement>, Vec<Statement>),
     Return(Expression),
     Evaluate(Expression),
@@ -119,7 +122,12 @@ pub(super) enum Expression {
     /// JavaScript `undefined`, and the value of a bare JavaScript `return`.
     Undefined,
     Name(String),
+    /// `target.name`; in JavaScript also `target["name"]`, which means the
+    /// same.
     Member(Box<Self>, String),
+    /// `target[key]` in Python and Go, where an entry under a key is not an
+    /// attribute or a field.
+    Subscript(Box<Self>, Box<Self>),
     /// JavaScript `a?.b`: undefined where `a` is null or undefined.
     OptionalMember(Box<Self>, String),
     Record(BTreeMap<String, Self>),
@@ -396,6 +404,7 @@ impl Expression {
             | Self::Index(inner, _) => vec![inner],
             Self::Binary(_, left, right)
             | Self::Coalesce(left, right)
+            | Self::Subscript(left, right)
             | Self::Contains(left, right) => {
                 vec![left, right]
             }

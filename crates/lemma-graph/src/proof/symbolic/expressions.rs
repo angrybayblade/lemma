@@ -33,6 +33,7 @@ impl Evaluator<'_> {
             }
             Expr::Member(target, name) => self.field(target, name, false, state)?,
             Expr::OptionalMember(target, name) => self.field(target, name, true, state)?,
+            Expr::Subscript(target, key) => self.subscript(target, key, state)?,
             Expr::Record(fields) => Value::Object(
                 fields
                     .iter()
@@ -219,6 +220,14 @@ impl Evaluator<'_> {
         state: &mut State,
     ) -> Result<Value, String> {
         let target = self.target(target, state)?;
+        if self.specification.is_none()
+            && self.language == Language::Python
+            && holds_object(&target)
+        {
+            return Err(format!(
+                "`.{name}` reads an attribute of a dict, which holds its entries under keys"
+            ));
+        }
         // A sequence has a `length` in JavaScript, and in a contract.
         let reads_length = name == "length"
             && (self.specification.is_some() || self.language == Language::TypeScript);
@@ -236,6 +245,28 @@ impl Evaluator<'_> {
             Some(counted) => counted,
             None => read_field(&target, name, is_optional, self.missing())?,
         };
+        self.narrow(&fails, state);
+        Ok(value)
+    }
+
+    /// `target[key]` in Python and Go: the entry of a dict or a declared
+    /// record under a constant key.
+    pub(super) fn subscript(
+        &mut self,
+        target: &Expr,
+        key: &Expr,
+        state: &mut State,
+    ) -> Result<Value, String> {
+        let target = self.target(target, state)?;
+        let key = self.expression(key, state)?;
+        let name = match &key {
+            Value::Scalar(term) => term.constant_text(),
+            _ => None,
+        };
+        let Some(name) = name else {
+            return Err("a subscript is read with a constant key".to_owned());
+        };
+        let (value, fails) = read_field(&target, &name, false, self.missing())?;
         self.narrow(&fails, state);
         Ok(value)
     }
@@ -387,6 +418,16 @@ impl Evaluator<'_> {
             Language::Go => "Go integer arithmetic does not overflow",
         };
         self.assumptions.insert(assumption.to_owned());
+    }
+}
+
+/// Whether `value` may be an object the checked code built from a literal:
+/// in Python a dict, whose entries are not attributes.
+fn holds_object(value: &Value) -> bool {
+    match value {
+        Value::Object(_) => true,
+        Value::Choice(_, then, otherwise) => holds_object(then) || holds_object(otherwise),
+        _ => false,
     }
 }
 
