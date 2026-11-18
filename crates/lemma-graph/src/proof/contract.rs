@@ -34,11 +34,13 @@ fn path_limit() -> usize {
     256
 }
 
-/// A symbolic scalar or an immutable record of symbolic inputs.
+/// A symbolic scalar, an immutable record of symbolic inputs, or a union of
+/// alternatives such as `["Text", "Null"]` for a text that may be `None`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub(super) enum Input {
     Scalar(String),
+    Union(Vec<Input>),
     Record(BTreeMap<String, Input>),
 }
 
@@ -93,7 +95,10 @@ impl Contract {
             }
         }
         for name in self.inputs.keys().chain(self.bindings.keys()) {
-            if matches!(name.as_str(), "result" | "effects") {
+            if matches!(
+                name.as_str(),
+                "result" | "effects" | "null" | "undefined" | "outcome"
+            ) {
                 return Err(format!("`{name}` is reserved in a proof contract"));
             }
         }

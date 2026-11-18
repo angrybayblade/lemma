@@ -543,3 +543,109 @@ fn a_left_out_parameter_takes_its_default() {
     let error = symbolic::execute(&function, &contract).err().unwrap();
     assert!(error.contains("no default"), "{error}");
 }
+
+fn nullable_contract(ensures: &str) -> Json {
+    json!({
+        "inputs": {"request": {"user": ["Null", {"admin": "Bool"}], "note": ["Text", "Null"]}},
+        "parameters": ["request"],
+        "ensures": [{"name": "property", "condition": ensures}],
+    })
+}
+
+#[test]
+fn null_literals_and_identity_with_none_are_read() {
+    for (file, text) in [
+        (
+            "x.py",
+            "def f(request):\n    if request.note is None:\n        return None\n    return request.note\n",
+        ),
+        (
+            "x.ts",
+            "function f(request) {\n  if (request.note === null) {\n    return undefined;\n  }\n  return request.user?.admin ?? false;\n}\n",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(request Request) *bool {\n  if request.user == nil {\n    return nil\n  }\n  return request.user\n}\n",
+        ),
+    ] {
+        assert!(source::read(file, text, "f").is_ok(), "{file}");
+    }
+    let identity = "def f(request):\n    return request.note is request.user\n";
+    assert!(source::read("x.py", identity, "f").is_err());
+    let optional_call = "function f(request) { return request.check?.(); }";
+    assert!(source::read("x.ts", optional_call, "f").is_err());
+}
+
+#[test]
+fn a_field_read_of_null_ends_the_path_but_a_guarded_read_does_not() {
+    let contract: Contract =
+        serde_json::from_value(nullable_contract("result == true || result == false")).unwrap();
+    let unguarded = "function f(request) {\n  return request.user.admin;\n}\n";
+    let (_, function) = source::read("x.ts", unguarded, "f").unwrap();
+    let execution = symbolic::execute(&function, &contract).unwrap();
+    assert_eq!(execution.paths.len(), 1);
+    assert_ne!(execution.paths[0].guard.code, execution.requires.code);
+    let guarded = "function f(request) {\n  if (request.user !== null && request.user.admin) {\n    return true;\n  }\n  return false;\n}\n";
+    let (_, function) = source::read("x.ts", guarded, "f").unwrap();
+    let execution = symbolic::execute(&function, &contract).unwrap();
+    assert_eq!(execution.paths.len(), 2);
+    assert!(
+        execution
+            .paths
+            .iter()
+            .all(|path| path.guard.code != "false")
+    );
+}
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn null_semantics_agree_with_the_languages() {
+    // A guarded read proves; an unguarded read of a field of null raises,
+    // so its normal returns still satisfy the property.
+    let admin_only = nullable_contract("!result || (request.user != null && request.user.admin)");
+    for (file, text) in [
+        (
+            "x.ts",
+            "function f(request) {\n  return request.user?.admin ?? false;\n}\n",
+        ),
+        (
+            "x.py",
+            "def f(request):\n    if request.user is None:\n        return False\n    return request.user.admin\n",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(request Request) bool {\n  if request.user == nil {\n    return false\n  }\n  return request.user.admin\n}\n",
+        ),
+        (
+            "x.ts",
+            "function f(request) {\n  return request.user.admin;\n}\n",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &admin_only);
+        assert_eq!(result["observed"]["status"], "proved", "{file}: {result}");
+    }
+    // Treating a missing user as an admin is caught.
+    let wrong = "def f(request):\n    if request.user is None:\n        return True\n    return request.user.admin\n";
+    let result = check_source("x.py", wrong, "f", &admin_only);
+    assert_eq!(result["observed"]["status"], "violated", "{result}");
+    // A postcondition that reads a field of null is never satisfied by it.
+    let careless = nullable_contract("request.user.admin || !request.user.admin");
+    let result = check_source("x.py", "def f(request):\n    return True\n", "f", &careless);
+    assert_eq!(result["observed"]["status"], "violated", "{result}");
+    // A precondition must be defined for every input.
+    let mut undefined_precondition = nullable_contract("result");
+    undefined_precondition["requires"] = json!(["request.user.admin"]);
+    let result = check_source(
+        "x.py",
+        "def f(request):\n    return True\n",
+        "f",
+        &undefined_precondition,
+    );
+    assert!(
+        result["unavailable"]
+            .as_str()
+            .unwrap()
+            .contains("precondition"),
+        "{result}"
+    );
+}

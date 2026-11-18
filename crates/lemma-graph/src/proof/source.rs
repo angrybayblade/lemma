@@ -593,6 +593,9 @@ impl<'a> Reader<'a> {
 
     fn return_value(&self, node: Node<'_>) -> Result<Expr, String> {
         match children(node).as_slice() {
+            // A Go bare return yields the named results, which are not read.
+            [] if self.language == Language::Go => self.unsupported(node),
+            [] if self.language == Language::Python => Ok(Expr::Null),
             [] => Ok(Expr::Undefined),
             [value] if value.kind() == "expression_list" => self.expression(only(*value)?),
             [value] => self.expression(*value),
@@ -647,6 +650,8 @@ impl<'a> Reader<'a> {
         Ok(match node.kind() {
             "true" => Expr::Bool(true),
             "false" => Expr::Bool(false),
+            "none" | "null" | "nil" => Expr::Null,
+            "undefined" => Expr::Undefined,
             "identifier" | "this" => Expr::Name(self.text(node).to_owned()),
             "number" | "integer" | "int_literal" => self.integer(node)?,
             "string" | "interpreted_string_literal" => Expr::Text(self.string(node)?),
@@ -672,6 +677,9 @@ impl<'a> Reader<'a> {
                 Box::new(self.expression(field(node, "alternative")?)?),
             ),
             "object" | "dictionary" | "composite_literal" => self.record(node)?,
+            "call_expression" | "call" if has_optional_chain(node) => {
+                return self.unsupported(node);
+            }
             "call_expression" | "call" => {
                 let function = self.expression(field(node, "function")?)?;
                 let arguments = children(field(node, "arguments")?)
@@ -706,10 +714,12 @@ impl<'a> Reader<'a> {
             .or_else(|| node.child_by_field_name("field"))
             .or_else(|| node.child_by_field_name("attribute"))
             .ok_or("missing member name")?;
-        Ok(Expr::Member(
-            Box::new(self.expression(target)?),
-            self.identifier(property)?,
-        ))
+        let target = Box::new(self.expression(target)?);
+        let name = self.identifier(property)?;
+        if has_optional_chain(node) {
+            return Ok(Expr::OptionalMember(target, name));
+        }
+        Ok(Expr::Member(target, name))
     }
 
     fn index(&self, node: Node<'_>) -> Result<Expr, String> {
@@ -721,10 +731,12 @@ impl<'a> Reader<'a> {
             .child_by_field_name("subscript")
             .or_else(|| node.child_by_field_name("index"))
             .ok_or("missing index")?;
-        Ok(Expr::Member(
-            Box::new(self.expression(target)?),
-            self.string(key)?,
-        ))
+        let target = Box::new(self.expression(target)?);
+        let key = self.string(key)?;
+        if has_optional_chain(node) {
+            return Ok(Expr::OptionalMember(target, key));
+        }
+        Ok(Expr::Member(target, key))
     }
 
     fn unary(&self, node: Node<'_>) -> Result<Expr, String> {
@@ -753,11 +765,27 @@ impl<'a> Reader<'a> {
         if operands.len() != 2 {
             return self.unsupported(node);
         }
-        let operator = match self.source[left.end_byte()..right.start_byte()].trim() {
+        let operator_text = self.source[left.end_byte()..right.start_byte()].trim();
+        if operator_text == "??" {
+            return Ok(Expr::Coalesce(
+                Box::new(self.expression(left)?),
+                Box::new(self.expression(right)?),
+            ));
+        }
+        // Python's `is` compares identity, which is equality only for the
+        // singletons `None`, `True` and `False`.
+        if matches!(operator_text, "is" | "is not")
+            && ![left, right]
+                .iter()
+                .any(|side| matches!(side.kind(), "none" | "true" | "false"))
+        {
+            return self.unsupported(node);
+        }
+        let operator = match operator_text {
             "&&" | "and" => Op::And,
             "||" | "or" => Op::Or,
-            "===" => Op::Equal,
-            "!==" => Op::NotEqual,
+            "===" | "is" => Op::Equal,
+            "!==" | "is not" => Op::NotEqual,
             "==" if self.language != Language::TypeScript => Op::Equal,
             "!=" if self.language != Language::TypeScript => Op::NotEqual,
             _ => return self.unsupported(node),
@@ -843,6 +871,14 @@ fn is_overload(decorator: &str) -> bool {
         decorator,
         "overload" | "typing.overload" | "typing_extensions.overload"
     )
+}
+
+/// Whether a member read, subscript or call is part of an optional chain,
+/// written `?.`.
+fn has_optional_chain(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .any(|child| matches!(child.kind(), "optional_chain" | "?."))
 }
 
 /// Whether a function is declared `async`: the keyword is an unnamed child

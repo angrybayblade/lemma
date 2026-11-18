@@ -53,12 +53,19 @@ pub(super) enum Expression {
     Bool(bool),
     Text(String),
     Integer(i64),
+    /// Python `None`, JavaScript `null`, Go `nil`.
+    Null,
+    /// JavaScript `undefined`, and the value of a bare JavaScript `return`.
     Undefined,
     Name(String),
     Member(Box<Self>, String),
+    /// JavaScript `a?.b`: undefined where `a` is null or undefined.
+    OptionalMember(Box<Self>, String),
     Record(BTreeMap<String, Self>),
     Not(Box<Self>),
     Binary(BinaryOperator, Box<Self>, Box<Self>),
+    /// JavaScript `a ?? b`: `b` where `a` is null or undefined.
+    Coalesce(Box<Self>, Box<Self>),
     Conditional(Box<Self>, Box<Self>, Box<Self>),
     Call(Box<Self>, Vec<Argument>),
     /// `await` of a call; any other awaited value is refused.
@@ -97,6 +104,7 @@ fn lower(expression: &ast::Expression) -> Result<Expression, String> {
         Kind::Boolean(value) => Expression::Bool(*value),
         Kind::Text(value) => Expression::Text(value.clone()),
         Kind::Integer(value) => Expression::Integer(*value),
+        Kind::Null => Expression::Null,
         Kind::Name(name) => Expression::Name(name.clone()),
         Kind::Member { target, name } => {
             Expression::Member(Box::new(lower(target)?), name.text.clone())

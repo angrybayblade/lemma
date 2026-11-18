@@ -68,13 +68,7 @@ fn verify(
         deadline: Solver::deadline(timeout_ms)?,
         queries: 0,
     };
-    if let Answer::Unsat = solver.query("preconditions", &execution.requires)? {
-        return Err("preconditions are inconsistent; refusing a vacuous proof".to_owned());
-    }
-    let reachable = disjunction(execution.paths.iter().map(|path| path.guard.clone()));
-    if let Answer::Unsat = solver.query("returns", &reachable)? {
-        return Err("no reachable normal return; refusing a vacuous proof".to_owned());
-    }
+    refuse_vacuous(&execution, &mut solver)?;
     let (holds, assertions) = check_postconditions(&execution, &contract, &mut solver)?;
     if toolchain != identity(environment, digests) {
         return Err("proof toolchain changed during verification".to_owned());
@@ -140,6 +134,25 @@ fn read_handler(given: &Json, handler: &Json) -> Result<(Json, ir::Function), St
         json!({"repository": repository, "file": file, "symbol": symbol, "hash": lemma_model::content_hash(text.as_bytes()), "language": language.name()}),
         function,
     ))
+}
+
+/// Refuses a contract that could hold for no reason: preconditions no input
+/// meets, or that read null, and a function with no reachable normal return.
+fn refuse_vacuous(execution: &symbolic::Execution, solver: &mut Solver<'_>) -> Result<(), String> {
+    if let Answer::Unsat = solver.query("preconditions", &execution.requires)? {
+        return Err("preconditions are inconsistent; refusing a vacuous proof".to_owned());
+    }
+    if execution.requires_undefined.code != "false"
+        && let Answer::Sat(_) =
+            solver.query("preconditions-defined", &execution.requires_undefined)?
+    {
+        return Err("a precondition reads a field of null or undefined for some input".to_owned());
+    }
+    let reachable = disjunction(execution.paths.iter().map(|path| path.guard.clone()));
+    if let Answer::Unsat = solver.query("returns", &reachable)? {
+        return Err("no reachable normal return; refusing a vacuous proof".to_owned());
+    }
+    Ok(())
 }
 
 fn check_postconditions(
