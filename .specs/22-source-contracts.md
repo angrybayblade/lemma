@@ -1,6 +1,6 @@
 # Source-backed verification contracts
 
-Status: initial implementation, 2026-11-17.
+Status: second slice implemented, 2026-11-17.
 
 ## Objective
 
@@ -28,13 +28,17 @@ The native checker runs at the selected checkout, uses the same evidence and `--
 
 ## Contract semantics
 
-Inputs declare symbolic Boolean and text values or records of such values. Integer literals such as HTTP status codes are supported. Arithmetic, mutable heap reasoning and concurrent schedules require a later, explicitly specified extension.
+Inputs declare symbolic Boolean, text and integer values, null and undefined, records, and unions of these. A value whose shape depends on the inputs is a choice between values decided by a term, so a text that may be `None` is one input. Heap mutation beyond objects the checked function built, loops and concurrent schedules require a later, explicitly specified extension.
 
-Parameters bind the implementation's arguments to declared inputs. Preconditions constrain the input domain. Every normal return must satisfy each named postcondition. Expressions use the existing `.lm` expression syntax. `result` names the returned value. `effects.<name>.called`, `.count`, and `.last` describe modeled calls.
+Parameters bind the implementation's arguments to declared inputs; `null` leaves a parameter to its default, and `captures` bind what a nested function reads from around it, each to an input, which covers late binding without an assumption. Preconditions constrain the input domain. Every normal return must satisfy each named postcondition. Expressions use the existing `.lm` expression syntax. `result` names the returned value. `effects.<name>.called`, `.count`, and `.last` describe modeled calls.
 
-call models declare their argument names, return-value templates, optional effect fields and a named assumption. Expression templates use `{ expr: "..." }`; ordinary values are literal templates. Every used call model is reported as an assumption. Callback invocation is outside the initial subset. Calls without a source interpretation or an explicit summary are unsupported.
+A contract expression must be defined where it is read. Reading a field of null, or one an object built in the code lacks, is recorded as undefined under the context that reaches it, the left of `&&` or a ternary's test, as Dafny and Why3 record well-definedness. A postcondition fails wherever its undefined reads are reached, and a precondition is refused unless the solver shows it defined for every input, so no read of null makes a contract hold vacuously.
 
-Models summarize effects on the verification state. They do not prove database, cryptographic, network or runtime implementations. Source mutation outside the supported value subset is refused, rather than silently assuming a frame condition. Models must name the assumption under which their summarized effects are complete.
+Call models declare their argument names, return-value templates, optional effect fields, per-call `outcomes`, whether the function is `async`, whether it `ignores_callbacks`, and a named assumption. Expression templates use `{ expr: "..." }`; ordinary values are literal templates. Every used call model is reported as an assumption. A model whose templates read a specification input may be called once on a path, since two calls reading one value would be assumed to answer alike. Decorator and context models name the assumption a decorator or a `with` rests on. Calls without a source interpretation or an explicit model are unsupported; functions the checked code defines are called by running their bodies.
+
+Models summarize effects on the verification state. They do not prove database, cryptographic, network or runtime implementations. A field may be assigned only on an object the function built from a literal and has not let anything else see, which makes the write invisible elsewhere; any other mutation, including of parameters, is refused rather than silently assuming a frame condition. Models must name the assumption under which their summarized effects are complete.
+
+A path that raises has no normal return and is dropped, except inside a `try`, where it is kept as it was where it raised until a handler catches it. Handlers match Python's built-in exception classes by their parents; classes defined elsewhere match by name, by `BaseException` and bare `except`, and by `Exception` under a reported assumption, and any other relation is refused. The languages' own meanings are kept where they differ: integer ranges (TypeScript's exact integers, Go's 64 bits, each reported as an assumption when arithmetic uses them), how a formatted string spells a value, reading past the end of a sequence, and reading a field an object lacks.
 
 ## Outcomes and trust
 
@@ -49,13 +53,15 @@ The source readers and logical encoding are trusted implementation components, n
 
 Use one contract on actual, independently written source functions in TypeScript, Python and Go. Verify the correct versions, then change the implementation to ignore a rejected write, reverse a status or bypass a permission check and require counterexamples. Test unsupported syntax, ambiguous bindings, invalid solver output, contradictory preconditions, dependency failures, evidence invalidation and `--no-run` through the existing `lemma check` entry point.
 
-## First slice and next boundaries
+## Slices and next boundaries
 
-Implemented: the native checker, strict Tree-sitter readers for all three languages, shared symbolic execution, call models with explicit assumptions and effects, feasibility checks, replayable SMT-LIB, counterexamples, and evidence integration. The worked example is `examples/source-contracts/mod.lm`; `docs/source-contracts.md` defines the supported syntax and manual obligations.
+The first slice implemented the native checker, strict Tree-sitter readers for all three languages, shared symbolic execution, call models with explicit assumptions and effects, feasibility checks, replayable SMT-LIB, counterexamples, and evidence integration, for top-level function bodies of immutable values.
 
-The first slice intentionally handles top-level named function bodies and TypeScript arrow bindings, rather than route-registration callbacks. Python records are ordinary dictionaries read with literal string keys; Go records are keyed struct literals and field reads. Source typechecking, module initialization, dynamic replacement of functions and framework routing are outside the proof. Parameter shapes and dependency interpretations remain explicit obligations. No claim is made that arbitrary production endpoints can be verified unchanged.
+The second slice widened what the reader translates, one construct at a time, each with a sound meaning in the symbolic core and a real-solver test: methods and receivers, nested functions and object-literal methods, definitions found by the name Lemma's symbol index gives them, decorators, keyword arguments and defaults, null and unions, formatted strings and integer arithmetic, raises, `try` and `with`, sequences and destructuring, reassignment and fresh objects, local functions run where called, spreads and constructors. The reader only accepts what the symbolic core can execute; anything else is refused at the construct that cannot be read.
 
-Before adding mutable heap, loops or concurrency, evaluate existing Viper/Nagini/Gobra and Boogie backends for that obligation class. The shared contract and result representation are the reusable Lemma layer; language semantics and proof infrastructure already offered by those projects should not be reimplemented merely for uniformity. State machines can later supply transition contracts, but a checked abstract state machine does not by itself discharge source refinement.
+Readability was measured as the share of named functions and methods the reader translates, on a private corpus of eight repositories, a development corpus of eight open-source repositories whose refusals guided the work, and a held-out corpus of twelve open-source repositories that was only ever counted. From the first slice to the second, the private share rose from 3.1% to 60.6%, the held-out share from 3.2% to 36.2%, and the development share from 27.3% to 46.5%. Readable means translatable, not proved: a contract, input shapes and models are still needed.
+
+Next boundaries, in the order the corpora suggest: loops and comprehensions over inputs given a stated maximum length, which unroll exactly for that input domain; Go zero values and unkeyed composite literals; variable subscript keys over records whose fields are exact; and a statement-level split for calls to local functions with branching effects. Before adding general heap mutation, unbounded loops or concurrency, evaluate existing Viper/Nagini/Gobra and Boogie backends for that obligation class. The shared contract and result representation are the reusable Lemma layer; language semantics and proof infrastructure already offered by those projects should not be reimplemented merely for uniformity. State machines can later supply transition contracts, but a checked abstract state machine does not by itself discharge source refinement.
 
 ## Relationship to behavior harnesses (reviewed 2026-11-17)
 

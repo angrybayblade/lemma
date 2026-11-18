@@ -44,15 +44,18 @@ The complete example supplies these contract fields as an ordinary `.lm` record:
 
 | Field | Meaning |
 | --- | --- |
-| `inputs` | Symbolic `"Bool"`, `"Text"`, or nested records of these sorts |
-| `parameters` | Input names, in the source function's parameter order; defaults to the source names |
+| `inputs` | Symbolic `"Bool"`, `"Text"`, `"Int"`, `"Null"`, `"Undefined"`, records of these, or unions written as lists, such as `["Text", "Null"]` for a text that may be `None` |
+| `parameters` | Input names, in the source function's parameter order, a method's receiver first; defaults to the source names. `null` leaves a parameter out, so its default applies |
+| `captures` | Names a nested function reads from the functions around it, each mapped to an input: every value it could hold when the function runs |
 | `requires` | Optional list of Boolean expressions constraining inputs |
 | `ensures` | Nonempty list of `{ name, condition }` postconditions |
-| `models` | Source call names mapped to call models |
+| `models` | Called functions mapped to call models; `new Name` models a constructor and `super.method` a parent method |
+| `decorators` | Decorators, by their text or callee, mapped to the assumption that the decorated function runs its body with the same arguments |
+| `contexts` | Context managers of a Python `with`, by their text or callee, mapped to the assumption that entering returns the manager and leaving neither suppresses an exception nor has another effect |
 | `bindings` | Optional explicit assumed constants for source globals |
 | `max_paths` | Optional source path limit, default 256, maximum 4096 |
 
-Expressions use `.lm` syntax: `!`, `&&`, `||`, `==`, `!=`, record fields and exact integer constants. `result` is the returned value. Integer ordering can compare constants such as effect counts; symbolic numeric inputs and arithmetic are unsupported.
+Expressions use `.lm` syntax: `!`, `&&`, `||`, `==`, `!=`, ordering, `+`, `-`, `*`, record fields, constant positions such as `result[0]`, `null`, `undefined` and exact integer constants. `result` is the returned value. Contract arithmetic is exact. A contract may read a field only where it is defined: reading a field of null, or one a returned object lacks, makes a postcondition fail wherever that read is reached, and a precondition must be defined for every input. Guard such reads, as in `r.user == null || r.user.admin`.
 
 Inputs not listed in `parameters` are specification inputs. For example, `lease.rejected` describes an arbitrary answer from the lease check. It is available to call models and postconditions, not injected into the source function's local variables. A specification input names one value, so a call model whose templates read one may be called at most once on a path; a second call is refused rather than assumed to answer alike.
 
@@ -64,8 +67,11 @@ Each call model declares:
 - Optional `outcomes`: sorts of values chosen afresh for every call, read in templates as `outcome.<name>`. Use them for whatever may differ between two calls, such as whether each write was rejected.
 - Optional `effect: { name, fields }`: an event recording selected call arguments and outcomes.
 - Optional `async: true`: the function returns a promise or coroutine. A call to it must be awaited, and awaiting a model without `async` is refused, so a forgotten `await` cannot pass.
+- Optional `ignores_callbacks: true`: the function never calls a function passed to it. Without it, passing a function to the model is refused, since what that function would do there is outside the model.
 
-Templates are literal Booleans, strings, exact integer constants and records. A record containing only `{ expr: "expression" }` evaluates that expression against specification inputs, the call's arguments and its outcomes. Models can use different source names for the same call model; the example maps both `commitStatus` and `commit_status` to the shared `commit` record.
+Arguments bind the model's parameters in order, then by keyword. A parameter left out is absent rather than read from a specification input of the same name.
+
+Templates are literal Booleans, strings, `null`, exact integer constants, records and lists. A record containing only `{ expr: "expression" }` evaluates that expression against specification inputs, the call's arguments and its outcomes. Models can use different source names for the same call model; the example maps both `commitStatus` and `commit_status` to the shared `commit` record.
 
 `effects.commit.called`, `.count`, and `.last` describe **attempts to call the modeled function**. They do not mean a successful database commit. Guard `.last` with `.called`; it is absent before any such call. Calls without a call model are refused. A used call model is always reported as an assumption, even when the called function's source happens to be in the same file.
 
@@ -88,19 +94,34 @@ Evidence reuse includes the verifier executable, solver executable, contract, de
 
 ## Supported source and limits
 
-| Language | Initial source subset |
+The three languages share one reading. Each row below is read in every language that has it, with that language's meaning where they differ.
+
+| Area | Read |
 | --- | --- |
-| TypeScript | Top-level named functions and function/arrow variable bindings; `const`/`let` bindings; Boolean guards; strict scalar equality; property/literal-string reads; plain object literals; scalar ternaries; direct modeled calls; `await` of a modeled call |
-| Python | Top-level undecorated functions with constant docstrings; bindings; `if`/`elif`/`else`; Boolean guards; scalar equality; dictionaries with literal string keys; direct or dotted modeled calls |
-| Go | Top-level functions; single-name `:=` bindings; Boolean guards; scalar equality; struct field reads; keyed struct literals; modeled calls |
+| Definitions | Top-level functions; methods by `Class.method`, with the receiver as the first parameter (`self`, `this`, or the Go receiver); nested functions and object-literal methods by their path, or by the name Lemma's symbol index gives a definition inside anonymous functions; `.ts`, `.tsx`, `.mts`, `.cts`, `.py` and `.go` files |
+| Parameters | Defaults, keyword-only and positional-only markers, TypeScript optional parameters |
+| Values | Booleans, text, integers, `None`/`null`/`undefined`/`nil`, records, objects built from literals, tuples, lists and arrays of known length, Python sets for membership |
+| Text | Escapes, Python f-strings and raw, joined and triple-quoted strings, TypeScript template literals, Go raw strings; values are spelled inside formatted strings as their language spells them |
+| Operators | Boolean operators without coercion, strict equality, Python `is` against `None`, `True` and `False`, `in` and `not in`, chained comparisons, integer ordering and `+`, `-`, `*`, text `+`, `??`, `?.`, ternaries and Python conditional expressions, TypeScript type syntax that does nothing at runtime |
+| Bindings | Declarations, reassignment, `+=`, unpacking with rest, TypeScript object destructuring with rest, Go `:=` and `var` with a value; TypeScript and Go declarations are scoped to their block |
+| Objects | Spreads in object and sequence literals; assigning a field of an object the function built and has not let anything else see |
+| Control flow | `if`, `return`, `raise`, `throw`, Go `panic`, `assert`, `try` with `except`/`catch`, `else` and `finally`, Python `with` under context models, `pass` |
+| Calls | Call models, constructors through `new` models, and functions the code defines: lambdas, arrow functions, function expressions, Go function literals and nested definitions, run where they are called |
 
-All three support explicit returns and records of immutable values. Input shapes are preconditions on the values supplied to the selected function: ordinary getter-free objects in TypeScript, ordinary dictionaries in Python, and matching structs in Go. No source binding can shadow or rebind an existing binding in this first subset. Calls in record fields, symbolic ternary branches and short-circuit right operands are refused to avoid silently changing effect order.
+Some meanings are the language's own, and are kept:
 
-The checker refuses loops, mutable heap updates, destructuring, callbacks, decorators, exceptions/`defer`, implicit Boolean coercion, JavaScript coercive equality, numeric arithmetic, string escapes/interpolation, and other unhandled syntax. It does not follow local helpers or imports automatically; an external helper needs an explicit model.
+- A path that raises has no normal return. Reading a field of null raises in every language; a position past the end raises in Python and Go and reads undefined in TypeScript; reading a field an object built in the code lacks raises in Python and reads undefined in TypeScript. Inside a `try`, such a path is followed to its handler. Handlers match Python's built-in exception classes by their parents; a class defined elsewhere is caught by its name, by `BaseException` or a bare `except`, and by `Exception` under a reported assumption.
+- Python integers are exact. TypeScript integers are exact up to 2^53 - 1 and Go's to 64 bits, so their `Int` inputs stay in that range and arithmetic on them reports an assumption.
+- Calling a function the code defines reads what it uses from around it as it is then, as late binding does. A callee with several paths is joined into one value only where its paths differ in nothing else.
+- Input shapes are preconditions on the values supplied to the selected function: getter-free objects in TypeScript, attribute and item reads without descriptors or `__getattr__` in Python, and matching structs in Go. A record a contract declares may hold fields it never named; reading one of those is refused.
 
-For an async function, `result` means the completed body return; it assumes the caller awaits completion. Promise/coroutine scheduling is outside these semantics. The result concerns normal returns. It does **not** establish absence of exceptions, termination, concurrency safety, correctness of called functions, source typechecking, module initialization, dynamic function replacement, or that a framework routes requests to the bound function. Keep normal compiler checks and runtime tests. Route-registration callbacks are outside this first subset.
+Every used call, decorator and context model, assumed constant and language assumption is reported, and makes the result `conditional`.
 
-The frontends and SMT encoding are trusted implementation components, not verified compilers. This is a usable first slice with explicit coverage, not a claim that arbitrary TypeScript, Python or Go programs are now formally verified.
+The checker refuses loops, comprehensions, generators, variable subscript keys, mutation of objects the function did not build (including its parameters), `nonlocal` and `global`, rest parameters, implicit Boolean coercion, JavaScript coercive equality, division and modulo, Go zero values, `defer` and `recover`, JSX, and other unhandled syntax. It reads a function's own code; a function defined elsewhere is called only under a call model.
+
+For an async function, `result` means the completed body return; it assumes the caller awaits completion. Promise and coroutine scheduling is outside these semantics. The result concerns normal returns. It does **not** establish absence of exceptions, termination, concurrency safety, correctness of called functions, source typechecking, module initialization, dynamic function replacement, or that a framework routes requests to the bound function. Keep normal compiler checks and runtime tests.
+
+The frontends and SMT encoding are trusted implementation components, not verified compilers. This is a usable slice with explicit coverage, not a claim that arbitrary TypeScript, Python or Go programs are now formally verified.
 
 ## What remains manual
 
@@ -111,6 +132,6 @@ The [design note](../.specs/22-source-contracts.md) compares the chosen architec
 To run the optional real-Z3 validation lane explicitly:
 
 ```sh
-LEMMA_SMT_SOLVER=/absolute/path/to/z3 cargo test -p lemma-graph --lib proof::tests -- --include-ignored
+LEMMA_SMT_SOLVER=/absolute/path/to/z3 cargo test -p lemma-graph --lib proof:: -- --include-ignored --skip corpus
 LEMMA_SMT_SOLVER=/absolute/path/to/z3 cargo test -p lemma-graph --test source_contracts -- --include-ignored
 ```
