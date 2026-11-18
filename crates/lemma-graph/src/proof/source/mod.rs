@@ -14,7 +14,24 @@ mod strings;
 
 pub(super) use super::ir::Language;
 
+/// Reads the function `symbol` names in a source file.
 pub(super) fn read(file: &str, source: &str, symbol: &str) -> Result<(Language, Function), String> {
+    let parsed = parse(file, source)?;
+    Ok((parsed.language, parsed.function(symbol)?))
+}
+
+/// A source file parsed once, from which any number of its functions can be
+/// read.
+pub(super) struct Parsed<'a> {
+    source: &'a str,
+    language: Language,
+    indexed: lemma_model::Language,
+    tree: tree_sitter::Tree,
+}
+
+/// Parses a source file in the language its extension names. A file with a
+/// syntax error is refused whole.
+pub(super) fn parse<'a>(file: &str, source: &'a str) -> Result<Parsed<'a>, String> {
     let extension = std::path::Path::new(file)
         .extension()
         .and_then(|s| s.to_str());
@@ -54,9 +71,24 @@ pub(super) fn read(file: &str, source: &str, symbol: &str) -> Result<(Language, 
             "implementation contains a syntax error; proof does not repair source".to_owned(),
         );
     }
-    let reader = Reader { source, language };
-    let definition = reader.find(tree.root_node(), symbol, indexed)?;
-    Ok((language, reader.function(&definition)?))
+    Ok(Parsed {
+        source,
+        language,
+        indexed,
+        tree,
+    })
+}
+
+impl Parsed<'_> {
+    /// Reads the function `symbol` names.
+    pub(super) fn function(&self, symbol: &str) -> Result<Function, String> {
+        let reader = Reader {
+            source: self.source,
+            language: self.language,
+        };
+        let definition = reader.find(self.tree.root_node(), symbol, self.indexed)?;
+        reader.function(&definition)
+    }
 }
 
 /// A function body found for a symbol, and the name its receiver has inside
