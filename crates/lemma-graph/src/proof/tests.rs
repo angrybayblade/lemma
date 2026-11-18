@@ -444,3 +444,60 @@ fn a_method_is_proved_with_its_receiver_bound_to_an_input() {
         assert_eq!(result["observed"]["status"], "proved", "{file}: {result}");
     }
 }
+
+#[test]
+fn decorators_are_recorded_for_functions_methods_and_classes() {
+    for (file, text, symbol, expected) in [
+        (
+            "x.py",
+            "@app.get('/s')\ndef f(request):\n    return True\n",
+            "f",
+            vec!["app.get('/s')"],
+        ),
+        (
+            "x.py",
+            "@register\nclass A:\n    @staticmethod\n    def m(request):\n        return True\n",
+            "A.m",
+            vec!["staticmethod", "register"],
+        ),
+        (
+            "x.ts",
+            "@Controller()\nexport class A {\n  @Get('/s')\n  m(request) {\n    return true;\n  }\n}\n",
+            "A.m",
+            vec!["Get('/s')", "Controller()"],
+        ),
+    ] {
+        let (_, function) = source::read(file, text, symbol).unwrap();
+        assert_eq!(function.decorators, expected, "{file}");
+    }
+}
+
+#[test]
+fn a_decorator_needs_a_model_unless_the_language_defines_it() {
+    let text = "class A:\n    @property\n    def ready(self):\n        return True\n    @cached\n    def other(self):\n        return True\n";
+    let mut contract: Contract = serde_json::from_value(json!({
+        "inputs": {"a": {"open": "Bool"}},
+        "parameters": ["a"],
+        "ensures": [{"name": "returns_true", "condition": "result"}],
+    }))
+    .unwrap();
+    let (_, property) = source::read("x.py", text, "A.ready").unwrap();
+    let execution = symbolic::execute(&property, &contract).unwrap();
+    assert!(execution.assumptions.is_empty());
+    let (_, cached) = source::read("x.py", text, "A.other").unwrap();
+    let error = symbolic::execute(&cached, &contract).err().unwrap();
+    assert!(error.contains("decorator model"), "{error}");
+    contract.decorators.insert(
+        "cached".to_owned(),
+        "cached returns what the method returns for the same receiver".to_owned(),
+    );
+    let execution = symbolic::execute(&cached, &contract).unwrap();
+    assert_eq!(execution.assumptions.len(), 1);
+}
+
+#[test]
+fn overload_signatures_are_not_the_implementation() {
+    let text = "from typing import overload\n@overload\ndef f(x: int) -> int: ...\n@overload\ndef f(x: str) -> str: ...\ndef f(x):\n    return x\n";
+    let (_, function) = source::read("x.py", text, "f").unwrap();
+    assert_eq!(function.decorators, Vec::<String>::new());
+}

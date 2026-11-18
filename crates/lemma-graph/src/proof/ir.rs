@@ -11,6 +11,10 @@ pub(super) struct Function {
     /// An `async` function: a call it makes to an async function must be
     /// awaited, or the value it reads is a pending promise or coroutine.
     pub is_async: bool,
+    /// Decorators of the function and its classes, as written; each needs a
+    /// decorator model unless the language defines it to return the function
+    /// unchanged.
+    pub decorators: Vec<String>,
     pub body: Vec<Statement>,
 }
 
