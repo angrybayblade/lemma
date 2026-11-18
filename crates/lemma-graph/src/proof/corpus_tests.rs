@@ -198,6 +198,8 @@ fn survey_repository(
             continue;
         };
         let extraction = extractor.extract(language, &text).unwrap();
+        // One parse serves every function of the file.
+        let parsed = super::source::parse(&path.to_string_lossy(), &text);
         files.push(json!({"repository": repository, "file": path, "language": language, "source_hash": lemma_model::content_hash(text.as_bytes()), "extractor_recovered": extraction.has_syntax_errors}));
         for symbol in extraction
             .symbols
@@ -206,9 +208,10 @@ fn survey_repository(
         {
             // Methods and nested functions are read by their qualified name;
             // the reader decides which of them it can translate.
-            let answer =
-                super::source::read(&path.to_string_lossy(), &text, &symbol.qualified_name)
-                    .map(|_| ());
+            let answer = match &parsed {
+                Ok(parsed) => parsed.function(&symbol.qualified_name).map(|_| ()),
+                Err(why) => Err(why.clone()),
+            };
             rows.push(json!({
                 "repository": repository, "file": path, "symbol": symbol.qualified_name,
                 "line": symbol.name_span.start.line + 1, "language": language,
