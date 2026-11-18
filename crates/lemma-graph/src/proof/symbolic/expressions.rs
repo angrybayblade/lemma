@@ -68,6 +68,7 @@ impl Evaluator<'_> {
                 assume_decorators(&function.decorators, self.contract, &mut self.assumptions)?;
                 Value::Closure(std::rc::Rc::new(Defined {
                     captured: captured(function, state),
+                    defaults: self.defaults(function, state),
                     function: (**function).clone(),
                 }))
             }
