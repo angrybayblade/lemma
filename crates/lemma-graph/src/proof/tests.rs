@@ -1640,3 +1640,15 @@ fn a_branch_on_constants_follows_only_the_path_it_takes() {
     let text = "def f(r):\n    x = 1 + 2\n    if x == 2:\n        return 0\n    if x < 3:\n        return 1\n    if 'a' == 'b':\n        return 2\n    return x * 2\n";
     assert_eq!(returned("x.py", text, &contract).unwrap(), ["6"]);
 }
+
+#[test]
+fn a_raise_python_makes_while_unpacking_or_spreading_is_caught_by_a_handler() {
+    let contract = scope_contract();
+    for text in [
+        "def f(r):\n    try:\n        a, b = (1, 2, 3)\n    except ValueError:\n        return 1\n    return 2\n",
+        "def f(r):\n    try:\n        a, *b, c = (1,)\n    except Exception:\n        return 1\n    return 2\n",
+        "def f(r):\n    try:\n        d = {**None, \"a\": 1}\n    except Exception:\n        return 1\n    return 2\n",
+    ] {
+        assert_eq!(returned("x.py", text, &contract).unwrap(), ["1"], "{text}");
+    }
+}

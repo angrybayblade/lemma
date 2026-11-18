@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::ir::{Expression as Expr, Language, Pattern};
-use super::value::{Term, Value, read_field};
+use super::value::{Value, read_field};
 use super::{Evaluator, State};
 
 impl Evaluator<'_> {
@@ -84,7 +84,7 @@ impl Evaluator<'_> {
         if items.len() < at + after {
             // Python raises; JavaScript reads undefined for what is missing.
             if self.language != Language::TypeScript {
-                state.guard = Term::boolean(false);
+                self.raise_here("ValueError", state);
                 return Ok(());
             }
             items.resize(at + after, Value::Undefined);
@@ -115,7 +115,7 @@ impl Evaluator<'_> {
     ) -> Result<(), String> {
         match self.language {
             Language::Python => {
-                state.guard = Term::boolean(false);
+                self.raise_here("ValueError", state);
                 Ok(())
             }
             Language::TypeScript => {
