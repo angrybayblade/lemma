@@ -140,8 +140,16 @@ fn expression_names(expression: &Expr, names: &mut BTreeSet<String>) {
         Expr::Member(inner, _)
         | Expr::OptionalMember(inner, _)
         | Expr::Not(inner)
+        | Expr::Negate(inner)
         | Expr::Await(inner) => {
             expression_names(inner, names);
+        }
+        Expr::Template(parts) => {
+            for part in parts {
+                if let ir::Part::Value(value) = part {
+                    expression_names(value, names);
+                }
+            }
         }
         Expr::Binary(_, left, right) | Expr::Coalesce(left, right) => {
             expression_names(left, names);

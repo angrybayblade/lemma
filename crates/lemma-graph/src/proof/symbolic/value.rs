@@ -9,6 +9,8 @@ use std::fmt::Write as _;
 
 use lemma_lang::syntax::ast::BinaryOperator as Op;
 
+use super::super::ir::Language;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::proof) enum Sort {
     Bool,
@@ -247,6 +249,86 @@ pub(in crate::proof) fn order(operator: Op, left: &Value, right: &Value) -> Resu
         sort: Sort::Bool,
         code: format!("({symbol} {} {})", left.code, right.code),
     })
+}
+
+/// `+`, `-` or `*` of two integers, or `+` of two texts. Mixing them is left
+/// out: Python raises where JavaScript coerces.
+pub(in crate::proof) fn arithmetic(
+    operator: Op,
+    left: &Value,
+    right: &Value,
+) -> Result<Term, String> {
+    let (Value::Scalar(left), Value::Scalar(right)) = (left, right) else {
+        return Err("arithmetic needs two integers, or two texts to join".to_owned());
+    };
+    let (sort, function) = match (left.sort, right.sort, operator) {
+        (Sort::Text, Sort::Text, Op::Add) => (Sort::Text, "str.++"),
+        (Sort::Integer, Sort::Integer, Op::Add) => (Sort::Integer, "+"),
+        (Sort::Integer, Sort::Integer, Op::Subtract) => (Sort::Integer, "-"),
+        (Sort::Integer, Sort::Integer, Op::Multiply) => (Sort::Integer, "*"),
+        _ => return Err("arithmetic needs two integers, or two texts to join".to_owned()),
+    };
+    Ok(Term {
+        sort,
+        code: format!("({function} {} {})", left.code, right.code),
+    })
+}
+
+pub(in crate::proof) fn negate(value: &Value) -> Result<Term, String> {
+    match value {
+        Value::Scalar(term) if term.sort == Sort::Integer => Ok(Term {
+            sort: Sort::Integer,
+            code: format!("(- {})", term.code),
+        }),
+        _ => Err("only an integer can be negated".to_owned()),
+    }
+}
+
+/// How `language` spells a value inside a formatted string.
+pub(in crate::proof) fn to_text(value: &Value, language: Language) -> Result<Term, String> {
+    let spelled = |python: &str, typescript: &str| match language {
+        Language::Python => Ok(Term::text(python)),
+        Language::TypeScript => Ok(Term::text(typescript)),
+        Language::Go => Err("Go has no formatted string literals".to_owned()),
+    };
+    match value {
+        Value::Scalar(term) => match term.sort {
+            Sort::Text => Ok(term.clone()),
+            Sort::Bool => {
+                let truth = spelled("True", "true")?;
+                let falsity = spelled("False", "false")?;
+                Ok(term.ite(&truth, &falsity))
+            }
+            Sort::Integer => Ok(Term {
+                sort: Sort::Text,
+                code: format!(
+                    "(ite (< {0} 0) (str.++ \"-\" (str.from_int (- {0}))) (str.from_int {0}))",
+                    term.code
+                ),
+            }),
+        },
+        Value::Null => spelled("None", "null"),
+        Value::Undefined if language == Language::TypeScript => Ok(Term::text("undefined")),
+        Value::Choice(test, then, otherwise) => {
+            Ok(test.ite(&to_text(then, language)?, &to_text(otherwise, language)?))
+        }
+        Value::Unreachable => Ok(Term::text("")),
+        _ => Err("only scalars, null and undefined are formatted into text".to_owned()),
+    }
+}
+
+/// The integers a language's integer can hold: TypeScript numbers are exact
+/// up to 2^53 - 1, and Go's `int` has 64 bits.
+pub(in crate::proof) fn integer_range(term: &Term, language: Language) -> Term {
+    let bound = |low: &str, high: &str| Term {
+        sort: Sort::Bool,
+        code: format!("(and (<= {low} {0}) (<= {0} {high}))", term.code),
+    };
+    match language {
+        Language::Python => Term::boolean(true),
+        Language::TypeScript => bound("(- 9007199254740991)", "9007199254740991"),
+        Language::Go => bound("(- 9223372036854775808)", "9223372036854775807"),
+    }
 }
 
 /// An SMT-LIB string literal.

@@ -649,3 +649,133 @@ fn null_semantics_agree_with_the_languages() {
         "{result}"
     );
 }
+
+#[test]
+fn strings_are_decoded_from_their_escapes_and_fragments() {
+    for (file, text, expected) in [
+        (
+            "x.py",
+            "def f():\n    return 'a\\tb\\u00e9' 'c'\n",
+            "a\tbéc",
+        ),
+        ("x.py", "def f():\n    return r'\\d'\n", "\\d"),
+        (
+            "x.py",
+            "def f():\n    return \"\"\"line\nnext\"\"\"\n",
+            "line\nnext",
+        ),
+        (
+            "x.ts",
+            "function f() { return 'it\\'s\\u{1F600}'; }",
+            "it's😀",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f() string { return \"a\\x41\" }",
+            "aA",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f() string { return `raw\\n` }",
+            "raw\\n",
+        ),
+    ] {
+        let (_, function) = source::read(file, text, "f").unwrap();
+        let ir::StatementKind::Return(ir::Expression::Text(value)) = &function.body[0].kind else {
+            panic!("{file}: {:?}", function.body);
+        };
+        assert_eq!(value, expected, "{file}");
+    }
+    for (file, text) in [
+        ("x.py", "def f(x):\n    return b'bytes'\n"),
+        ("x.py", "def f(x):\n    return f'{x!r}'\n"),
+        ("x.py", "def f(x):\n    return f'{x:>3}'\n"),
+        ("x.py", "def f(x):\n    return f'{x=}'\n"),
+        ("x.py", "def f(x):\n    return '\\d'\n"),
+        ("x.py", "def f(x):\n    return x / 2\n"),
+    ] {
+        assert!(source::read(file, text, "f").is_err(), "{text}");
+    }
+}
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn formatted_strings_spell_values_as_each_language_does() {
+    let contract = |ensures: &str| {
+        json!({
+            "inputs": {"r": {"name": "Text", "flag": "Bool"}},
+            "parameters": ["r"],
+            "ensures": [{"name": "property", "condition": ensures}],
+        })
+    };
+    for (file, text, ensures) in [
+        (
+            "x.py",
+            "def f(r):\n    return f'{r.name}!'\n",
+            "result == r.name + \"!\"",
+        ),
+        (
+            "x.ts",
+            "function f(r) { return `${r.name}!`; }",
+            "result == r.name + \"!\"",
+        ),
+        (
+            "x.py",
+            "def f(r):\n    return f'{r.flag}'\n",
+            "result == \"True\" || result == \"False\"",
+        ),
+        (
+            "x.ts",
+            "function f(r) { return `${r.flag}`; }",
+            "result == \"true\" || result == \"false\"",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(r R) string { return r.name + \"!\" }",
+            "result == r.name + \"!\"",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &contract(ensures));
+        assert_eq!(result["observed"]["status"], "proved", "{file}: {result}");
+    }
+    let wrong = check_source(
+        "x.ts",
+        "function f(r) { return `${r.flag}`; }",
+        "f",
+        &contract("result == \"True\" || result == \"False\""),
+    );
+    assert_eq!(wrong["observed"]["status"], "violated", "{wrong}");
+}
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn integer_arithmetic_is_exact_in_python_and_assumed_elsewhere() {
+    let contract = json!({
+        "inputs": {"r": {"count": "Int"}},
+        "parameters": ["r"],
+        "ensures": [{"name": "grows", "condition": "result == r.count + 1 && result > r.count"}],
+    });
+    for (file, text, status) in [
+        ("x.py", "def f(r):\n    return r.count + 1\n", "proved"),
+        (
+            "x.ts",
+            "function f(r) { return r.count + 1; }",
+            "conditional",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(r R) int { return r.count + 1 }",
+            "conditional",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &contract);
+        assert_eq!(result["observed"]["status"], status, "{file}: {result}");
+    }
+    let wrong = check_source(
+        "x.py",
+        "def f(r):\n    return r.count - 1\n",
+        "f",
+        &contract,
+    );
+    assert_eq!(wrong["observed"]["status"], "violated", "{wrong}");
+}

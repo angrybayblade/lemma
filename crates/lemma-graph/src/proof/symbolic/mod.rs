@@ -14,10 +14,12 @@ use lemma_lang::syntax::ast::BinaryOperator as Op;
 use serde_json::Value as Json;
 
 use super::contract::{Contract, Input};
-use super::ir::{self, Branch, Expression as Expr, Function, Statement, StatementKind as Stmt};
+use super::ir::{
+    self, Branch, Expression as Expr, Function, Language, Part, Statement, StatementKind as Stmt,
+};
 use models::{assume_decorators, check_awaiting, match_arguments, reads_inputs};
 pub(super) use value::{Sort, Term, Value};
-use value::{equal, order, read_field};
+use value::{arithmetic, equal, integer_range, negate, order, read_field, to_text};
 
 #[derive(Debug, Clone)]
 pub(super) struct State {
@@ -58,6 +60,7 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
     let mut evaluator = Evaluator {
         contract,
         inputs: &inputs,
+        language: function.language,
         is_async: function.is_async,
         context: Term::boolean(true),
         specification: None,
@@ -67,6 +70,9 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
     };
     assume_decorators(&function.decorators, contract, &mut evaluator.assumptions)?;
     let (mut state, requires, requires_undefined) = prepare(&inputs, &mut evaluator)?;
+    let requires = inputs.values().fold(requires, |all, value| {
+        all.and(&ranges(value, function.language))
+    });
     bind_parameters(function, &inputs, &mut state, &mut evaluator)?;
     state.guard = requires.clone();
     let paths = evaluator.statements(&function.body, vec![state])?;
@@ -226,6 +232,7 @@ impl Execution {
         let (condition, undefined) = Evaluator {
             contract,
             inputs: &self.inputs,
+            language: Language::Python,
             is_async: false,
             context: Term::boolean(true),
             specification: None,
@@ -271,11 +278,12 @@ fn input(
             let sort = match name.as_str() {
                 "Bool" => Sort::Bool,
                 "Text" => Sort::Text,
+                "Int" => Sort::Integer,
                 "Null" => return Ok(Value::Null),
                 "Undefined" => return Ok(Value::Undefined),
                 _ => {
                     return Err(format!(
-                        "input `{path}` has unsupported sort `{name}`; use Bool, Text, Null or Undefined"
+                        "input `{path}` has unsupported sort `{name}`; use Bool, Text, Int, Null or Undefined"
                     ));
                 }
             };
@@ -319,9 +327,25 @@ fn insert_model(env: &mut BTreeMap<String, Value>, path: &str, name: &str) -> Re
     }
 }
 
+/// That every integer in `value` is one `language` can hold.
+fn ranges(value: &Value, language: Language) -> Term {
+    match value {
+        Value::Scalar(term) if term.sort == Sort::Integer => integer_range(term, language),
+        Value::Record(fields) => fields.values().fold(Term::boolean(true), |all, field| {
+            all.and(&ranges(field, language))
+        }),
+        Value::Choice(_, then, otherwise) => {
+            ranges(then, language).and(&ranges(otherwise, language))
+        }
+        _ => Term::boolean(true),
+    }
+}
+
 struct Evaluator<'a> {
     contract: &'a Contract,
     inputs: &'a BTreeMap<String, Value>,
+    /// The checked function's language, for what the languages disagree on.
+    language: Language,
     /// Whether the function under check is `async`, where `await` is allowed.
     is_async: bool,
     /// What must hold for the expression being evaluated to be reached at
@@ -473,6 +497,12 @@ impl Evaluator<'_> {
                     .collect::<Result<_, String>>()?,
             ),
             Expr::Not(operand) => Value::Scalar(self.expression(operand, state)?.as_bool()?.not()),
+            Expr::Negate(operand) => {
+                let operand = self.expression(operand, state)?;
+                self.assume_integer_arithmetic();
+                Value::Scalar(negate(&operand)?)
+            }
+            Expr::Template(parts) => self.template_text(parts, state)?,
             Expr::Binary(operator, left, right) => self.binary(*operator, left, right, state)?,
             Expr::Coalesce(left, right) => self.coalesce(left, right, state)?,
             Expr::Conditional(test, then, otherwise) => {
@@ -554,6 +584,9 @@ impl Evaluator<'_> {
             return Ok(Value::Scalar(match operator {
                 Op::Equal => equal(&left, &right)?,
                 Op::NotEqual => equal(&left, &right)?.not(),
+                Op::Add | Op::Subtract | Op::Multiply => {
+                    self.arithmetic(operator, &left, &right)?
+                }
                 _ => order(operator, &left, &right)?,
             }));
         }
@@ -574,6 +607,48 @@ impl Evaluator<'_> {
         } else {
             left.or(&right)
         }))
+    }
+
+    /// A formatted string, with each value spelled as the language spells it.
+    fn template_text(&mut self, parts: &[Part], state: &mut State) -> Result<Value, String> {
+        let mut text = Term::text("");
+        for part in parts {
+            let piece = match part {
+                Part::Text(piece) => Term::text(piece),
+                Part::Value(expression) => {
+                    to_text(&self.expression(expression, state)?, self.language)?
+                }
+            };
+            text = Term {
+                sort: Sort::Text,
+                code: format!("(str.++ {} {})", text.code, piece.code),
+            };
+        }
+        Ok(Value::Scalar(text))
+    }
+
+    fn arithmetic(&mut self, operator: Op, left: &Value, right: &Value) -> Result<Term, String> {
+        let term = arithmetic(operator, left, right)?;
+        if term.sort == Sort::Integer {
+            self.assume_integer_arithmetic();
+        }
+        Ok(term)
+    }
+
+    /// Source integer arithmetic is exact only within the language's range:
+    /// TypeScript numbers lose precision past 2^53, Go integers wrap.
+    fn assume_integer_arithmetic(&mut self) {
+        if self.specification.is_some() {
+            return;
+        }
+        let assumption = match self.language {
+            Language::Python => return,
+            Language::TypeScript => {
+                "TypeScript integer arithmetic stays within 2^53 - 1, where numbers are exact"
+            }
+            Language::Go => "Go integer arithmetic does not overflow",
+        };
+        self.assumptions.insert(assumption.to_owned());
     }
 
     fn call(
@@ -625,9 +700,9 @@ impl Evaluator<'_> {
                 let path = format!("calls.{name}.{call_number}.{field}");
                 outcome.insert(field.clone(), input(shape, &path, &mut self.symbols)?);
             }
-            local
-                .env
-                .insert("outcome".to_owned(), Value::Record(outcome));
+            let outcome = Value::Record(outcome);
+            state.guard = state.guard.and(&ranges(&outcome, self.language));
+            local.env.insert("outcome".to_owned(), outcome);
         }
         if let Some(effect) = model.effect {
             let fields = effect
@@ -713,9 +788,14 @@ fn fill_absent(value: Value, fallback: &Value) -> Value {
 fn is_pure(expression: &Expr) -> bool {
     match expression {
         Expr::Call(_, _) | Expr::Await(_) => false,
-        Expr::Not(inner) | Expr::Member(inner, _) | Expr::OptionalMember(inner, _) => {
-            is_pure(inner)
-        }
+        Expr::Not(inner)
+        | Expr::Negate(inner)
+        | Expr::Member(inner, _)
+        | Expr::OptionalMember(inner, _) => is_pure(inner),
+        Expr::Template(parts) => parts.iter().all(|part| match part {
+            Part::Text(_) => true,
+            Part::Value(value) => is_pure(value),
+        }),
         Expr::Binary(_, left, right) | Expr::Coalesce(left, right) => {
             is_pure(left) && is_pure(right)
         }
