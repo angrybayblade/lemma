@@ -412,6 +412,15 @@ impl Evaluator<'_> {
             Stmt::Evaluate(expression) => {
                 self.expression(expression, &mut state)?;
             }
+            Stmt::Raise => {
+                state.guard = Term::boolean(false);
+            }
+            Stmt::Assert(condition) => {
+                let condition = self.expression(condition, &mut state)?.as_bool()?;
+                state.guard = state.guard.and(&condition);
+                self.assumptions
+                    .insert("Python runs with assertions enabled, not with -O".to_owned());
+            }
             Stmt::If(expression, then, otherwise) => {
                 return self.branch(statement.line, expression, [then, otherwise], state);
             }

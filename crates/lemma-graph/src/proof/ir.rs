@@ -66,6 +66,11 @@ pub(super) enum StatementKind {
     If(Expression, Vec<Statement>, Vec<Statement>),
     Return(Expression),
     Evaluate(Expression),
+    /// `raise`, `throw` or Go's `panic(...)`: the path ends without a normal
+    /// return, whatever the raised value would be.
+    Raise,
+    /// Python's `assert`: the path goes on only where the condition holds.
+    Assert(Expression),
 }
 
 #[derive(Debug, Clone)]
