@@ -6,8 +6,8 @@ use lemma_lang::syntax::ast::BinaryOperator as Op;
 use tree_sitter::{Node, Parser};
 
 use super::ir::{
-    Argument, Expression as Expr, Function, Handler, Parameter, Part, Pattern, Raised, Statement,
-    StatementKind as Stmt, Try,
+    Argument, Context, Expression as Expr, Function, Handler, Parameter, Part, Pattern, Raised,
+    Statement, StatementKind as Stmt, Try,
 };
 
 pub(super) use super::ir::Language;
@@ -560,6 +560,7 @@ impl<'a> Reader<'a> {
             "expression_statement" if self.is_go_panic(node) => Stmt::Raise(Raised::Unknown),
             "try_statement" => Stmt::Try(Box::new(self.try_statement(node)?)),
             "pass_statement" | "empty_statement" => return Ok(Vec::new()),
+            "with_statement" => self.with_statement(node)?,
             "expression_statement" => {
                 let expression = only(node)?;
                 if matches!(
@@ -603,6 +604,43 @@ impl<'a> Reader<'a> {
             .next()
             .ok_or("empty assert statement")?;
         Ok(Stmt::Assert(self.expression(condition)?))
+    }
+
+    /// Python's `with` and its context managers.
+    fn with_statement(&self, node: Node<'_>) -> Result<Stmt, String> {
+        let is_async = is_async(node);
+        let mut contexts = Vec::new();
+        for clause in children(node) {
+            if clause.kind() != "with_clause" {
+                continue;
+            }
+            for item in children(clause) {
+                contexts.push(self.context(item, is_async)?);
+            }
+        }
+        Ok(Stmt::With(contexts, self.block(field(node, "body")?)?))
+    }
+
+    /// One `with` item: a context manager, and what `as` binds.
+    fn context(&self, item: Node<'_>, is_async: bool) -> Result<Context, String> {
+        let value = field(item, "value")?;
+        let (value, target) = if value.kind() == "as_pattern" {
+            let alias = only(field(value, "alias")?)?;
+            let manager = *children(value).first().ok_or("empty with item")?;
+            (manager, Some(self.pattern(alias)?))
+        } else {
+            (value, None)
+        };
+        Ok(Context {
+            text: self
+                .text(value)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            value: self.expression(value)?,
+            target,
+            is_async,
+        })
     }
 
     /// The class a Python `raise` names, as written.
@@ -1482,16 +1520,11 @@ fn literal_bindings<'b>(body: &'b [Statement], built: &mut std::collections::BTr
             | Stmt::Assign(Pattern::Name(name), Expr::Record(_) | Expr::Sequence(_)) => {
                 built.insert(name);
             }
-            Stmt::If(_, then, otherwise) => {
-                literal_bindings(then, built);
-                literal_bindings(otherwise, built);
-            }
-            Stmt::Try(statement) => {
-                for block in statement.blocks() {
+            kind => {
+                for block in kind.blocks() {
                     literal_bindings(block, built);
                 }
             }
-            _ => {}
         }
     }
 }
@@ -1500,16 +1533,11 @@ fn field_assignments<'b>(body: &'b [Statement], targets: &mut Vec<(usize, &'b st
     for statement in body {
         match &statement.kind {
             Stmt::SetField(name, _, _) => targets.push((statement.line, name)),
-            Stmt::If(_, then, otherwise) => {
-                field_assignments(then, targets);
-                field_assignments(otherwise, targets);
-            }
-            Stmt::Try(statement) => {
-                for block in statement.blocks() {
+            kind => {
+                for block in kind.blocks() {
                     field_assignments(block, targets);
                 }
             }
-            _ => {}
         }
     }
 }

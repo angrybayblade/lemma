@@ -23,6 +23,11 @@ pub(super) struct Contract {
     /// returns its result.
     #[serde(default)]
     pub decorators: BTreeMap<String, String>,
+    /// Context managers of a `with`, by their text or their callee, mapped
+    /// to the assumption that entering returns the manager itself and leaving
+    /// neither suppresses an exception nor has another effect.
+    #[serde(default)]
+    pub contexts: BTreeMap<String, String>,
     #[serde(default)]
     pub requires: Vec<String>,
     pub ensures: Vec<Assertion>,
@@ -110,6 +115,13 @@ impl Contract {
         {
             if !identifier(name) {
                 return Err(format!("invalid contract name `{name}`"));
+            }
+        }
+        for (context, assumption) in &self.contexts {
+            if assumption.trim().is_empty() {
+                return Err(format!(
+                    "context model `{context}` needs a named assumption"
+                ));
             }
         }
         for (decorator, assumption) in &self.decorators {

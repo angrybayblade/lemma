@@ -1109,3 +1109,34 @@ fn an_unknown_relation_between_exception_classes_is_refused() {
             .is_empty()
     );
 }
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn with_enters_each_context_manager_under_its_context_model() {
+    let mut contract = json!({
+        "inputs": {"r": {"id": "Text"}},
+        "parameters": ["r"],
+        "models": {"open_account": {"assumption": "open_account returns the account it opens", "parameters": ["id"], "returns": {"id": {"expr": "id"}}}},
+        "ensures": [{"name": "same_account", "condition": "result == r.id"}],
+    });
+    let text = "def f(r):\n    with lock:\n        with open_account(r.id) as account:\n            return account.id\n";
+    let refused = check_source("x.py", text, "f", &contract);
+    assert!(
+        refused["unavailable"]
+            .as_str()
+            .unwrap()
+            .contains("context model"),
+        "{refused}"
+    );
+    contract["contexts"] = json!({
+        "lock": "the lock is released on leaving and suppresses nothing",
+        "open_account": "an account entered is the account opened, and leaving closes it without other effects",
+    });
+    let result = check_source("x.py", text, "f", &contract);
+    assert_eq!(result["observed"]["status"], "conditional", "{result}");
+    assert_eq!(
+        result["observed"]["assumptions"].as_array().unwrap().len(),
+        3,
+        "{result}"
+    );
+}
