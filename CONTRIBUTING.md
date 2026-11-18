@@ -160,6 +160,9 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | contract | What a proof checker checks one function against: its inputs, preconditions, postconditions and call models | spec, specification |
 | call model | An assumed meaning for a function the checked code calls, with the assumption it rests on; a proof that uses one reports it | mock, stub, summary, dependency model |
 | proof status | What a proof checker's observation says: proved, conditional or violated; a behavior reads it, and it is not an outcome | verdict, result |
+| decorator model | An assumed meaning for a decorator in a contract: that the decorated function runs its body with the same arguments | decorator mock, wrapper model |
+| context model | An assumed meaning for a context manager of a `with` in a contract: entering returns the manager, leaving has no other effect | context mock, scope model |
+| capture | A name a nested function reads from the functions around it, given an input by the contract | closure variable, free variable, upvalue |
 
 Extend this table when a new domain concept appears, in the same change that introduces it.
 
