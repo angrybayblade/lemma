@@ -1340,3 +1340,39 @@ fn spreads_rest_patterns_and_constructors_follow_their_languages() {
     );
     assert_eq!(result["observed"]["status"], "conditional", "{result}");
 }
+
+/// The value every path of `f` returns, or why the function was refused.
+fn returned(file: &str, text: &str, contract: &Json) -> Result<Vec<String>, String> {
+    let contract: Contract = serde_json::from_value(contract.clone()).unwrap();
+    let (_, function) = source::read(file, text, "f")?;
+    let execution = symbolic::execute(&function, &contract)?;
+    Ok(execution
+        .paths
+        .iter()
+        .map(|path| match &path.result {
+            Some(symbolic::Value::Scalar(term)) => term.code.clone(),
+            other => format!("{other:?}"),
+        })
+        .collect())
+}
+
+fn scope_contract() -> Json {
+    json!({
+        "inputs": {"r": {"ok": "Bool"}},
+        "parameters": ["r"],
+        "contexts": {"manager": "the manager is entered and left without another effect"},
+        "models": {"manager": {"assumption": "manager returns a context manager", "returns": true}},
+        "ensures": [{"name": "any", "condition": "true"}],
+    })
+}
+
+#[test]
+fn a_declaration_in_a_try_body_or_a_handler_ends_with_its_block() {
+    let contract = scope_contract();
+    for text in [
+        "function f(r) {\n  const x = 1;\n  try {\n    const x = 2;\n  } catch (e) {\n  }\n  return x;\n}\n",
+        "function f(r) {\n  const x = 1;\n  try {\n    throw new Error();\n  } catch (e) {\n    const x = 2;\n  } finally {\n    const x = 3;\n  }\n  return x;\n}\n",
+    ] {
+        assert_eq!(returned("x.ts", text, &contract).unwrap(), ["1"], "{text}");
+    }
+}

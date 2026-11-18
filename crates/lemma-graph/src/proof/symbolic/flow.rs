@@ -93,7 +93,7 @@ impl Evaluator<'_> {
         state: State,
     ) -> Result<Vec<State>, String> {
         self.try_depth += 1;
-        let body = self.statements(&statement.body, vec![state]);
+        let body = self.block(&statement.body, state);
         self.try_depth -= 1;
         let mut after = Vec::new();
         for path in body? {
@@ -102,7 +102,7 @@ impl Evaluator<'_> {
                     let raised = raised.clone();
                     after.extend(self.handle(statement, &raised, path)?);
                 }
-                (None, None) => after.extend(self.statements(&statement.otherwise, vec![path])?),
+                (None, None) => after.extend(self.block(&statement.otherwise, path)?),
                 (None, Some(_)) => after.push(path),
             }
         }
@@ -134,7 +134,7 @@ impl Evaluator<'_> {
             }
             path.raised = None;
             self.handling.push(raised.clone());
-            let handled = self.statements(&handler.body, vec![path]);
+            let handled = self.block(&handler.body, path);
             self.handling.pop();
             return handled;
         }
@@ -150,7 +150,7 @@ impl Evaluator<'_> {
     ) -> Result<Vec<State>, String> {
         let result = path.result.take();
         let raised = path.raised.take();
-        let mut finished = self.statements(body, vec![path])?;
+        let mut finished = self.block(body, path)?;
         for path in &mut finished {
             if path.result.is_none() && path.raised.is_none() {
                 path.result.clone_from(&result);
