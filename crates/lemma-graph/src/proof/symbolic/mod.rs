@@ -490,6 +490,7 @@ impl Evaluator<'_> {
                     .insert("Python runs with assertions enabled, not with -O".to_owned());
             }
             Stmt::Try(statement) => return self.try_statement(statement, state),
+            Stmt::With(contexts, body) => return self.with_statement(contexts, body, state),
             Stmt::If(expression, then, otherwise) => {
                 return self.branch(statement.line, expression, [then, otherwise], state);
             }
@@ -594,6 +595,53 @@ impl Evaluator<'_> {
             }
         }
         state.guard = state.guard.and(&condition.not());
+    }
+
+    /// `with`: each context manager is entered, under its context model, and
+    /// what `as` names is bound to it; then the body runs.
+    fn with_statement(
+        &mut self,
+        contexts: &[ir::Context],
+        body: &[Statement],
+        mut state: State,
+    ) -> Result<Vec<State>, String> {
+        for context in contexts {
+            self.enter(context, &mut state)?;
+        }
+        let mut paths = std::mem::take(&mut state.pending);
+        paths.extend(self.statements(body, vec![state])?);
+        Ok(paths)
+    }
+
+    fn enter(&mut self, context: &ir::Context, state: &mut State) -> Result<(), String> {
+        if context.is_async && !self.is_async {
+            return Err("`async with` outside an async function".to_owned());
+        }
+        let callee = context
+            .text
+            .split('(')
+            .next()
+            .unwrap_or(&context.text)
+            .trim();
+        let assumption = self
+            .contract
+            .contexts
+            .get(&context.text)
+            .or_else(|| self.contract.contexts.get(callee))
+            .ok_or_else(|| format!("context manager `{}` needs a context model", context.text))?;
+        self.assumptions.insert(assumption.clone());
+        // A manager nothing binds and nothing calls to reach matters only by
+        // entering and leaving, which its context model stands for.
+        let Some(target) = &context.target else {
+            if context.value.has_call() {
+                self.expression(&context.value, state)?;
+            }
+            return Ok(());
+        };
+        let value = self.expression(&context.value, state)?;
+        self.bind(target, value, false, state)?;
+        track_freshness(target, &context.value, &mut state.fresh);
+        Ok(())
     }
 
     /// `try`: the body, then a handler for what it raised, `else` if it

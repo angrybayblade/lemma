@@ -80,6 +80,8 @@ pub(super) enum StatementKind {
     Raise(Raised),
     /// `try` with its handlers, `else` and `finally`.
     Try(Box<Try>),
+    /// Python's `with`: each context manager, then the body.
+    With(Vec<Context>, Vec<Statement>),
     /// Python's `assert`: the path goes on only where the condition holds.
     Assert(Expression),
 }
@@ -135,6 +137,16 @@ pub(super) enum Raised {
     Again,
 }
 
+/// One context manager of a `with`: its expression as written, which names
+/// its context model, and what `as` binds.
+#[derive(Debug, Clone)]
+pub(super) struct Context {
+    pub text: String,
+    pub value: Expression,
+    pub target: Option<Pattern>,
+    pub is_async: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct Try {
     pub body: Vec<Statement>,
@@ -142,6 +154,18 @@ pub(super) struct Try {
     /// Python's `else`: run when the body raised nothing.
     pub otherwise: Vec<Statement>,
     pub finally: Vec<Statement>,
+}
+
+impl StatementKind {
+    /// The blocks nested in a statement.
+    pub(super) fn blocks(&self) -> Vec<&[Statement]> {
+        match self {
+            Self::If(_, then, otherwise) => vec![then, otherwise],
+            Self::Try(statement) => statement.blocks().collect(),
+            Self::With(_, body) => vec![body],
+            _ => Vec::new(),
+        }
+    }
 }
 
 impl Try {
