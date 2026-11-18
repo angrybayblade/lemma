@@ -19,10 +19,11 @@ use super::ir::{
     StatementKind as Stmt,
 };
 use models::{assume_decorators, check_awaiting, match_arguments, reads_inputs};
-pub(super) use value::{Sort, Term, Value};
 use value::{
-    arithmetic, contains, element, equal, integer_range, negate, order, read_field, to_text,
+    Missing, arithmetic, contains, element, equal, integer_range, negate, order, read_field,
+    to_text,
 };
+pub(super) use value::{Sort, Term, Value};
 
 #[derive(Debug, Clone)]
 pub(super) struct State {
@@ -32,6 +33,9 @@ pub(super) struct State {
     effects: BTreeMap<String, Vec<Value>>,
     /// How often each model was called on this path.
     calls: BTreeMap<String, usize>,
+    /// Variables holding an object built here from a literal that nothing
+    /// else can see yet: the only ones whose fields may be assigned.
+    fresh: BTreeSet<String>,
     pub result: Option<Value>,
 }
 
@@ -110,6 +114,7 @@ fn prepare(
         branches: Vec::new(),
         effects: BTreeMap::new(),
         calls: BTreeMap::new(),
+        fresh: BTreeSet::new(),
         result: None,
     };
     for (name, template) in &evaluator.contract.bindings {
@@ -334,9 +339,11 @@ fn insert_model(env: &mut BTreeMap<String, Value>, path: &str, name: &str) -> Re
 fn ranges(value: &Value, language: Language) -> Term {
     match value {
         Value::Scalar(term) if term.sort == Sort::Integer => integer_range(term, language),
-        Value::Record(fields) => fields.values().fold(Term::boolean(true), |all, field| {
-            all.and(&ranges(field, language))
-        }),
+        Value::Record(fields) | Value::Object(fields) => {
+            fields.values().fold(Term::boolean(true), |all, field| {
+                all.and(&ranges(field, language))
+            })
+        }
         Value::Choice(_, then, otherwise) => {
             ranges(then, language).and(&ranges(otherwise, language))
         }
@@ -402,9 +409,26 @@ impl Evaluator<'_> {
             return Ok(vec![state]);
         }
         match &statement.kind {
-            Stmt::Bind(pattern, expression) => {
+            Stmt::Bind(pattern, expression) | Stmt::Assign(pattern, expression) => {
                 let value = self.expression(expression, &mut state)?;
-                self.bind(pattern, value, &mut state)?;
+                let is_assignment = matches!(statement.kind, Stmt::Assign(..));
+                self.bind(pattern, value, is_assignment, &mut state)?;
+                track_freshness(pattern, expression, &mut state.fresh);
+            }
+            Stmt::Update(name, operator, expression) => {
+                let value = self.expression(expression, &mut state)?;
+                let current = state
+                    .env
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| format!("`{name}` is updated before it is assigned"))?;
+                let updated = self.arithmetic(*operator, &current, &value)?;
+                state.env.insert(name.clone(), Value::Scalar(updated));
+                state.fresh.remove(name);
+            }
+            Stmt::SetField(name, field, expression) => {
+                let value = self.expression(expression, &mut state)?;
+                set_field(name, field, value, &mut state)?;
             }
             Stmt::Return(expression) => {
                 let value = self.expression(expression, &mut state)?;
@@ -431,22 +455,29 @@ impl Evaluator<'_> {
         Ok(vec![state])
     }
 
-    /// Binds what `pattern` names to the parts of `value`.
-    fn bind(&mut self, pattern: &Pattern, value: Value, state: &mut State) -> Result<(), String> {
+    /// Binds what `pattern` names to the parts of `value`; an assignment
+    /// only to variables already declared.
+    fn bind(
+        &mut self,
+        pattern: &Pattern,
+        value: Value,
+        is_assignment: bool,
+        state: &mut State,
+    ) -> Result<(), String> {
         match pattern {
             Pattern::Ignore => Ok(()),
             Pattern::Name(name) => {
-                if state.env.contains_key(name) {
-                    return Err(format!("rebinding or shadowing `{name}` is unsupported"));
+                if is_assignment && !state.env.contains_key(name) {
+                    return Err(format!("`{name}` is assigned before it is declared"));
                 }
                 state.env.insert(name.clone(), value);
                 Ok(())
             }
             Pattern::Record(fields) => {
                 for (field, part) in fields {
-                    let (read, fails) = read_field(&value, field, false)?;
+                    let (read, fails) = read_field(&value, field, false, self.missing())?;
                     self.narrow(&fails, state);
-                    self.bind(part, read, state)?;
+                    self.bind(part, read, is_assignment, state)?;
                 }
                 Ok(())
             }
@@ -455,10 +486,10 @@ impl Evaluator<'_> {
                     return Err("only a sequence of known length can be unpacked".to_owned());
                 };
                 if items.len() != parts.len() {
-                    return self.unpack_mismatch(parts, items, state);
+                    return self.unpack_mismatch(parts, items, is_assignment, state);
                 }
                 for (part, item) in parts.iter().zip(items) {
-                    self.bind(part, item, state)?;
+                    self.bind(part, item, is_assignment, state)?;
                 }
                 Ok(())
             }
@@ -471,6 +502,7 @@ impl Evaluator<'_> {
         &mut self,
         parts: &[Pattern],
         items: Vec<Value>,
+        is_assignment: bool,
         state: &mut State,
     ) -> Result<(), String> {
         match self.language {
@@ -482,7 +514,7 @@ impl Evaluator<'_> {
                 let mut items = items.into_iter();
                 for part in parts {
                     let item = items.next().unwrap_or(Value::Undefined);
-                    self.bind(part, item, state)?;
+                    self.bind(part, item, is_assignment, state)?;
                 }
                 Ok(())
             }
@@ -519,7 +551,36 @@ impl Evaluator<'_> {
             branch.guard = branch.guard.and(&guard);
             branch.branches.push(Branch { line, taken });
             if branch.guard.code != "false" {
-                paths.extend(self.statements(body, vec![branch])?);
+                paths.extend(self.block(body, branch)?);
+            }
+        }
+        Ok(paths)
+    }
+
+    /// Runs a block. TypeScript and Go declarations last until its end, where
+    /// what they shadowed is visible again; Python's last for the function.
+    fn block(&mut self, body: &[Statement], state: State) -> Result<Vec<State>, String> {
+        if self.language == Language::Python {
+            return self.statements(body, vec![state]);
+        }
+        let mut declared = BTreeSet::new();
+        for statement in body {
+            if let Stmt::Bind(pattern, _) = &statement.kind {
+                pattern_names(pattern, &mut declared);
+            }
+        }
+        let outer: Vec<(String, Option<Value>, bool)> = declared
+            .into_iter()
+            .map(|name| {
+                let value = state.env.get(&name).cloned();
+                let is_fresh = state.fresh.contains(&name);
+                (name, value, is_fresh)
+            })
+            .collect();
+        let mut paths = self.statements(body, vec![state])?;
+        for path in &mut paths {
+            for (name, value, is_fresh) in &outer {
+                restore(path, name, value.as_ref(), *is_fresh);
             }
         }
         Ok(paths)
@@ -568,14 +629,14 @@ impl Evaluator<'_> {
             Expr::Integer(value) => Value::Scalar(Term::integer(*value)),
             Expr::Null => Value::Null,
             Expr::Undefined => Value::Undefined,
-            Expr::Name(name) => state
-                .env
-                .get(name)
-                .cloned()
-                .ok_or_else(|| format!("unmodeled name `{name}`"))?,
+            Expr::Name(name) => {
+                // A variable used as a whole may now be seen elsewhere.
+                state.fresh.remove(name);
+                lookup(name, state)?
+            }
             Expr::Member(target, name) => self.field(target, name, false, state)?,
             Expr::OptionalMember(target, name) => self.field(target, name, true, state)?,
-            Expr::Record(fields) => Value::Record(
+            Expr::Record(fields) => Value::Object(
                 fields
                     .iter()
                     .map(|(name, expression)| Ok((name.clone(), self.pure(expression, state)?)))
@@ -611,6 +672,24 @@ impl Evaluator<'_> {
             .iter()
             .map(|item| self.expression(item, state))
             .collect()
+    }
+
+    /// What reading a field an object lacks does here: a contract counts it
+    /// as undefined, the source as its language does.
+    fn missing(&self) -> Missing {
+        if self.specification.is_some() {
+            return Missing::Raises;
+        }
+        Missing::of(self.language)
+    }
+
+    /// What a field or element is read from: reading a part of a variable
+    /// does not let anything else see the variable's object.
+    fn target(&mut self, target: &Expr, state: &mut State) -> Result<Value, String> {
+        if let Expr::Name(name) = target {
+            return lookup(name, state);
+        }
+        self.expression(target, state)
     }
 
     /// `test ? then : otherwise`; only the branch the test picks is reached.
@@ -664,8 +743,8 @@ impl Evaluator<'_> {
         is_optional: bool,
         state: &mut State,
     ) -> Result<Value, String> {
-        let target = self.expression(target, state)?;
-        let (value, fails) = read_field(&target, name, is_optional)?;
+        let target = self.target(target, state)?;
+        let (value, fails) = read_field(&target, name, is_optional, self.missing())?;
         self.narrow(&fails, state);
         Ok(value)
     }
@@ -874,6 +953,78 @@ impl Evaluator<'_> {
             ),
         })
     }
+}
+
+/// Makes `name` again what it was before a block declared its own.
+fn restore(state: &mut State, name: &str, value: Option<&Value>, is_fresh: bool) {
+    match value {
+        Some(value) => state.env.insert(name.to_owned(), value.clone()),
+        None => state.env.remove(name),
+    };
+    if is_fresh {
+        state.fresh.insert(name.to_owned());
+    } else {
+        state.fresh.remove(name);
+    }
+}
+
+fn lookup(name: &str, state: &State) -> Result<Value, String> {
+    state
+        .env
+        .get(name)
+        .cloned()
+        .ok_or_else(|| format!("unmodeled name `{name}`"))
+}
+
+/// After binding `pattern` to `expression`: a variable bound to a record or
+/// sequence literal holds an object nothing else can see.
+fn track_freshness(pattern: &Pattern, expression: &Expr, fresh: &mut BTreeSet<String>) {
+    let mut names = BTreeSet::new();
+    pattern_names(pattern, &mut names);
+    let is_literal = matches!(expression, Expr::Record(_) | Expr::Sequence(_));
+    for name in names {
+        if is_literal && matches!(pattern, Pattern::Name(_)) {
+            fresh.insert(name);
+        } else {
+            fresh.remove(&name);
+        }
+    }
+}
+
+fn pattern_names(pattern: &Pattern, names: &mut BTreeSet<String>) {
+    match pattern {
+        Pattern::Name(name) => {
+            names.insert(name.clone());
+        }
+        Pattern::Ignore => {}
+        Pattern::Sequence(parts) => {
+            for part in parts {
+                pattern_names(part, names);
+            }
+        }
+        Pattern::Record(fields) => {
+            for (_, part) in fields {
+                pattern_names(part, names);
+            }
+        }
+    }
+}
+
+/// Assigns a field of a variable's object, which only an object nothing
+/// else can see allows: the assignment is then invisible elsewhere.
+fn set_field(name: &str, field: &str, value: Value, state: &mut State) -> Result<(), String> {
+    if !state.fresh.contains(name) {
+        return Err(format!(
+            "`{name}` may be seen elsewhere, so assigning its field `{field}` is unsupported"
+        ));
+    }
+    let Some(Value::Object(fields)) = state.env.get_mut(name) else {
+        return Err(format!(
+            "`{name}` is not a record, so `{field}` cannot be assigned"
+        ));
+    };
+    fields.insert(field.to_owned(), value);
+    Ok(())
 }
 
 /// Where `value` is null or undefined.

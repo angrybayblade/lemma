@@ -62,7 +62,16 @@ pub(super) struct Statement {
 
 #[derive(Debug, Clone)]
 pub(super) enum StatementKind {
+    /// A declaration, or any Python assignment: TypeScript and Go scope it
+    /// to its block, Python to the function.
     Bind(Pattern, Expression),
+    /// A TypeScript or Go assignment to variables already declared.
+    Assign(Pattern, Expression),
+    /// `name op= value` on a variable.
+    Update(String, BinaryOperator, Expression),
+    /// `name.field = value` or `name["field"] = value`, on a variable whose
+    /// value nothing else can see.
+    SetField(String, String, Expression),
     If(Expression, Vec<Statement>, Vec<Statement>),
     Return(Expression),
     Evaluate(Expression),
