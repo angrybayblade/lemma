@@ -1376,3 +1376,56 @@ fn a_declaration_in_a_try_body_or_a_handler_ends_with_its_block() {
         assert_eq!(returned("x.ts", text, &contract).unwrap(), ["1"], "{text}");
     }
 }
+
+#[test]
+fn a_called_function_reads_only_the_variables_it_was_defined_with() {
+    let contract = scope_contract();
+    // Each of these calls a function where a name it reads means another
+    // variable: one of an inner block, of a function that has returned, or
+    // of the caller it runs in.
+    for (file, text) in [
+        (
+            "x.ts",
+            "function f(r) {\n  const x = 1;\n  let g = () => 0;\n  if (r.ok) {\n    const x = 2;\n    g = () => x;\n  }\n  return g();\n}\n",
+        ),
+        (
+            "x.py",
+            "def f(r):\n    def make():\n        x = 1\n        def inner():\n            return x\n        return inner\n    x = 5\n    g = make()\n    return g()\n",
+        ),
+        (
+            "x.py",
+            "def f(r):\n    x = 1\n    def get():\n        return x\n    def call(x):\n        return get()\n    return call(2)\n",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(r R) int {\n  x := 1\n  g := func() int { return x }\n  if r.ok {\n    x := 2\n    _ = x\n    return g()\n  }\n  return g()\n}\n",
+        ),
+    ] {
+        let error = returned(file, text, &contract).unwrap_err();
+        assert!(error.contains("another variable"), "{text}: {error}");
+    }
+    // Functions defined in any order still find each other.
+    for (file, text) in [
+        (
+            "x.ts",
+            "function f(r) {\n  const a = () => b();\n  const b = () => 1;\n  return a();\n}\n",
+        ),
+        (
+            "x.py",
+            "def f(r):\n    def a():\n        return b()\n    def b():\n        return 1\n    return a()\n",
+        ),
+    ] {
+        assert_eq!(returned(file, text, &contract).unwrap(), ["1"], "{text}");
+    }
+}
+
+#[test]
+fn a_name_a_python_function_assigns_is_its_own_from_the_start() {
+    let contract = scope_contract();
+    // Python raises here: `x` is local to `g`, and unbound where it is read.
+    let unbound = "def f(r):\n    x = 1\n    def g():\n        y = x\n        x = 2\n        return y\n    return g()\n";
+    assert!(returned("x.py", unbound, &contract).is_err());
+    // What a called function's `with` binds stays in that function.
+    let with_target = "def f(r):\n    def g():\n        with manager() as x:\n            pass\n        return 1\n    x = 5\n    g()\n    return x\n";
+    assert_eq!(returned("x.py", with_target, &contract).unwrap(), ["5"]);
+}

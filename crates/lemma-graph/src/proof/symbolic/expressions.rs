@@ -6,9 +6,10 @@ use lemma_lang::syntax::ast::BinaryOperator as Op;
 
 use super::super::ir::{self, Expression as Expr, Language, Part};
 use super::models::assume_decorators;
+use super::scopes::captured;
 use super::value::{
-    Missing, Sort, Term, Value, arithmetic, contains, element, equal, negate, order, read_field,
-    to_text,
+    Defined, Missing, Sort, Term, Value, arithmetic, contains, element, equal, negate, order,
+    read_field, to_text,
 };
 use super::{Evaluator, State, is_pure, lookup};
 
@@ -65,7 +66,10 @@ impl Evaluator<'_> {
             Expr::Call(callee, arguments) => self.call(callee, arguments, false, state)?,
             Expr::Closure(function) => {
                 assume_decorators(&function.decorators, self.contract, &mut self.assumptions)?;
-                Value::Closure(std::rc::Rc::new((**function).clone()))
+                Value::Closure(std::rc::Rc::new(Defined {
+                    captured: captured(function, state),
+                    function: (**function).clone(),
+                }))
             }
             Expr::Await(inner) => self.awaited(inner, state)?,
         })

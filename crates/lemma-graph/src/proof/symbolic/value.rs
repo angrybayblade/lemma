@@ -102,6 +102,14 @@ impl Term {
     }
 }
 
+/// A function defined in the checked code, and which variable each name it
+/// reads from around it was where it was defined.
+#[derive(Debug)]
+pub(in crate::proof) struct Defined {
+    pub function: Function,
+    pub captured: BTreeMap<String, Option<u64>>,
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::proof) enum Value {
     Scalar(Term),
@@ -118,7 +126,7 @@ pub(in crate::proof) enum Value {
     /// A function a call model stands for.
     Model(String),
     /// A function defined in the checked code, called by running its body.
-    Closure(std::rc::Rc<Function>),
+    Closure(std::rc::Rc<Defined>),
     /// Python `None`, JavaScript `null` and Go `nil`.
     Null,
     /// JavaScript `undefined`, and what is absent: an argument left out, or

@@ -11,7 +11,8 @@ use super::super::ir::{
 };
 use super::models::{check_awaiting, match_arguments, reads_inputs};
 use super::patterns::pattern_names;
-use super::value::{Term, Value};
+use super::scopes::check_captured;
+use super::value::{Defined, Term, Value};
 use super::{Evaluator, State, input, ranges, specification_names};
 
 impl Evaluator<'_> {
@@ -24,8 +25,9 @@ impl Evaluator<'_> {
     ) -> Result<Value, String> {
         let name = match self.expression(callee, state)? {
             Value::Model(name) => name,
-            Value::Closure(function) => {
-                return self.call_closure(&function, arguments, is_awaited, state);
+            Value::Closure(defined) => {
+                check_captured(&defined.captured, state)?;
+                return self.call_closure(&defined, arguments, is_awaited, state);
             }
             _ => return Err("call target has no call model".to_owned()),
         };
@@ -117,11 +119,12 @@ impl Evaluator<'_> {
     /// else, so a branching callee with effects is refused here.
     pub(super) fn call_closure(
         &mut self,
-        function: &Function,
+        defined: &Defined,
         arguments: &[ir::Argument],
         is_awaited: bool,
         state: &mut State,
     ) -> Result<Value, String> {
+        let function = &defined.function;
         check_awaiting("the function", function.is_async, is_awaited)?;
         if self.inlined >= 8 {
             return Err("functions call each other too deeply to follow".to_owned());
@@ -130,6 +133,7 @@ impl Evaluator<'_> {
         callee.result = None;
         callee.pending.clear();
         self.bind_arguments(function, arguments, state, &mut callee)?;
+        self.enter_function(function, &mut callee);
         let locals = local_names(function);
         let outer_async = std::mem::replace(&mut self.is_async, function.is_async);
         self.inlined += 1;
@@ -329,6 +333,15 @@ pub(super) fn collect_bound(body: &[Statement], language: Language, names: &mut 
             }
             Stmt::Update(name, _, _) if language == Language::Python => {
                 names.insert(name.clone());
+            }
+            Stmt::With(contexts, body) => {
+                for target in contexts
+                    .iter()
+                    .filter_map(|context| context.target.as_ref())
+                {
+                    pattern_names(target, names);
+                }
+                collect_bound(body, language, names);
             }
             // A TypeScript or Go declaration in a nested block ends with it.
             kind if language == Language::Python => {

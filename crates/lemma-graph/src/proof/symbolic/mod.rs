@@ -11,6 +11,7 @@ mod expressions;
 mod flow;
 mod models;
 mod patterns;
+mod scopes;
 mod value;
 
 use patterns::{pattern_names, set_field, track_freshness};
@@ -37,6 +38,10 @@ pub(super) struct State {
     /// else can see yet: the only ones whose fields may be assigned.
     fresh: BTreeSet<String>,
     pub result: Option<Value>,
+    /// Which variable each name is. A declaration makes a new one, so a
+    /// function defined here can tell whether a name it reads still means
+    /// the variable it was defined with.
+    variables: BTreeMap<String, u64>,
     /// What the path raised inside a `try`, until a handler catches it.
     raised: Option<Raised>,
     /// Paths that raised inside a `try` while the current statement ran,
@@ -82,6 +87,7 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
         symbols,
         assumptions: BTreeSet::new(),
         calls: 0,
+        declared: 0,
     };
     assume_decorators(&function.decorators, contract, &mut evaluator.assumptions)?;
     let (mut state, requires, requires_undefined) = prepare(&inputs, &mut evaluator)?;
@@ -89,6 +95,7 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
         all.and(&ranges(value, function.language))
     });
     bind_parameters(function, &inputs, &mut state, &mut evaluator)?;
+    evaluator.enter_function(function, &mut state);
     state.guard = requires.clone();
     let mut paths = evaluator.statements(&function.body, vec![state])?;
     // A raise no handler caught leaves the function without a normal return.
@@ -125,6 +132,7 @@ fn prepare(
         effects: BTreeMap::new(),
         calls: BTreeMap::new(),
         fresh: BTreeSet::new(),
+        variables: BTreeMap::new(),
         result: None,
         raised: None,
         pending: Vec::new(),
@@ -275,6 +283,7 @@ impl Execution {
             symbols: BTreeMap::new(),
             assumptions: BTreeSet::new(),
             calls: 0,
+            declared: 0,
         }
         .specification(&ir::condition(expression)?, &mut state)?;
         Ok(condition.as_bool()?.and(&undefined.not()))
@@ -406,6 +415,8 @@ struct Evaluator<'a> {
     symbols: BTreeMap<String, (String, Sort)>,
     assumptions: BTreeSet<String>,
     calls: usize,
+    /// How many variables were declared, which numbers the next one.
+    declared: u64,
 }
 
 impl Evaluator<'_> {
@@ -454,11 +465,11 @@ impl Evaluator<'_> {
 
     fn run(&mut self, statement: &Statement, mut state: State) -> Result<Vec<State>, String> {
         match &statement.kind {
-            Stmt::Bind(pattern, expression) | Stmt::Assign(pattern, expression) => {
-                let value = self.expression(expression, &mut state)?;
-                let is_assignment = matches!(statement.kind, Stmt::Assign(..));
-                self.bind(pattern, value, is_assignment, &mut state)?;
-                track_freshness(pattern, expression, &mut state.fresh);
+            Stmt::Bind(pattern, expression) => {
+                self.assign(pattern, expression, false, &mut state)?;
+            }
+            Stmt::Assign(pattern, expression) => {
+                self.assign(pattern, expression, true, &mut state)?;
             }
             Stmt::Update(name, operator, expression) => {
                 let value = self.expression(expression, &mut state)?;
@@ -514,6 +525,26 @@ impl Evaluator<'_> {
         Ok(vec![state])
     }
 
+    /// Binds what `pattern` names to the value of `expression`: a
+    /// declaration, or an assignment to variables already declared.
+    fn assign(
+        &mut self,
+        pattern: &ir::Pattern,
+        expression: &Expr,
+        is_assignment: bool,
+        state: &mut State,
+    ) -> Result<(), String> {
+        let value = self.expression(expression, state)?;
+        self.bind(pattern, value, is_assignment, state)?;
+        // A Go `:=` declares where it runs; Python and TypeScript declare
+        // for the whole function or block.
+        if !is_assignment && self.language == Language::Go {
+            self.declare_pattern(pattern, state);
+        }
+        track_freshness(pattern, expression, &mut state.fresh);
+        Ok(())
+    }
+
     fn branch(
         &mut self,
         line: usize,
@@ -537,7 +568,9 @@ impl Evaluator<'_> {
 
     /// Runs a block. TypeScript and Go declarations last until its end, where
     /// what they shadowed is visible again; Python's last for the function.
-    fn block(&mut self, body: &[Statement], state: State) -> Result<Vec<State>, String> {
+    /// A TypeScript `let` or `const` is a new variable from the start of its
+    /// block, unbound until it is declared.
+    fn block(&mut self, body: &[Statement], mut state: State) -> Result<Vec<State>, String> {
         if self.language == Language::Python {
             return self.statements(body, vec![state]);
         }
@@ -547,18 +580,24 @@ impl Evaluator<'_> {
                 pattern_names(pattern, &mut declared);
             }
         }
-        let outer: Vec<(String, Option<Value>, bool)> = declared
+        let outer: Vec<Shadowed> = declared
             .into_iter()
-            .map(|name| {
-                let value = state.env.get(&name).cloned();
-                let is_fresh = state.fresh.contains(&name);
-                (name, value, is_fresh)
+            .map(|name| Shadowed {
+                value: state.env.get(&name).cloned(),
+                is_fresh: state.fresh.contains(&name),
+                variable: state.variables.get(&name).copied(),
+                name,
             })
             .collect();
+        if self.language == Language::TypeScript {
+            for shadowed in &outer {
+                self.unbind(&shadowed.name, &mut state);
+            }
+        }
         let mut paths = self.statements(body, vec![state])?;
         for path in &mut paths {
-            for (name, value, is_fresh) in &outer {
-                restore(path, name, value.as_ref(), *is_fresh);
+            for shadowed in &outer {
+                restore(path, shadowed);
             }
         }
         Ok(paths)
@@ -601,14 +640,27 @@ impl Evaluator<'_> {
     }
 }
 
-/// Makes `name` again what it was before a block declared its own.
-fn restore(state: &mut State, name: &str, value: Option<&Value>, is_fresh: bool) {
-    match value {
-        Some(value) => state.env.insert(name.to_owned(), value.clone()),
+/// What a name was before a block declared its own.
+struct Shadowed {
+    name: String,
+    value: Option<Value>,
+    is_fresh: bool,
+    variable: Option<u64>,
+}
+
+/// Makes a name again what it was before a block declared its own.
+fn restore(state: &mut State, shadowed: &Shadowed) {
+    let name = &shadowed.name;
+    match &shadowed.value {
+        Some(value) => state.env.insert(name.clone(), value.clone()),
         None => state.env.remove(name),
     };
-    if is_fresh {
-        state.fresh.insert(name.to_owned());
+    match shadowed.variable {
+        Some(variable) => state.variables.insert(name.clone(), variable),
+        None => state.variables.remove(name),
+    };
+    if shadowed.is_fresh {
+        state.fresh.insert(name.clone());
     } else {
         state.fresh.remove(name);
     }
