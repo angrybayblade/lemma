@@ -17,21 +17,32 @@ pub(super) fn read(file: &str, source: &str, symbol: &str) -> Result<(Language, 
     let extension = std::path::Path::new(file)
         .extension()
         .and_then(|s| s.to_str());
-    let (language, grammar): (Language, tree_sitter::Language) = match extension {
-        Some("ts" | "mts" | "cts") => (
-            Language::TypeScript,
-            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        ),
-        // TypeScript with JSX; JSX itself is refused like any other syntax
-        // the reader does not know.
-        Some("tsx") => (
-            Language::TypeScript,
-            tree_sitter_typescript::LANGUAGE_TSX.into(),
-        ),
-        Some("py") => (Language::Python, tree_sitter_python::LANGUAGE.into()),
-        Some("go") => (Language::Go, tree_sitter_go::LANGUAGE.into()),
-        _ => return Err("proof supports .ts, .tsx, .py and .go implementations".to_owned()),
-    };
+    let (language, indexed, grammar): (Language, lemma_model::Language, tree_sitter::Language) =
+        match extension {
+            Some("ts" | "mts" | "cts") => (
+                Language::TypeScript,
+                lemma_model::Language::TypeScript,
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            ),
+            // TypeScript with JSX; JSX itself is refused like any other syntax
+            // the reader does not know.
+            Some("tsx") => (
+                Language::TypeScript,
+                lemma_model::Language::Tsx,
+                tree_sitter_typescript::LANGUAGE_TSX.into(),
+            ),
+            Some("py") => (
+                Language::Python,
+                lemma_model::Language::Python,
+                tree_sitter_python::LANGUAGE.into(),
+            ),
+            Some("go") => (
+                Language::Go,
+                lemma_model::Language::Go,
+                tree_sitter_go::LANGUAGE.into(),
+            ),
+            _ => return Err("proof supports .ts, .tsx, .py and .go implementations".to_owned()),
+        };
     let mut parser = Parser::new();
     parser.set_language(&grammar).map_err(|e| e.to_string())?;
     let tree = parser
@@ -43,7 +54,7 @@ pub(super) fn read(file: &str, source: &str, symbol: &str) -> Result<(Language, 
         );
     }
     let reader = Reader { source, language };
-    let definition = reader.lookup(tree.root_node(), symbol)?;
+    let definition = reader.find(tree.root_node(), symbol, indexed)?;
     Ok((language, reader.function(&definition)?))
 }
 
