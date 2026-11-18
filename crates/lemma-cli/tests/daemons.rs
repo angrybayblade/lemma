@@ -544,6 +544,38 @@ fn a_lookup_from_the_index_is_answered_while_another_waits_for_its_server() {
     assert!(after.contains("busy with `lemma refs price"), "{after}");
 }
 
+/// The line of `lemma daemon status` in `directory` about the server
+/// `provider`, once there is one; `None` if there never is.
+fn server_line(runtime: &Path, directory: &Path, provider: &str) -> Option<String> {
+    for _ in 0..200 {
+        let status = said(&lemma(runtime, directory, &["daemon", "status"]));
+        if let Some(line) = status.lines().find(|line| line.starts_with(provider)) {
+            return Some(line.to_owned());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    None
+}
+
+#[test]
+fn a_symbol_search_has_the_server_of_what_it_found_started() {
+    let space = space();
+    let runtime = space.path().canonicalize().unwrap();
+    let _daemons = Daemons(&runtime);
+    let app = runtime.join("app");
+    checkout_with_a_silent_server(&runtime, &app);
+    let missed = said(&lemma(&runtime, &app, &["symbols", "no_such_name"]));
+    let before = said(&lemma(&runtime, &app, &["daemon", "status"]));
+
+    let found = said(&lemma(&runtime, &app, &["symbols", "price"]));
+    let server = server_line(&runtime, &app, "pyright");
+
+    assert!(missed.contains("no matching symbols"), "{missed}");
+    assert!(!before.contains("pyright"), "{before}");
+    assert!(found.contains("src/m.py"), "{found}");
+    assert!(server.is_some(), "no server was started");
+}
+
 #[test]
 fn a_lookup_waits_for_its_server_as_long_as_it_was_told_and_no_longer() {
     let space = space();

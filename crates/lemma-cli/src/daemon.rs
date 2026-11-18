@@ -9,7 +9,7 @@
 //! starts its daemon. It exits after a period without commands, stopping
 //! its servers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
@@ -35,7 +35,7 @@ use lemma_query::UsesAnswer;
 use crate::anchors::UsesRequest;
 use crate::cli::Cli;
 use crate::config::{self, Autostart, Config};
-use crate::engine::{Engine, Invocation};
+use crate::engine::{Engine, Invocation, Touched};
 use crate::sentry::Sentry;
 use crate::workspace::{Workspace, named_repositories};
 
@@ -544,9 +544,18 @@ impl Lanes {
             .spawn(move || provider_lane.serve(&for_providers))?;
         let (to_index, for_index) = mpsc::channel();
         let last_request = Arc::clone(last_request);
+        let for_lookups = socket.to_path_buf();
         let from_index = thread::Builder::new()
             .name("index-lane".to_owned())
-            .spawn(move || serve_index_lane(beside, &for_index, &last_request, logger))?;
+            .spawn(move || {
+                let lane = IndexLane {
+                    engine: beside,
+                    socket: for_lookups,
+                    last_request,
+                    logger,
+                };
+                lane.serve(&for_index);
+            })?;
         Ok(Self {
             to_providers,
             to_index,
@@ -727,32 +736,80 @@ fn answered_from_index(args: &[String]) -> Option<Cli> {
 
 /// The index lane: answers lookups that ask no provider, one at a time,
 /// from `engine`, which shares its indexes with the provider lane's.
-fn serve_index_lane(
-    mut engine: Engine,
-    asked: &Receiver<IndexLookup>,
-    last_request: &Mutex<Instant>,
+struct IndexLane {
+    engine: Engine,
+    /// The daemon's own socket, to ask the provider lane through.
+    socket: PathBuf,
+    last_request: Arc<Mutex<Instant>>,
     logger: &'static crate::logging::Logger,
-) {
-    let mut tidied = Instant::now();
-    for lookup in asked {
-        let IndexLookup {
-            cli,
-            invocation,
-            mut stream,
-        } = lookup;
-        let lines = Lines::OfThisThread(logger);
-        let reply = busy(last_request, || {
-            run_parsed(&mut engine, cli, &invocation, lines)
-        });
-        let _ = send(&mut stream, &reply);
-        // The provider lane's upkeep does not reach this engine, which
-        // would otherwise keep the files of deleted directories open.
-        if tidied.elapsed() >= MAINTENANCE_INTERVAL {
-            engine.forget_vanished();
-            tidied = Instant::now();
+}
+
+impl IndexLane {
+    fn serve(mut self, asked: &Receiver<IndexLookup>) {
+        let mut tidied = Instant::now();
+        let mut started_ahead = BTreeSet::new();
+        for lookup in asked {
+            let IndexLookup {
+                cli,
+                invocation,
+                mut stream,
+            } = lookup;
+            let lines = Lines::OfThisThread(self.logger);
+            let reply = busy(&self.last_request, || {
+                run_parsed(&mut self.engine, cli, &invocation, lines)
+            });
+            let _ = send(&mut stream, &reply);
+            let touched = self.engine.take_touched();
+            if let Some(touched) = touched.filter(|touched| started_ahead.insert(touched.clone())) {
+                start_ahead(&self.socket, &touched, &invocation);
+            }
+            if tidied.elapsed() >= MAINTENANCE_INTERVAL {
+                // The provider lane's upkeep does not reach this engine,
+                // which would otherwise keep the files of deleted
+                // directories open.
+                self.engine.forget_vanished();
+                // A server stopped for being idle since is asked for
+                // again by the next lookup about its code.
+                started_ahead.clear();
+                tidied = Instant::now();
+            }
         }
+        self.engine.shutdown();
     }
-    engine.shutdown();
+}
+
+/// Has the server for the code a lookup was about started in the
+/// background, so that the lookup likely to follow, which asks that
+/// server, does not wait for it to load the project. The servers are the
+/// provider lane's, so it is asked as a person would ask it, with `lemma
+/// daemon lsp start`; nobody waits for its answer, and a server that
+/// cannot start is the later lookup's to report.
+fn start_ahead(socket: &Path, touched: &Touched, invocation: &Invocation) {
+    let request = Request::Run {
+        build: build_id(),
+        args: start_command(touched),
+        cwd: touched.root.clone(),
+        place: touched.root.clone(),
+        path_env: invocation.path_env.clone().map(OsString::into_vec),
+        wants_sentry: false,
+    };
+    let Ok(mut stream) = UnixStream::connect(socket) else {
+        return;
+    };
+    let _ = send(&mut stream, &request);
+}
+
+/// The command that starts the server `touched` names, as its arguments.
+fn start_command(touched: &Touched) -> Vec<String> {
+    let words = [
+        "daemon",
+        "lsp",
+        "start",
+        &touched.root.display().to_string(),
+        "--language",
+        touched.language.as_str(),
+    ];
+    words.map(str::to_owned).to_vec()
 }
 
 /// Puts around the engine's status what the daemon serves, `before` it,

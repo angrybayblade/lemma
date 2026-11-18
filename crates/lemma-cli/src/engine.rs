@@ -117,6 +117,10 @@ pub(crate) struct Engine {
     /// The workspace the graph being answered was traced through, if it
     /// was traced through one this process keeps.
     traced_through: Option<PathBuf>,
+    /// The repository and language the last lookup answered from the
+    /// index was about, for whoever runs the engine to have that
+    /// repository's server started; see [`Engine::take_touched`].
+    touched: Option<Touched>,
     /// What building exports read, so building them again after an edit
     /// parses only what changed. Made when exports are first built: routes
     /// are kept on disk too, in a directory found then.
@@ -234,6 +238,14 @@ struct OpenStore {
     inode: Option<u64>,
 }
 
+/// A repository's code in one language, which a lookup was about.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Touched {
+    /// The repository's directory.
+    pub root: PathBuf,
+    pub language: Language,
+}
+
 impl Engine {
     /// An engine for a single command.
     pub fn one_shot() -> Self {
@@ -252,6 +264,7 @@ impl Engine {
             is_command_waiting: None,
             got_ready: HashMap::new(),
             traced_through: None,
+            touched: None,
             kept_for_exports: None,
         }
     }
@@ -273,6 +286,7 @@ impl Engine {
             is_command_waiting: None,
             got_ready: HashMap::new(),
             traced_through: None,
+            touched: None,
             kept_for_exports: None,
         }
     }
@@ -316,6 +330,16 @@ impl Engine {
         engine.live_indexes = Arc::clone(&self.live_indexes);
         engine.searches = Arc::clone(&self.searches);
         engine
+    }
+
+    /// The repository and language the last symbol search or outline was
+    /// about, once. Such a lookup is answered from the index, and is
+    /// usually followed by one that asks the repository's language server:
+    /// started now, the server loads the project while the answer is being
+    /// read. A long-lived engine records it; one made for a single command
+    /// would not be there for the next.
+    pub fn take_touched(&mut self) -> Option<Touched> {
+        self.touched.take()
     }
 
     /// Has getting ready for graphs give way to commands: `is_waiting`
@@ -728,10 +752,15 @@ impl Engine {
             lemma_graph::compose::composition(lemma_path, &cache, indexing.cloning())?;
         let members = composition.members;
         if matches!(indexing, Indexing::FilesOnly) {
+            let mut located = Vec::new();
             for member in &members {
                 let indexed_root = member_root(member, &cache)?;
                 let db_path = default_index_path(&member.root)?;
                 self.index_files(&db_path, &indexed_root, Some(&member.file))?;
+                located.push(stored_member(member, &indexed_root, &db_path));
+            }
+            if request.db.is_none() {
+                self.mount_moved_members(&default_index_path(root)?, &located)?;
             }
             return Ok(0);
         }
@@ -826,14 +855,32 @@ impl Engine {
         let db_path = default_index_path(&member.root)?;
         let states = kept.and_then(|kept| kept.of(&indexed_root));
         let indexed = self.index_repository(&db_path, &indexed_root, Some(&member.file), states)?;
-        let stored = StoredMember {
-            name: member.name.clone(),
-            root: member.root.display().to_string(),
-            revision: member.commit.clone(),
-            indexed_root: indexed_root.display().to_string(),
-            database: db_path.display().to_string(),
-        };
-        Ok((stored, indexed))
+        Ok((stored_member(member, &indexed_root, &db_path), indexed))
+    }
+
+    /// Mounts a workspace's members where they are now, when its index at
+    /// `db_path` still has one of them somewhere else.
+    ///
+    /// The index records each member's directory, so a workspace that was
+    /// renamed, or copied with its index, names directories that are gone or
+    /// are another workspace's. Lookups read members from that record:
+    /// left alone, they would find nothing, or answer about the other
+    /// workspace's code.
+    fn mount_moved_members(
+        &mut self,
+        db_path: &Path,
+        located: &[StoredMember],
+    ) -> anyhow::Result<()> {
+        // Nothing is mounted before the first `lemma index` of a workspace.
+        if !db_path.exists() {
+            return Ok(());
+        }
+        let mounted = open_store(&mut self.stores, db_path)?.workspace_members()?;
+        if !any_member_moved(&mounted, located) {
+            return Ok(());
+        }
+        store_for_writing(&mut self.stores, db_path)?.mount_workspace(located)?;
+        Ok(())
     }
 
     fn symbols(
@@ -858,6 +905,10 @@ impl Engine {
         };
         if !members.is_empty() {
             let found = self.workspace_symbols(&members, &filter)?;
+            self.touched = found
+                .first()
+                .filter(|_| self.warms_up_after_index)
+                .and_then(|best| touched_member(&members, best));
             output::symbols(out, &found, request.format)?;
             return Ok(0);
         }
@@ -873,6 +924,13 @@ impl Engine {
             Some(found) => found,
             None => store.find_symbols(snapshot.id, &filter)?,
         };
+        self.touched = found
+            .first()
+            .filter(|_| self.warms_up_after_index)
+            .map(|best| Touched {
+                root: PathBuf::from(&snapshot.snapshot.root),
+                language: best.language,
+            });
         output::symbols(out, &found, request.format)?;
         Ok(0)
     }
@@ -887,6 +945,13 @@ impl Engine {
         let found = self.index_of_file(request.find_index()?, &file)?;
         let store = open_store(&mut self.stores, &found.db_path)?;
         let mut symbols = lemma_query::symbols_in_file(store, found.snapshot.id, &found.relative)?;
+        self.touched = symbols
+            .first()
+            .filter(|_| self.warms_up_after_index)
+            .map(|first| Touched {
+                root: PathBuf::from(&found.snapshot.snapshot.root),
+                language: first.language,
+            });
         let Some(member) = found.member else {
             output::outline(out, &found.relative, &symbols, request.format)?;
             return Ok(0);
@@ -1797,6 +1862,50 @@ impl Indexing {
             Indexing::Refresh | Indexing::FilesOnly => lemma_graph::repos::Cloning::Forbidden,
         }
     }
+}
+
+/// A member as a workspace's index records it: where its files and its
+/// own index are.
+fn stored_member(
+    member: &lemma_graph::compose::Member,
+    indexed_root: &Path,
+    db_path: &Path,
+) -> StoredMember {
+    StoredMember {
+        name: member.name.clone(),
+        root: member.root.display().to_string(),
+        revision: member.commit.clone(),
+        indexed_root: indexed_root.display().to_string(),
+        database: db_path.display().to_string(),
+    }
+}
+
+/// The member a symbol found in a workspace is in, and the symbol's
+/// language. `None` for a member pinned to a commit: nobody is working in
+/// its worktree, so its server is started when one is asked, not ahead.
+fn touched_member(members: &[StoredMember], symbol: &StoredSymbol) -> Option<Touched> {
+    let member = members.iter().find(|member| {
+        symbol
+            .path
+            .strip_prefix(member.name.as_str())
+            .is_some_and(|rest| rest.starts_with(':'))
+    })?;
+    if member.revision.is_some() {
+        return None;
+    }
+    Some(Touched {
+        root: PathBuf::from(&member.indexed_root),
+        language: symbol.language,
+    })
+}
+
+/// Whether a member a workspace's index has `mounted` is now `located`
+/// somewhere else. A member only one side names has not moved: adding and
+/// dropping members is the full index's to record, with their exports.
+fn any_member_moved(mounted: &[StoredMember], located: &[StoredMember]) -> bool {
+    mounted
+        .iter()
+        .any(|was| located.iter().any(|now| now.name == was.name && now != was))
 }
 
 /// What indexing one repository produced.

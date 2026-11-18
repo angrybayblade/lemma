@@ -89,6 +89,8 @@ LSP does not guarantee a universal “entire repository analysis complete” sig
 
 **Waiting that can be given up (2026-11-14).** A client can be handed a function that says when to stop waiting for answers (`LspClient::interrupt_when`), for requests made ahead of anyone asking ([spec 14](14-sentry.md), "More than one graph, and giving way"). The request is not cancelled, and the same request made again before the server is told of a change waits for the answer already on its way.
 
+**A server after a bulk change (2026-11-17).** Before a lookup, a running server is told which files changed since it last heard (`workspace/didChangeWatchedFiles`), and asked at once. That holds for an edit. After a checkout or a rebase it does not: a server told of thousands of files goes on reading them while it answers, from whichever it has read so far, and no message says when it has finished. References asked right after a large branch switch came back with one use where there were three, the two missing being in a file the server had not reached, and the answer was then kept as the snapshot's. So when more than 1,000 files changed at once, the number sentry takes for bulk state ([spec 14](14-sentry.md)), the server is not told: it is stopped, and the lookup starts a fresh one, which reads every file as it is before answering. That costs the server's loading time, which a correct answer after such a switch cost anyway. Below that number the server is told as before; whether a smaller change can be answered too early is not known, and none was seen.
+
 ## Proposed normalized operations
 
 ```text

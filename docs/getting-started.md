@@ -129,7 +129,7 @@ via pyright
   tests/test_router.py:40:5  in test_delete_unknown_route
 ```
 
-Commands run in a background daemon that `lemma` starts on first use. The daemon starts each language server after `lemma index` and caches answers until the code changes. The first lookup may wait for the server to load the project; later lookups, even of other symbols, take milliseconds.
+Commands run in a background daemon that `lemma` starts on first use. The daemon starts a language server after `lemma index` on a repository, or when `lemma symbols` or `lemma outline` first finds code in its language, and caches answers until the code changes. The first lookup may wait for the server to load the project; later lookups, even of other symbols, take milliseconds.
 
 If a name matches more than one symbol, Lemma lists the candidates. Choose one with the qualified name, a filter such as `--language python` or `--path api/`, or the id: `lemma refs '#f256e26e'`.
 
