@@ -934,8 +934,6 @@ fn unpacking_a_sequence_of_another_length_follows_the_language() {
         execution.paths[0].result,
         Some(symbolic::Value::Undefined)
     ));
-    let variable_key = "def f(r, key):\n    return r[key]\n";
-    assert!(source::read("x.py", variable_key, "f").is_err());
 }
 
 #[test]
@@ -1894,4 +1892,153 @@ fn an_entry_of_a_dict_is_not_an_attribute_and_an_inherited_property_is_not_undef
         let refused = returned(file, body, &contract).unwrap_err();
         assert!(refused.contains(why), "{body}: {refused}");
     }
+}
+
+fn key_contract() -> Json {
+    json!({
+        "inputs": {"r": {"ok": "Bool"}, "k": "Text", "i": "Int"},
+        "parameters": ["r", "k", "i"],
+        "ensures": [{"name": "any", "condition": "true"}],
+    })
+}
+
+#[test]
+fn a_computed_key_reads_whichever_entry_or_item_it_names() {
+    let contract = key_contract();
+    for (file, text, expected) in [
+        // A constant the code computed is a constant key.
+        (
+            "x.py",
+            "def f(r, k, i):\n    d = {\"a\": 1, \"b\": 2}\n    name = \"b\"\n    return d[name]\n",
+            "2",
+        ),
+        (
+            "x.py",
+            "def f(r, k, i):\n    xs = [5, 6, 7]\n    at = 1\n    return xs[at + 1]\n",
+            "7",
+        ),
+        (
+            "x.ts",
+            "function f(r, k, i) {\n  const xs = [5, 6];\n  const at = 1;\n  return xs[at];\n}\n",
+            "6",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(r R, k string, i int) int {\n  xs := []int{5, 6}\n  at := 1\n  return xs[at]\n}\n",
+            "6",
+        ),
+    ] {
+        assert_eq!(
+            returned(file, text, &contract).unwrap(),
+            [expected],
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_computed_key_is_refused_where_nothing_gives_what_it_reads() {
+    let contract = key_contract();
+    for (file, text, why) in [
+        (
+            "x.py",
+            "def f(r, k, i):\n    return r[k]\n",
+            "may name a field the contract never declared",
+        ),
+        (
+            "x.ts",
+            "function f(r, k, i) {\n  return r[k];\n}\n",
+            "may name a field the contract never declared",
+        ),
+        (
+            "x.py",
+            "def f(r, k, i):\n    d = {\"a\": 1}\n    return d[r.ok]\n",
+            "a Boolean key differs between languages",
+        ),
+        (
+            "x.py",
+            "def f(r, k, i):\n    xs = [1]\n    return xs[k]\n",
+            "only an object has entries under text keys",
+        ),
+        (
+            "x.ts",
+            "function f(r, k, i) {\n  const o = {a: 1};\n  return o[i];\n}\n",
+            "only a sequence has elements at positions",
+        ),
+        (
+            "x.py",
+            "def f(r, k, i):\n    d = {\"a\": 1}\n    return d[k, k]\n",
+            "unsupported subscript",
+        ),
+        (
+            "x.ts",
+            "function f(r, k, i) {\n  const o = {a: 1};\n  return o?.[k];\n}\n",
+            "unsupported",
+        ),
+    ] {
+        let refused = returned(file, text, &contract).unwrap_err();
+        assert!(refused.contains(why), "{text}: {refused}");
+    }
+}
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn a_key_that_depends_on_an_input_is_proved_for_every_entry_it_may_name() {
+    let contract = |condition: &str| {
+        json!({
+            "inputs": {"k": "Text", "i": "Int"},
+            "parameters": ["k", "i"],
+            "ensures": [{"name": "holds", "condition": condition}],
+        })
+    };
+    for (file, text, condition, mutation) in [
+        // Python raises for a key the dict lacks, so every return read one.
+        (
+            "x.py",
+            "def f(k, i):\n    d = {\"a\": 1, \"b\": 2}\n    return d[k]\n",
+            "(k == \"a\" && result == 1) || (k == \"b\" && result == 2)",
+            ("\"b\": 2", "\"b\": 3"),
+        ),
+        // Python counts a negative position from the end.
+        (
+            "x.py",
+            "def f(k, i):\n    xs = [5, 6, 7]\n    return xs[i]\n",
+            "(i == 0 - 1 && result == 7) || (i == 0 - 3 && result == 5) || (i >= 0 && i <= 2 && result == i + 5) || (i == 0 - 2 && result == 6)",
+            ("7]", "8]"),
+        ),
+        // Go panics outside the slice.
+        (
+            "x.go",
+            "package p\nfunc f(k string, i int) int {\n  xs := []int{5, 6, 7}\n  return xs[i]\n}\n",
+            "i >= 0 && i <= 2 && result == i + 5",
+            ("7}", "8}"),
+        ),
+        // JavaScript reads undefined outside the array, and for another key.
+        (
+            "x.ts",
+            "function f(k, i) {\n  const xs = [5, 6, 7];\n  const x = xs[i];\n  if (x === undefined) {\n    return 0 - 1;\n  }\n  return x;\n}\n",
+            "(i >= 0 && i <= 2 && result == i + 5) || ((i < 0 || i > 2) && result == 0 - 1)",
+            ("7]", "8]"),
+        ),
+        (
+            "x.ts",
+            "function f(k, i) {\n  const o = {a: 1, b: 2};\n  const x = o[k];\n  if (x === undefined) {\n    return 0;\n  }\n  return x;\n}\n",
+            "(k == \"a\" && result == 1) || (k == \"b\" && result == 2) || (k != \"a\" && k != \"b\" && result == 0)",
+            ("b: 2", "b: 3"),
+        ),
+    ] {
+        let result = check_source(file, text, "f", &contract(condition));
+        assert_eq!(result["observed"]["holds"], true, "{text}: {result}");
+        let mutated = check_source(
+            file,
+            &text.replace(mutation.0, mutation.1),
+            "f",
+            &contract(condition),
+        );
+        assert_eq!(mutated["observed"]["holds"], false, "{text}: {mutated}");
+    }
+    // A computed key of a JavaScript object is read under an assumption.
+    let text = "function f(k, i) {\n  const o = {a: 1};\n  return o[k] === undefined;\n}\n";
+    let result = check_source("x.ts", text, "f", &contract("result == (k != \"a\")"));
+    assert_eq!(result["observed"]["status"], "conditional", "{result}");
 }
