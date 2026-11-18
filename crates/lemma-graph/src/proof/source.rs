@@ -422,6 +422,7 @@ impl<'a> Reader<'a> {
                 kind: Stmt::Return(self.expression(body)?),
             }]
         };
+        check_field_assignments(&body)?;
         Ok(Function {
             language: self.language,
             parameters,
@@ -543,27 +544,29 @@ impl<'a> Reader<'a> {
                 }
                 return Ok(bindings);
             }
+            // `let x;` declares `x` as undefined.
             "variable_declarator" => Stmt::Bind(
                 self.pattern(field(node, "name")?)?,
-                self.expression(field(node, "value")?)?,
+                node.child_by_field_name("value")
+                    .map_or(Ok(Expr::Undefined), |value| self.expression(value))?,
             ),
-            "short_var_declaration" | "assignment_statement" | "assignment" => {
-                self.assignment(node)?
-            }
-            // Nothing in a raise can make the path return normally, so what it
-            // raises is not read.
-            "raise_statement" | "throw_statement" => Stmt::Raise,
-            "assert_statement" => {
-                let condition = children(node)
-                    .into_iter()
-                    .next()
-                    .ok_or("empty assert statement")?;
-                Stmt::Assert(self.expression(condition)?)
-            }
+            "short_var_declaration"
+            | "assignment_statement"
+            | "assignment"
+            | "assignment_expression"
+            | "augmented_assignment"
+            | "augmented_assignment_expression" => self.assignment(node)?,
+            "raise_statement" | "throw_statement" | "assert_statement" => self.exit(node)?,
             "expression_statement" if self.is_go_panic(node) => Stmt::Raise,
             "expression_statement" => {
                 let expression = only(node)?;
-                if expression.kind() == "assignment" {
+                if matches!(
+                    expression.kind(),
+                    "assignment"
+                        | "augmented_assignment"
+                        | "assignment_expression"
+                        | "augmented_assignment_expression"
+                ) {
                     return self.statement(expression);
                 }
                 if !matches!(
@@ -582,6 +585,19 @@ impl<'a> Reader<'a> {
             line: node.start_position().row + 1,
             kind,
         }])
+    }
+
+    /// A statement that may leave the function by raising. Nothing in a raise
+    /// can make the path return normally, so what it raises is not read.
+    fn exit(&self, node: Node<'_>) -> Result<Stmt, String> {
+        if node.kind() != "assert_statement" {
+            return Ok(Stmt::Raise);
+        }
+        let condition = children(node)
+            .into_iter()
+            .next()
+            .ok_or("empty assert statement")?;
+        Ok(Stmt::Assert(self.expression(condition)?))
     }
 
     /// A Go `var` with a value; one without would bind a zero value.
@@ -618,15 +634,79 @@ impl<'a> Reader<'a> {
             })
     }
 
+    /// An assignment, declaration with `:=`, or `op=` update.
     fn assignment(&self, node: Node<'_>) -> Result<Stmt, String> {
-        if node.kind() == "assignment_statement"
-            && field(node, "operator").is_ok_and(|op| self.text(op) != "=")
+        let left = field(node, "left")?;
+        let right = field(node, "right")?;
+        let operator = node
+            .child_by_field_name("operator")
+            .map_or("=", |operator| self.text(operator));
+        let operator = match operator {
+            "=" | ":=" => None,
+            "+=" => Some(Op::Add),
+            "-=" => Some(Op::Subtract),
+            "*=" => Some(Op::Multiply),
+            _ => return self.unsupported(node),
+        };
+        let value = self.expression(right)?;
+        let left = if left.kind() == "expression_list" && children(left).len() == 1 {
+            only(left)?
+        } else {
+            left
+        };
+        if let Some((name, key)) = self.field_target(left)? {
+            let value = match operator {
+                Some(operator) => Expr::Binary(
+                    operator,
+                    Box::new(Expr::Member(
+                        Box::new(Expr::Name(name.clone())),
+                        key.clone(),
+                    )),
+                    Box::new(value),
+                ),
+                None => value,
+            };
+            return Ok(Stmt::SetField(name, key, value));
+        }
+        if let Some(operator) = operator {
+            return Ok(Stmt::Update(self.identifier(left)?, operator, value));
+        }
+        let pattern = self.pattern(left)?;
+        // Python binds wherever it assigns; TypeScript and Go declare with
+        // `let`, `const`, `var` or `:=` and otherwise assign.
+        let is_declaration =
+            self.language == Language::Python || node.kind() == "short_var_declaration";
+        if is_declaration {
+            return Ok(Stmt::Bind(pattern, value));
+        }
+        Ok(Stmt::Assign(pattern, value))
+    }
+
+    /// `name.field` or `name["field"]` as an assignment target.
+    fn field_target(&self, node: Node<'_>) -> Result<Option<(String, String)>, String> {
+        let is_member = matches!(
+            node.kind(),
+            "attribute" | "member_expression" | "selector_expression"
+        );
+        let is_item = matches!(
+            node.kind(),
+            "subscript" | "subscript_expression" | "index_expression"
+        );
+        if !is_member && !is_item {
+            return Ok(None);
+        }
+        let Expr::Member(target, key) = self.expression(node)? else {
+            return self.unsupported(node);
+        };
+        let Expr::Name(name) = *target else {
+            return self.unsupported(node);
+        };
+        if self.language == Language::TypeScript
+            && matches!(key.as_str(), "__proto__" | "constructor" | "prototype")
         {
             return self.unsupported(node);
         }
-        let left = field(node, "left")?;
-        let right = field(node, "right")?;
-        Ok(Stmt::Bind(self.pattern(left)?, self.expression(right)?))
+        Ok(Some((name, key)))
     }
 
     /// What a binding's left side names.
@@ -1285,6 +1365,53 @@ fn decode_escapes(text: &str, language: Language) -> Option<String> {
         decoded.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
     }
     Some(decoded)
+}
+
+/// Refuses assigning a field of a variable the function never binds to a
+/// record literal, such as a parameter: no contract could show such a write
+/// invisible to the caller.
+fn check_field_assignments(body: &[Statement]) -> Result<(), String> {
+    let mut built = std::collections::BTreeSet::new();
+    literal_bindings(body, &mut built);
+    let mut targets = Vec::new();
+    field_assignments(body, &mut targets);
+    for (line, name) in targets {
+        if !built.contains(name) {
+            return Err(format!(
+                "assigning a field of `{name}` at line {line}, an object the function did not build, is unsupported"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn literal_bindings<'b>(body: &'b [Statement], built: &mut std::collections::BTreeSet<&'b str>) {
+    for statement in body {
+        match &statement.kind {
+            Stmt::Bind(Pattern::Name(name), Expr::Record(_) | Expr::Sequence(_))
+            | Stmt::Assign(Pattern::Name(name), Expr::Record(_) | Expr::Sequence(_)) => {
+                built.insert(name);
+            }
+            Stmt::If(_, then, otherwise) => {
+                literal_bindings(then, built);
+                literal_bindings(otherwise, built);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn field_assignments<'b>(body: &'b [Statement], targets: &mut Vec<(usize, &'b str)>) {
+    for statement in body {
+        match &statement.kind {
+            Stmt::SetField(name, _, _) => targets.push((statement.line, name)),
+            Stmt::If(_, then, otherwise) => {
+                field_assignments(then, targets);
+                field_assignments(otherwise, targets);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn required(name: String) -> Parameter {

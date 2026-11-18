@@ -105,7 +105,12 @@ impl Term {
 #[derive(Debug, Clone)]
 pub(in crate::proof) enum Value {
     Scalar(Term),
+    /// A record whose shape a contract declared: it may hold fields the
+    /// contract never named, so reading one of those has no known value.
     Record(BTreeMap<String, Value>),
+    /// An object the checked code built from a literal: it holds exactly
+    /// these fields.
+    Object(BTreeMap<String, Value>),
     /// A tuple, list or array of known length.
     Sequence(Vec<Value>),
     /// A Python set: its elements, in no order that may be read.
@@ -162,13 +167,35 @@ impl Value {
     }
 }
 
+/// What reading a field an object lacks does: Python raises, JavaScript
+/// reads undefined, and a contract counts the read as undefined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::proof) enum Missing {
+    Raises,
+    IsUndefined,
+    IsUnsupported,
+}
+
+impl Missing {
+    pub(in crate::proof) fn of(language: Language) -> Self {
+        match language {
+            Language::Python => Self::Raises,
+            Language::TypeScript => Self::IsUndefined,
+            // A Go struct literal leaves out fields as zero values of types
+            // that are not known here.
+            Language::Go => Self::IsUnsupported,
+        }
+    }
+}
+
 /// A field read: the value read, and the condition under which the read
-/// reaches null or undefined. An optional read yields undefined there
-/// instead, as JavaScript's `?.` does.
+/// raises, as reading a field of null does in every language. An optional
+/// read yields undefined there instead, as JavaScript's `?.` does.
 pub(in crate::proof) fn read_field(
     value: &Value,
     name: &str,
     is_optional: bool,
+    missing: Missing,
 ) -> Result<(Value, Term), String> {
     match value {
         Value::Record(fields) => fields
@@ -176,14 +203,22 @@ pub(in crate::proof) fn read_field(
             .cloned()
             .map(|field| (field, Term::boolean(false)))
             .ok_or_else(|| format!("record has no declared field `{name}`")),
+        Value::Object(fields) => match (fields.get(name), missing) {
+            (Some(field), _) => Ok((field.clone(), Term::boolean(false))),
+            (None, Missing::Raises) => Ok((Value::Unreachable, Term::boolean(true))),
+            (None, Missing::IsUndefined) => Ok((Value::Undefined, Term::boolean(false))),
+            (None, Missing::IsUnsupported) => Err(format!(
+                "the object has no field `{name}`, whose zero value is unknown"
+            )),
+        },
         Value::Null | Value::Undefined if is_optional => {
             Ok((Value::Undefined, Term::boolean(false)))
         }
         Value::Null | Value::Undefined => Ok((Value::Unreachable, Term::boolean(true))),
         Value::Unreachable => Ok((Value::Unreachable, Term::boolean(false))),
         Value::Choice(test, then, otherwise) => {
-            let (then, then_fails) = read_field(then, name, is_optional)?;
-            let (otherwise, otherwise_fails) = read_field(otherwise, name, is_optional)?;
+            let (then, then_fails) = read_field(then, name, is_optional, missing)?;
+            let (otherwise, otherwise_fails) = read_field(otherwise, name, is_optional, missing)?;
             let fails = test.and(&then_fails).or(&test.not().and(&otherwise_fails));
             Ok((Value::choice(test, then, otherwise), fails))
         }
@@ -197,6 +232,8 @@ pub(in crate::proof) fn read_field(
 /// Go compare plain data, and `is` compares with `None`, `True` or `False`.
 pub(in crate::proof) fn equal(left: &Value, right: &Value) -> Result<Term, String> {
     match (left, right) {
+        // No path observes an unreachable value, so any answer will do.
+        (Value::Unreachable, _) | (_, Value::Unreachable) => Ok(Term::boolean(false)),
         (Value::Choice(test, then, otherwise), other)
         | (other, Value::Choice(test, then, otherwise)) => {
             Ok(test.ite(&equal(then, other)?, &equal(otherwise, other)?))
@@ -207,8 +244,8 @@ pub(in crate::proof) fn equal(left: &Value, right: &Value) -> Result<Term, Strin
         (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => {
             Ok(Term::boolean(false))
         }
-        (absent, Value::Scalar(_) | Value::Record(_))
-        | (Value::Scalar(_) | Value::Record(_), absent)
+        (absent, Value::Scalar(_) | Value::Record(_) | Value::Object(_) | Value::Sequence(_))
+        | (Value::Scalar(_) | Value::Record(_) | Value::Object(_) | Value::Sequence(_), absent)
             if absent.is_absent() =>
         {
             Ok(Term::boolean(false))

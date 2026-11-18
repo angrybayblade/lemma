@@ -82,7 +82,7 @@ fn unmodeled_calls_and_ghost_inputs_are_not_source_implementations() {
 }
 
 #[test]
-fn ambiguous_symbols_and_rebinding_are_refused() {
+fn ambiguous_symbols_are_refused() {
     assert!(
         source::read(
             "x.py",
@@ -91,13 +91,24 @@ fn ambiguous_symbols_and_rebinding_are_refused() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn reassigning_a_parameter_never_changes_what_a_contract_means_by_an_input() {
     let (_, function) = source::read(
         "x.py",
         "def f(request):\n    request = False\n    return request\n",
         "f",
     )
     .unwrap();
-    assert!(symbolic::execute(&function, &contract(source::Language::Python)).is_err());
+    let contract = contract(source::Language::Python);
+    let execution = symbolic::execute(&function, &contract).unwrap();
+    let path = &execution.paths[0];
+    assert!(matches!(&path.result, Some(symbolic::Value::Scalar(term)) if term.code == "false"));
+    let reads_input = execution
+        .postcondition(path, "request.allowed || !request.allowed", &contract)
+        .unwrap();
+    assert_ne!(reads_input.code, "false");
 }
 
 #[test]
@@ -985,4 +996,62 @@ fn a_set_is_read_for_membership_only_and_chains_with_calls_are_refused() {
         )
         .is_err()
     );
+}
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn locals_are_reassigned_and_fresh_objects_are_built_field_by_field() {
+    let contract = json!({
+        "inputs": {"r": {"limit": "Int", "cursor": ["Null", "Text"]}},
+        "parameters": ["r"],
+        "ensures": [{"name": "query", "condition": "result.limit == r.limit + 1 && (r.cursor == null || result.after == r.cursor)"}],
+    });
+    for (file, text) in [
+        (
+            "x.py",
+            "def f(r):\n    params = {'limit': r.limit}\n    params['limit'] += 1\n    if r.cursor is not None:\n        params['after'] = r.cursor\n    return params\n",
+        ),
+        (
+            "x.ts",
+            "function f(r) {\n  const params = { limit: r.limit };\n  params.limit += 1;\n  if (r.cursor !== null) {\n    params.after = r.cursor;\n  }\n  return params;\n}\n",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(r R) Q {\n  limit := r.limit\n  limit = limit + 1\n  q := Q{limit: limit}\n  if r.cursor != nil {\n    q.after = r.cursor\n  }\n  return q\n}\n",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &contract);
+        assert_eq!(result["observed"]["holds"], true, "{file}: {result}");
+    }
+}
+
+#[test]
+fn objects_others_can_see_are_never_assigned_and_blocks_scope_declarations() {
+    let contract: Contract = serde_json::from_value(json!({
+        "inputs": {"r": {"ok": "Bool"}},
+        "parameters": ["r"],
+        "models": {"send": {"assumption": "send records its argument", "parameters": ["body"], "returns": true}},
+        "ensures": [{"name": "any", "condition": "true"}],
+    }))
+    .unwrap();
+    let mutates_input = "def f(r):\n    r.ok = True\n    return r\n";
+    assert!(source::read("x.py", mutates_input, "f").is_err());
+    for text in [
+        "def f(r):\n    body = {}\n    send(body)\n    body['late'] = True\n    return body\n",
+        "def f(r):\n    body = {}\n    alias = body\n    body['late'] = True\n    return alias\n",
+    ] {
+        let (_, function) = source::read("x.py", text, "f").unwrap();
+        let error = symbolic::execute(&function, &contract).err().unwrap();
+        assert!(error.contains("seen elsewhere"), "{text}: {error}");
+    }
+    let shadowed =
+        "function f(r) {\n  const x = 1;\n  if (r.ok) {\n    const x = 2;\n  }\n  return x;\n}\n";
+    let (_, function) = source::read("x.ts", shadowed, "f").unwrap();
+    let execution = symbolic::execute(&function, &contract).unwrap();
+    for path in &execution.paths {
+        assert!(matches!(&path.result, Some(symbolic::Value::Scalar(term)) if term.code == "1"));
+    }
+    let undeclared = "function f(r) {\n  y = 1;\n  return y;\n}\n";
+    let (_, function) = source::read("x.ts", undeclared, "f").unwrap();
+    assert!(symbolic::execute(&function, &contract).is_err());
 }
