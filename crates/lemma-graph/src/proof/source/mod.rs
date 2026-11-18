@@ -194,6 +194,9 @@ impl<'a> Reader<'a> {
             }]
         };
         check_field_assignments(&body)?;
+        if self.language == Language::Python {
+            check_attribute_assignments(&body)?;
+        }
         Ok(Function {
             language: self.language,
             parameters,
@@ -322,6 +325,23 @@ fn check_field_assignments(body: &[Statement]) -> Result<(), String> {
     Ok(())
 }
 
+/// Refuses assigning an attribute of an object a Python function built: it
+/// builds dicts, lists and tuples, none of which takes a new attribute.
+fn check_attribute_assignments(body: &[Statement]) -> Result<(), String> {
+    for statement in body {
+        if let Stmt::SetField(name, field, _) = &statement.kind {
+            return Err(format!(
+                "assigning the attribute `{field}` of `{name}` at line {}, which Python refuses on a dict or a list, is unsupported",
+                statement.line
+            ));
+        }
+        for block in statement.kind.blocks() {
+            check_attribute_assignments(block)?;
+        }
+    }
+    Ok(())
+}
+
 fn literal_bindings<'b>(body: &'b [Statement], built: &mut std::collections::BTreeSet<&'b str>) {
     for statement in body {
         match &statement.kind {
@@ -347,7 +367,9 @@ fn literal_bindings<'b>(body: &'b [Statement], built: &mut std::collections::BTr
 fn field_assignments<'b>(body: &'b [Statement], targets: &mut Vec<(usize, &'b str)>) {
     for statement in body {
         match &statement.kind {
-            Stmt::SetField(name, _, _) => targets.push((statement.line, name)),
+            Stmt::SetField(name, _, _) | Stmt::SetEntry(name, _, _) => {
+                targets.push((statement.line, name));
+            }
             kind => {
                 for block in kind.blocks() {
                     field_assignments(block, targets);

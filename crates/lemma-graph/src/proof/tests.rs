@@ -1838,3 +1838,60 @@ fn comprehensions_over_an_input_are_proved_for_every_length_it_may_have() {
         assert_eq!(mutated["observed"]["holds"], false, "{text}: {mutated}");
     }
 }
+
+#[test]
+fn an_entry_of_a_dict_is_not_an_attribute_and_an_inherited_property_is_not_undefined() {
+    let contract = scope_contract();
+    for (file, body, expected) in [
+        (
+            "x.py",
+            "def f(r):\n    d = {\"a\": 1}\n    d[\"b\"] = 2\n    d[\"b\"] += 1\n    return d[\"a\"] + d[\"b\"]\n",
+            "4",
+        ),
+        ("x.py", "def f(r):\n    return r[\"ok\"]\n", "input_0"),
+        (
+            "x.ts",
+            "function f(r) {\n  const o = {a: 1};\n  o.toString = 2;\n  return o.toString + o[\"a\"];\n}\n",
+            "3",
+        ),
+    ] {
+        assert_eq!(
+            returned(file, body, &contract).unwrap(),
+            [expected],
+            "{body}"
+        );
+    }
+    for (file, body, why) in [
+        // Python returns 2 here: a dict has an attribute `items`.
+        (
+            "x.py",
+            "def f(r):\n    d = {\"a\": 1}\n    x = d.items\n    return 2\n",
+            "reads an attribute of a dict",
+        ),
+        // Python raises in these two: an entry is not an attribute.
+        (
+            "x.py",
+            "def f(r):\n    d = {\"a\": 1}\n    return d.a\n",
+            "reads an attribute of a dict",
+        ),
+        (
+            "x.py",
+            "def f(r):\n    d = {\"a\": 1}\n    d.b = 2\n    return d[\"b\"]\n",
+            "assigning the attribute `b` of `d`",
+        ),
+        // JavaScript reads the functions every object inherits.
+        (
+            "x.ts",
+            "function f(r) {\n  const o = {a: 1};\n  return o.toString === undefined;\n}\n",
+            "every JavaScript object inherits",
+        ),
+        (
+            "x.ts",
+            "function f(r) {\n  const o = {a: 1};\n  return o[\"constructor\"] === undefined;\n}\n",
+            "every JavaScript object inherits",
+        ),
+    ] {
+        let refused = returned(file, body, &contract).unwrap_err();
+        assert!(refused.contains(why), "{body}: {refused}");
+    }
+}

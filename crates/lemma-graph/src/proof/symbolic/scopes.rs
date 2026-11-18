@@ -143,7 +143,9 @@ fn block_names(body: &[Statement], names: &mut BTreeSet<String>) {
                 pattern_names(pattern, names);
                 expression_names(value, names);
             }
-            Stmt::Update(name, _, value) | Stmt::SetField(name, _, value) => {
+            Stmt::Update(name, _, value)
+            | Stmt::SetField(name, _, value)
+            | Stmt::SetEntry(name, _, value) => {
                 names.insert(name.clone());
                 expression_names(value, names);
             }
