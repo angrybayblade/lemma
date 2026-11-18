@@ -1,92 +1,23 @@
 //! Symbolic execution of the shared, immutable-value subset.
+//!
+//! Every path through the function is followed with its inputs as solver
+//! terms. A path that raises, as a field read of null does in every
+//! language, has no normal return and is dropped: the contract speaks of
+//! normal returns only.
+
+mod models;
+mod value;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
 
 use lemma_lang::syntax::ast::BinaryOperator as Op;
 use serde_json::Value as Json;
 
-use super::contract::{CallModel, Contract, Input};
+use super::contract::{Contract, Input};
 use super::ir::{self, Branch, Expression as Expr, Function, Statement, StatementKind as Stmt};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Sort {
-    Bool,
-    Text,
-    Integer,
-}
-
-impl Sort {
-    pub(super) fn smt(self) -> &'static str {
-        match self {
-            Self::Bool => "Bool",
-            Self::Text => "String",
-            Self::Integer => "Int",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct Term {
-    pub sort: Sort,
-    pub code: String,
-}
-
-impl Term {
-    pub(super) fn boolean(value: bool) -> Self {
-        Self {
-            sort: Sort::Bool,
-            code: value.to_string(),
-        }
-    }
-    pub(super) fn not(&self) -> Self {
-        match self.code.as_str() {
-            "true" => Self::boolean(false),
-            "false" => Self::boolean(true),
-            _ => Self {
-                sort: Sort::Bool,
-                code: format!("(not {})", self.code),
-            },
-        }
-    }
-    pub(super) fn and(&self, other: &Self) -> Self {
-        match (self.code.as_str(), other.code.as_str()) {
-            ("false", _) | (_, "false") => Self::boolean(false),
-            ("true", _) => other.clone(),
-            (_, "true") => self.clone(),
-            _ => Self {
-                sort: Sort::Bool,
-                code: format!("(and {} {})", self.code, other.code),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(super) enum Value {
-    Scalar(Term),
-    Record(BTreeMap<String, Value>),
-    Model(String),
-    Undefined,
-}
-
-impl Value {
-    fn boolean(value: bool) -> Self {
-        Self::Scalar(Term::boolean(value))
-    }
-    fn integer(value: usize) -> Self {
-        Self::Scalar(Term {
-            sort: Sort::Integer,
-            code: value.to_string(),
-        })
-    }
-    pub(super) fn as_bool(&self) -> Result<Term, String> {
-        match self {
-            Self::Scalar(term) if term.sort == Sort::Bool => Ok(term.clone()),
-            _ => Err("a condition must be Boolean; implicit coercion is unsupported".to_owned()),
-        }
-    }
-}
+use models::{assume_decorators, check_awaiting, match_arguments, reads_inputs};
+pub(super) use value::{Sort, Term, Value};
+use value::{equal, order, read_field};
 
 #[derive(Debug, Clone)]
 pub(super) struct State {
@@ -99,9 +30,20 @@ pub(super) struct State {
     pub result: Option<Value>,
 }
 
+impl State {
+    /// Whether the path can still reach a statement: it has not returned,
+    /// and no read of null has ended it.
+    fn is_running(&self) -> bool {
+        self.result.is_none() && self.guard.code != "false"
+    }
+}
+
 pub(super) struct Execution {
     pub symbols: BTreeMap<String, (String, Sort)>,
     pub requires: Term,
+    /// Where a precondition reads a field of null or undefined: a contract
+    /// whose preconditions are not defined for every input is refused.
+    pub requires_undefined: Term,
     pub paths: Vec<State>,
     pub assumptions: BTreeSet<String>,
     inputs: BTreeMap<String, Value>,
@@ -117,12 +59,14 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
         contract,
         inputs: &inputs,
         is_async: function.is_async,
+        context: Term::boolean(true),
+        specification: None,
         symbols,
         assumptions: BTreeSet::new(),
         calls: 0,
     };
     assume_decorators(&function.decorators, contract, &mut evaluator.assumptions)?;
-    let (mut state, requires) = prepare(&inputs, &mut evaluator)?;
+    let (mut state, requires, requires_undefined) = prepare(&inputs, &mut evaluator)?;
     bind_parameters(function, &inputs, &mut state, &mut evaluator)?;
     state.guard = requires.clone();
     let paths = evaluator.statements(&function.body, vec![state])?;
@@ -132,65 +76,27 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
     Ok(Execution {
         symbols: evaluator.symbols,
         requires,
+        requires_undefined,
         paths,
         assumptions: evaluator.assumptions,
         inputs,
     })
 }
 
-/// Decorators the languages define to return the function they decorate, or
-/// to mark it without changing how a call runs.
-const UNCHANGED_BY: &[&str] = &[
-    "staticmethod",
-    "classmethod",
-    "property",
-    "abstractmethod",
-    "abc.abstractmethod",
-    "override",
-    "typing.override",
-    "typing_extensions.override",
-    "final",
-    "typing.final",
-    "dataclass",
-    "dataclasses.dataclass",
-];
-
-/// Requires a decorator model for every decorator the language does not
-/// define, and records its assumption.
-fn assume_decorators(
-    decorators: &[String],
-    contract: &Contract,
-    assumptions: &mut BTreeSet<String>,
-) -> Result<(), String> {
-    for decorator in decorators {
-        let callee = decorator.split('(').next().unwrap_or(decorator).trim();
-        if UNCHANGED_BY.contains(&decorator.as_str()) || is_property_accessor(decorator) {
-            continue;
-        }
-        let assumption = contract
-            .decorators
-            .get(decorator)
-            .or_else(|| contract.decorators.get(callee))
-            .ok_or_else(|| format!("decorator `{decorator}` needs a decorator model"))?;
-        assumptions.insert(assumption.clone());
-    }
-    Ok(())
-}
-
-/// `@<property>.setter`, `.getter` and `.deleter` register an accessor of a
-/// property and return it; the accessor's body is what runs.
-fn is_property_accessor(decorator: &str) -> bool {
-    decorator.split_once('.').is_some_and(|(owner, accessor)| {
-        !owner.contains(['(', ' ']) && matches!(accessor, "setter" | "getter" | "deleter")
-    })
+/// Names every contract expression can read besides the inputs.
+fn specification_names(inputs: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+    let mut names = inputs.clone();
+    names.insert("null".to_owned(), Value::Null);
+    names.insert("undefined".to_owned(), Value::Undefined);
+    names
 }
 
 fn prepare(
     inputs: &BTreeMap<String, Value>,
     evaluator: &mut Evaluator<'_>,
-) -> Result<(State, Term), String> {
+) -> Result<(State, Term, Term), String> {
     let mut state = State {
-        env: inputs.clone(),
+        env: specification_names(inputs),
         guard: Term::boolean(true),
         branches: Vec::new(),
         effects: BTreeMap::new(),
@@ -207,18 +113,20 @@ fn prepare(
             .assumptions
             .insert(format!("constant `{name}` has the declared binding"));
     }
+    let mut requires = Term::boolean(true);
+    let mut requires_undefined = Term::boolean(false);
+    for expression in &evaluator.contract.requires {
+        let (condition, undefined) =
+            evaluator.specification(&ir::condition(expression)?, &mut state)?;
+        requires = requires.and(&condition.as_bool()?);
+        requires_undefined = requires_undefined.or(&undefined);
+    }
     for name in evaluator.contract.models.keys() {
         insert_model(&mut state.env, name, name)?;
     }
-    let mut requires = Term::boolean(true);
-    for expression in &evaluator.contract.requires {
-        requires = requires.and(
-            &evaluator
-                .pure(&ir::condition(expression)?, &mut state)?
-                .as_bool()?,
-        );
-    }
-    Ok((state, requires))
+    state.env.remove("null");
+    state.env.remove("undefined");
+    Ok((state, requires, requires_undefined))
 }
 
 fn bind_parameters(
@@ -275,6 +183,8 @@ fn bind_parameters(
 }
 
 impl Execution {
+    /// A postcondition on one path: it holds, and every field it reads on
+    /// the way is defined, so a read of null can never satisfy it.
     pub(super) fn postcondition(
         &self,
         path: &State,
@@ -282,7 +192,7 @@ impl Execution {
         contract: &Contract,
     ) -> Result<Term, String> {
         let mut state = path.clone();
-        state.env = self.inputs.clone();
+        state.env = specification_names(&self.inputs);
         state.env.insert(
             "result".to_owned(),
             path.result.clone().ok_or("return value is missing")?,
@@ -297,11 +207,12 @@ impl Execution {
                 .effects
                 .get(&effect.name)
                 .map_or(&[][..], Vec::as_slice);
+            let count = i64::try_from(events.len()).map_err(|e| e.to_string())?;
             effects.insert(
                 effect.name.clone(),
                 Value::Record(BTreeMap::from([
                     ("called".to_owned(), Value::boolean(!events.is_empty())),
-                    ("count".to_owned(), Value::integer(events.len())),
+                    ("count".to_owned(), Value::Scalar(Term::integer(count))),
                     (
                         "last".to_owned(),
                         events.last().cloned().unwrap_or(Value::Undefined),
@@ -312,16 +223,18 @@ impl Execution {
         state
             .env
             .insert("effects".to_owned(), Value::Record(effects));
-        Evaluator {
+        let (condition, undefined) = Evaluator {
             contract,
             inputs: &self.inputs,
             is_async: false,
+            context: Term::boolean(true),
+            specification: None,
             symbols: BTreeMap::new(),
             assumptions: BTreeSet::new(),
             calls: 0,
         }
-        .pure(&ir::condition(expression)?, &mut state)?
-        .as_bool()
+        .specification(&ir::condition(expression)?, &mut state)?;
+        Ok(condition.as_bool()?.and(&undefined.not()))
     }
 }
 
@@ -342,26 +255,49 @@ fn input(
                 })
                 .collect::<Result<_, String>>()?,
         )),
+        Input::Union(alternatives) => {
+            let Some((last, rest)) = alternatives.split_last() else {
+                return Err(format!("input `{path}` is an empty union"));
+            };
+            let mut value = input(last, &format!("{path}|{}", rest.len()), symbols)?;
+            for (index, alternative) in rest.iter().enumerate().rev() {
+                let selector = symbol(&format!("{path}?{index}"), Sort::Bool, symbols)?;
+                let alternative = input(alternative, &format!("{path}|{index}"), symbols)?;
+                value = Value::choice(&selector, alternative, value);
+            }
+            Ok(value)
+        }
         Input::Scalar(name) => {
             let sort = match name.as_str() {
                 "Bool" => Sort::Bool,
                 "Text" => Sort::Text,
+                "Null" => return Ok(Value::Null),
+                "Undefined" => return Ok(Value::Undefined),
                 _ => {
                     return Err(format!(
-                        "input `{path}` has unsupported sort `{name}`; use Bool or Text"
+                        "input `{path}` has unsupported sort `{name}`; use Bool, Text, Null or Undefined"
                     ));
                 }
             };
-            let symbol = format!("input_{}", symbols.len());
-            if symbols
-                .insert(path.to_owned(), (symbol.clone(), sort))
-                .is_some()
-            {
-                return Err("ambiguous symbolic input path".to_owned());
-            }
-            Ok(Value::Scalar(Term { sort, code: symbol }))
+            Ok(Value::Scalar(symbol(path, sort, symbols)?))
         }
     }
+}
+
+/// A fresh solver constant for the input at `path`.
+fn symbol(
+    path: &str,
+    sort: Sort,
+    symbols: &mut BTreeMap<String, (String, Sort)>,
+) -> Result<Term, String> {
+    let code = format!("input_{}", symbols.len());
+    if symbols
+        .insert(path.to_owned(), (code.clone(), sort))
+        .is_some()
+    {
+        return Err("ambiguous symbolic input path".to_owned());
+    }
+    Ok(Term { sort, code })
 }
 
 fn insert_model(env: &mut BTreeMap<String, Value>, path: &str, name: &str) -> Result<(), String> {
@@ -388,6 +324,12 @@ struct Evaluator<'a> {
     inputs: &'a BTreeMap<String, Value>,
     /// Whether the function under check is `async`, where `await` is allowed.
     is_async: bool,
+    /// What must hold for the expression being evaluated to be reached at
+    /// all: the left of `&&` for its right, a ternary's test for a branch.
+    context: Term,
+    /// While a contract expression is evaluated: where it reads a field of
+    /// null or undefined, rather than paths that raise.
+    specification: Option<Term>,
     /// Every symbolic value: the contract's inputs, then each call's outcomes.
     symbols: BTreeMap<String, (String, Sort)>,
     assumptions: BTreeSet<String>,
@@ -409,7 +351,12 @@ impl Evaluator<'_> {
     fn steps(&mut self, statement: &Statement, paths: Vec<State>) -> Result<Vec<State>, String> {
         let mut next = Vec::new();
         for state in paths {
-            next.extend(self.step(statement, state)?);
+            // A path that raised has no normal return to check.
+            next.extend(
+                self.step(statement, state)?
+                    .into_iter()
+                    .filter(|state| state.result.is_some() || state.guard.code != "false"),
+            );
             if next.len() > self.contract.max_paths {
                 return Err(format!(
                     "source exceeds max_paths ({})",
@@ -421,7 +368,7 @@ impl Evaluator<'_> {
     }
 
     fn step(&mut self, statement: &Statement, mut state: State) -> Result<Vec<State>, String> {
-        if state.result.is_some() || state.guard.code == "false" {
+        if !state.is_running() {
             return Ok(vec![state]);
         }
         match &statement.kind {
@@ -433,7 +380,10 @@ impl Evaluator<'_> {
                 state.env.insert(name.clone(), value);
             }
             Stmt::Return(expression) => {
-                state.result = Some(self.expression(expression, &mut state)?);
+                let value = self.expression(expression, &mut state)?;
+                if state.is_running() {
+                    state.result = Some(value);
+                }
             }
             Stmt::Evaluate(expression) => {
                 self.expression(expression, &mut state)?;
@@ -473,32 +423,49 @@ impl Evaluator<'_> {
         self.expression(expression, state)
     }
 
+    /// Evaluates a contract expression, and where it reads a field of null.
+    fn specification(
+        &mut self,
+        expression: &Expr,
+        state: &mut State,
+    ) -> Result<(Value, Term), String> {
+        let outer = self.specification.replace(Term::boolean(false));
+        let outer_context = std::mem::replace(&mut self.context, Term::boolean(true));
+        let value = self.pure(expression, state);
+        let undefined = std::mem::replace(&mut self.specification, outer);
+        self.context = outer_context;
+        Ok((value?, undefined.unwrap_or_else(|| Term::boolean(false))))
+    }
+
+    /// Evaluates `expression` as reached only where `condition` holds, as the
+    /// right of `&&` and a ternary's branches are.
+    fn guarded(
+        &mut self,
+        condition: &Term,
+        expression: &Expr,
+        state: &mut State,
+    ) -> Result<Value, String> {
+        let outer = self.context.clone();
+        self.context = outer.and(condition);
+        let value = self.pure(expression, state);
+        self.context = outer;
+        value
+    }
+
     fn expression(&mut self, expression: &Expr, state: &mut State) -> Result<Value, String> {
         Ok(match expression {
             Expr::Bool(value) => Value::boolean(*value),
-            Expr::Text(value) => Value::Scalar(Term {
-                sort: Sort::Text,
-                code: quote(value),
-            }),
-            Expr::Integer(value) => Value::Scalar(Term {
-                sort: Sort::Integer,
-                code: value.to_string(),
-            }),
+            Expr::Text(value) => Value::Scalar(Term::text(value)),
+            Expr::Integer(value) => Value::Scalar(Term::integer(*value)),
+            Expr::Null => Value::Null,
             Expr::Undefined => Value::Undefined,
             Expr::Name(name) => state
                 .env
                 .get(name)
                 .cloned()
                 .ok_or_else(|| format!("unmodeled name `{name}`"))?,
-            Expr::Member(target, name) => {
-                let Value::Record(fields) = self.expression(target, state)? else {
-                    return Err(format!("cannot read `{name}` on a non-record"));
-                };
-                fields
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| format!("record has no declared field `{name}`"))?
-            }
+            Expr::Member(target, name) => self.field(target, name, false, state)?,
+            Expr::OptionalMember(target, name) => self.field(target, name, true, state)?,
             Expr::Record(fields) => Value::Record(
                 fields
                     .iter()
@@ -507,12 +474,17 @@ impl Evaluator<'_> {
             ),
             Expr::Not(operand) => Value::Scalar(self.expression(operand, state)?.as_bool()?.not()),
             Expr::Binary(operator, left, right) => self.binary(*operator, left, right, state)?,
+            Expr::Coalesce(left, right) => self.coalesce(left, right, state)?,
             Expr::Conditional(test, then, otherwise) => {
                 let test = self.expression(test, state)?.as_bool()?;
                 match test.code.as_str() {
                     "true" => self.expression(then, state)?,
                     "false" => self.expression(otherwise, state)?,
-                    _ => merge(&test, self.pure(then, state)?, self.pure(otherwise, state)?)?,
+                    _ => {
+                        let then = self.guarded(&test, then, state)?;
+                        let otherwise = self.guarded(&test.not(), otherwise, state)?;
+                        Value::choice(&test, then, otherwise)
+                    }
                 }
             }
             Expr::Call(callee, arguments) => self.call(callee, arguments, false, state)?,
@@ -528,6 +500,44 @@ impl Evaluator<'_> {
         })
     }
 
+    /// Reads a field. Where the target may be null, the source path raises
+    /// there and continues only where it is not; a contract may not read it.
+    fn field(
+        &mut self,
+        target: &Expr,
+        name: &str,
+        is_optional: bool,
+        state: &mut State,
+    ) -> Result<Value, String> {
+        let target = self.expression(target, state)?;
+        let (value, fails) = read_field(&target, name, is_optional)?;
+        let undefined = self.context.and(&fails);
+        if undefined.code == "false" {
+            return Ok(value);
+        }
+        if let Some(accumulated) = &mut self.specification {
+            *accumulated = accumulated.or(&undefined);
+            return Ok(value);
+        }
+        // The source raises here, so only paths that do not reach the read of
+        // null go on.
+        state.guard = state.guard.and(&undefined.not());
+        Ok(value)
+    }
+
+    /// `left ?? right`: `right` where `left` is null or undefined.
+    fn coalesce(&mut self, left: &Expr, right: &Expr, state: &mut State) -> Result<Value, String> {
+        let left = self.expression(left, state)?;
+        if left.is_absent() {
+            return self.expression(right, state);
+        }
+        if !matches!(left, Value::Choice(..)) {
+            return Ok(left);
+        }
+        let right = self.guarded(&absent(&left), right, state)?;
+        Ok(fill_absent(left, &right))
+    }
+
     fn binary(
         &mut self,
         operator: Op,
@@ -540,7 +550,12 @@ impl Evaluator<'_> {
         }
         let left = self.expression(left, state)?;
         if !matches!(operator, Op::And | Op::Or) {
-            return compare(operator, left, self.expression(right, state)?);
+            let right = self.expression(right, state)?;
+            return Ok(Value::Scalar(match operator {
+                Op::Equal => equal(&left, &right)?,
+                Op::NotEqual => equal(&left, &right)?.not(),
+                _ => order(operator, &left, &right)?,
+            }));
         }
         let left = left.as_bool()?;
         if (operator == Op::And && left.code == "false")
@@ -548,11 +563,16 @@ impl Evaluator<'_> {
         {
             return Ok(Value::Scalar(left));
         }
-        let right = self.pure(right, state)?.as_bool()?;
+        let reached_when = if operator == Op::And {
+            left.clone()
+        } else {
+            left.not()
+        };
+        let right = self.guarded(&reached_when, right, state)?.as_bool()?;
         Ok(Value::Scalar(if operator == Op::And {
             left.and(&right)
         } else {
-            left.not().and(&right.not()).not()
+            left.or(&right)
         }))
     }
 
@@ -597,7 +617,7 @@ impl Evaluator<'_> {
         let call_number = *count;
         self.assumptions.insert(model.assumption.clone());
         let mut local = state.clone();
-        local.env = self.inputs.clone();
+        local.env = specification_names(self.inputs);
         local.env.extend(arguments);
         if !model.outcomes.is_empty() {
             let mut outcome = BTreeMap::new();
@@ -627,41 +647,38 @@ impl Evaluator<'_> {
     fn template(&mut self, template: &Json, state: &mut State) -> Result<Value, String> {
         Ok(match template {
             Json::Bool(value) => Value::boolean(*value),
-            Json::String(value) => Value::Scalar(Term {
-                sort: Sort::Text,
-                code: quote(value),
-            }),
+            Json::String(value) => Value::Scalar(Term::text(value)),
             Json::Number(value) => {
                 let integer = value
                     .as_i64()
                     .filter(|n| n.unsigned_abs() <= 9_007_199_254_740_991)
                     .ok_or("only exactly representable integer constants are supported")?;
-                Value::Scalar(Term {
-                    sort: Sort::Integer,
-                    code: if integer < 0 {
-                        format!("(- {})", integer.unsigned_abs())
-                    } else {
-                        integer.to_string()
-                    },
-                })
+                Value::Scalar(Term::integer(integer))
             }
-            Json::Object(fields) if fields.len() == 1 && fields.contains_key("expr") => self.pure(
-                &ir::condition(
-                    fields["expr"]
-                        .as_str()
-                        .ok_or("expr template must contain text")?,
-                )?,
-                state,
-            )?,
+            Json::Null => Value::Null,
+            Json::Object(fields) if fields.len() == 1 && fields.contains_key("expr") => {
+                let text = fields["expr"]
+                    .as_str()
+                    .ok_or("expr template must contain text")?;
+                let (value, undefined) = self.specification(&ir::condition(text)?, state)?;
+                // A template is an assumption: it may not quietly narrow the
+                // paths where it reads null.
+                if undefined.code != "false" {
+                    return Err(format!(
+                        "template `{text}` reads a field of a value that may be null or undefined"
+                    ));
+                }
+                value
+            }
             Json::Object(fields) => Value::Record(
                 fields
                     .iter()
                     .map(|(key, value)| Ok((key.clone(), self.template(value, state)?)))
                     .collect::<Result<_, String>>()?,
             ),
-            _ => {
+            Json::Array(_) => {
                 return Err(
-                    "templates support Bool, Text, integer constants and immutable records"
+                    "templates support Bool, Text, null, integer constants and immutable records"
                         .to_owned(),
                 );
             }
@@ -669,180 +686,48 @@ impl Evaluator<'_> {
     }
 }
 
-/// Gives each of a model's parameters the argument passed for it: in order,
-/// then by name. A parameter left out is absent, rather than falling back to
-/// a specification input of the same name.
-fn match_arguments(
-    name: &str,
-    parameters: &[String],
-    arguments: Vec<(Option<&str>, Value)>,
-) -> Result<BTreeMap<String, Value>, String> {
-    let mut bound = BTreeMap::new();
-    let mut position = 0;
-    for (keyword, value) in arguments {
-        let parameter = if let Some(keyword) = keyword {
-            parameters
-                .iter()
-                .find(|parameter| parameter.as_str() == keyword)
-                .ok_or_else(|| format!("model `{name}` has no parameter `{keyword}`"))?
-        } else {
-            position += 1;
-            parameters
-                .get(position - 1)
-                .ok_or_else(|| format!("model `{name}` takes fewer arguments"))?
-        };
-        if bound.insert(parameter.clone(), value).is_some() {
-            return Err(format!("model `{name}` is given `{parameter}` twice"));
-        }
-    }
-    for parameter in parameters {
-        bound.entry(parameter.clone()).or_insert(Value::Undefined);
-    }
-    Ok(bound)
-}
-
-fn check_awaiting(name: &str, is_async: bool, is_awaited: bool) -> Result<(), String> {
-    if is_async && !is_awaited {
-        return Err(format!(
-            "the call to async `{name}` is not awaited, so its result is a pending promise or coroutine"
-        ));
-    }
-    if !is_async && is_awaited {
-        return Err(format!("`{name}` is awaited, but its model is not `async`"));
-    }
-    Ok(())
-}
-
-/// Whether a model's templates read a specification input, rather than only
-/// its own arguments and outcomes.
-fn reads_inputs(model: &CallModel, inputs: &BTreeMap<String, Value>) -> Result<bool, String> {
-    let mut names = BTreeSet::new();
-    template_names(&model.returns, &mut names)?;
-    if let Some(effect) = &model.effect {
-        for template in effect.fields.values() {
-            template_names(template, &mut names)?;
-        }
-    }
-    Ok(names
-        .iter()
-        .any(|name| inputs.contains_key(name) && !model.parameters.contains(name)))
-}
-
-fn template_names(template: &Json, names: &mut BTreeSet<String>) -> Result<(), String> {
-    let Json::Object(fields) = template else {
-        return Ok(());
-    };
-    if let (1, Some(Json::String(text))) = (fields.len(), fields.get("expr")) {
-        expression_names(&ir::condition(text)?, names);
-        return Ok(());
-    }
-    for value in fields.values() {
-        template_names(value, names)?;
-    }
-    Ok(())
-}
-
-fn expression_names(expression: &Expr, names: &mut BTreeSet<String>) {
-    match expression {
-        Expr::Name(name) => {
-            names.insert(name.clone());
-        }
-        Expr::Member(inner, _) | Expr::Not(inner) | Expr::Await(inner) => {
-            expression_names(inner, names);
-        }
-        Expr::Binary(_, left, right) => {
-            expression_names(left, names);
-            expression_names(right, names);
-        }
-        Expr::Conditional(test, then, otherwise) => {
-            for part in [test, then, otherwise] {
-                expression_names(part, names);
-            }
-        }
-        Expr::Record(fields) => {
-            for value in fields.values() {
-                expression_names(value, names);
-            }
-        }
-        Expr::Call(callee, arguments) => {
-            expression_names(callee, names);
-            for argument in arguments {
-                expression_names(&argument.value, names);
-            }
-        }
-        Expr::Bool(_) | Expr::Text(_) | Expr::Integer(_) | Expr::Undefined => {}
+/// Where `value` is null or undefined.
+fn absent(value: &Value) -> Term {
+    match value {
+        Value::Null | Value::Undefined => Term::boolean(true),
+        Value::Choice(test, then, otherwise) => test
+            .and(&absent(then))
+            .or(&test.not().and(&absent(otherwise))),
+        _ => Term::boolean(false),
     }
 }
 
-fn compare(operator: Op, left: Value, right: Value) -> Result<Value, String> {
-    let (Value::Scalar(left), Value::Scalar(right)) = (left, right) else {
-        return Err("only scalar comparisons are supported".to_owned());
-    };
-    if left.sort != right.sort {
-        return Err("cross-type comparisons are unsupported".to_owned());
-    }
-    let symbol = match operator {
-        Op::Equal | Op::NotEqual => "=",
-        Op::Less if left.sort == Sort::Integer => "<",
-        Op::LessOrEqual if left.sort == Sort::Integer => "<=",
-        Op::Greater if left.sort == Sort::Integer => ">",
-        Op::GreaterOrEqual if left.sort == Sort::Integer => ">=",
-        _ => {
-            return Err(
-                "arithmetic and ordered symbolic text comparisons are unsupported".to_owned(),
-            );
-        }
-    };
-    let term = Term {
-        sort: Sort::Bool,
-        code: format!("({symbol} {} {})", left.code, right.code),
-    };
-    Ok(Value::Scalar(if operator == Op::NotEqual {
-        term.not()
-    } else {
-        term
-    }))
-}
-
-fn merge(test: &Term, then: Value, otherwise: Value) -> Result<Value, String> {
-    match (then, otherwise) {
-        (Value::Scalar(then), Value::Scalar(otherwise)) if then.sort == otherwise.sort => {
-            Ok(Value::Scalar(Term {
-                sort: then.sort,
-                code: format!("(ite {} {} {})", test.code, then.code, otherwise.code),
-            }))
-        }
-        _ => Err("conditional values must be scalars of the same sort".to_owned()),
+/// `value`, with `fallback` wherever it is null or undefined.
+fn fill_absent(value: Value, fallback: &Value) -> Value {
+    match value {
+        Value::Null | Value::Undefined => fallback.clone(),
+        Value::Choice(test, then, otherwise) => Value::choice(
+            &test,
+            fill_absent(*then, fallback),
+            fill_absent(*otherwise, fallback),
+        ),
+        other => other,
     }
 }
 
 fn is_pure(expression: &Expr) -> bool {
     match expression {
         Expr::Call(_, _) | Expr::Await(_) => false,
-        Expr::Not(inner) | Expr::Member(inner, _) => is_pure(inner),
-        Expr::Binary(_, left, right) => is_pure(left) && is_pure(right),
+        Expr::Not(inner) | Expr::Member(inner, _) | Expr::OptionalMember(inner, _) => {
+            is_pure(inner)
+        }
+        Expr::Binary(_, left, right) | Expr::Coalesce(left, right) => {
+            is_pure(left) && is_pure(right)
+        }
         Expr::Conditional(test, then, otherwise) => {
             is_pure(test) && is_pure(then) && is_pure(otherwise)
         }
         Expr::Record(fields) => fields.values().all(is_pure),
-        _ => true,
+        Expr::Bool(_)
+        | Expr::Text(_)
+        | Expr::Integer(_)
+        | Expr::Null
+        | Expr::Undefined
+        | Expr::Name(_) => true,
     }
-}
-
-fn quote(text: &str) -> String {
-    let mut encoded = String::from("\"");
-    for character in text.chars() {
-        match character {
-            '"' => encoded.push_str("\"\""),
-            // Escape backslashes too: an input containing a literal \u sequence
-            // must not be reinterpreted as an SMT-LIB Unicode escape.
-            '\\' => encoded.push_str("\\u{5c}"),
-            c if !c.is_ascii() || c.is_control() => {
-                let _ = write!(encoded, "\\u{{{:x}}}", u32::from(c));
-            }
-            c => encoded.push(c),
-        }
-    }
-    encoded.push('"');
-    encoded
 }
