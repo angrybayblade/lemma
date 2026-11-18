@@ -834,3 +834,80 @@ fn a_path_that_raises_has_no_normal_return_to_check() {
         "{always}"
     );
 }
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn sequences_unpack_index_and_contain_as_each_language_does() {
+    let lookup = json!({
+        "inputs": {"r": {"id": "Text", "role": "Text"}},
+        "parameters": ["r"],
+        "models": {"find": {
+            "assumption": "find answers whether the account exists, or an error",
+            "parameters": ["id"],
+            "outcomes": {"found": "Bool", "error": ["Null", "Text"]},
+            "returns": [{"expr": "outcome.found"}, {"expr": "outcome.error"}],
+        }},
+        "ensures": [{"name": "errors_are_reported", "condition": "result[1] == null || !result[0]"}],
+    });
+    let go = "package p\nfunc f(r R) (bool, error) {\n  found, err := find(r.id)\n  if err != nil {\n    return false, err\n  }\n  return found, nil\n}\n";
+    let py = "def f(r):\n    found, error = find(r.id)\n    if error is not None:\n        return (False, error)\n    return found, None\n";
+    for (file, text) in [("x.go", go), ("x.py", py)] {
+        let result = check_source(file, text, "f", &lookup);
+        assert_eq!(
+            result["observed"]["status"], "conditional",
+            "{file}: {result}"
+        );
+    }
+    let leaky = py.replace("return (False, error)", "return (True, error)");
+    let result = check_source("x.py", &leaky, "f", &lookup);
+    assert_eq!(result["observed"]["status"], "violated", "{result}");
+    let roles = json!({
+        "inputs": {"r": {"role": "Text"}},
+        "parameters": ["r"],
+        "ensures": [{"name": "staff", "condition": "result == (r.role == \"admin\" || r.role == \"owner\")"}],
+    });
+    for (file, text) in [
+        (
+            "x.py",
+            "def f(r):\n    return r.role in ('admin', 'owner')\n",
+        ),
+        (
+            "x.py",
+            "def f(r):\n    staff = ['admin', 'owner']\n    return staff[0] == r.role or staff[-1] == r.role\n",
+        ),
+        (
+            "x.ts",
+            "function f(r) {\n  const [first, second] = ['admin', 'owner'];\n  return r.role === first || r.role === second;\n}\n",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &roles);
+        assert_eq!(result["observed"]["status"], "proved", "{file}: {result}");
+    }
+}
+
+#[test]
+fn unpacking_a_sequence_of_another_length_follows_the_language() {
+    let contract: Contract = serde_json::from_value(json!({
+        "inputs": {"r": {"ok": "Bool"}},
+        "parameters": ["r"],
+        "ensures": [{"name": "any", "condition": "true"}],
+    }))
+    .unwrap();
+    let python = "def f(r):\n    a, b = (r.ok,)\n    return a\n";
+    let (_, function) = source::read("x.py", python, "f").unwrap();
+    assert!(
+        symbolic::execute(&function, &contract)
+            .unwrap()
+            .paths
+            .is_empty()
+    );
+    let typescript = "function f(r) {\n  const [a, b] = [r.ok];\n  return b;\n}\n";
+    let (_, function) = source::read("x.ts", typescript, "f").unwrap();
+    let execution = symbolic::execute(&function, &contract).unwrap();
+    assert!(matches!(
+        execution.paths[0].result,
+        Some(symbolic::Value::Undefined)
+    ));
+    let variable_key = "def f(r, key):\n    return r[key]\n";
+    assert!(source::read("x.py", variable_key, "f").is_err());
+}

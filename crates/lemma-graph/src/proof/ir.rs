@@ -62,7 +62,7 @@ pub(super) struct Statement {
 
 #[derive(Debug, Clone)]
 pub(super) enum StatementKind {
-    Bind(String, Expression),
+    Bind(Pattern, Expression),
     If(Expression, Vec<Statement>, Vec<Statement>),
     Return(Expression),
     Evaluate(Expression),
@@ -95,10 +95,27 @@ pub(super) enum Expression {
     Negate(Box<Self>),
     /// A formatted string: Python's f-string, a JavaScript template literal.
     Template(Vec<Part>),
+    /// A tuple, list or array of known length.
+    Sequence(Vec<Self>),
+    /// An element of a sequence at a constant position.
+    Index(Box<Self>, i64),
+    /// Python's `needle in haystack`, over a sequence or a text.
+    Contains(Box<Self>, Box<Self>),
     Conditional(Box<Self>, Box<Self>, Box<Self>),
     Call(Box<Self>, Vec<Argument>),
     /// `await` of a call; any other awaited value is refused.
     Await(Box<Self>),
+}
+
+/// What a binding names: one variable, or the parts of a sequence or record.
+#[derive(Debug, Clone)]
+pub(super) enum Pattern {
+    Name(String),
+    /// Go's blank identifier `_`, which binds nothing.
+    Ignore,
+    Sequence(Vec<Pattern>),
+    /// Fields read from a record, each bound to its own pattern.
+    Record(Vec<(String, Pattern)>),
 }
 
 /// A piece of a formatted string.
@@ -152,11 +169,35 @@ fn lower(expression: &ast::Expression) -> Result<Expression, String> {
             operator: UnaryOperator::Not,
             operand,
         } => Expression::Not(Box::new(lower(operand)?)),
+        Kind::Unary {
+            operator: UnaryOperator::Negate,
+            operand,
+        } => Expression::Negate(Box::new(lower(operand)?)),
         Kind::Binary {
             operator,
             left,
             right,
         } => Expression::Binary(*operator, Box::new(lower(left)?), Box::new(lower(right)?)),
+        Kind::List(items) => {
+            Expression::Sequence(items.iter().map(lower).collect::<Result<_, _>>()?)
+        }
+        Kind::Index { target, keys } => {
+            let [index] = keys.as_slice() else {
+                return Err("a contract indexes a sequence by one constant".to_owned());
+            };
+            let position = match &index.kind {
+                Kind::Integer(value) => *value,
+                Kind::Unary {
+                    operator: UnaryOperator::Negate,
+                    operand,
+                } => match operand.kind {
+                    Kind::Integer(value) => -value,
+                    _ => return Err("a contract indexes a sequence by a constant".to_owned()),
+                },
+                _ => return Err("a contract indexes a sequence by a constant".to_owned()),
+            };
+            Expression::Index(Box::new(lower(target)?), position)
+        }
         Kind::Record(fields) => Expression::Record(
             fields
                 .iter()

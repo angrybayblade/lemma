@@ -15,11 +15,14 @@ use serde_json::Value as Json;
 
 use super::contract::{Contract, Input};
 use super::ir::{
-    self, Branch, Expression as Expr, Function, Language, Part, Statement, StatementKind as Stmt,
+    self, Branch, Expression as Expr, Function, Language, Part, Pattern, Statement,
+    StatementKind as Stmt,
 };
 use models::{assume_decorators, check_awaiting, match_arguments, reads_inputs};
 pub(super) use value::{Sort, Term, Value};
-use value::{arithmetic, equal, integer_range, negate, order, read_field, to_text};
+use value::{
+    arithmetic, contains, element, equal, integer_range, negate, order, read_field, to_text,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct State {
@@ -337,6 +340,9 @@ fn ranges(value: &Value, language: Language) -> Term {
         Value::Choice(_, then, otherwise) => {
             ranges(then, language).and(&ranges(otherwise, language))
         }
+        Value::Sequence(items) => items.iter().fold(Term::boolean(true), |all, item| {
+            all.and(&ranges(item, language))
+        }),
         _ => Term::boolean(true),
     }
 }
@@ -396,12 +402,9 @@ impl Evaluator<'_> {
             return Ok(vec![state]);
         }
         match &statement.kind {
-            Stmt::Bind(name, expression) => {
-                if state.env.contains_key(name) {
-                    return Err(format!("rebinding or shadowing `{name}` is unsupported"));
-                }
+            Stmt::Bind(pattern, expression) => {
                 let value = self.expression(expression, &mut state)?;
-                state.env.insert(name.clone(), value);
+                self.bind(pattern, value, &mut state)?;
             }
             Stmt::Return(expression) => {
                 let value = self.expression(expression, &mut state)?;
@@ -426,6 +429,79 @@ impl Evaluator<'_> {
             }
         }
         Ok(vec![state])
+    }
+
+    /// Binds what `pattern` names to the parts of `value`.
+    fn bind(&mut self, pattern: &Pattern, value: Value, state: &mut State) -> Result<(), String> {
+        match pattern {
+            Pattern::Ignore => Ok(()),
+            Pattern::Name(name) => {
+                if state.env.contains_key(name) {
+                    return Err(format!("rebinding or shadowing `{name}` is unsupported"));
+                }
+                state.env.insert(name.clone(), value);
+                Ok(())
+            }
+            Pattern::Record(fields) => {
+                for (field, part) in fields {
+                    let (read, fails) = read_field(&value, field, false)?;
+                    self.narrow(&fails, state);
+                    self.bind(part, read, state)?;
+                }
+                Ok(())
+            }
+            Pattern::Sequence(parts) => {
+                let Value::Sequence(items) = value else {
+                    return Err("only a sequence of known length can be unpacked".to_owned());
+                };
+                if items.len() != parts.len() {
+                    return self.unpack_mismatch(parts, items, state);
+                }
+                for (part, item) in parts.iter().zip(items) {
+                    self.bind(part, item, state)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Unpacking a sequence of another length: Python raises, JavaScript
+    /// reads undefined past the end, and Go does not compile.
+    fn unpack_mismatch(
+        &mut self,
+        parts: &[Pattern],
+        items: Vec<Value>,
+        state: &mut State,
+    ) -> Result<(), String> {
+        match self.language {
+            Language::Python => {
+                state.guard = Term::boolean(false);
+                Ok(())
+            }
+            Language::TypeScript => {
+                let mut items = items.into_iter();
+                for part in parts {
+                    let item = items.next().unwrap_or(Value::Undefined);
+                    self.bind(part, item, state)?;
+                }
+                Ok(())
+            }
+            Language::Go => Err("Go assigns as many values as there are names".to_owned()),
+        }
+    }
+
+    /// Narrows the path to where a read did not raise: only where the read
+    /// is reached, and in a contract, records it as undefined instead.
+    fn narrow(&mut self, fails: &Term, state: &mut State) {
+        let undefined = self.context.and(fails);
+        if undefined.code == "false" {
+            return;
+        }
+        if let Some(accumulated) = &mut self.specification {
+            *accumulated = accumulated.or(&undefined);
+            return;
+        }
+        state.guard = state.guard.and(&undefined.not());
     }
 
     fn branch(
@@ -512,31 +588,68 @@ impl Evaluator<'_> {
                 Value::Scalar(negate(&operand)?)
             }
             Expr::Template(parts) => self.template_text(parts, state)?,
+            Expr::Sequence(items) => Value::Sequence(
+                items
+                    .iter()
+                    .map(|item| self.expression(item, state))
+                    .collect::<Result<_, _>>()?,
+            ),
+            Expr::Index(target, position) => self.element(target, *position, state)?,
+            Expr::Contains(needle, haystack) => {
+                let needle = self.expression(needle, state)?;
+                let haystack = self.expression(haystack, state)?;
+                Value::Scalar(contains(&needle, &haystack)?)
+            }
             Expr::Binary(operator, left, right) => self.binary(*operator, left, right, state)?,
             Expr::Coalesce(left, right) => self.coalesce(left, right, state)?,
             Expr::Conditional(test, then, otherwise) => {
-                let test = self.expression(test, state)?.as_bool()?;
-                match test.code.as_str() {
-                    "true" => self.expression(then, state)?,
-                    "false" => self.expression(otherwise, state)?,
-                    _ => {
-                        let then = self.guarded(&test, then, state)?;
-                        let otherwise = self.guarded(&test.not(), otherwise, state)?;
-                        Value::choice(&test, then, otherwise)
-                    }
-                }
+                self.conditional(test, then, otherwise, state)?
             }
             Expr::Call(callee, arguments) => self.call(callee, arguments, false, state)?,
-            Expr::Await(inner) => {
-                if !self.is_async {
-                    return Err("`await` outside an async function".to_owned());
-                }
-                let Expr::Call(callee, arguments) = inner.as_ref() else {
-                    return Err("only a call can be awaited".to_owned());
-                };
-                self.call(callee, arguments, true, state)?
-            }
+            Expr::Await(inner) => self.awaited(inner, state)?,
         })
+    }
+
+    /// `test ? then : otherwise`; only the branch the test picks is reached.
+    fn conditional(
+        &mut self,
+        test: &Expr,
+        then: &Expr,
+        otherwise: &Expr,
+        state: &mut State,
+    ) -> Result<Value, String> {
+        let test = self.expression(test, state)?.as_bool()?;
+        match test.code.as_str() {
+            "true" => self.expression(then, state),
+            "false" => self.expression(otherwise, state),
+            _ => {
+                let then = self.guarded(&test, then, state)?;
+                let otherwise = self.guarded(&test.not(), otherwise, state)?;
+                Ok(Value::choice(&test, then, otherwise))
+            }
+        }
+    }
+
+    fn awaited(&mut self, inner: &Expr, state: &mut State) -> Result<Value, String> {
+        if !self.is_async {
+            return Err("`await` outside an async function".to_owned());
+        }
+        let Expr::Call(callee, arguments) = inner else {
+            return Err("only a call can be awaited".to_owned());
+        };
+        self.call(callee, arguments, true, state)
+    }
+
+    fn element(
+        &mut self,
+        target: &Expr,
+        position: i64,
+        state: &mut State,
+    ) -> Result<Value, String> {
+        let target = self.expression(target, state)?;
+        let (value, fails) = element(&target, position, self.language)?;
+        self.narrow(&fails, state);
+        Ok(value)
     }
 
     /// Reads a field. Where the target may be null, the source path raises
@@ -550,17 +663,7 @@ impl Evaluator<'_> {
     ) -> Result<Value, String> {
         let target = self.expression(target, state)?;
         let (value, fails) = read_field(&target, name, is_optional)?;
-        let undefined = self.context.and(&fails);
-        if undefined.code == "false" {
-            return Ok(value);
-        }
-        if let Some(accumulated) = &mut self.specification {
-            *accumulated = accumulated.or(&undefined);
-            return Ok(value);
-        }
-        // The source raises here, so only paths that do not reach the read of
-        // null go on.
-        state.guard = state.guard.and(&undefined.not());
+        self.narrow(&fails, state);
         Ok(value)
     }
 
@@ -760,12 +863,12 @@ impl Evaluator<'_> {
                     .map(|(key, value)| Ok((key.clone(), self.template(value, state)?)))
                     .collect::<Result<_, String>>()?,
             ),
-            Json::Array(_) => {
-                return Err(
-                    "templates support Bool, Text, null, integer constants and immutable records"
-                        .to_owned(),
-                );
-            }
+            Json::Array(items) => Value::Sequence(
+                items
+                    .iter()
+                    .map(|item| self.template(item, state))
+                    .collect::<Result<_, _>>()?,
+            ),
         })
     }
 }
@@ -799,8 +902,11 @@ fn is_pure(expression: &Expr) -> bool {
         Expr::Call(_, _) | Expr::Await(_) => false,
         Expr::Not(inner)
         | Expr::Negate(inner)
+        | Expr::Index(inner, _)
         | Expr::Member(inner, _)
         | Expr::OptionalMember(inner, _) => is_pure(inner),
+        Expr::Sequence(items) => items.iter().all(is_pure),
+        Expr::Contains(left, right) => is_pure(left) && is_pure(right),
         Expr::Template(parts) => parts.iter().all(|part| match part {
             Part::Text(_) => true,
             Part::Value(value) => is_pure(value),
