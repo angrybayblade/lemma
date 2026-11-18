@@ -13,19 +13,23 @@ use super::ir::{
 pub(super) use super::ir::Language;
 
 pub(super) fn read(file: &str, source: &str, symbol: &str) -> Result<(Language, Function), String> {
-    let language = match std::path::Path::new(file)
+    let extension = std::path::Path::new(file)
         .extension()
-        .and_then(|s| s.to_str())
-    {
-        Some("ts") => Language::TypeScript,
-        Some("py") => Language::Python,
-        Some("go") => Language::Go,
-        _ => return Err("proof supports .ts, .py and .go implementations".to_owned()),
-    };
-    let grammar = match language {
-        Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        Language::Python => tree_sitter_python::LANGUAGE.into(),
-        Language::Go => tree_sitter_go::LANGUAGE.into(),
+        .and_then(|s| s.to_str());
+    let (language, grammar): (Language, tree_sitter::Language) = match extension {
+        Some("ts" | "mts" | "cts") => (
+            Language::TypeScript,
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        ),
+        // TypeScript with JSX; JSX itself is refused like any other syntax
+        // the reader does not know.
+        Some("tsx") => (
+            Language::TypeScript,
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+        ),
+        Some("py") => (Language::Python, tree_sitter_python::LANGUAGE.into()),
+        Some("go") => (Language::Go, tree_sitter_go::LANGUAGE.into()),
+        _ => return Err("proof supports .ts, .tsx, .py and .go implementations".to_owned()),
     };
     let mut parser = Parser::new();
     parser.set_language(&grammar).map_err(|e| e.to_string())?;
