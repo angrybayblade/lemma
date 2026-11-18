@@ -120,7 +120,7 @@ impl Evaluator<'_> {
                     }
                     // JavaScript spreads nothing from null; Python raises.
                     Value::Null | Value::Undefined if self.language == Language::TypeScript => {}
-                    Value::Null | Value::Undefined => state.guard = Term::boolean(false),
+                    Value::Null | Value::Undefined => self.raise_here("TypeError", state),
                     _ => {
                         return Err(
                             "only an object or record can be spread into an object".to_owned()

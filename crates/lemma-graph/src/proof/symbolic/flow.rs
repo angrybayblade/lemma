@@ -38,6 +38,12 @@ impl Evaluator<'_> {
         state.guard = state.guard.and(&condition.not());
     }
 
+    /// The path raises `class` wherever what is being evaluated is reached.
+    pub(super) fn raise_here(&mut self, class: &str, state: &mut State) {
+        let reached = self.context.clone();
+        self.raise_where(&reached, Raised::Class(class.to_owned()), state);
+    }
+
     /// `with`: each context manager is entered, under its context model, and
     /// what `as` names is bound to it; then the body runs.
     pub(super) fn with_statement(
