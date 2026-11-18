@@ -1208,3 +1208,17 @@ fn nested_functions_and_object_methods_are_read_with_their_captures() {
     let result = check_source("x.ts", text, "client.url", &object);
     assert_eq!(result["observed"]["holds"], true, "{result}");
 }
+
+#[test]
+fn definitions_inside_anonymous_functions_are_found_by_their_indexed_name() {
+    let callback =
+        "describe('router', () => {\n  function Home(props) {\n    return props.ready;\n  }\n});\n";
+    let (_, function) = source::read("x.ts", callback, "Home").unwrap();
+    assert_eq!(function.parameters.len(), 1);
+    let getter = "export function createRouter(routes) {\n  return {\n    get routes() {\n      return this.list;\n    },\n  };\n}\n";
+    let (_, function) = source::read("x.ts", getter, "createRouter.routes").unwrap();
+    assert_eq!(function.parameters[0].name, "this");
+    let twice =
+        "a(() => { function f() { return 1; } });\nb(() => { function f() { return 2; } });\n";
+    assert!(source::read("x.ts", twice, "f").is_err());
+}

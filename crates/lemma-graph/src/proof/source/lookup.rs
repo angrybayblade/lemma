@@ -24,13 +24,133 @@ struct Scope<'t> {
 }
 
 impl<'a> Reader<'a> {
-    /// Finds the one definition `symbol` names: a top-level function, or a
-    /// method written `Container.method`, where Python classes may nest.
-    pub(super) fn lookup<'t>(
+    /// The one definition `symbol` names: found by its containers, or, where
+    /// they pass through anonymous functions and objects, by the name Lemma's
+    /// symbol index gives it, so that both name a definition alike.
+    pub(super) fn find<'t>(
         &self,
         root: Node<'t>,
         symbol: &str,
+        indexed: lemma_model::Language,
     ) -> Result<Definition<'t>, String> {
+        let found = self.lookup(root, symbol);
+        if matches!(&found, Ok(definitions) if definitions.len() == 1) {
+            return found.map(|mut definitions| definitions.remove(0));
+        }
+        let mut extracted = self.indexed(root, symbol, indexed)?;
+        if extracted.len() == 1 {
+            return Ok(extracted.remove(0));
+        }
+        let count = found?.len();
+        Err(format!(
+            "expected one function or method `{symbol}`, found {count}"
+        ))
+    }
+
+    /// Definitions Lemma's symbol index names `symbol`, found by the place of
+    /// their names.
+    fn indexed<'t>(
+        &self,
+        root: Node<'t>,
+        symbol: &str,
+        language: lemma_model::Language,
+    ) -> Result<Vec<Definition<'t>>, String> {
+        let mut extractor = lemma_syntax::Extractor::new().map_err(|e| e.to_string())?;
+        let extraction = extractor
+            .extract(language, self.source)
+            .map_err(|e| e.to_string())?;
+        let mut found = Vec::new();
+        for indexed in &extraction.symbols {
+            let is_function = matches!(
+                indexed.kind,
+                lemma_model::SymbolKind::Function | lemma_model::SymbolKind::Method
+            );
+            if !is_function || indexed.qualified_name != symbol {
+                continue;
+            }
+            let point = |position: lemma_model::Position| tree_sitter::Point {
+                row: position.line as usize,
+                column: position.column as usize,
+            };
+            let name = root.descendant_for_point_range(
+                point(indexed.name_span.start),
+                point(indexed.name_span.end),
+            );
+            let definition = name.and_then(|name| self.definition_at(name));
+            found.extend(
+                definition
+                    .filter(|definition| !definition.decorators.iter().any(|d| is_overload(d))),
+            );
+        }
+        Ok(found)
+    }
+
+    /// The definition whose name is `name`, its receiver as its place gives
+    /// it, and the decorators on it and on the classes around it.
+    fn definition_at<'t>(&self, name: Node<'t>) -> Option<Definition<'t>> {
+        let owner = name.parent()?;
+        let (node, receiver) = match owner.kind() {
+            "function_declaration" | "function_definition" => (owner, None),
+            "method_definition" => (owner, Some("this".to_owned())),
+            "method_declaration" => {
+                let receiver = only(owner.child_by_field_name("receiver")?).ok()?;
+                let receiver = receiver
+                    .child_by_field_name("name")
+                    .map_or("_", |n| self.text(n));
+                (owner, Some(receiver.to_owned()))
+            }
+            "variable_declarator" | "pair" | "public_field_definition" => {
+                let value = owner.child_by_field_name("value")?;
+                // `this` in a function value is the object it is called on,
+                // and an arrow function's `this` is the class instance only
+                // as a class field.
+                let receiver = match (value.kind(), owner.kind()) {
+                    ("function_expression", "pair")
+                    | ("arrow_function", "public_field_definition") => Some("this".to_owned()),
+                    ("arrow_function" | "function_expression", _) => None,
+                    _ => return None,
+                };
+                (value, receiver)
+            }
+            _ => return None,
+        };
+        let mut decorators = self.attached_decorators(owner);
+        let mut ancestor = owner.parent();
+        while let Some(current) = ancestor {
+            if matches!(
+                current.kind(),
+                "class_declaration" | "abstract_class_declaration" | "class_definition"
+            ) {
+                decorators.extend(self.attached_decorators(current));
+            }
+            ancestor = current.parent();
+        }
+        Some(Definition {
+            node,
+            receiver,
+            decorators,
+        })
+    }
+
+    /// The decorators of a declaration: on it, on a Python wrapper or a
+    /// TypeScript `export`, and written before it as siblings.
+    fn attached_decorators(&self, node: Node<'_>) -> Vec<String> {
+        let mut decorators = self.decorators(node);
+        if let Some(parent) = node.parent()
+            && matches!(parent.kind(), "decorated_definition" | "export_statement")
+        {
+            decorators.extend(self.decorators(parent));
+        }
+        let mut sibling = node.prev_named_sibling();
+        while let Some(previous) = sibling.filter(|previous| previous.kind() == "decorator") {
+            decorators.push(self.decorator_text(previous));
+            sibling = previous.prev_named_sibling();
+        }
+        decorators
+    }
+
+    /// The definitions `symbol` names through its containers.
+    fn lookup<'t>(&self, root: Node<'t>, symbol: &str) -> Result<Vec<Definition<'t>>, String> {
         let segments: Vec<&str> = symbol.split('.').collect();
         let found = match segments.as_slice() {
             [name] => top_level(root)
@@ -46,17 +166,11 @@ impl<'a> Reader<'a> {
             [containers @ .., name] => self.scoped(root, containers, name)?,
             [] => Vec::new(),
         };
-        let mut found: Vec<Definition<'t>> = found
+        let found: Vec<Definition<'t>> = found;
+        Ok(found
             .into_iter()
             .filter(|definition| !definition.decorators.iter().any(|d| is_overload(d)))
-            .collect();
-        if found.len() != 1 {
-            return Err(format!(
-                "expected one function or method `{symbol}`, found {}",
-                found.len()
-            ));
-        }
-        Ok(found.remove(0))
+            .collect())
     }
 
     pub(super) fn function_named<'t>(
