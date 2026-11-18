@@ -1140,3 +1140,10 @@ fn with_enters_each_context_manager_under_its_context_model() {
         "{result}"
     );
 }
+
+#[test]
+fn tsx_files_read_their_typescript_and_refuse_jsx() {
+    let helper = "export function label(user: User): string {\n  return user.admin ? 'Admin' : 'Member';\n}\nexport function Badge(user: User) {\n  return <span>{label(user)}</span>;\n}\n";
+    assert!(source::read("x.tsx", helper, "label").is_ok());
+    assert!(source::read("x.tsx", helper, "Badge").is_err());
+}
