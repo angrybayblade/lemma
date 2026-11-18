@@ -108,6 +108,8 @@ pub(in crate::proof) enum Value {
     Record(BTreeMap<String, Value>),
     /// A tuple, list or array of known length.
     Sequence(Vec<Value>),
+    /// A Python set: its elements, in no order that may be read.
+    Set(Vec<Value>),
     /// A function a call model stands for.
     Model(String),
     /// Python `None`, JavaScript `null` and Go `nil`.
@@ -185,7 +187,7 @@ pub(in crate::proof) fn read_field(
             let fails = test.and(&then_fails).or(&test.not().and(&otherwise_fails));
             Ok((Value::choice(test, then, otherwise), fails))
         }
-        Value::Scalar(_) | Value::Model(_) | Value::Sequence(_) => {
+        Value::Scalar(_) | Value::Model(_) | Value::Sequence(_) | Value::Set(_) => {
             Err(format!("cannot read `{name}` on a non-record"))
         }
     }
@@ -272,9 +274,11 @@ pub(in crate::proof) fn element(
 /// sequence, or a substring of a text.
 pub(in crate::proof) fn contains(needle: &Value, haystack: &Value) -> Result<Term, String> {
     match haystack {
-        Value::Sequence(items) => items.iter().try_fold(Term::boolean(false), |any, item| {
-            Ok(any.or(&equal(needle, item)?))
-        }),
+        Value::Sequence(items) | Value::Set(items) => {
+            items.iter().try_fold(Term::boolean(false), |any, item| {
+                Ok(any.or(&equal(needle, item)?))
+            })
+        }
         Value::Scalar(text) if text.sort == Sort::Text => match needle {
             Value::Scalar(part) if part.sort == Sort::Text => Ok(Term {
                 sort: Sort::Bool,

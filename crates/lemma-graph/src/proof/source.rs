@@ -536,6 +536,13 @@ impl<'a> Reader<'a> {
                 }
                 return self.block(node);
             }
+            "var_declaration" => {
+                let mut bindings = Vec::new();
+                for spec in children(node) {
+                    bindings.extend(self.go_var(spec)?);
+                }
+                return Ok(bindings);
+            }
             "variable_declarator" => Stmt::Bind(
                 self.pattern(field(node, "name")?)?,
                 self.expression(field(node, "value")?)?,
@@ -574,6 +581,29 @@ impl<'a> Reader<'a> {
         Ok(vec![Statement {
             line: node.start_position().row + 1,
             kind,
+        }])
+    }
+
+    /// A Go `var` with a value; one without would bind a zero value.
+    fn go_var(&self, spec: Node<'_>) -> Result<Vec<Statement>, String> {
+        if spec.kind() != "var_spec" {
+            return self.unsupported(spec);
+        }
+        let Some(value) = spec.child_by_field_name("value") else {
+            return self.unsupported(spec);
+        };
+        let mut cursor = spec.walk();
+        let names: Vec<Pattern> = spec
+            .children_by_field_name("name", &mut cursor)
+            .map(|name| self.pattern(name))
+            .collect::<Result<_, _>>()?;
+        let pattern = match <[Pattern; 1]>::try_from(names) {
+            Ok([name]) => name,
+            Err(names) => Pattern::Sequence(names),
+        };
+        Ok(vec![Statement {
+            line: spec.start_position().row + 1,
+            kind: Stmt::Bind(pattern, self.expression(value)?),
         }])
     }
 
@@ -699,6 +729,9 @@ impl<'a> Reader<'a> {
     }
 
     fn expression(&self, node: Node<'_>) -> Result<Expr, String> {
+        if let Some(expression) = self.special_form(node)? {
+            return Ok(expression);
+        }
         Ok(match node.kind() {
             "true" => Expr::Bool(true),
             "false" => Expr::Bool(false),
@@ -735,6 +768,7 @@ impl<'a> Reader<'a> {
             ),
             "object" | "dictionary" | "composite_literal" => self.record(node)?,
             "expression_list" if children(node).len() == 1 => self.expression(only(node)?)?,
+
             "list" | "tuple" | "array" | "expression_list" => Expr::Sequence(
                 children(node)
                     .into_iter()
@@ -754,6 +788,54 @@ impl<'a> Reader<'a> {
             }
             _ => return self.unsupported(node),
         })
+    }
+
+    /// Type syntax that does nothing at runtime, Python's conditional
+    /// expression and set literals.
+    fn special_form(&self, node: Node<'_>) -> Result<Option<Expr>, String> {
+        let first = || children(node).first().copied().ok_or("empty expression");
+        Ok(Some(match node.kind() {
+            "as_expression" | "satisfies_expression" => self.expression(first()?)?,
+            // The grammar groups `a && b!` as `(a && b)!`, where TypeScript's
+            // postfix `!` binds tighter than any operator; accept only the
+            // operands TypeScript itself could give it.
+            "non_null_expression" => {
+                let operand = first()?;
+                if !matches!(
+                    operand.kind(),
+                    "identifier"
+                        | "this"
+                        | "member_expression"
+                        | "subscript_expression"
+                        | "call_expression"
+                        | "parenthesized_expression"
+                        | "non_null_expression"
+                ) {
+                    return self.unsupported(node);
+                }
+                self.expression(operand)?
+            }
+            "type_assertion" if self.language == Language::TypeScript => {
+                self.expression(*children(node).last().ok_or("empty type assertion")?)?
+            }
+            "conditional_expression" => {
+                let [then, test, otherwise] = children(node)[..] else {
+                    return self.unsupported(node);
+                };
+                Expr::Conditional(
+                    Box::new(self.expression(test)?),
+                    Box::new(self.expression(then)?),
+                    Box::new(self.expression(otherwise)?),
+                )
+            }
+            "set" => Expr::Set(
+                children(node)
+                    .into_iter()
+                    .map(|element| self.expression(element))
+                    .collect::<Result<_, _>>()?,
+            ),
+            _ => return Ok(None),
+        }))
     }
 
     fn integer(&self, node: Node<'_>) -> Result<Expr, String> {
@@ -839,6 +921,9 @@ impl<'a> Reader<'a> {
         match operator {
             "!" | "not" => Ok(Expr::Not(Box::new(self.expression(operand)?))),
             "-" => Ok(Expr::Negate(Box::new(self.expression(operand)?))),
+            // A pointer to a fresh struct reads as the struct: nothing here
+            // compares pointers or writes through them.
+            "&" if operand.kind() == "composite_literal" => self.expression(operand),
             _ => self.unsupported(node),
         }
     }
@@ -853,6 +938,9 @@ impl<'a> Reader<'a> {
             .child_by_field_name("right")
             .or_else(|| operands.last().copied())
             .ok_or("missing right operand")?;
+        if operands.len() > 2 && node.kind() == "comparison_operator" {
+            return self.chained_comparison(node, &operands);
+        }
         if operands.len() != 2 {
             return self.unsupported(node);
         }
@@ -898,6 +986,45 @@ impl<'a> Reader<'a> {
         ))
     }
 
+    /// Python's `a < b <= c`: each neighbouring pair compared, each operand
+    /// evaluated once. Read only when no operand calls a function, so that
+    /// comparing a middle operand twice changes nothing.
+    fn chained_comparison(&self, node: Node<'_>, operands: &[Node<'_>]) -> Result<Expr, String> {
+        let mut chain: Option<Expr> = None;
+        for pair in operands.windows(2) {
+            let [left, right] = pair else {
+                return self.unsupported(node);
+            };
+            let operator = self.source[left.end_byte()..right.start_byte()].trim();
+            let comparison = if let Some(membership) = self.membership(operator, *left, *right)? {
+                membership
+            } else {
+                let operator = match operator {
+                    "==" => Op::Equal,
+                    "!=" => Op::NotEqual,
+                    "<" => Op::Less,
+                    "<=" => Op::LessOrEqual,
+                    ">" => Op::Greater,
+                    ">=" => Op::GreaterOrEqual,
+                    _ => return self.unsupported(node),
+                };
+                Expr::Binary(
+                    operator,
+                    Box::new(self.expression(*left)?),
+                    Box::new(self.expression(*right)?),
+                )
+            };
+            if comparison.has_call() {
+                return self.unsupported(node);
+            }
+            chain = Some(match chain {
+                Some(earlier) => Expr::Binary(Op::And, Box::new(earlier), Box::new(comparison)),
+                None => comparison,
+            });
+        }
+        chain.ok_or_else(|| self.refusal(node))
+    }
+
     /// Python's `in` and `not in`.
     fn membership(
         &self,
@@ -920,8 +1047,10 @@ impl<'a> Reader<'a> {
 
     fn record(&self, node: Node<'_>) -> Result<Expr, String> {
         let body = if node.kind() == "composite_literal" {
-            if field(node, "type")?.kind() != "type_identifier" {
-                return self.unsupported(node);
+            match field(node, "type")?.kind() {
+                "type_identifier" | "qualified_type" => {}
+                "slice_type" | "array_type" => return self.go_sequence(field(node, "body")?),
+                _ => return self.unsupported(node),
             }
             field(node, "body")?
         } else {
@@ -935,6 +1064,18 @@ impl<'a> Reader<'a> {
             }
         }
         Ok(Expr::Record(record))
+    }
+
+    /// The elements of a Go slice or array literal, without keys.
+    fn go_sequence(&self, body: Node<'_>) -> Result<Expr, String> {
+        let mut items = Vec::new();
+        for element in children(body) {
+            if element.kind() != "literal_element" {
+                return self.unsupported(element);
+            }
+            items.push(self.expression(only(element)?)?);
+        }
+        Ok(Expr::Sequence(items))
     }
 
     fn record_entry(&self, entry: Node<'_>) -> Result<(String, Expr), String> {

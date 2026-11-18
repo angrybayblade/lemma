@@ -145,7 +145,7 @@ fn expression_names(expression: &Expr, names: &mut BTreeSet<String>) {
         | Expr::Await(inner) => {
             expression_names(inner, names);
         }
-        Expr::Sequence(items) => {
+        Expr::Sequence(items) | Expr::Set(items) => {
             for item in items {
                 expression_names(item, names);
             }
