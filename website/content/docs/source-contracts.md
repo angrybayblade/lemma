@@ -44,7 +44,7 @@ The complete example supplies these contract fields as an ordinary `.lm` record:
 
 | Field | Meaning |
 | --- | --- |
-| `inputs` | Symbolic `"Bool"`, `"Text"`, `"Int"`, `"Null"`, `"Undefined"`, records of these, or unions written as lists, such as `["Text", "Null"]` for a text that may be `None` |
+| `inputs` | Symbolic `"Bool"`, `"Text"`, `"Int"`, `"Null"`, `"Undefined"`, records of these, unions written as lists, such as `["Text", "Null"]` for a text that may be `None`, or sequences of a stated longest length, such as `{ sequence: "Int", max_length: 3 }` |
 | `parameters` | Input names, in the source function's parameter order, a method's receiver first; defaults to the source names. `null` leaves a parameter out, so its default applies |
 | `captures` | Names a nested function reads from the functions around it, each mapped to an input: every value it could hold when the function runs |
 | `requires` | Optional list of Boolean expressions constraining inputs |
@@ -55,7 +55,7 @@ The complete example supplies these contract fields as an ordinary `.lm` record:
 | `bindings` | Optional explicit assumed constants for source globals |
 | `max_paths` | Optional source path limit, default 256, maximum 4096 |
 
-Expressions use `.lm` syntax: `!`, `&&`, `||`, `==`, `!=`, ordering, `+`, `-`, `*`, record fields, constant positions such as `result[0]`, `null`, `undefined` and exact integer constants. `result` is the returned value. Contract arithmetic is exact. A contract may read a field only where it is defined: reading a field of null, or one a returned object lacks, makes a postcondition fail wherever that read is reached, and a precondition must be defined for every input. Guard such reads, as in `r.user == null || r.user.admin`.
+Expressions use `.lm` syntax: `!`, `&&`, `||`, `==`, `!=`, ordering, `+`, `-`, `*`, record fields, constant positions such as `result[0]`, the `length` of a sequence, `null`, `undefined` and exact integer constants. `result` is the returned value. Contract arithmetic is exact. A contract may read a field only where it is defined: reading a field of null, or one a returned object lacks, makes a postcondition fail wherever that read is reached, and a precondition must be defined for every input. Guard such reads, as in `r.user == null || r.user.admin`.
 
 Inputs not listed in `parameters` are specification inputs. For example, `lease.rejected` describes an arbitrary answer from the lease check. It is available to call models and postconditions, not injected into the source function's local variables. A specification input names one value, so a call model whose templates read one may be called at most once on a path; a second call is refused rather than assumed to answer alike.
 
@@ -106,6 +106,7 @@ The three languages share one reading. Each row below is read in every language 
 | Bindings | Declarations, reassignment, `+=`, unpacking with rest, TypeScript object destructuring with rest, Go `:=` and `var` with a value; TypeScript and Go declarations are scoped to their block |
 | Objects | Spreads in object and sequence literals; assigning a field of an object the function built and has not let anything else see |
 | Control flow | `if`, `return`, `raise`, `throw`, Go `panic`, `assert`, `try` with `except`/`catch`, `else` and `finally`, Python `with` under context models, `pass` |
+| Loops | Python `for`, JavaScript `for … of` and Go `for … range` over a sequence of known length, with `break`, `continue` and Python's `else`; `len` and `.length` of such a sequence |
 | Calls | Call models, constructors through `new` models, and functions the code defines: lambdas, arrow functions, function expressions, Go function literals and nested definitions, run where they are called |
 
 Some meanings are the language's own, and are kept:
@@ -113,12 +114,13 @@ Some meanings are the language's own, and are kept:
 - A path that raises has no normal return. Reading a field of null raises in every language; a position past the end raises in Python and Go and reads undefined in TypeScript; reading a field an object built in the code lacks raises in Python and reads undefined in TypeScript. Inside a `try`, such a path is followed to its handler. Handlers match Python's built-in exception classes by their parents; a class defined elsewhere is caught by its name, by `BaseException` or a bare `except`, and by `Exception` under a reported assumption.
 - Python integers are exact. TypeScript integers are exact up to 2^53 - 1 and Go's to 64 bits, so their `Int` inputs stay in that range and arithmetic on them reports an assumption.
 - A Python function's parameter defaults are evaluated once, where the function is defined; a TypeScript default at each call that leaves the parameter out.
+- A loop over a sequence runs its body once for each item, so it is followed where the length is known: a literal, what a call model returns, or an input with a `max_length`. A result about such an input holds for every length up to the stated one and says nothing of a longer sequence. Each pass of a TypeScript or Go loop has its own variables; a Python loop binds variables of the function.
 - Calling a function the code defines reads what it uses from around it as it is then, as late binding does. It is called only where every name it reads still means the variable it was defined with; a call from a block or function that declares one of those names again is refused. A name a Python function assigns is its own from its first line, and a TypeScript `let` or `const` its block's, so reading one before it is assigned is refused, where the languages raise. A callee with several paths is joined into one value only where its paths differ in nothing else.
 - Input shapes are preconditions on the values supplied to the selected function: getter-free objects in TypeScript, attribute and item reads without descriptors or `__getattr__` in Python, and matching structs in Go. A record a contract declares may hold fields it never named; reading one of those is refused.
 
 Every used call, decorator and context model, assumed constant and language assumption is reported, and makes the result `conditional`.
 
-The checker refuses loops, comprehensions, generators, variable subscript keys, mutation of objects the function did not build (including its parameters), `nonlocal` and `global`, rest parameters, implicit Boolean coercion, JavaScript coercive equality, division and modulo, Go zero values, `defer` and `recover`, JSX, and other unhandled syntax. It reads a function's own code; a function defined elsewhere is called only under a call model.
+The checker refuses loops that run until a condition fails (`while`, and the three-part and bare `for` of JavaScript and Go), `for … in`, `for await`, a `break` or `continue` with a label, loops over a value whose length is not known, comprehensions, generators, variable subscript keys, mutation of objects the function did not build (including its parameters), `nonlocal` and `global`, rest parameters, implicit Boolean coercion, JavaScript coercive equality, division and modulo, Go zero values, `defer` and `recover`, JSX, and other unhandled syntax. It reads a function's own code; a function defined elsewhere is called only under a call model.
 
 For an async function, `result` means the completed body return; it assumes the caller awaits completion. Promise and coroutine scheduling is outside these semantics. The result concerns normal returns. It does **not** establish absence of exceptions, termination, concurrency safety, correctness of called functions, source typechecking, module initialization, dynamic function replacement, or that a framework routes requests to the bound function. Keep normal compiler checks and runtime tests.
 

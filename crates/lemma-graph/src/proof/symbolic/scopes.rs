@@ -154,7 +154,20 @@ fn block_names(body: &[Statement], names: &mut BTreeSet<String>) {
                     expression_names(&context.value, names);
                 }
             }
-            Stmt::Raise(_) | Stmt::Try(_) => {}
+            // What a loop binds is its own inside it.
+            Stmt::ForEach(each) => {
+                expression_names(&each.iterable, names);
+                let mut inside = BTreeSet::new();
+                block_names(&each.body, &mut inside);
+                let mut bound = BTreeSet::new();
+                for pattern in each.index.iter().chain(&each.item) {
+                    pattern_names(pattern, &mut bound);
+                }
+                names.extend(inside.difference(&bound).cloned());
+                block_names(&each.otherwise, names);
+                continue;
+            }
+            Stmt::Raise(_) | Stmt::Try(_) | Stmt::Break | Stmt::Continue => {}
         }
         for block in statement.kind.blocks() {
             block_names(block, names);

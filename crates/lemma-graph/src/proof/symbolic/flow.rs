@@ -102,8 +102,12 @@ impl Evaluator<'_> {
                     let raised = raised.clone();
                     after.extend(self.handle(statement, &raised, path)?);
                 }
-                (None, None) => after.extend(self.block(&statement.otherwise, path)?),
-                (None, Some(_)) => after.push(path),
+                // `else` runs where the body ran to its end: not where it
+                // returned, nor where it left a loop around the `try`.
+                (None, None) if path.jump.is_none() => {
+                    after.extend(self.block(&statement.otherwise, path)?);
+                }
+                (None, _) => after.push(path),
             }
         }
         if statement.finally.is_empty() {
@@ -142,7 +146,7 @@ impl Evaluator<'_> {
     }
 
     /// `finally`: runs on every way out of a `try`, and the way out resumes
-    /// unless `finally` returns or raises itself.
+    /// unless `finally` returns, raises or leaves a loop itself.
     pub(super) fn finally(
         &mut self,
         body: &[Statement],
@@ -150,11 +154,13 @@ impl Evaluator<'_> {
     ) -> Result<Vec<State>, String> {
         let result = path.result.take();
         let raised = path.raised.take();
+        let jump = path.jump.take();
         let mut finished = self.block(body, path)?;
         for path in &mut finished {
-            if path.result.is_none() && path.raised.is_none() {
+            if path.result.is_none() && path.raised.is_none() && path.jump.is_none() {
                 path.result.clone_from(&result);
                 path.raised.clone_from(&raised);
+                path.jump = jump;
             }
         }
         Ok(finished)

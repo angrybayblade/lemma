@@ -87,6 +87,26 @@ pub(super) enum StatementKind {
     With(Vec<Context>, Vec<Statement>),
     /// Python's `assert`: the path goes on only where the condition holds.
     Assert(Expression),
+    /// A loop over the items of a sequence, in order.
+    ForEach(Box<ForEach>),
+    /// `break`: leaves the innermost loop.
+    Break,
+    /// `continue`: goes on with the next pass of the innermost loop.
+    Continue,
+}
+
+/// A loop over a sequence: Python's `for`, JavaScript's `for … of` and Go's
+/// `for … range`.
+#[derive(Debug, Clone)]
+pub(super) struct ForEach {
+    /// What each position is bound to, as the first name of a Go `range` is.
+    pub index: Option<Pattern>,
+    /// What each item is bound to.
+    pub item: Option<Pattern>,
+    pub iterable: Expression,
+    pub body: Vec<Statement>,
+    /// Python's `else`: run where the loop ends without a `break`.
+    pub otherwise: Vec<Statement>,
 }
 
 #[derive(Debug, Clone)]
@@ -175,6 +195,7 @@ impl StatementKind {
             Self::If(_, then, otherwise) => vec![then, otherwise],
             Self::Try(statement) => statement.blocks().collect(),
             Self::With(_, body) => vec![body],
+            Self::ForEach(statement) => vec![&statement.body, &statement.otherwise],
             _ => Vec::new(),
         }
     }

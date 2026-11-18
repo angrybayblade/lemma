@@ -55,6 +55,10 @@ impl Reader<'_> {
                 self.nested_definition(node)?
             }
             "with_statement" => self.with_statement(node)?,
+            "for_statement" => self.for_statement(node)?,
+            "for_in_statement" => self.for_of(node)?,
+            // A `switch` is not read, so a `break` here always leaves a loop.
+            "break_statement" | "continue_statement" => self.jump(node)?,
             "expression_statement" => {
                 let expression = only(node)?;
                 if matches!(

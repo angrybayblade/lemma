@@ -8,8 +8,8 @@ use super::super::ir::{self, Expression as Expr, Language, Part};
 use super::models::assume_decorators;
 use super::scopes::captured;
 use super::value::{
-    Defined, Missing, Sort, Term, Value, arithmetic, contains, element, equal, negate, order,
-    read_field, to_text,
+    Absent, Defined, Missing, Sort, Term, Value, arithmetic, contains, element, equal, length,
+    negate, order, read_field, to_text,
 };
 use super::{Evaluator, State, is_pure, lookup};
 
@@ -217,9 +217,59 @@ impl Evaluator<'_> {
         state: &mut State,
     ) -> Result<Value, String> {
         let target = self.target(target, state)?;
-        let (value, fails) = read_field(&target, name, is_optional, self.missing())?;
+        // A sequence has a `length` in JavaScript, and in a contract.
+        let reads_length = name == "length"
+            && (self.specification.is_some() || self.language == Language::TypeScript);
+        let absent = if is_optional {
+            Absent::IsUndefined
+        } else {
+            Absent::Raises
+        };
+        let counted = if reads_length {
+            length(&target, absent)?
+        } else {
+            None
+        };
+        let (value, fails) = match counted {
+            Some(counted) => counted,
+            None => read_field(&target, name, is_optional, self.missing())?,
+        };
         self.narrow(&fails, state);
         Ok(value)
+    }
+
+    /// Python's and Go's built-in `len`, of a sequence of known length or
+    /// of a Python text. Go counts a string's bytes, which are not known.
+    pub(super) fn built_in_length(
+        &mut self,
+        arguments: &[ir::Argument],
+        state: &mut State,
+    ) -> Result<Value, String> {
+        let [argument] = arguments else {
+            return Err("`len` takes one argument".to_owned());
+        };
+        if argument.name.is_some() {
+            return Err("`len` takes no keyword argument".to_owned());
+        }
+        let value = self.expression(&argument.value, state)?;
+        if let (Value::Scalar(text), Language::Python) = (&value, self.language) {
+            if text.sort == Sort::Text {
+                return Ok(Value::Scalar(Term {
+                    sort: Sort::Integer,
+                    code: format!("(str.len {})", text.code),
+                }));
+            }
+        }
+        let absent = if self.language == Language::Go {
+            Absent::IsUnsupported
+        } else {
+            Absent::Raises
+        };
+        let Some((count, fails)) = length(&value, absent)? else {
+            return Err("`len` is read of a sequence of known length".to_owned());
+        };
+        self.narrow(&fails, state);
+        Ok(count)
     }
 
     /// `left ?? right`: `right` where `left` is null or undefined.

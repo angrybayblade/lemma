@@ -286,6 +286,49 @@ pub(in crate::proof) fn read_field(
     }
 }
 
+/// What asking null for its length does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::proof) enum Absent {
+    /// It raises, as Python's `len(None)` and JavaScript's `null.length` do.
+    Raises,
+    /// It reads undefined, as JavaScript's `null?.length` does.
+    IsUndefined,
+    /// It depends on a type not known here, as Go's `len(nil)` does.
+    IsUnsupported,
+}
+
+/// How many items a sequence has, and where asking raises; `None` for a
+/// value that is not a sequence, whose length is some other read.
+pub(in crate::proof) fn length(
+    value: &Value,
+    absent: Absent,
+) -> Result<Option<(Value, Term)>, String> {
+    Ok(match value {
+        Value::Sequence(items) => {
+            let count = i64::try_from(items.len()).map_err(|e| e.to_string())?;
+            Some((Value::Scalar(Term::integer(count)), Term::boolean(false)))
+        }
+        Value::Null | Value::Undefined => match absent {
+            Absent::Raises => Some((Value::Unreachable, Term::boolean(true))),
+            Absent::IsUndefined => Some((Value::Undefined, Term::boolean(false))),
+            Absent::IsUnsupported => {
+                return Err("the length of a nil value depends on its type".to_owned());
+            }
+        },
+        Value::Unreachable => Some((Value::Unreachable, Term::boolean(false))),
+        Value::Choice(test, then, otherwise) => {
+            let (Some((then, then_fails)), Some((otherwise, otherwise_fails))) =
+                (length(then, absent)?, length(otherwise, absent)?)
+            else {
+                return Ok(None);
+            };
+            let fails = test.and(&then_fails).or(&test.not().and(&otherwise_fails));
+            Some((Value::choice(test, then, otherwise), fails))
+        }
+        _ => None,
+    })
+}
+
 /// Whether two values are equal, as `===` in TypeScript, `==` in Python and
 /// Go compare plain data, and `is` compares with `None`, `True` or `False`.
 pub(in crate::proof) fn equal(left: &Value, right: &Value) -> Result<Term, String> {
@@ -398,6 +441,15 @@ pub(in crate::proof) fn order(operator: Op, left: &Value, right: &Value) -> Resu
     if matches!(left, Value::Unreachable) || matches!(right, Value::Unreachable) {
         return Ok(Term::boolean(false));
     }
+    // A value that depends on the inputs is ordered as each value it may be.
+    if let Value::Choice(test, then, otherwise) = left {
+        let then = order(operator, then, right)?;
+        return Ok(test.ite(&then, &order(operator, otherwise, right)?));
+    }
+    if let Value::Choice(test, then, otherwise) = right {
+        let then = order(operator, left, then)?;
+        return Ok(test.ite(&then, &order(operator, left, otherwise)?));
+    }
     let (Value::Scalar(left), Value::Scalar(right)) = (left, right) else {
         return Err("only integers can be ordered".to_owned());
     };
@@ -433,8 +485,22 @@ pub(in crate::proof) fn arithmetic(
     left: &Value,
     right: &Value,
 ) -> Result<Term, String> {
-    let (Value::Scalar(left), Value::Scalar(right)) = (left, right) else {
-        return Err("arithmetic needs two integers, or two texts to join".to_owned());
+    if let Value::Choice(test, then, otherwise) = left {
+        let then = arithmetic(operator, then, right)?;
+        return same_sort(test, &then, &arithmetic(operator, otherwise, right)?);
+    }
+    if let Value::Choice(test, then, otherwise) = right {
+        let then = arithmetic(operator, left, then)?;
+        return same_sort(test, &then, &arithmetic(operator, left, otherwise)?);
+    }
+    // No path observes an unreachable value, so the other operand's own
+    // value will do.
+    let (left, right) = match (left, right) {
+        (Value::Unreachable, Value::Scalar(other)) | (Value::Scalar(other), Value::Unreachable) => {
+            return Ok(other.clone());
+        }
+        (Value::Scalar(left), Value::Scalar(right)) => (left, right),
+        _ => return Err("arithmetic needs two integers, or two texts to join".to_owned()),
     };
     if let (Some(left), Some(right)) = (left.constant_integer(), right.constant_integer()) {
         let exact = match operator {
@@ -458,6 +524,15 @@ pub(in crate::proof) fn arithmetic(
         sort,
         code: format!("({function} {} {})", left.code, right.code),
     })
+}
+
+/// `then` where `test` holds, else `otherwise`, which must be of one sort:
+/// a number where one input holds and a text where another does is refused.
+fn same_sort(test: &Term, then: &Term, otherwise: &Term) -> Result<Term, String> {
+    if then.sort != otherwise.sort {
+        return Err("arithmetic on a value that is a number or a text by its input".to_owned());
+    }
+    Ok(test.ite(then, otherwise))
 }
 
 pub(in crate::proof) fn negate(value: &Value) -> Result<Term, String> {

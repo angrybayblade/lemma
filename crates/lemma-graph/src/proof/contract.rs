@@ -43,15 +43,30 @@ fn path_limit() -> usize {
     256
 }
 
-/// A symbolic scalar, an immutable record of symbolic inputs, or a union of
-/// alternatives such as `["Text", "Null"]` for a text that may be `None`.
+/// A symbolic scalar, an immutable record of symbolic inputs, a union of
+/// alternatives such as `["Text", "Null"]` for a text that may be `None`, or
+/// a sequence of at most `max_length` items, such as
+/// `{ sequence: "Int", max_length: 3 }`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub(super) enum Input {
     Scalar(String),
     Union(Vec<Input>),
+    Sequence(Sequence),
     Record(BTreeMap<String, Input>),
 }
+
+/// A sequence input: every length up to `max_length`, each item of one shape.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Sequence {
+    pub sequence: Box<Input>,
+    pub max_length: usize,
+}
+
+/// The longest sequence a contract may state: a loop over it is followed
+/// once for every length.
+pub(super) const MAX_SEQUENCE_LENGTH: usize = 32;
 
 /// A named property required at every normal return.
 #[derive(Debug, Clone, Deserialize)]
