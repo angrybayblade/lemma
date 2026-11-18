@@ -57,16 +57,16 @@ impl Reader<'_> {
                     .collect::<Result<_, _>>()?,
             ),
             "new_expression" => self.construction(node)?,
+            "list_comprehension" | "set_comprehension" | "dictionary_comprehension" => {
+                self.comprehension(node)?
+            }
             "super" => Expr::Name("super".to_owned()),
             "call_expression" | "call" if has_optional_chain(node) => {
                 return self.unsupported(node);
             }
             "call_expression" | "call" => {
                 let function = self.expression(field(node, "function")?)?;
-                let arguments = children(field(node, "arguments")?)
-                    .into_iter()
-                    .map(|n| self.argument(n))
-                    .collect::<Result<_, _>>()?;
+                let arguments = self.arguments(field(node, "arguments")?)?;
                 Expr::Call(Box::new(function), arguments)
             }
             _ => return self.unsupported(node),
