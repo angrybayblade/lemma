@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use lemma_lang::syntax::ast::BinaryOperator as Op;
 use tree_sitter::Node;
 
-use super::super::ir::Expression as Expr;
+use super::super::ir::{Entry, Expression as Expr};
 use super::{Definition, Language, Reader, children, field, has_optional_chain, only};
 
 impl Reader<'_> {
@@ -53,9 +53,11 @@ impl Reader<'_> {
             "list" | "tuple" | "array" | "expression_list" => Expr::Sequence(
                 children(node)
                     .into_iter()
-                    .map(|element| self.expression(element))
+                    .map(|element| self.element(element))
                     .collect::<Result<_, _>>()?,
             ),
+            "new_expression" => self.construction(node)?,
+            "super" => Expr::Name("super".to_owned()),
             "call_expression" | "call" if has_optional_chain(node) => {
                 return self.unsupported(node);
             }
@@ -337,6 +339,48 @@ impl Reader<'_> {
         Ok(Some(Expr::Not(Box::new(contains))))
     }
 
+    /// An element of a sequence literal, which may spread another sequence.
+    fn element(&self, node: Node<'_>) -> Result<Expr, String> {
+        if matches!(node.kind(), "spread_element" | "list_splat") {
+            return Ok(Expr::Spread(Box::new(self.expression(only(node)?)?)));
+        }
+        self.expression(node)
+    }
+
+    /// `new Constructor(arguments)`, named by the constructor as written.
+    fn construction(&self, node: Node<'_>) -> Result<Expr, String> {
+        let constructor = field(node, "constructor")?;
+        if !matches!(constructor.kind(), "identifier" | "member_expression") {
+            return self.unsupported(node);
+        }
+        let arguments = match node.child_by_field_name("arguments") {
+            Some(arguments) => children(arguments)
+                .into_iter()
+                .map(|argument| self.argument(argument))
+                .collect::<Result<_, _>>()?,
+            None => Vec::new(),
+        };
+        let name = self
+            .text(constructor)
+            .split_whitespace()
+            .collect::<String>();
+        Ok(Expr::New(name, arguments))
+    }
+
+    /// An object literal with spreads, its parts kept in order.
+    fn merge(&self, body: Node<'_>) -> Result<Expr, String> {
+        let mut entries = Vec::new();
+        for entry in children(body) {
+            if matches!(entry.kind(), "spread_element" | "dictionary_splat") {
+                entries.push(Entry::Spread(self.expression(only(entry)?)?));
+                continue;
+            }
+            let (key, value) = self.record_entry(entry)?;
+            entries.push(Entry::Field(key, value));
+        }
+        Ok(Expr::Merge(entries))
+    }
+
     pub(super) fn record(&self, node: Node<'_>) -> Result<Expr, String> {
         let body = if node.kind() == "composite_literal" {
             match field(node, "type")?.kind() {
@@ -348,6 +392,12 @@ impl Reader<'_> {
         } else {
             node
         };
+        if children(body)
+            .iter()
+            .any(|entry| matches!(entry.kind(), "spread_element" | "dictionary_splat"))
+        {
+            return self.merge(body);
+        }
         let mut record = BTreeMap::new();
         for entry in children(body) {
             let (key, value) = self.record_entry(entry)?;

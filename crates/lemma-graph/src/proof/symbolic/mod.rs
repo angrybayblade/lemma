@@ -148,8 +148,11 @@ fn prepare(
         requires = requires.and(&condition.as_bool()?);
         requires_undefined = requires_undefined.or(&undefined);
     }
+    // A constructor's model is found by `new`, not by a name in the source.
     for name in evaluator.contract.models.keys() {
-        insert_model(&mut state.env, name, name)?;
+        if !name.starts_with("new ") {
+            insert_model(&mut state.env, name, name)?;
+        }
     }
     state.env.remove("null");
     state.env.remove("undefined");
@@ -538,10 +541,29 @@ impl Evaluator<'_> {
                 }
                 Ok(())
             }
+            Pattern::RecordRest(fields, rest) => {
+                for (field, part) in fields {
+                    let (read, fails) = read_field(&value, field, false, self.missing())?;
+                    self.narrow(&fails, state);
+                    self.bind(part, read, is_assignment, state)?;
+                }
+                let taken: BTreeSet<&str> =
+                    fields.iter().map(|(field, _)| field.as_str()).collect();
+                let remaining = match value {
+                    Value::Object(all) => Value::Object(without(all, &taken)),
+                    Value::Record(all) => Value::Record(without(all, &taken)),
+                    _ => return Err("only an object's remaining fields can be gathered".to_owned()),
+                };
+                self.bind(rest, remaining, is_assignment, state)
+            }
+            Pattern::Rest(_) => Err("a rest pattern belongs inside a sequence pattern".to_owned()),
             Pattern::Sequence(parts) => {
                 let Value::Sequence(items) = value else {
                     return Err("only a sequence of known length can be unpacked".to_owned());
                 };
+                if parts.iter().any(|part| matches!(part, Pattern::Rest(_))) {
+                    return self.unpack_rest(parts, items, is_assignment, state);
+                }
                 if items.len() != parts.len() {
                     return self.unpack_mismatch(parts, items, is_assignment, state);
                 }
@@ -551,6 +573,42 @@ impl Evaluator<'_> {
                 Ok(())
             }
         }
+    }
+
+    /// Unpacks a sequence where one part gathers the items the others leave.
+    fn unpack_rest(
+        &mut self,
+        parts: &[Pattern],
+        mut items: Vec<Value>,
+        is_assignment: bool,
+        state: &mut State,
+    ) -> Result<(), String> {
+        let at = parts
+            .iter()
+            .position(|part| matches!(part, Pattern::Rest(_)))
+            .ok_or("missing rest pattern")?;
+        let after = parts.len() - at - 1;
+        if items.len() < at + after {
+            // Python raises; JavaScript reads undefined for what is missing.
+            if self.language != Language::TypeScript {
+                state.guard = Term::boolean(false);
+                return Ok(());
+            }
+            items.resize(at + after, Value::Undefined);
+        }
+        let tail = items.split_off(items.len() - after);
+        let gathered = items.split_off(at);
+        let Pattern::Rest(rest) = &parts[at] else {
+            return Err("missing rest pattern".to_owned());
+        };
+        for (part, item) in parts[..at].iter().zip(items) {
+            self.bind(part, item, is_assignment, state)?;
+        }
+        self.bind(rest, Value::Sequence(gathered), is_assignment, state)?;
+        for (part, item) in parts[at + 1..].iter().zip(tail) {
+            self.bind(part, item, is_assignment, state)?;
+        }
+        Ok(())
     }
 
     /// Unpacking a sequence of another length: Python raises, JavaScript
@@ -838,7 +896,12 @@ impl Evaluator<'_> {
                 Value::Scalar(negate(&operand)?)
             }
             Expr::Template(parts) => self.template_text(parts, state)?,
-            Expr::Sequence(items) => Value::Sequence(self.expressions(items, state)?),
+            Expr::Sequence(items) => Value::Sequence(self.elements(items, state)?),
+            Expr::Spread(_) => return Err("a spread belongs inside a literal".to_owned()),
+            Expr::Merge(entries) => self.merge(entries, state)?,
+            Expr::New(constructor, arguments) => {
+                self.call_model(&format!("new {constructor}"), arguments, false, state)?
+            }
             Expr::Set(items) => Value::Set(self.expressions(items, state)?),
             Expr::Index(target, position) => self.element(target, *position, state)?,
             Expr::Contains(needle, haystack) => {
@@ -857,6 +920,58 @@ impl Evaluator<'_> {
                 Value::Closure(std::rc::Rc::new((**function).clone()))
             }
             Expr::Await(inner) => self.awaited(inner, state)?,
+        })
+    }
+
+    /// The items of a sequence literal, with spread sequences flattened in.
+    fn elements(&mut self, items: &[Expr], state: &mut State) -> Result<Vec<Value>, String> {
+        let mut values = Vec::new();
+        for item in items {
+            let Expr::Spread(inner) = item else {
+                values.push(self.expression(item, state)?);
+                continue;
+            };
+            let Value::Sequence(spread) = self.expression(inner, state)? else {
+                return Err("only a sequence of known length can be spread".to_owned());
+            };
+            values.extend(spread);
+        }
+        Ok(values)
+    }
+
+    /// An object literal with spreads, read in order: later parts replace
+    /// earlier fields. Spreading a record a contract declared leaves fields
+    /// it never named, so the result is open too.
+    fn merge(&mut self, entries: &[ir::Entry], state: &mut State) -> Result<Value, String> {
+        let mut fields = BTreeMap::new();
+        let mut is_exact = true;
+        for entry in entries {
+            match entry {
+                ir::Entry::Field(key, value) => {
+                    let value = self.expression(value, state)?;
+                    fields.insert(key.clone(), value);
+                }
+                ir::Entry::Spread(value) => match self.expression(value, state)? {
+                    Value::Object(spread) => fields.extend(spread),
+                    Value::Record(spread) => {
+                        fields.extend(spread);
+                        is_exact = false;
+                    }
+                    // JavaScript spreads nothing from null; Python raises.
+                    Value::Null | Value::Undefined if self.language == Language::TypeScript => {}
+                    Value::Null | Value::Undefined => state.guard = Term::boolean(false),
+                    _ => {
+                        return Err(
+                            "only an object or record can be spread into an object".to_owned()
+                        );
+                    }
+                },
+            }
+        }
+        Ok(if is_exact {
+            Value::Object(fields)
+        } else {
+            Value::Record(fields)
         })
     }
 
@@ -1052,6 +1167,17 @@ impl Evaluator<'_> {
             }
             _ => return Err("call target has no call model".to_owned()),
         };
+        self.call_model(&name, arguments, is_awaited, state)
+    }
+
+    /// A call answered by the call model `name`.
+    fn call_model(
+        &mut self,
+        name: &str,
+        arguments: &[ir::Argument],
+        is_awaited: bool,
+        state: &mut State,
+    ) -> Result<Value, String> {
         let mut values = Vec::new();
         for argument in arguments {
             values.push((
@@ -1066,13 +1192,13 @@ impl Evaluator<'_> {
         let model = self
             .contract
             .models
-            .get(&name)
+            .get(name)
             .ok_or_else(|| format!("missing model `{name}`"))?
             .clone();
-        check_awaiting(&name, model.is_async, is_awaited)?;
-        check_callbacks(&name, &model, &values)?;
-        let arguments = match_arguments(&name, &model.parameters, values)?;
-        self.apply_model(&name, model, arguments, state)
+        check_awaiting(name, model.is_async, is_awaited)?;
+        check_callbacks(name, &model, &values)?;
+        let arguments = match_arguments(name, &model.parameters, values)?;
+        self.apply_model(name, model, arguments, state)
     }
 
     /// What a call model says a call does: its effect, and what it returns.
@@ -1308,6 +1434,13 @@ fn join_paths(
     Ok(value)
 }
 
+/// The fields of `all` not in `taken`.
+fn without(all: BTreeMap<String, Value>, taken: &BTreeSet<&str>) -> BTreeMap<String, Value> {
+    all.into_iter()
+        .filter(|(field, _)| !taken.contains(field.as_str()))
+        .collect()
+}
+
 /// Refuses passing a function to a call model that may call it: what the
 /// function would do there is outside the model.
 fn check_callbacks(
@@ -1379,7 +1512,10 @@ fn lookup(name: &str, state: &State) -> Result<Value, String> {
 fn track_freshness(pattern: &Pattern, expression: &Expr, fresh: &mut BTreeSet<String>) {
     let mut names = BTreeSet::new();
     pattern_names(pattern, &mut names);
-    let is_literal = matches!(expression, Expr::Record(_) | Expr::Sequence(_));
+    let is_literal = matches!(
+        expression,
+        Expr::Record(_) | Expr::Sequence(_) | Expr::Merge(_)
+    );
     for name in names {
         if is_literal && matches!(pattern, Pattern::Name(_)) {
             fresh.insert(name);
@@ -1405,6 +1541,13 @@ fn pattern_names(pattern: &Pattern, names: &mut BTreeSet<String>) {
                 pattern_names(part, names);
             }
         }
+        Pattern::RecordRest(fields, rest) => {
+            for (_, part) in fields {
+                pattern_names(part, names);
+            }
+            pattern_names(rest, names);
+        }
+        Pattern::Rest(inner) => pattern_names(inner, names),
     }
 }
 
@@ -1450,32 +1593,5 @@ fn fill_absent(value: Value, fallback: &Value) -> Value {
 }
 
 fn is_pure(expression: &Expr) -> bool {
-    match expression {
-        Expr::Call(_, _) | Expr::Await(_) => false,
-        Expr::Not(inner)
-        | Expr::Negate(inner)
-        | Expr::Index(inner, _)
-        | Expr::Member(inner, _)
-        | Expr::OptionalMember(inner, _) => is_pure(inner),
-        Expr::Sequence(items) | Expr::Set(items) => items.iter().all(is_pure),
-        Expr::Contains(left, right) => is_pure(left) && is_pure(right),
-        Expr::Template(parts) => parts.iter().all(|part| match part {
-            Part::Text(_) => true,
-            Part::Value(value) => is_pure(value),
-        }),
-        Expr::Binary(_, left, right) | Expr::Coalesce(left, right) => {
-            is_pure(left) && is_pure(right)
-        }
-        Expr::Conditional(test, then, otherwise) => {
-            is_pure(test) && is_pure(then) && is_pure(otherwise)
-        }
-        Expr::Record(fields) => fields.values().all(is_pure),
-        Expr::Bool(_)
-        | Expr::Text(_)
-        | Expr::Integer(_)
-        | Expr::Null
-        | Expr::Undefined
-        | Expr::Name(_)
-        | Expr::Closure(_) => true,
-    }
+    !expression.has_call()
 }
