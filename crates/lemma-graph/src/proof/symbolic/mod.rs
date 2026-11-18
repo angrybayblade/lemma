@@ -5,6 +5,7 @@
 //! language, has no normal return and is dropped: the contract speaks of
 //! normal returns only.
 
+mod exceptions;
 mod models;
 mod value;
 
@@ -15,8 +16,8 @@ use serde_json::Value as Json;
 
 use super::contract::{Contract, Input};
 use super::ir::{
-    self, Branch, Expression as Expr, Function, Language, Part, Pattern, Statement,
-    StatementKind as Stmt,
+    self, Branch, Expression as Expr, Function, Language, Part, Pattern, Raised, Statement,
+    StatementKind as Stmt, Try,
 };
 use models::{assume_decorators, check_awaiting, match_arguments, reads_inputs};
 use value::{
@@ -37,13 +38,18 @@ pub(super) struct State {
     /// else can see yet: the only ones whose fields may be assigned.
     fresh: BTreeSet<String>,
     pub result: Option<Value>,
+    /// What the path raised inside a `try`, until a handler catches it.
+    raised: Option<Raised>,
+    /// Paths that raised inside a `try` while the current statement ran,
+    /// each as it was where it raised.
+    pending: Vec<State>,
 }
 
 impl State {
     /// Whether the path can still reach a statement: it has not returned,
     /// and no read of null has ended it.
     fn is_running(&self) -> bool {
-        self.result.is_none() && self.guard.code != "false"
+        self.result.is_none() && self.raised.is_none() && self.guard.code != "false"
     }
 }
 
@@ -70,6 +76,8 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
         language: function.language,
         is_async: function.is_async,
         context: Term::boolean(true),
+        try_depth: 0,
+        handling: Vec::new(),
         specification: None,
         symbols,
         assumptions: BTreeSet::new(),
@@ -82,7 +90,9 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
     });
     bind_parameters(function, &inputs, &mut state, &mut evaluator)?;
     state.guard = requires.clone();
-    let paths = evaluator.statements(&function.body, vec![state])?;
+    let mut paths = evaluator.statements(&function.body, vec![state])?;
+    // A raise no handler caught leaves the function without a normal return.
+    paths.retain(|path| path.raised.is_none());
     if paths.iter().any(|path| path.result.is_none()) {
         return Err("a source path falls through without an explicit return".to_owned());
     }
@@ -116,6 +126,8 @@ fn prepare(
         calls: BTreeMap::new(),
         fresh: BTreeSet::new(),
         result: None,
+        raised: None,
+        pending: Vec::new(),
     };
     for (name, template) in &evaluator.contract.bindings {
         if state.env.contains_key(name) {
@@ -243,6 +255,8 @@ impl Execution {
             language: Language::Python,
             is_async: false,
             context: Term::boolean(true),
+            try_depth: 0,
+            handling: Vec::new(),
             specification: None,
             symbols: BTreeMap::new(),
             assumptions: BTreeSet::new(),
@@ -367,6 +381,11 @@ struct Evaluator<'a> {
     /// While a contract expression is evaluated: where it reads a field of
     /// null or undefined, rather than paths that raise.
     specification: Option<Term>,
+    /// How many `try` bodies enclose the statement running, where a raise
+    /// may be caught and so must be followed rather than dropped.
+    try_depth: usize,
+    /// What the handlers running caught, which a bare `raise` raises again.
+    handling: Vec<Raised>,
     /// Every symbolic value: the contract's inputs, then each call's outcomes.
     symbols: BTreeMap<String, (String, Sort)>,
     assumptions: BTreeSet<String>,
@@ -404,10 +423,20 @@ impl Evaluator<'_> {
         Ok(next)
     }
 
-    fn step(&mut self, statement: &Statement, mut state: State) -> Result<Vec<State>, String> {
+    fn step(&mut self, statement: &Statement, state: State) -> Result<Vec<State>, String> {
         if !state.is_running() {
             return Ok(vec![state]);
         }
+        let mut paths = self.run(statement, state)?;
+        let mut raised = Vec::new();
+        for path in &mut paths {
+            raised.append(&mut path.pending);
+        }
+        paths.extend(raised);
+        Ok(paths)
+    }
+
+    fn run(&mut self, statement: &Statement, mut state: State) -> Result<Vec<State>, String> {
         match &statement.kind {
             Stmt::Bind(pattern, expression) | Stmt::Assign(pattern, expression) => {
                 let value = self.expression(expression, &mut state)?;
@@ -439,15 +468,28 @@ impl Evaluator<'_> {
             Stmt::Evaluate(expression) => {
                 self.expression(expression, &mut state)?;
             }
-            Stmt::Raise => {
-                state.guard = Term::boolean(false);
+            Stmt::Raise(raised) => {
+                let raised = match raised {
+                    Raised::Again => self.handling.last().cloned().unwrap_or(Raised::Unknown),
+                    other => other.clone(),
+                };
+                if self.try_depth == 0 {
+                    state.guard = Term::boolean(false);
+                } else {
+                    state.raised = Some(raised);
+                }
             }
             Stmt::Assert(condition) => {
                 let condition = self.expression(condition, &mut state)?.as_bool()?;
-                state.guard = state.guard.and(&condition);
+                self.raise_where(
+                    &condition.not(),
+                    Raised::Class("AssertionError".to_owned()),
+                    &mut state,
+                );
                 self.assumptions
                     .insert("Python runs with assertions enabled, not with -O".to_owned());
             }
+            Stmt::Try(statement) => return self.try_statement(statement, state),
             Stmt::If(expression, then, otherwise) => {
                 return self.branch(statement.line, expression, [then, otherwise], state);
             }
@@ -533,7 +575,92 @@ impl Evaluator<'_> {
             *accumulated = accumulated.or(&undefined);
             return;
         }
-        state.guard = state.guard.and(&undefined.not());
+        self.raise_where(&undefined, Raised::Implicit, state);
+    }
+
+    /// The path raises where `condition` holds and goes on where it does not.
+    /// Inside a `try` the raising path is kept, as it was here, for a handler.
+    fn raise_where(&mut self, condition: &Term, raised: Raised, state: &mut State) {
+        if condition.code == "false" {
+            return;
+        }
+        if self.try_depth > 0 {
+            let mut raising = state.clone();
+            raising.pending.clear();
+            raising.guard = state.guard.and(condition);
+            raising.raised = Some(raised);
+            if raising.guard.code != "false" {
+                state.pending.push(raising);
+            }
+        }
+        state.guard = state.guard.and(&condition.not());
+    }
+
+    /// `try`: the body, then a handler for what it raised, `else` if it
+    /// raised nothing, and `finally` on every way out.
+    fn try_statement(&mut self, statement: &Try, state: State) -> Result<Vec<State>, String> {
+        self.try_depth += 1;
+        let body = self.statements(&statement.body, vec![state]);
+        self.try_depth -= 1;
+        let mut after = Vec::new();
+        for path in body? {
+            match (&path.raised, &path.result) {
+                (Some(raised), _) => {
+                    let raised = raised.clone();
+                    after.extend(self.handle(statement, &raised, path)?);
+                }
+                (None, None) => after.extend(self.statements(&statement.otherwise, vec![path])?),
+                (None, Some(_)) => after.push(path),
+            }
+        }
+        if statement.finally.is_empty() {
+            return Ok(after);
+        }
+        let mut finished = Vec::new();
+        for path in after {
+            finished.extend(self.finally(&statement.finally, path)?);
+        }
+        Ok(finished)
+    }
+
+    /// Runs the first handler that catches `raised`; the path raises on if
+    /// none does.
+    fn handle(
+        &mut self,
+        statement: &Try,
+        raised: &Raised,
+        mut path: State,
+    ) -> Result<Vec<State>, String> {
+        for handler in &statement.handlers {
+            match exceptions::catches(handler.classes.as_deref(), raised)? {
+                exceptions::Catch::No => continue,
+                exceptions::Catch::Yes => {}
+                exceptions::Catch::Assuming(assumption) => {
+                    self.assumptions.insert(assumption);
+                }
+            }
+            path.raised = None;
+            self.handling.push(raised.clone());
+            let handled = self.statements(&handler.body, vec![path]);
+            self.handling.pop();
+            return handled;
+        }
+        Ok(vec![path])
+    }
+
+    /// `finally`: runs on every way out of a `try`, and the way out resumes
+    /// unless `finally` returns or raises itself.
+    fn finally(&mut self, body: &[Statement], mut path: State) -> Result<Vec<State>, String> {
+        let result = path.result.take();
+        let raised = path.raised.take();
+        let mut finished = self.statements(body, vec![path])?;
+        for path in &mut finished {
+            if path.result.is_none() && path.raised.is_none() {
+                path.result.clone_from(&result);
+                path.raised.clone_from(&raised);
+            }
+        }
+        Ok(finished)
     }
 
     fn branch(
@@ -544,7 +671,7 @@ impl Evaluator<'_> {
         mut state: State,
     ) -> Result<Vec<State>, String> {
         let test = self.expression(expression, &mut state)?.as_bool()?;
-        let mut paths = Vec::new();
+        let mut paths = std::mem::take(&mut state.pending);
         for (taken, body) in [(true, bodies[0]), (false, bodies[1])] {
             let guard = if taken { test.clone() } else { test.not() };
             let mut branch = state.clone();

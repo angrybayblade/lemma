@@ -6,8 +6,8 @@ use lemma_lang::syntax::ast::BinaryOperator as Op;
 use tree_sitter::{Node, Parser};
 
 use super::ir::{
-    Argument, Expression as Expr, Function, Parameter, Part, Pattern, Statement,
-    StatementKind as Stmt,
+    Argument, Expression as Expr, Function, Handler, Parameter, Part, Pattern, Raised, Statement,
+    StatementKind as Stmt, Try,
 };
 
 pub(super) use super::ir::Language;
@@ -557,7 +557,9 @@ impl<'a> Reader<'a> {
             | "augmented_assignment"
             | "augmented_assignment_expression" => self.assignment(node)?,
             "raise_statement" | "throw_statement" | "assert_statement" => self.exit(node)?,
-            "expression_statement" if self.is_go_panic(node) => Stmt::Raise,
+            "expression_statement" if self.is_go_panic(node) => Stmt::Raise(Raised::Unknown),
+            "try_statement" => Stmt::Try(Box::new(self.try_statement(node)?)),
+            "pass_statement" | "empty_statement" => return Ok(Vec::new()),
             "expression_statement" => {
                 let expression = only(node)?;
                 if matches!(
@@ -590,14 +592,102 @@ impl<'a> Reader<'a> {
     /// A statement that may leave the function by raising. Nothing in a raise
     /// can make the path return normally, so what it raises is not read.
     fn exit(&self, node: Node<'_>) -> Result<Stmt, String> {
-        if node.kind() != "assert_statement" {
-            return Ok(Stmt::Raise);
+        if node.kind() == "throw_statement" {
+            return Ok(Stmt::Raise(Raised::Unknown));
+        }
+        if node.kind() == "raise_statement" {
+            return Ok(Stmt::Raise(self.raised(node)));
         }
         let condition = children(node)
             .into_iter()
             .next()
             .ok_or("empty assert statement")?;
         Ok(Stmt::Assert(self.expression(condition)?))
+    }
+
+    /// The class a Python `raise` names, as written.
+    fn raised(&self, node: Node<'_>) -> Raised {
+        let Some(value) = node.named_child(0).filter(|value| {
+            node.child_by_field_name("cause")
+                .is_none_or(|cause| cause.id() != value.id())
+        }) else {
+            return Raised::Again;
+        };
+        let class = if value.kind() == "call" {
+            value.child_by_field_name("function")
+        } else {
+            Some(value)
+        };
+        match class {
+            Some(class) if matches!(class.kind(), "identifier" | "attribute") => {
+                Raised::Class(self.text(class).to_owned())
+            }
+            _ => Raised::Unknown,
+        }
+    }
+
+    fn try_statement(&self, node: Node<'_>) -> Result<Try, String> {
+        let mut statement = Try {
+            body: self.block(field(node, "body")?)?,
+            handlers: Vec::new(),
+            otherwise: Vec::new(),
+            finally: Vec::new(),
+        };
+        for part in children(node) {
+            match part.kind() {
+                "block" | "statement_block" => {}
+                "except_clause" => statement.handlers.push(self.python_handler(part)?),
+                "catch_clause" => statement.handlers.push(Handler {
+                    classes: None,
+                    body: self.block(field(part, "body")?)?,
+                }),
+                "else_clause" => statement.otherwise = self.block(field(part, "body")?)?,
+                "finally_clause" => {
+                    let body = part
+                        .child_by_field_name("body")
+                        .or_else(|| children(part).last().copied())
+                        .ok_or("empty finally clause")?;
+                    statement.finally = self.block(body)?;
+                }
+                _ => return self.unsupported(part),
+            }
+        }
+        Ok(statement)
+    }
+
+    /// A Python `except` clause and the classes it names.
+    fn python_handler(&self, clause: Node<'_>) -> Result<Handler, String> {
+        let body = children(clause)
+            .into_iter()
+            .find(|part| part.kind() == "block")
+            .ok_or("empty except clause")?;
+        let Some(value) = clause.child_by_field_name("value") else {
+            return Ok(Handler {
+                classes: None,
+                body: self.block(body)?,
+            });
+        };
+        let value = if value.kind() == "as_pattern" {
+            *children(value).first().ok_or("empty except pattern")?
+        } else {
+            value
+        };
+        let names = if value.kind() == "tuple" {
+            children(value)
+        } else {
+            vec![value]
+        };
+        let mut classes = Vec::new();
+        for name in names {
+            if !matches!(name.kind(), "identifier" | "attribute") {
+                return self.unsupported(name);
+            }
+            classes.push(self.text(name).to_owned());
+        }
+        Ok(Handler {
+            classes: Some(classes),
+            body: self.block(body)?,
+        })
     }
 
     /// A Go `var` with a value; one without would bind a zero value.
@@ -1396,6 +1486,11 @@ fn literal_bindings<'b>(body: &'b [Statement], built: &mut std::collections::BTr
                 literal_bindings(then, built);
                 literal_bindings(otherwise, built);
             }
+            Stmt::Try(statement) => {
+                for block in statement.blocks() {
+                    literal_bindings(block, built);
+                }
+            }
             _ => {}
         }
     }
@@ -1408,6 +1503,11 @@ fn field_assignments<'b>(body: &'b [Statement], targets: &mut Vec<(usize, &'b st
             Stmt::If(_, then, otherwise) => {
                 field_assignments(then, targets);
                 field_assignments(otherwise, targets);
+            }
+            Stmt::Try(statement) => {
+                for block in statement.blocks() {
+                    field_assignments(block, targets);
+                }
             }
             _ => {}
         }

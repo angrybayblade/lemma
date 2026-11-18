@@ -65,6 +65,7 @@ const BUILD_INPUTS: &[&str] = &[
     include_str!("mod.rs"),
     include_str!("solver.rs"),
     include_str!("source.rs"),
+    include_str!("symbolic/exceptions.rs"),
     include_str!("symbolic/mod.rs"),
     include_str!("symbolic/models.rs"),
     include_str!("symbolic/value.rs"),
