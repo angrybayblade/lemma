@@ -588,12 +588,8 @@ impl Evaluator<'_> {
                 Value::Scalar(negate(&operand)?)
             }
             Expr::Template(parts) => self.template_text(parts, state)?,
-            Expr::Sequence(items) => Value::Sequence(
-                items
-                    .iter()
-                    .map(|item| self.expression(item, state))
-                    .collect::<Result<_, _>>()?,
-            ),
+            Expr::Sequence(items) => Value::Sequence(self.expressions(items, state)?),
+            Expr::Set(items) => Value::Set(self.expressions(items, state)?),
             Expr::Index(target, position) => self.element(target, *position, state)?,
             Expr::Contains(needle, haystack) => {
                 let needle = self.expression(needle, state)?;
@@ -608,6 +604,13 @@ impl Evaluator<'_> {
             Expr::Call(callee, arguments) => self.call(callee, arguments, false, state)?,
             Expr::Await(inner) => self.awaited(inner, state)?,
         })
+    }
+
+    fn expressions(&mut self, items: &[Expr], state: &mut State) -> Result<Vec<Value>, String> {
+        items
+            .iter()
+            .map(|item| self.expression(item, state))
+            .collect()
     }
 
     /// `test ? then : otherwise`; only the branch the test picks is reached.
@@ -905,7 +908,7 @@ fn is_pure(expression: &Expr) -> bool {
         | Expr::Index(inner, _)
         | Expr::Member(inner, _)
         | Expr::OptionalMember(inner, _) => is_pure(inner),
-        Expr::Sequence(items) => items.iter().all(is_pure),
+        Expr::Sequence(items) | Expr::Set(items) => items.iter().all(is_pure),
         Expr::Contains(left, right) => is_pure(left) && is_pure(right),
         Expr::Template(parts) => parts.iter().all(|part| match part {
             Part::Text(_) => true,

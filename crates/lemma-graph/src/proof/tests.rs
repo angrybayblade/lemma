@@ -911,3 +911,78 @@ fn unpacking_a_sequence_of_another_length_follows_the_language() {
     let variable_key = "def f(r, key):\n    return r[key]\n";
     assert!(source::read("x.py", variable_key, "f").is_err());
 }
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn type_syntax_conditional_forms_and_chains_read_as_their_runtime_meaning() {
+    let contract = json!({
+        "inputs": {"r": {"level": "Int", "role": "Text"}},
+        "parameters": ["r"],
+        "ensures": [{"name": "middle", "condition": "result == (1 < r.level && r.level <= 3)"}],
+    });
+    for (file, text) in [
+        ("x.py", "def f(r):\n    return 1 < r.level <= 3\n"),
+        (
+            "x.py",
+            "def f(r):\n    return True if 1 < r.level and r.level <= 3 else False\n",
+        ),
+        (
+            "x.ts",
+            "function f(r) {\n  return ((1 < (r as Request).level) satisfies boolean) && (r!.level <= 3);\n}\n",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(r R) bool {\n  var low = 1\n  bounds := []int{low, 3}\n  return bounds[0] < r.level && r.level <= bounds[1]\n}\n",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &contract);
+        assert!(
+            matches!(
+                result["observed"]["status"].as_str(),
+                Some("proved" | "conditional")
+            ),
+            "{file}: {result}"
+        );
+        assert_eq!(result["observed"]["holds"], true, "{file}: {result}");
+    }
+    let staff = json!({
+        "inputs": {"r": {"role": "Text"}},
+        "parameters": ["r"],
+        "ensures": [{"name": "staff", "condition": "result == (r.role == \"admin\" || r.role == \"owner\")"}],
+    });
+    let result = check_source(
+        "x.py",
+        "def f(r):\n    return r.role in {'admin', 'owner'}\n",
+        "f",
+        &staff,
+    );
+    assert_eq!(result["observed"]["status"], "proved", "{result}");
+}
+
+#[test]
+fn a_set_is_read_for_membership_only_and_chains_with_calls_are_refused() {
+    let contract: Contract = serde_json::from_value(json!({
+        "inputs": {"r": {"role": "Text"}},
+        "parameters": ["r"],
+        "ensures": [{"name": "any", "condition": "true"}],
+    }))
+    .unwrap();
+    let (_, function) = source::read(
+        "x.py",
+        "def f(r):\n    a, b = {'x', 'y'}\n    return a\n",
+        "f",
+    )
+    .unwrap();
+    assert!(symbolic::execute(&function, &contract).is_err());
+    assert!(source::read("x.py", "def f(r):\n    return 1 < g(r) < 3\n", "f").is_err());
+    // The grammar would group this as `(r.a && r)!.b`.
+    assert!(source::read("x.ts", "function f(r) { return r.a && r!.b; }", "f").is_err());
+    assert!(
+        source::read(
+            "x.go",
+            "package p\nfunc f(r R) bool { var ok bool; return ok }",
+            "f"
+        )
+        .is_err()
+    );
+}

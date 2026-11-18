@@ -97,6 +97,9 @@ pub(super) enum Expression {
     Template(Vec<Part>),
     /// A tuple, list or array of known length.
     Sequence(Vec<Self>),
+    /// A Python set literal: only membership is read from it, since its
+    /// order is not the written one.
+    Set(Vec<Self>),
     /// An element of a sequence at a constant position.
     Index(Box<Self>, i64),
     /// Python's `needle in haystack`, over a sequence or a text.
@@ -206,4 +209,36 @@ fn lower(expression: &ast::Expression) -> Result<Expression, String> {
         ),
         _ => return Err(format!("unsupported contract expression `{expression:?}`")),
     })
+}
+
+impl Expression {
+    /// Whether evaluating the expression may call a function.
+    pub(super) fn has_call(&self) -> bool {
+        match self {
+            Self::Call(..) | Self::Await(_) => true,
+            Self::Member(inner, _)
+            | Self::OptionalMember(inner, _)
+            | Self::Not(inner)
+            | Self::Negate(inner)
+            | Self::Index(inner, _) => inner.has_call(),
+            Self::Binary(_, left, right)
+            | Self::Coalesce(left, right)
+            | Self::Contains(left, right) => left.has_call() || right.has_call(),
+            Self::Conditional(test, then, otherwise) => {
+                test.has_call() || then.has_call() || otherwise.has_call()
+            }
+            Self::Record(fields) => fields.values().any(Self::has_call),
+            Self::Sequence(items) | Self::Set(items) => items.iter().any(Self::has_call),
+            Self::Template(parts) => parts.iter().any(|part| match part {
+                Part::Text(_) => false,
+                Part::Value(value) => value.has_call(),
+            }),
+            Self::Bool(_)
+            | Self::Text(_)
+            | Self::Integer(_)
+            | Self::Null
+            | Self::Undefined
+            | Self::Name(_) => false,
+        }
+    }
 }
