@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use lemma_lang::syntax::ast::BinaryOperator as Op;
 use tree_sitter::{Node, Parser};
 
-use super::ir::{Expression as Expr, Function, Statement, StatementKind as Stmt};
+use super::ir::{
+    Argument, Expression as Expr, Function, Parameter, Statement, StatementKind as Stmt,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Language {
@@ -408,9 +410,13 @@ impl<'a> Reader<'a> {
             .or_else(|| node.child_by_field_name("parameter"))
             .ok_or("function has no parameter list")?;
         // A method's receiver is its first parameter in every language.
-        let mut parameters: Vec<String> = definition.receiver.iter().cloned().collect();
+        let mut parameters: Vec<Parameter> = definition
+            .receiver
+            .iter()
+            .map(|name| required(name.clone()))
+            .collect();
         if parameter_node.kind() == "identifier" {
-            parameters.push(self.identifier(parameter_node)?);
+            parameters.push(required(self.identifier(parameter_node)?));
         } else {
             for parameter in children(parameter_node) {
                 parameters.extend(self.parameter(parameter)?);
@@ -447,23 +453,55 @@ impl<'a> Reader<'a> {
         self.block_nodes(&nodes[usize::from(has_docstring)..])
     }
 
-    fn parameter(&self, node: Node<'_>) -> Result<Vec<String>, String> {
-        match node.kind() {
-            "identifier" => Ok(vec![self.identifier(node)?]),
-            "required_parameter" => Ok(vec![self.identifier(field(node, "pattern")?)?]),
-            "typed_parameter" => {
-                Ok(vec![self.identifier(
-                    *children(node).first().ok_or("empty Python parameter")?,
-                )?])
+    fn parameter(&self, node: Node<'_>) -> Result<Vec<Parameter>, String> {
+        let default = |name: Node<'_>, value: Option<Node<'_>>| -> Result<Parameter, String> {
+            Ok(Parameter {
+                name: self.identifier(name)?,
+                default: value.map(|value| self.expression(value)),
+            })
+        };
+        Ok(match node.kind() {
+            "identifier" => vec![required(self.identifier(node)?)],
+            "required_parameter" => vec![default(
+                field(node, "pattern")?,
+                node.child_by_field_name("value"),
+            )?],
+            // `x?: T` is `undefined` when left out, unless it has a default.
+            "optional_parameter" => {
+                let mut parameter =
+                    default(field(node, "pattern")?, node.child_by_field_name("value"))?;
+                parameter.default.get_or_insert(Ok(Expr::Undefined));
+                vec![parameter]
             }
+            "typed_parameter" => vec![required(
+                self.identifier(*children(node).first().ok_or("empty Python parameter")?)?,
+            )],
+            "default_parameter" | "typed_default_parameter" => {
+                vec![default(field(node, "name")?, Some(field(node, "value")?))?]
+            }
+            // `*` and `/` separate kinds of parameters; they are not one.
+            "keyword_separator" | "positional_separator" => Vec::new(),
             "parameter_declaration" => {
                 let mut cursor = node.walk();
                 node.children_by_field_name("name", &mut cursor)
-                    .map(|name| self.identifier(name))
-                    .collect()
+                    .map(|name| Ok(required(self.identifier(name)?)))
+                    .collect::<Result<_, String>>()?
             }
-            _ => self.unsupported(node),
+            _ => return self.unsupported(node),
+        })
+    }
+
+    fn argument(&self, node: Node<'_>) -> Result<Argument, String> {
+        if node.kind() == "keyword_argument" {
+            return Ok(Argument {
+                name: Some(self.identifier(field(node, "name")?)?),
+                value: self.expression(field(node, "value")?)?,
+            });
         }
+        Ok(Argument {
+            name: None,
+            value: self.expression(node)?,
+        })
     }
 
     fn identifier(&self, node: Node<'_>) -> Result<String, String> {
@@ -638,7 +676,7 @@ impl<'a> Reader<'a> {
                 let function = self.expression(field(node, "function")?)?;
                 let arguments = children(field(node, "arguments")?)
                     .into_iter()
-                    .map(|n| self.expression(n))
+                    .map(|n| self.argument(n))
                     .collect::<Result<_, _>>()?;
                 Expr::Call(Box::new(function), arguments)
             }
@@ -788,6 +826,13 @@ impl<'a> Reader<'a> {
             return self.unsupported(node);
         }
         Ok(value.to_owned())
+    }
+}
+
+fn required(name: String) -> Parameter {
+    Parameter {
+        name,
+        default: None,
     }
 }
 

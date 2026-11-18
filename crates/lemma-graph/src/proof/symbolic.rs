@@ -123,7 +123,7 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
     };
     assume_decorators(&function.decorators, contract, &mut evaluator.assumptions)?;
     let (mut state, requires) = prepare(&inputs, &mut evaluator)?;
-    bind_parameters(function, contract, &inputs, &mut state)?;
+    bind_parameters(function, &inputs, &mut state, &mut evaluator)?;
     state.guard = requires.clone();
     let paths = evaluator.statements(&function.body, vec![state])?;
     if paths.iter().any(|path| path.result.is_none()) {
@@ -223,35 +223,53 @@ fn prepare(
 
 fn bind_parameters(
     function: &Function,
-    contract: &Contract,
     inputs: &BTreeMap<String, Value>,
     state: &mut State,
+    evaluator: &mut Evaluator<'_>,
 ) -> Result<(), String> {
-    let parameters = if contract.parameters.is_empty() {
-        &function.parameters
+    let contract = evaluator.contract;
+    let given: Vec<Option<&String>> = if contract.parameters.is_empty() {
+        function.parameters.iter().map(|p| Some(&p.name)).collect()
     } else {
-        &contract.parameters
+        contract.parameters.iter().map(Option::as_ref).collect()
     };
-    if parameters.len() != function.parameters.len() {
+    if given.len() != function.parameters.len() {
         return Err("contract parameter count differs from the implementation".to_owned());
     }
     // Source locals are separate from specification inputs; reassigning a local
     // must never change what a postcondition means by an input name.
-    let values = parameters
-        .iter()
-        .map(|name| {
-            inputs
+    state.env.retain(|name, _| !inputs.contains_key(name));
+    let mut values = Vec::new();
+    for (parameter, input) in function.parameters.iter().zip(given) {
+        let value = match (input, &parameter.default) {
+            (Some(name), _) => inputs
                 .get(name)
                 .cloned()
-                .ok_or_else(|| format!("parameter `{name}` is not a declared input"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    state.env.retain(|name, _| !inputs.contains_key(name));
-    for (name, value) in function.parameters.iter().zip(values) {
-        if state.env.contains_key(name) && !inputs.contains_key(name) {
-            return Err(format!("parameter `{name}` shadows a called function"));
+                .ok_or_else(|| format!("parameter `{name}` is not a declared input"))?,
+            (None, Some(Ok(default))) => evaluator.pure(default, state)?,
+            (None, Some(Err(why))) => {
+                return Err(format!(
+                    "parameter `{}` is left out, and its default is unsupported: {why}",
+                    parameter.name
+                ));
+            }
+            (None, None) => {
+                return Err(format!(
+                    "parameter `{}` has no default, so the contract must give it an input",
+                    parameter.name
+                ));
+            }
+        };
+        values.push(value);
+    }
+    for (parameter, value) in function.parameters.iter().zip(values) {
+        if state.env.contains_key(&parameter.name) {
+            return Err(format!(
+                "parameter `{}` shadows a called function",
+                parameter.name
+            ));
         }
-        state.env.insert(name.clone(), value);
+        state.env.insert(parameter.name.clone(), value);
     }
     Ok(())
 }
@@ -541,17 +559,20 @@ impl Evaluator<'_> {
     fn call(
         &mut self,
         callee: &Expr,
-        arguments: &[Expr],
+        arguments: &[ir::Argument],
         is_awaited: bool,
         state: &mut State,
     ) -> Result<Value, String> {
         let Value::Model(name) = self.expression(callee, state)? else {
             return Err("call target has no call model".to_owned());
         };
-        let arguments = arguments
-            .iter()
-            .map(|argument| self.expression(argument, state))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut values = Vec::new();
+        for argument in arguments {
+            values.push((
+                argument.name.as_deref(),
+                self.expression(&argument.value, state)?,
+            ));
+        }
         self.calls += 1;
         if self.calls > 16384 {
             return Err("call limit exceeded".to_owned());
@@ -563,9 +584,7 @@ impl Evaluator<'_> {
             .ok_or_else(|| format!("missing model `{name}`"))?
             .clone();
         check_awaiting(&name, model.is_async, is_awaited)?;
-        if model.parameters.len() != arguments.len() {
-            return Err(format!("model `{name}` has a different argument count"));
-        }
+        let arguments = match_arguments(&name, &model.parameters, values)?;
         let count = state.calls.entry(name.clone()).or_default();
         *count += 1;
         if *count > 1 && reads_inputs(&model, self.inputs)? {
@@ -579,9 +598,7 @@ impl Evaluator<'_> {
         self.assumptions.insert(model.assumption.clone());
         let mut local = state.clone();
         local.env = self.inputs.clone();
-        for (parameter, argument) in model.parameters.iter().zip(arguments) {
-            local.env.insert(parameter.clone(), argument);
-        }
+        local.env.extend(arguments);
         if !model.outcomes.is_empty() {
             let mut outcome = BTreeMap::new();
             for (field, shape) in &model.outcomes {
@@ -652,6 +669,38 @@ impl Evaluator<'_> {
     }
 }
 
+/// Gives each of a model's parameters the argument passed for it: in order,
+/// then by name. A parameter left out is absent, rather than falling back to
+/// a specification input of the same name.
+fn match_arguments(
+    name: &str,
+    parameters: &[String],
+    arguments: Vec<(Option<&str>, Value)>,
+) -> Result<BTreeMap<String, Value>, String> {
+    let mut bound = BTreeMap::new();
+    let mut position = 0;
+    for (keyword, value) in arguments {
+        let parameter = if let Some(keyword) = keyword {
+            parameters
+                .iter()
+                .find(|parameter| parameter.as_str() == keyword)
+                .ok_or_else(|| format!("model `{name}` has no parameter `{keyword}`"))?
+        } else {
+            position += 1;
+            parameters
+                .get(position - 1)
+                .ok_or_else(|| format!("model `{name}` takes fewer arguments"))?
+        };
+        if bound.insert(parameter.clone(), value).is_some() {
+            return Err(format!("model `{name}` is given `{parameter}` twice"));
+        }
+    }
+    for parameter in parameters {
+        bound.entry(parameter.clone()).or_insert(Value::Undefined);
+    }
+    Ok(bound)
+}
+
 fn check_awaiting(name: &str, is_async: bool, is_awaited: bool) -> Result<(), String> {
     if is_async && !is_awaited {
         return Err(format!(
@@ -718,7 +767,7 @@ fn expression_names(expression: &Expr, names: &mut BTreeSet<String>) {
         Expr::Call(callee, arguments) => {
             expression_names(callee, names);
             for argument in arguments {
-                expression_names(argument, names);
+                expression_names(&argument.value, names);
             }
         }
         Expr::Bool(_) | Expr::Text(_) | Expr::Integer(_) | Expr::Undefined => {}

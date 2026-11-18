@@ -7,7 +7,7 @@ use serde::Serialize;
 
 #[derive(Debug, Clone)]
 pub(super) struct Function {
-    pub parameters: Vec<String>,
+    pub parameters: Vec<Parameter>,
     /// An `async` function: a call it makes to an async function must be
     /// awaited, or the value it reads is a pending promise or coroutine.
     pub is_async: bool,
@@ -16,6 +16,22 @@ pub(super) struct Function {
     /// unchanged.
     pub decorators: Vec<String>,
     pub body: Vec<Statement>,
+}
+
+/// A parameter, and the value it takes when a caller leaves it out.
+#[derive(Debug, Clone)]
+pub(super) struct Parameter {
+    pub name: String,
+    /// The default, or why it could not be read: that matters only to a
+    /// contract that leaves the parameter out.
+    pub default: Option<Result<Expression, String>>,
+}
+
+/// An argument of a call: positional, or named as Python keyword arguments are.
+#[derive(Debug, Clone)]
+pub(super) struct Argument {
+    pub name: Option<String>,
+    pub value: Expression,
 }
 
 #[derive(Debug, Clone)]
@@ -44,7 +60,7 @@ pub(super) enum Expression {
     Not(Box<Self>),
     Binary(BinaryOperator, Box<Self>, Box<Self>),
     Conditional(Box<Self>, Box<Self>, Box<Self>),
-    Call(Box<Self>, Vec<Self>),
+    Call(Box<Self>, Vec<Argument>),
     /// `await` of a call; any other awaited value is refused.
     Await(Box<Self>),
 }
