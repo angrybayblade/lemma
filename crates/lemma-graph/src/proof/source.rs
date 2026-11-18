@@ -620,9 +620,9 @@ impl<'a> Reader<'a> {
                 }
                 Expr::Await(Box::new(self.expression(inner)?))
             }
-            "member_expression" | "selector_expression" => self.member(node)?,
-            // Python records are ordinary dictionaries. Attribute reads could
-            // execute descriptors and are accepted only as modeled call targets.
+            // A field read, in every language, under the precondition that the
+            // value is plain data: no getter, descriptor or `__getattr__` runs.
+            "member_expression" | "selector_expression" | "attribute" => self.member(node)?,
             "subscript" | "subscript_expression" => self.index(node)?,
             "unary_expression" | "not_operator" => self.unary(node)?,
             "binary_expression" | "boolean_operator" | "comparison_operator" => {
@@ -635,7 +635,7 @@ impl<'a> Reader<'a> {
             ),
             "object" | "dictionary" | "composite_literal" => self.record(node)?,
             "call_expression" | "call" => {
-                let function = self.callee(field(node, "function")?)?;
+                let function = self.expression(field(node, "function")?)?;
                 let arguments = children(field(node, "arguments")?)
                     .into_iter()
                     .map(|n| self.expression(n))
@@ -644,16 +644,6 @@ impl<'a> Reader<'a> {
             }
             _ => return self.unsupported(node),
         })
-    }
-
-    fn callee(&self, node: Node<'_>) -> Result<Expr, String> {
-        if node.kind() != "attribute" {
-            return self.expression(node);
-        }
-        Ok(Expr::Member(
-            Box::new(self.callee(field(node, "object")?)?),
-            self.identifier(field(node, "attribute")?)?,
-        ))
     }
 
     fn integer(&self, node: Node<'_>) -> Result<Expr, String> {
@@ -676,6 +666,7 @@ impl<'a> Reader<'a> {
         let property = node
             .child_by_field_name("property")
             .or_else(|| node.child_by_field_name("field"))
+            .or_else(|| node.child_by_field_name("attribute"))
             .ok_or("missing member name")?;
         Ok(Expr::Member(
             Box::new(self.expression(target)?),
