@@ -130,20 +130,25 @@ impl<'a> Reader<'a> {
         let node = definition.node;
         let parameter_node = node
             .child_by_field_name("parameters")
-            .or_else(|| node.child_by_field_name("parameter"))
-            .ok_or("function has no parameter list")?;
+            .or_else(|| node.child_by_field_name("parameter"));
         // A method's receiver is its first parameter in every language.
         let mut parameters: Vec<Parameter> = definition
             .receiver
             .iter()
             .map(|name| required(name.clone()))
             .collect();
-        if parameter_node.kind() == "identifier" {
-            parameters.push(required(self.identifier(parameter_node)?));
-        } else {
-            for parameter in children(parameter_node) {
-                parameters.extend(self.parameter(parameter)?);
+        // A lambda with no parameters has no parameter list at all.
+        match parameter_node {
+            Some(single) if single.kind() == "identifier" => {
+                parameters.push(required(self.identifier(single)?));
             }
+            Some(list) => {
+                for parameter in children(list) {
+                    parameters.extend(self.parameter(parameter)?);
+                }
+            }
+            None if node.kind() == "lambda" => {}
+            None => return Err("function has no parameter list".to_owned()),
         }
         let body = field(node, "body")?;
         let body = if matches!(body.kind(), "statement_block" | "block") {
@@ -160,6 +165,7 @@ impl<'a> Reader<'a> {
             parameters,
             is_async: is_async(node),
             decorators: definition.decorators.clone(),
+            has_own_this: node.kind() == "function_expression",
             body,
         })
     }

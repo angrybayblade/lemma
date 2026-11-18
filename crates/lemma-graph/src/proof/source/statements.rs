@@ -6,7 +6,7 @@ use tree_sitter::Node;
 use super::super::ir::{
     Context, Expression as Expr, Handler, Pattern, Raised, Statement, StatementKind as Stmt, Try,
 };
-use super::{Language, Reader, children, field, is_async, only};
+use super::{Definition, Language, Reader, children, field, is_async, only};
 
 impl Reader<'_> {
     pub(super) fn block(&self, node: Node<'_>) -> Result<Vec<Statement>, String> {
@@ -15,7 +15,12 @@ impl Reader<'_> {
 
     pub(super) fn block_nodes(&self, nodes: &[Node<'_>]) -> Result<Vec<Statement>, String> {
         let mut statements = Vec::new();
-        for &child in nodes {
+        // JavaScript hoists a function declaration to the top of its block,
+        // so it can be called above where it is written.
+        let (hoisted, nodes): (Vec<Node<'_>>, Vec<Node<'_>>) = nodes.iter().partition(|node| {
+            self.language == Language::TypeScript && node.kind() == "function_declaration"
+        });
+        for child in hoisted.into_iter().chain(nodes) {
             if child.kind() == "statement_list" {
                 statements.extend(self.block(child)?);
             } else {
@@ -27,24 +32,8 @@ impl Reader<'_> {
 
     pub(super) fn statement(&self, node: Node<'_>) -> Result<Vec<Statement>, String> {
         let kind = match node.kind() {
-            "lexical_declaration" | "variable_declaration" => {
-                // New declaration forms can carry runtime behavior (for
-                // example resource disposal); only ordinary lexical bindings
-                // belong to this subset.
-                if !matches!(
-                    self.text(node).split_whitespace().next(),
-                    Some("const" | "let")
-                ) {
-                    return self.unsupported(node);
-                }
-                return self.block(node);
-            }
-            "var_declaration" => {
-                let mut bindings = Vec::new();
-                for spec in children(node) {
-                    bindings.extend(self.go_var(spec)?);
-                }
-                return Ok(bindings);
+            "lexical_declaration" | "variable_declaration" | "var_declaration" => {
+                return self.declarations(node);
             }
             // `let x;` declares `x` as undefined.
             "variable_declarator" => Stmt::Bind(
@@ -62,6 +51,9 @@ impl Reader<'_> {
             "expression_statement" if self.is_go_panic(node) => Stmt::Raise(Raised::Unknown),
             "try_statement" => Stmt::Try(Box::new(self.try_statement(node)?)),
             "pass_statement" | "empty_statement" => return Ok(Vec::new()),
+            "function_definition" | "function_declaration" | "decorated_definition" => {
+                self.nested_definition(node)?
+            }
             "with_statement" => self.with_statement(node)?,
             "expression_statement" => {
                 let expression = only(node)?;
@@ -106,6 +98,51 @@ impl Reader<'_> {
             .next()
             .ok_or("empty assert statement")?;
         Ok(Stmt::Assert(self.expression(condition)?))
+    }
+
+    /// A TypeScript `const` or `let`, or a Go `var`: one binding per name.
+    fn declarations(&self, node: Node<'_>) -> Result<Vec<Statement>, String> {
+        if node.kind() == "var_declaration" {
+            let mut bindings = Vec::new();
+            for spec in children(node) {
+                bindings.extend(self.go_var(spec)?);
+            }
+            return Ok(bindings);
+        }
+        // New declaration forms can carry runtime behavior (for example
+        // resource disposal); only ordinary lexical bindings belong here.
+        if !matches!(
+            self.text(node).split_whitespace().next(),
+            Some("const" | "let")
+        ) {
+            return self.unsupported(node);
+        }
+        self.block(node)
+    }
+
+    /// A function defined inside another, bound to its name as a closure.
+    fn nested_definition(&self, node: Node<'_>) -> Result<Stmt, String> {
+        let (definition, decorators) = if node.kind() == "decorated_definition" {
+            (field(node, "definition")?, self.decorators(node))
+        } else {
+            (node, Vec::new())
+        };
+        if !matches!(
+            definition.kind(),
+            "function_definition" | "function_declaration"
+        ) {
+            return self.unsupported(definition);
+        }
+        let name = self.identifier(field(definition, "name")?)?;
+        let function = self.function(&Definition {
+            node: definition,
+            receiver: None,
+            decorators,
+        })?;
+        Ok(Stmt::Bind(
+            Pattern::Name(name),
+            Expr::Closure(Box::new(function)),
+        ))
     }
 
     /// Python's `with` and its context managers.

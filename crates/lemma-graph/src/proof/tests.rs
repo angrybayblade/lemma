@@ -1222,3 +1222,66 @@ fn definitions_inside_anonymous_functions_are_found_by_their_indexed_name() {
         "a(() => { function f() { return 1; } });\nb(() => { function f() { return 2; } });\n";
     assert!(source::read("x.ts", twice, "f").is_err());
 }
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn local_functions_are_called_by_running_their_bodies() {
+    let contract = |ensures: &str| {
+        json!({
+            "inputs": {"r": {"count": "Int"}},
+            "parameters": ["r"],
+            "ensures": [{"name": "property", "condition": ensures}],
+        })
+    };
+    let plus_one = contract("result == r.count + 1");
+    for (file, text) in [
+        (
+            "x.py",
+            "def f(r):\n    g = lambda y, z=1: y + z\n    def h(a):\n        return a\n    return h(g(r.count))\n",
+        ),
+        (
+            "x.ts",
+            "function f(r) {\n  const g = (y) => y + 1;\n  const k = function (a) { return a; };\n  return h(k(g(r.count)));\n  function h(a) { return a; }\n}\n",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(r R) int {\n  g := func(y int) int { return y + 1 }\n  return g(r.count)\n}\n",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &plus_one);
+        assert_eq!(result["observed"]["holds"], true, "{file}: {result}");
+    }
+    let sign = contract("(r.count < 0 && result == -1) || (r.count >= 0 && result == 1)");
+    let branching = "function f(r) {\n  const sign = (n) => {\n    if (n < 0) {\n      return -1;\n    }\n    return 1;\n  };\n  return sign(r.count);\n}\n";
+    let result = check_source("x.ts", branching, "f", &sign);
+    assert_eq!(result["observed"]["holds"], true, "{result}");
+    let wrong = branching.replace("return -1", "return 1");
+    let result = check_source("x.ts", &wrong, "f", &sign);
+    assert_eq!(result["observed"]["status"], "violated", "{result}");
+    let marks = contract("result == true");
+    let outer = "function f(r) {\n  let seen = false;\n  const mark = () => {\n    seen = true;\n  };\n  mark();\n  return seen;\n}\n";
+    let result = check_source("x.ts", outer, "f", &marks);
+    assert_eq!(result["observed"]["holds"], true, "{result}");
+}
+
+#[test]
+fn functions_passed_to_models_and_branching_effects_are_refused() {
+    let mut contract: Contract = serde_json::from_value(json!({
+        "inputs": {"r": {"ok": "Bool"}},
+        "parameters": ["r"],
+        "models": {"each": {"assumption": "each runs nothing it is given", "parameters": ["items", "callback"], "returns": true},
+                   "log": {"assumption": "log records", "parameters": ["message"], "returns": true}},
+        "ensures": [{"name": "any", "condition": "true"}],
+    }))
+    .unwrap();
+    let callback = "function f(r) {\n  return each([], (item) => item);\n}\n";
+    let (_, function) = source::read("x.ts", callback, "f").unwrap();
+    let error = symbolic::execute(&function, &contract).err().unwrap();
+    assert!(error.contains("ignores_callbacks"), "{error}");
+    contract.models.get_mut("each").unwrap().ignores_callbacks = true;
+    assert!(symbolic::execute(&function, &contract).is_ok());
+    let effects = "function f(r) {\n  const g = () => {\n    if (r.ok) {\n      log('a');\n    }\n    return 1;\n  };\n  return g() + 1;\n}\n";
+    let (_, function) = source::read("x.ts", effects, "f").unwrap();
+    let error = symbolic::execute(&function, &contract).err().unwrap();
+    assert!(error.contains("different effects"), "{error}");
+}

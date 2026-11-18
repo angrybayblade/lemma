@@ -79,6 +79,10 @@ pub(super) struct CallModel {
     /// The function returns a promise or coroutine, so a call must be awaited.
     #[serde(default, rename = "async")]
     pub is_async: bool,
+    /// The function never calls a function passed to it, so passing one is
+    /// read as passing an opaque value.
+    #[serde(default)]
+    pub ignores_callbacks: bool,
 }
 
 /// One modeled effect, recorded with the arguments of its call.

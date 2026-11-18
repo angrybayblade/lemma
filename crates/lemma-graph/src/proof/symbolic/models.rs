@@ -179,6 +179,11 @@ fn expression_names(expression: &Expr, names: &mut BTreeSet<String>) {
                 expression_names(&argument.value, names);
             }
         }
-        Expr::Bool(_) | Expr::Text(_) | Expr::Integer(_) | Expr::Null | Expr::Undefined => {}
+        Expr::Bool(_)
+        | Expr::Text(_)
+        | Expr::Integer(_)
+        | Expr::Null
+        | Expr::Undefined
+        | Expr::Closure(_) => {}
     }
 }
