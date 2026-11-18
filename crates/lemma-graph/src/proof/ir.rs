@@ -35,6 +35,9 @@ pub(super) struct Function {
     /// decorator model unless the language defines it to return the function
     /// unchanged.
     pub decorators: Vec<String>,
+    /// A JavaScript `function` expression, whose `this` is its own: undefined
+    /// when called plainly. An arrow function's `this` is the one around it.
+    pub has_own_this: bool,
     pub body: Vec<Statement>,
 }
 
@@ -117,6 +120,9 @@ pub(super) enum Expression {
     Index(Box<Self>, i64),
     /// Python's `needle in haystack`, over a sequence or a text.
     Contains(Box<Self>, Box<Self>),
+    /// A function defined where it is used: an arrow function, a function
+    /// expression, a lambda, a Go function literal or a nested definition.
+    Closure(Box<Function>),
     Conditional(Box<Self>, Box<Self>, Box<Self>),
     Call(Box<Self>, Vec<Argument>),
     /// `await` of a call; any other awaited value is refused.
@@ -313,7 +319,8 @@ impl Expression {
             | Self::Integer(_)
             | Self::Null
             | Self::Undefined
-            | Self::Name(_) => false,
+            | Self::Name(_)
+            | Self::Closure(_) => false,
         }
     }
 }

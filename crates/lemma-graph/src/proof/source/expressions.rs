@@ -6,7 +6,7 @@ use lemma_lang::syntax::ast::BinaryOperator as Op;
 use tree_sitter::Node;
 
 use super::super::ir::Expression as Expr;
-use super::{Language, Reader, children, field, has_optional_chain, only};
+use super::{Definition, Language, Reader, children, field, has_optional_chain, only};
 
 impl Reader<'_> {
     pub(super) fn expression(&self, node: Node<'_>) -> Result<Expr, String> {
@@ -108,6 +108,13 @@ impl Reader<'_> {
                     Box::new(self.expression(then)?),
                     Box::new(self.expression(otherwise)?),
                 )
+            }
+            "arrow_function" | "function_expression" | "func_literal" | "lambda" => {
+                Expr::Closure(Box::new(self.function(&Definition {
+                    node,
+                    receiver: None,
+                    decorators: Vec::new(),
+                })?))
             }
             "set" => Expr::Set(
                 children(node)

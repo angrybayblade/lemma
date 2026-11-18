@@ -41,7 +41,7 @@ impl<'a> Reader<'a> {
         if extracted.len() == 1 {
             return Ok(extracted.remove(0));
         }
-        let count = found?.len();
+        let count = found?.len().max(extracted.len());
         Err(format!(
             "expected one function or method `{symbol}`, found {count}"
         ))

@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 
 use lemma_lang::syntax::ast::BinaryOperator as Op;
 
-use super::super::ir::Language;
+use super::super::ir::{Function, Language};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::proof) enum Sort {
@@ -117,6 +117,8 @@ pub(in crate::proof) enum Value {
     Set(Vec<Value>),
     /// A function a call model stands for.
     Model(String),
+    /// A function defined in the checked code, called by running its body.
+    Closure(std::rc::Rc<Function>),
     /// Python `None`, JavaScript `null` and Go `nil`.
     Null,
     /// JavaScript `undefined`, and what is absent: an argument left out, or
@@ -146,6 +148,17 @@ impl Value {
             (_, then, otherwise) => {
                 Value::Choice(test.clone(), Box::new(then), Box::new(otherwise))
             }
+        }
+    }
+
+    /// Whether a function defined in the checked code is part of the value.
+    pub(in crate::proof) fn holds_closure(&self) -> bool {
+        match self {
+            Self::Closure(_) => true,
+            Self::Record(fields) | Self::Object(fields) => fields.values().any(Self::holds_closure),
+            Self::Sequence(items) | Self::Set(items) => items.iter().any(Self::holds_closure),
+            Self::Choice(_, then, otherwise) => then.holds_closure() || otherwise.holds_closure(),
+            _ => false,
         }
     }
 
@@ -222,9 +235,11 @@ pub(in crate::proof) fn read_field(
             let fails = test.and(&then_fails).or(&test.not().and(&otherwise_fails));
             Ok((Value::choice(test, then, otherwise), fails))
         }
-        Value::Scalar(_) | Value::Model(_) | Value::Sequence(_) | Value::Set(_) => {
-            Err(format!("cannot read `{name}` on a non-record"))
-        }
+        Value::Scalar(_)
+        | Value::Model(_)
+        | Value::Closure(_)
+        | Value::Sequence(_)
+        | Value::Set(_) => Err(format!("cannot read `{name}` on a non-record")),
     }
 }
 

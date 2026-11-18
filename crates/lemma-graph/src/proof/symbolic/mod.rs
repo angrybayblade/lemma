@@ -78,6 +78,7 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
         context: Term::boolean(true),
         try_depth: 0,
         handling: Vec::new(),
+        inlined: 0,
         specification: None,
         symbols,
         assumptions: BTreeSet::new(),
@@ -267,6 +268,7 @@ impl Execution {
             context: Term::boolean(true),
             try_depth: 0,
             handling: Vec::new(),
+            inlined: 0,
             specification: None,
             symbols: BTreeMap::new(),
             assumptions: BTreeSet::new(),
@@ -396,6 +398,8 @@ struct Evaluator<'a> {
     try_depth: usize,
     /// What the handlers running caught, which a bare `raise` raises again.
     handling: Vec<Raised>,
+    /// How many called functions are being run inside one another.
+    inlined: usize,
     /// Every symbolic value: the contract's inputs, then each call's outcomes.
     symbols: BTreeMap<String, (String, Sort)>,
     assumptions: BTreeSet<String>,
@@ -848,6 +852,10 @@ impl Evaluator<'_> {
                 self.conditional(test, then, otherwise, state)?
             }
             Expr::Call(callee, arguments) => self.call(callee, arguments, false, state)?,
+            Expr::Closure(function) => {
+                assume_decorators(&function.decorators, self.contract, &mut self.assumptions)?;
+                Value::Closure(std::rc::Rc::new((**function).clone()))
+            }
             Expr::Await(inner) => self.awaited(inner, state)?,
         })
     }
@@ -1037,8 +1045,12 @@ impl Evaluator<'_> {
         is_awaited: bool,
         state: &mut State,
     ) -> Result<Value, String> {
-        let Value::Model(name) = self.expression(callee, state)? else {
-            return Err("call target has no call model".to_owned());
+        let name = match self.expression(callee, state)? {
+            Value::Model(name) => name,
+            Value::Closure(function) => {
+                return self.call_closure(&function, arguments, is_awaited, state);
+            }
+            _ => return Err("call target has no call model".to_owned()),
         };
         let mut values = Vec::new();
         for argument in arguments {
@@ -1058,8 +1070,20 @@ impl Evaluator<'_> {
             .ok_or_else(|| format!("missing model `{name}`"))?
             .clone();
         check_awaiting(&name, model.is_async, is_awaited)?;
+        check_callbacks(&name, &model, &values)?;
         let arguments = match_arguments(&name, &model.parameters, values)?;
-        let count = state.calls.entry(name.clone()).or_default();
+        self.apply_model(&name, model, arguments, state)
+    }
+
+    /// What a call model says a call does: its effect, and what it returns.
+    fn apply_model(
+        &mut self,
+        name: &str,
+        model: super::contract::CallModel,
+        arguments: BTreeMap<String, Value>,
+        state: &mut State,
+    ) -> Result<Value, String> {
+        let count = state.calls.entry(name.to_owned()).or_default();
         *count += 1;
         if *count > 1 && reads_inputs(&model, self.inputs)? {
             // A specification input names one value. Two calls reading it
@@ -1096,6 +1120,103 @@ impl Evaluator<'_> {
                 .push(Value::Record(fields));
         }
         self.template(&model.returns, &mut local)
+    }
+
+    /// Calls a function defined in the checked code by running its body
+    /// here: what it reads from around it is what it holds now, as late
+    /// binding reads it. The caller goes on from the callee's path; several
+    /// paths are joined into one value only where they differ in nothing
+    /// else, so a branching callee with effects is refused here.
+    fn call_closure(
+        &mut self,
+        function: &Function,
+        arguments: &[ir::Argument],
+        is_awaited: bool,
+        state: &mut State,
+    ) -> Result<Value, String> {
+        check_awaiting("the function", function.is_async, is_awaited)?;
+        if self.inlined >= 8 {
+            return Err("functions call each other too deeply to follow".to_owned());
+        }
+        let mut callee = state.clone();
+        callee.result = None;
+        callee.pending.clear();
+        self.bind_arguments(function, arguments, state, &mut callee)?;
+        let locals = local_names(function);
+        let outer_async = std::mem::replace(&mut self.is_async, function.is_async);
+        self.inlined += 1;
+        let paths = self.statements(&function.body, vec![callee]);
+        self.inlined -= 1;
+        self.is_async = outer_async;
+        let mut returned = Vec::new();
+        for mut path in paths? {
+            if path.raised.is_some() {
+                return Err(
+                    "a raise inside a called function, within a `try`, is unsupported".to_owned(),
+                );
+            }
+            if path.result.is_none() {
+                // Falling off the end returns `None` in Python and
+                // `undefined` in TypeScript; Go functions with results cannot.
+                path.result = Some(match function.language {
+                    Language::Python => Value::Null,
+                    Language::TypeScript | Language::Go => Value::Undefined,
+                });
+            }
+            returned.push(path);
+        }
+        join_paths(returned, &locals, state)
+    }
+
+    /// Gives a closure's parameters the arguments of a call, in order then
+    /// by name, and defaults for the rest.
+    fn bind_arguments(
+        &mut self,
+        function: &Function,
+        arguments: &[ir::Argument],
+        state: &mut State,
+        callee: &mut State,
+    ) -> Result<(), String> {
+        let mut values = Vec::new();
+        for argument in arguments {
+            let value = self.expression(&argument.value, state)?;
+            values.push((argument.name.clone(), value));
+        }
+        // What the arguments evaluated may have narrowed or effected.
+        *callee = state.clone();
+        callee.result = None;
+        callee.pending.clear();
+        let mut bound: BTreeMap<String, Value> = BTreeMap::new();
+        let mut position = 0;
+        for (name, value) in values {
+            let parameter = if let Some(name) = name {
+                function
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == name)
+                    .ok_or_else(|| format!("the function has no parameter `{name}`"))?
+            } else {
+                position += 1;
+                function
+                    .parameters
+                    .get(position - 1)
+                    .ok_or("the function takes fewer arguments")?
+            };
+            bound.insert(parameter.name.clone(), value);
+        }
+        for parameter in &function.parameters {
+            let value = match (bound.remove(&parameter.name), &parameter.default) {
+                (Some(value), _) => value,
+                (None, Some(Ok(default))) => self.pure(default, callee)?,
+                (None, _) => return Err(format!("argument `{}` is missing", parameter.name)),
+            };
+            callee.env.insert(parameter.name.clone(), value);
+            callee.fresh.remove(&parameter.name);
+        }
+        if function.has_own_this {
+            callee.env.insert("this".to_owned(), Value::Undefined);
+        }
+        Ok(())
     }
 
     fn template(&mut self, template: &Json, state: &mut State) -> Result<Value, String> {
@@ -1137,6 +1258,98 @@ impl Evaluator<'_> {
                     .collect::<Result<_, _>>()?,
             ),
         })
+    }
+}
+
+/// Continues the caller from the paths a called function returned on.
+fn join_paths(
+    mut returned: Vec<State>,
+    locals: &BTreeSet<String>,
+    state: &mut State,
+) -> Result<Value, String> {
+    let caller_env = state.env.clone();
+    let outer = |path: &State| -> BTreeMap<String, Value> {
+        caller_env
+            .keys()
+            .filter(|name| !locals.contains(*name))
+            .filter_map(|name| {
+                path.env
+                    .get(name)
+                    .map(|value| (name.clone(), value.clone()))
+            })
+            .collect()
+    };
+    let Some(first) = returned.first() else {
+        state.guard = Term::boolean(false);
+        return Ok(Value::Unreachable);
+    };
+    let shared = format!("{:?}", (&first.effects, &first.calls, outer(first)));
+    if returned
+        .iter()
+        .any(|path| format!("{:?}", (&path.effects, &path.calls, outer(path))) != shared)
+    {
+        return Err("a called function with several paths and different effects is unsupported inside an expression".to_owned());
+    }
+    // Paths are exclusive: the value is each path's where its guard holds.
+    let mut value = Value::Unreachable;
+    let mut guard = Term::boolean(false);
+    for path in returned.iter().rev() {
+        let result = path.result.clone().unwrap_or(Value::Undefined);
+        value = Value::choice(&path.guard, result, value);
+        guard = guard.or(&path.guard);
+    }
+    let first = returned.remove(0);
+    let assigned = outer(&first);
+    state.guard = guard;
+    state.effects = first.effects;
+    state.calls = first.calls;
+    state.branches = first.branches;
+    state.env.extend(assigned);
+    Ok(value)
+}
+
+/// Refuses passing a function to a call model that may call it: what the
+/// function would do there is outside the model.
+fn check_callbacks(
+    name: &str,
+    model: &super::contract::CallModel,
+    values: &[(Option<&str>, Value)],
+) -> Result<(), String> {
+    if model.ignores_callbacks || !values.iter().any(|(_, value)| value.holds_closure()) {
+        return Ok(());
+    }
+    Err(format!(
+        "`{name}` is passed a function it may call; declare `ignores_callbacks` if it never does"
+    ))
+}
+
+/// The names a function binds itself: its parameters, and in Python every
+/// name it assigns, which Python makes local to it.
+fn local_names(function: &Function) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = function.parameters.iter().map(|p| p.name.clone()).collect();
+    names.insert("this".to_owned());
+    collect_bound(&function.body, function.language, &mut names);
+    names
+}
+
+fn collect_bound(body: &[Statement], language: Language, names: &mut BTreeSet<String>) {
+    for statement in body {
+        match &statement.kind {
+            Stmt::Bind(pattern, _) => pattern_names(pattern, names),
+            Stmt::Assign(pattern, _) if language == Language::Python => {
+                pattern_names(pattern, names);
+            }
+            Stmt::Update(name, _, _) if language == Language::Python => {
+                names.insert(name.clone());
+            }
+            // A TypeScript or Go declaration in a nested block ends with it.
+            kind if language == Language::Python => {
+                for block in kind.blocks() {
+                    collect_bound(block, language, names);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1262,6 +1475,7 @@ fn is_pure(expression: &Expr) -> bool {
         | Expr::Integer(_)
         | Expr::Null
         | Expr::Undefined
-        | Expr::Name(_) => true,
+        | Expr::Name(_)
+        | Expr::Closure(_) => true,
     }
 }
