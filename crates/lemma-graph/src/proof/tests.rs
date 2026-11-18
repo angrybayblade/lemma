@@ -1429,3 +1429,15 @@ fn a_name_a_python_function_assigns_is_its_own_from_the_start() {
     let with_target = "def f(r):\n    def g():\n        with manager() as x:\n            pass\n        return 1\n    x = 5\n    g()\n    return x\n";
     assert_eq!(returned("x.py", with_target, &contract).unwrap(), ["5"]);
 }
+
+#[test]
+fn a_python_default_is_evaluated_where_the_function_is_defined() {
+    let contract = scope_contract();
+    let python =
+        "def f(r):\n    x = 1\n    def g(a=x):\n        return a\n    x = 2\n    return g()\n";
+    assert_eq!(returned("x.py", python, &contract).unwrap(), ["1"]);
+    // TypeScript evaluates a default at the call that leaves the parameter out.
+    let typescript =
+        "function f(r) {\n  let x = 1;\n  const g = (a = x) => a;\n  x = 2;\n  return g();\n}\n";
+    assert_eq!(returned("x.ts", typescript, &contract).unwrap(), ["2"]);
+}

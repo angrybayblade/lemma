@@ -108,6 +108,10 @@ impl Term {
 pub(in crate::proof) struct Defined {
     pub function: Function,
     pub captured: BTreeMap<String, Option<u64>>,
+    /// The values of a Python function's parameter defaults, which Python
+    /// evaluates once, where the function is defined; or why one could not
+    /// be read, which matters only to a call that leaves the parameter out.
+    pub defaults: BTreeMap<String, Result<Value, String>>,
 }
 
 #[derive(Debug, Clone)]

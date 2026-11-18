@@ -14,6 +14,7 @@ use super::super::ir::{
 };
 use super::calls::local_names;
 use super::patterns::pattern_names;
+use super::value::Value;
 use super::{Evaluator, State};
 
 impl Evaluator<'_> {
@@ -55,6 +56,26 @@ impl Evaluator<'_> {
                 self.unbind(&name, state);
             }
         }
+    }
+
+    /// The values of a Python function's parameter defaults, evaluated here
+    /// where the function is defined. TypeScript evaluates a default at each
+    /// call that needs it.
+    pub(super) fn defaults(
+        &mut self,
+        function: &Function,
+        state: &mut State,
+    ) -> BTreeMap<String, Result<Value, String>> {
+        let mut defaults = BTreeMap::new();
+        if function.language != Language::Python {
+            return defaults;
+        }
+        for parameter in &function.parameters {
+            if let Some(Ok(default)) = &parameter.default {
+                defaults.insert(parameter.name.clone(), self.pure(default, state));
+            }
+        }
+        defaults
     }
 
     /// Declares `name` without a value: it is unbound until assigned.

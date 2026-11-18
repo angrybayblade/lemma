@@ -132,7 +132,7 @@ impl Evaluator<'_> {
         let mut callee = state.clone();
         callee.result = None;
         callee.pending.clear();
-        self.bind_arguments(function, arguments, state, &mut callee)?;
+        self.bind_arguments(defined, arguments, state, &mut callee)?;
         self.enter_function(function, &mut callee);
         let locals = local_names(function);
         let outer_async = std::mem::replace(&mut self.is_async, function.is_async);
@@ -164,11 +164,12 @@ impl Evaluator<'_> {
     /// by name, and defaults for the rest.
     pub(super) fn bind_arguments(
         &mut self,
-        function: &Function,
+        defined: &Defined,
         arguments: &[ir::Argument],
         state: &mut State,
         callee: &mut State,
     ) -> Result<(), String> {
+        let function = &defined.function;
         let mut values = Vec::new();
         for argument in arguments {
             let value = self.expression(&argument.value, state)?;
@@ -199,6 +200,9 @@ impl Evaluator<'_> {
         for parameter in &function.parameters {
             let value = match (bound.remove(&parameter.name), &parameter.default) {
                 (Some(value), _) => value,
+                (None, Some(Ok(_))) if defined.defaults.contains_key(&parameter.name) => {
+                    defined.defaults[&parameter.name].clone()?
+                }
                 (None, Some(Ok(default))) => self.pure(default, callee)?,
                 (None, _) => return Err(format!("argument `{}` is missing", parameter.name)),
             };
