@@ -16,6 +16,10 @@ pub(super) struct Contract {
     pub parameters: Vec<Option<String>>,
     #[serde(default)]
     pub bindings: BTreeMap<String, Value>,
+    /// Names a nested function reads from the functions around it, each
+    /// given an input: every value it could hold when the function runs.
+    #[serde(default)]
+    pub captures: BTreeMap<String, String>,
     #[serde(default)]
     pub models: BTreeMap<String, CallModel>,
     /// Decorators, by their text or their callee, mapped to the assumption
@@ -112,6 +116,8 @@ impl Contract {
             .keys()
             .chain(self.bindings.keys())
             .chain(self.parameters.iter().flatten())
+            .chain(self.captures.keys())
+            .chain(self.captures.values())
         {
             if !identifier(name) {
                 return Err(format!("invalid contract name `{name}`"));

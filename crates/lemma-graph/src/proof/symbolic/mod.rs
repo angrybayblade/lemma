@@ -196,8 +196,18 @@ fn bind_parameters(
         };
         values.push(value);
     }
+    // What a nested function reads from around it may hold any value of
+    // its input when the function runs; its own parameters shadow it.
+    for (name, input) in &contract.captures {
+        let value = inputs.get(input).cloned().ok_or_else(|| {
+            format!("capture `{name}` names `{input}`, which is not a declared input")
+        })?;
+        state.env.insert(name.clone(), value);
+    }
     for (parameter, value) in function.parameters.iter().zip(values) {
-        if state.env.contains_key(&parameter.name) {
+        if state.env.contains_key(&parameter.name)
+            && !contract.captures.contains_key(&parameter.name)
+        {
             return Err(format!(
                 "parameter `{}` shadows a called function",
                 parameter.name

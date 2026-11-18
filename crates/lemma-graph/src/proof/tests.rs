@@ -420,10 +420,25 @@ fn methods_are_read_by_qualified_name_with_their_receiver_first() {
 }
 
 #[test]
-fn nested_functions_and_unknown_containers_are_refused() {
+fn a_nested_function_reads_its_captures_only_from_the_contract() {
     let nested = "def outer(request):\n    def inner():\n        return request['allowed']\n    return inner()\n";
-    let error = source::read("x.py", nested, "outer.inner").err().unwrap();
-    assert!(error.contains("enclosing"), "{error}");
+    let (_, function) = source::read("x.py", nested, "outer.inner").unwrap();
+    let mut contract: Contract = serde_json::from_value(json!({
+        "inputs": {"request": {"allowed": "Bool"}},
+        "parameters": [],
+        "ensures": [{"name": "allowed", "condition": "result == request.allowed"}],
+    }))
+    .unwrap();
+    let error = symbolic::execute(&function, &contract).err().unwrap();
+    assert!(error.contains("unmodeled name `request`"), "{error}");
+    contract
+        .captures
+        .insert("request".to_owned(), "request".to_owned());
+    assert!(symbolic::execute(&function, &contract).is_ok());
+}
+
+#[test]
+fn unknown_containers_are_refused() {
     assert!(
         source::read(
             "x.py",
@@ -1146,4 +1161,50 @@ fn tsx_files_read_their_typescript_and_refuse_jsx() {
     let helper = "export function label(user: User): string {\n  return user.admin ? 'Admin' : 'Member';\n}\nexport function Badge(user: User) {\n  return <span>{label(user)}</span>;\n}\n";
     assert!(source::read("x.tsx", helper, "label").is_ok());
     assert!(source::read("x.tsx", helper, "Badge").is_err());
+}
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn nested_functions_and_object_methods_are_read_with_their_captures() {
+    let contract = json!({
+        "inputs": {"limit": "Int", "r": {"count": "Int"}},
+        "parameters": ["r"],
+        "captures": {"limit": "limit"},
+        "ensures": [{"name": "within", "condition": "result == (r.count <= limit)"}],
+    });
+    for (file, text, symbol) in [
+        (
+            "x.py",
+            "def make(limit):\n    def within(r):\n        return r.count <= limit\n    return within\n",
+            "make.within",
+        ),
+        (
+            "x.ts",
+            "export function make(limit: number) {\n  const within = (r) => r.count <= limit;\n  return within;\n}\n",
+            "make.within",
+        ),
+        (
+            "x.py",
+            "class Policy:\n    def check(self, limit):\n        def within(r):\n            return r.count <= limit\n        return within\n",
+            "Policy.check.within",
+        ),
+    ] {
+        let result = check_source(file, text, symbol, &contract);
+        assert!(
+            matches!(
+                result["observed"]["status"].as_str(),
+                Some("proved" | "conditional")
+            ),
+            "{file} {symbol}: {result}"
+        );
+        assert_eq!(result["observed"]["holds"], true, "{result}");
+    }
+    let object = json!({
+        "inputs": {"api": {"base": "Text"}, "r": {"path": "Text"}},
+        "parameters": ["api", "r"],
+        "ensures": [{"name": "joined", "condition": "result == api.base + r.path"}],
+    });
+    let text = "export const client = {\n  url(r) {\n    return this.base + r.path;\n  },\n};\n";
+    let result = check_source("x.ts", text, "client.url", &object);
+    assert_eq!(result["observed"]["holds"], true, "{result}");
 }
