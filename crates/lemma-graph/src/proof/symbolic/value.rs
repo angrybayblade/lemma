@@ -88,6 +88,37 @@ impl Term {
         self.not().and(&other.not()).not()
     }
 
+    /// The integer the term is, where it is written as a constant.
+    fn constant_integer(&self) -> Option<i64> {
+        if self.sort != Sort::Integer {
+            return None;
+        }
+        let negated = self
+            .code
+            .strip_prefix("(- ")
+            .and_then(|rest| rest.strip_suffix(')'));
+        let digits = negated.unwrap_or(&self.code);
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let magnitude: i64 = digits.parse().ok()?;
+        Some(if negated.is_some() {
+            -magnitude
+        } else {
+            magnitude
+        })
+    }
+
+    /// Whether the term is written as a constant: `true`, `7`, `"text"`.
+    /// Each constant has one spelling here.
+    fn is_constant(&self) -> bool {
+        match self.sort {
+            Sort::Bool => matches!(self.code.as_str(), "true" | "false"),
+            Sort::Integer => self.constant_integer().is_some(),
+            Sort::Text => self.code.starts_with('"'),
+        }
+    }
+
     /// `then` where `self` holds, else `otherwise`; both of one sort.
     fn ite(&self, then: &Self, otherwise: &Self) -> Self {
         match self.code.as_str() {
@@ -283,6 +314,10 @@ pub(in crate::proof) fn equal(left: &Value, right: &Value) -> Result<Term, Strin
 }
 
 fn equal_terms(left: &Term, right: &Term) -> Result<Term, String> {
+    // Two constants of one sort are written alike exactly when they are equal.
+    if left.sort == right.sort && left.is_constant() && right.is_constant() {
+        return Ok(Term::boolean(left.code == right.code));
+    }
     if left.sort == right.sort {
         return Ok(Term {
             sort: Sort::Bool,
@@ -369,6 +404,15 @@ pub(in crate::proof) fn order(operator: Op, left: &Value, right: &Value) -> Resu
     if left.sort != Sort::Integer || right.sort != Sort::Integer {
         return Err("ordered comparisons of text or Booleans are unsupported".to_owned());
     }
+    if let (Some(left), Some(right)) = (left.constant_integer(), right.constant_integer()) {
+        return Ok(Term::boolean(match operator {
+            Op::Less => left < right,
+            Op::LessOrEqual => left <= right,
+            Op::Greater => left > right,
+            Op::GreaterOrEqual => left >= right,
+            _ => return Err("unsupported comparison".to_owned()),
+        }));
+    }
     let symbol = match operator {
         Op::Less => "<",
         Op::LessOrEqual => "<=",
@@ -392,6 +436,17 @@ pub(in crate::proof) fn arithmetic(
     let (Value::Scalar(left), Value::Scalar(right)) = (left, right) else {
         return Err("arithmetic needs two integers, or two texts to join".to_owned());
     };
+    if let (Some(left), Some(right)) = (left.constant_integer(), right.constant_integer()) {
+        let exact = match operator {
+            Op::Add => left.checked_add(right),
+            Op::Subtract => left.checked_sub(right),
+            Op::Multiply => left.checked_mul(right),
+            _ => None,
+        };
+        if let Some(exact) = exact {
+            return Ok(Term::integer(exact));
+        }
+    }
     let (sort, function) = match (left.sort, right.sort, operator) {
         (Sort::Text, Sort::Text, Op::Add) => (Sort::Text, "str.++"),
         (Sort::Integer, Sort::Integer, Op::Add) => (Sort::Integer, "+"),

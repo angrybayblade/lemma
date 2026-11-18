@@ -1441,3 +1441,10 @@ fn a_python_default_is_evaluated_where_the_function_is_defined() {
         "function f(r) {\n  let x = 1;\n  const g = (a = x) => a;\n  x = 2;\n  return g();\n}\n";
     assert_eq!(returned("x.ts", typescript, &contract).unwrap(), ["2"]);
 }
+
+#[test]
+fn a_branch_on_constants_follows_only_the_path_it_takes() {
+    let contract = scope_contract();
+    let text = "def f(r):\n    x = 1 + 2\n    if x == 2:\n        return 0\n    if x < 3:\n        return 1\n    if 'a' == 'b':\n        return 2\n    return x * 2\n";
+    assert_eq!(returned("x.py", text, &contract).unwrap(), ["6"]);
+}
