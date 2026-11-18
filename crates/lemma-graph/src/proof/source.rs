@@ -542,6 +542,17 @@ impl<'a> Reader<'a> {
             "short_var_declaration" | "assignment_statement" | "assignment" => {
                 self.assignment(node)?
             }
+            // Nothing in a raise can make the path return normally, so what it
+            // raises is not read.
+            "raise_statement" | "throw_statement" => Stmt::Raise,
+            "assert_statement" => {
+                let condition = children(node)
+                    .into_iter()
+                    .next()
+                    .ok_or("empty assert statement")?;
+                Stmt::Assert(self.expression(condition)?)
+            }
+            "expression_statement" if self.is_go_panic(node) => Stmt::Raise,
             "expression_statement" => {
                 let expression = only(node)?;
                 if expression.kind() == "assignment" {
@@ -563,6 +574,17 @@ impl<'a> Reader<'a> {
             line: node.start_position().row + 1,
             kind,
         }])
+    }
+
+    /// Whether a statement is a call of Go's built-in `panic`.
+    fn is_go_panic(&self, node: Node<'_>) -> bool {
+        self.language == Language::Go
+            && only(node).is_ok_and(|call| {
+                call.kind() == "call_expression"
+                    && call
+                        .child_by_field_name("function")
+                        .is_some_and(|function| self.text(function) == "panic")
+            })
     }
 
     fn assignment(&self, node: Node<'_>) -> Result<Stmt, String> {
@@ -867,6 +889,16 @@ impl<'a> Reader<'a> {
     /// The pieces of a string literal, decoded from the grammar's fragments,
     /// escapes and interpolations rather than from its source text.
     fn text_parts(&self, node: Node<'_>) -> Result<Vec<Part>, String> {
+        if !matches!(
+            node.kind(),
+            "string"
+                | "concatenated_string"
+                | "template_string"
+                | "interpreted_string_literal"
+                | "raw_string_literal"
+        ) {
+            return self.unsupported(node);
+        }
         if node.kind() == "concatenated_string" {
             let mut parts = Vec::new();
             for piece in children(node) {

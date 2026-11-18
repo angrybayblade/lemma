@@ -779,3 +779,58 @@ fn integer_arithmetic_is_exact_in_python_and_assumed_elsewhere() {
     );
     assert_eq!(wrong["observed"]["status"], "violated", "{wrong}");
 }
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn a_path_that_raises_has_no_normal_return_to_check() {
+    let contract = json!({
+        "inputs": {"r": {"allowed": "Bool"}},
+        "parameters": ["r"],
+        "ensures": [{"name": "only_when_allowed", "condition": "r.allowed && result"}],
+    });
+    for (file, text, status) in [
+        (
+            "x.py",
+            "def f(r):\n    if not r.allowed:\n        raise PermissionError(f'denied {r}')\n    return True\n",
+            "proved",
+        ),
+        (
+            "x.ts",
+            "function f(r) {\n  if (!r.allowed) {\n    throw new Error('denied');\n  }\n  return true;\n}\n",
+            "proved",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(r R) bool {\n  if !r.allowed {\n    panic(\"denied\")\n  }\n  return true\n}\n",
+            "proved",
+        ),
+        (
+            "x.py",
+            "def f(r):\n    assert r.allowed, 'denied'\n    return True\n",
+            "conditional",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &contract);
+        assert_eq!(result["observed"]["status"], status, "{file}: {result}");
+    }
+    let wrong = check_source(
+        "x.py",
+        "def f(r):\n    if r.allowed:\n        raise ValueError()\n    return True\n",
+        "f",
+        &contract,
+    );
+    assert_eq!(wrong["observed"]["status"], "violated", "{wrong}");
+    let always = check_source(
+        "x.py",
+        "def f(r):\n    raise ValueError()\n",
+        "f",
+        &contract,
+    );
+    assert!(
+        always["unavailable"]
+            .as_str()
+            .unwrap()
+            .contains("no reachable normal return"),
+        "{always}"
+    );
+}
