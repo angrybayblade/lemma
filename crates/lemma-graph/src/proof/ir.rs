@@ -77,7 +77,9 @@ pub(super) enum StatementKind {
     Evaluate(Expression),
     /// `raise`, `throw` or Go's `panic(...)`: the path ends without a normal
     /// return, whatever the raised value would be.
-    Raise,
+    Raise(Raised),
+    /// `try` with its handlers, `else` and `finally`.
+    Try(Box<Try>),
     /// Python's `assert`: the path goes on only where the condition holds.
     Assert(Expression),
 }
@@ -117,6 +119,46 @@ pub(super) enum Expression {
     Call(Box<Self>, Vec<Argument>),
     /// `await` of a call; any other awaited value is refused.
     Await(Box<Self>),
+}
+
+/// What a raise raises, as far as a handler needs to know.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Raised {
+    /// An exception class, as written: `raise ValueError(...)`.
+    Class(String),
+    /// What the language raises itself, such as reading a field of `None`;
+    /// its class depends on how the field was read.
+    Implicit,
+    /// A raised value whose class is not written, such as `raise error`.
+    Unknown,
+    /// Python's bare `raise`, raising again what a handler caught.
+    Again,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct Try {
+    pub body: Vec<Statement>,
+    pub handlers: Vec<Handler>,
+    /// Python's `else`: run when the body raised nothing.
+    pub otherwise: Vec<Statement>,
+    pub finally: Vec<Statement>,
+}
+
+impl Try {
+    /// Every block of the statement, in order.
+    pub(super) fn blocks(&self) -> impl Iterator<Item = &[Statement]> {
+        std::iter::once(self.body.as_slice())
+            .chain(self.handlers.iter().map(|handler| handler.body.as_slice()))
+            .chain([self.otherwise.as_slice(), self.finally.as_slice()])
+    }
+}
+
+/// A handler, and the classes it catches; `None` catches everything, as a
+/// bare `except:` and a TypeScript `catch` do.
+#[derive(Debug, Clone)]
+pub(super) struct Handler {
+    pub classes: Option<Vec<String>>,
+    pub body: Vec<Statement>,
 }
 
 /// What a binding names: one variable, or the parts of a sequence or record.

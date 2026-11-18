@@ -1055,3 +1055,57 @@ fn objects_others_can_see_are_never_assigned_and_blocks_scope_declarations() {
     let (_, function) = source::read("x.ts", undeclared, "f").unwrap();
     assert!(symbolic::execute(&function, &contract).is_err());
 }
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn handlers_catch_what_the_body_raises_and_finally_runs_on_every_way_out() {
+    let contract = json!({
+        "inputs": {"r": {"allowed": "Bool", "user": ["Null", {"name": "Text"}]}},
+        "parameters": ["r"],
+        "ensures": [{"name": "outcome", "condition": "(!r.allowed && result == \"denied\") || (r.allowed && r.user == null && result == \"error\") || (r.allowed && r.user != null && result == r.user.name)"}],
+    });
+    let python = "def f(r):\n    try:\n        if not r.allowed:\n            raise PermissionError('no')\n        name = r.user.name\n    except PermissionError:\n        return 'denied'\n    except Exception:\n        return 'error'\n    else:\n        return name\n    finally:\n        pass\n";
+    let result = check_source("x.py", python, "f", &contract);
+    assert_eq!(result["observed"]["status"], "proved", "{result}");
+    let swapped = python.replace("return 'denied'", "return 'error'");
+    let result = check_source("x.py", &swapped, "f", &contract);
+    assert_eq!(result["observed"]["status"], "violated", "{result}");
+    let typescript = "function f(r) {\n  try {\n    if (!r.allowed) {\n      return 'denied';\n    }\n    return r.user.name;\n  } catch (error) {\n    return 'error';\n  }\n}\n";
+    let result = check_source("x.ts", typescript, "f", &contract);
+    assert_eq!(result["observed"]["status"], "proved", "{result}");
+    let overriding = json!({
+        "inputs": {"r": {"allowed": "Bool"}},
+        "parameters": ["r"],
+        "ensures": [{"name": "finally_wins", "condition": "result == 2"}],
+    });
+    let result = check_source(
+        "x.py",
+        "def f(r):\n    try:\n        return 1\n    finally:\n        return 2\n",
+        "f",
+        &overriding,
+    );
+    assert_eq!(result["observed"]["status"], "proved", "{result}");
+}
+
+#[test]
+fn an_unknown_relation_between_exception_classes_is_refused() {
+    let contract: Contract = serde_json::from_value(json!({
+        "inputs": {"r": {"ok": "Bool"}},
+        "parameters": ["r"],
+        "ensures": [{"name": "any", "condition": "true"}],
+    }))
+    .unwrap();
+    let text = "def f(r):\n    try:\n        raise NotFound('x')\n    except ValueError:\n        return False\n";
+    let (_, function) = source::read("x.py", text, "f").unwrap();
+    let error = symbolic::execute(&function, &contract).err().unwrap();
+    assert!(error.contains("not known"), "{error}");
+    let reraised =
+        "def f(r):\n    try:\n        raise KeyError('x')\n    except KeyError:\n        raise\n";
+    let (_, function) = source::read("x.py", reraised, "f").unwrap();
+    assert!(
+        symbolic::execute(&function, &contract)
+            .unwrap()
+            .paths
+            .is_empty()
+    );
+}
