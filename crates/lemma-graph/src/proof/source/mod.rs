@@ -8,6 +8,7 @@ use super::ir::{
 
 mod expressions;
 mod lookup;
+mod loops;
 mod statements;
 mod strings;
 

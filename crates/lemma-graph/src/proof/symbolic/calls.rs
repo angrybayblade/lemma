@@ -23,6 +23,9 @@ impl Evaluator<'_> {
         is_awaited: bool,
         state: &mut State,
     ) -> Result<Value, String> {
+        if self.is_built_in_length(callee, state) {
+            return self.built_in_length(arguments, state);
+        }
         let name = match self.expression(callee, state)? {
             Value::Model(name) => name,
             Value::Closure(defined) => {
@@ -32,6 +35,15 @@ impl Evaluator<'_> {
             _ => return Err("call target has no call model".to_owned()),
         };
         self.call_model(&name, arguments, is_awaited, state)
+    }
+
+    /// Whether a callee is the `len` Python and Go build in: the name, where
+    /// neither the code nor a call model gives it another meaning.
+    fn is_built_in_length(&self, callee: &Expr, state: &State) -> bool {
+        self.language != Language::TypeScript
+            && matches!(callee, Expr::Name(name) if name == "len")
+            && !state.env.contains_key("len")
+            && !state.variables.contains_key("len")
     }
 
     /// A call answered by the call model `name`.
@@ -89,12 +101,17 @@ impl Evaluator<'_> {
         local.env.extend(arguments);
         if !model.outcomes.is_empty() {
             let mut outcome = BTreeMap::new();
+            let mut domain = Term::boolean(true);
             for (field, shape) in &model.outcomes {
                 let path = format!("calls.{name}.{call_number}.{field}");
-                outcome.insert(field.clone(), input(shape, &path, &mut self.symbols)?);
+                let value = input(shape, &path, &mut self.symbols, &mut domain)?;
+                outcome.insert(field.clone(), value);
             }
             let outcome = Value::Record(outcome);
-            state.guard = state.guard.and(&ranges(&outcome, self.language));
+            state.guard = state
+                .guard
+                .and(&domain)
+                .and(&ranges(&outcome, self.language));
             local.env.insert("outcome".to_owned(), outcome);
         }
         if let Some(effect) = model.effect {
@@ -337,6 +354,13 @@ pub(super) fn collect_bound(body: &[Statement], language: Language, names: &mut 
             }
             Stmt::Update(name, _, _) if language == Language::Python => {
                 names.insert(name.clone());
+            }
+            Stmt::ForEach(each) if language == Language::Python => {
+                for pattern in each.index.iter().chain(&each.item) {
+                    pattern_names(pattern, names);
+                }
+                collect_bound(&each.body, language, names);
+                collect_bound(&each.otherwise, language, names);
             }
             Stmt::With(contexts, body) => {
                 for target in contexts

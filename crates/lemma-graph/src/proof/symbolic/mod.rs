@@ -9,6 +9,7 @@ mod calls;
 mod exceptions;
 mod expressions;
 mod flow;
+mod loops;
 mod models;
 mod patterns;
 mod scopes;
@@ -18,7 +19,7 @@ use patterns::{pattern_names, set_field, track_freshness};
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::contract::{Contract, Input};
+use super::contract::{Contract, Input, MAX_SEQUENCE_LENGTH, Sequence};
 use super::ir::{
     self, Branch, Expression as Expr, Function, Language, Raised, Statement, StatementKind as Stmt,
 };
@@ -44,16 +45,29 @@ pub(super) struct State {
     variables: BTreeMap<String, u64>,
     /// What the path raised inside a `try`, until a handler catches it.
     raised: Option<Raised>,
+    /// How the path is leaving the pass of the loop it is in, until that
+    /// loop takes it up.
+    jump: Option<Jump>,
     /// Paths that raised inside a `try` while the current statement ran,
     /// each as it was where it raised.
     pending: Vec<State>,
 }
 
+/// How a path leaves a pass of a loop early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Jump {
+    Break,
+    Continue,
+}
+
 impl State {
     /// Whether the path can still reach a statement: it has not returned,
-    /// and no read of null has ended it.
+    /// is not leaving a loop's pass, and no read of null has ended it.
     fn is_running(&self) -> bool {
-        self.result.is_none() && self.raised.is_none() && self.guard.code != "false"
+        self.result.is_none()
+            && self.raised.is_none()
+            && self.jump.is_none()
+            && self.guard.code != "false"
     }
 }
 
@@ -71,8 +85,9 @@ pub(super) struct Execution {
 pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execution, String> {
     let mut symbols = BTreeMap::new();
     let mut inputs = BTreeMap::new();
+    let mut domain = Term::boolean(true);
     for (name, shape) in &contract.inputs {
-        inputs.insert(name.clone(), input(shape, name, &mut symbols)?);
+        inputs.insert(name.clone(), input(shape, name, &mut symbols, &mut domain)?);
     }
     let mut evaluator = Evaluator {
         contract,
@@ -91,7 +106,7 @@ pub(super) fn execute(function: &Function, contract: &Contract) -> Result<Execut
     };
     assume_decorators(&function.decorators, contract, &mut evaluator.assumptions)?;
     let (mut state, requires, requires_undefined) = prepare(&inputs, &mut evaluator)?;
-    let requires = inputs.values().fold(requires, |all, value| {
+    let requires = inputs.values().fold(requires.and(&domain), |all, value| {
         all.and(&ranges(value, function.language))
     });
     bind_parameters(function, &inputs, &mut state, &mut evaluator)?;
@@ -135,6 +150,7 @@ fn prepare(
         variables: BTreeMap::new(),
         result: None,
         raised: None,
+        jump: None,
         pending: Vec::new(),
     };
     for (name, template) in &evaluator.contract.bindings {
@@ -290,10 +306,14 @@ impl Execution {
     }
 }
 
+/// The symbolic value of an input of `shape`. What the shape itself says of
+/// its symbols, as a sequence's length is at most its `max_length`, is added
+/// to `domain`.
 fn input(
     shape: &Input,
     path: &str,
     symbols: &mut BTreeMap<String, (String, Sort)>,
+    domain: &mut Term,
 ) -> Result<Value, String> {
     match shape {
         Input::Record(fields) => Ok(Value::Record(
@@ -302,19 +322,20 @@ fn input(
                 .map(|(name, shape)| {
                     Ok((
                         name.clone(),
-                        input(shape, &format!("{path}.{name}"), symbols)?,
+                        input(shape, &format!("{path}.{name}"), symbols, domain)?,
                     ))
                 })
                 .collect::<Result<_, String>>()?,
         )),
+        Input::Sequence(shape) => sequence_input(shape, path, symbols, domain),
         Input::Union(alternatives) => {
             let Some((last, rest)) = alternatives.split_last() else {
                 return Err(format!("input `{path}` is an empty union"));
             };
-            let mut value = input(last, &format!("{path}|{}", rest.len()), symbols)?;
+            let mut value = input(last, &format!("{path}|{}", rest.len()), symbols, domain)?;
             for (index, alternative) in rest.iter().enumerate().rev() {
                 let selector = symbol(&format!("{path}?{index}"), Sort::Bool, symbols)?;
-                let alternative = input(alternative, &format!("{path}|{index}"), symbols)?;
+                let alternative = input(alternative, &format!("{path}|{index}"), symbols, domain)?;
                 value = Value::choice(&selector, alternative, value);
             }
             Ok(value)
@@ -335,6 +356,50 @@ fn input(
             Ok(Value::Scalar(symbol(path, sort, symbols)?))
         }
     }
+}
+
+/// A sequence input: one sequence for each length up to its `max_length`,
+/// chosen by a symbolic length. Every length shares the items it has.
+fn sequence_input(
+    shape: &Sequence,
+    path: &str,
+    symbols: &mut BTreeMap<String, (String, Sort)>,
+    domain: &mut Term,
+) -> Result<Value, String> {
+    if shape.max_length > MAX_SEQUENCE_LENGTH {
+        return Err(format!(
+            "input `{path}` states a max_length above {MAX_SEQUENCE_LENGTH}"
+        ));
+    }
+    let length = symbol(&format!("{path}.length"), Sort::Integer, symbols)?;
+    let longest = i64::try_from(shape.max_length).map_err(|e| e.to_string())?;
+    *domain = domain.and(&Term {
+        sort: Sort::Bool,
+        code: format!("(and (<= 0 {0}) (<= {0} {longest}))", length.code),
+    });
+    let mut items = Vec::new();
+    for position in 0..shape.max_length {
+        items.push(input(
+            &shape.sequence,
+            &format!("{path}[{position}]"),
+            symbols,
+            domain,
+        )?);
+    }
+    let mut value = Value::Sequence(items.clone());
+    for shorter in (0..longest).rev() {
+        let is_this_long = Term {
+            sort: Sort::Bool,
+            code: format!("(= {} {shorter})", length.code),
+        };
+        let kept = usize::try_from(shorter).map_err(|e| e.to_string())?;
+        value = Value::choice(
+            &is_this_long,
+            Value::Sequence(items[..kept].to_vec()),
+            value,
+        );
+    }
+    Ok(value)
 }
 
 /// A fresh solver constant for the input at `path`.
@@ -472,15 +537,7 @@ impl Evaluator<'_> {
                 self.assign(pattern, expression, true, &mut state)?;
             }
             Stmt::Update(name, operator, expression) => {
-                let value = self.expression(expression, &mut state)?;
-                let current = state
-                    .env
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| format!("`{name}` is updated before it is assigned"))?;
-                let updated = self.arithmetic(*operator, &current, &value)?;
-                state.env.insert(name.clone(), Value::Scalar(updated));
-                state.fresh.remove(name);
+                self.update(name, *operator, expression, &mut state)?;
             }
             Stmt::SetField(name, field, expression) => {
                 let value = self.expression(expression, &mut state)?;
@@ -516,6 +573,9 @@ impl Evaluator<'_> {
                 self.assumptions
                     .insert("Python runs with assertions enabled, not with -O".to_owned());
             }
+            Stmt::ForEach(each) => return self.for_each(statement.line, each, state),
+            Stmt::Break => state.jump = Some(Jump::Break),
+            Stmt::Continue => state.jump = Some(Jump::Continue),
             Stmt::Try(statement) => return self.try_statement(statement, state),
             Stmt::With(contexts, body) => return self.with_statement(contexts, body, state),
             Stmt::If(expression, then, otherwise) => {
@@ -542,6 +602,26 @@ impl Evaluator<'_> {
             self.declare_pattern(pattern, state);
         }
         track_freshness(pattern, expression, &mut state.fresh);
+        Ok(())
+    }
+
+    /// `name op= value` on a variable.
+    fn update(
+        &mut self,
+        name: &str,
+        operator: lemma_lang::syntax::ast::BinaryOperator,
+        expression: &Expr,
+        state: &mut State,
+    ) -> Result<(), String> {
+        let value = self.expression(expression, state)?;
+        let current = state
+            .env
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("`{name}` is updated before it is assigned"))?;
+        let updated = self.arithmetic(operator, &current, &value)?;
+        state.env.insert(name.to_owned(), Value::Scalar(updated));
+        state.fresh.remove(name);
         Ok(())
     }
 
@@ -581,13 +661,8 @@ impl Evaluator<'_> {
             }
         }
         let outer: Vec<Shadowed> = declared
-            .into_iter()
-            .map(|name| Shadowed {
-                value: state.env.get(&name).cloned(),
-                is_fresh: state.fresh.contains(&name),
-                variable: state.variables.get(&name).copied(),
-                name,
-            })
+            .iter()
+            .map(|name| Shadowed::of(name, &state))
             .collect();
         if self.language == Language::TypeScript {
             for shadowed in &outer {
@@ -646,6 +721,18 @@ struct Shadowed {
     value: Option<Value>,
     is_fresh: bool,
     variable: Option<u64>,
+}
+
+impl Shadowed {
+    /// What `name` is on a path now.
+    fn of(name: &str, state: &State) -> Self {
+        Self {
+            name: name.to_owned(),
+            value: state.env.get(name).cloned(),
+            is_fresh: state.fresh.contains(name),
+            variable: state.variables.get(name).copied(),
+        }
+    }
 }
 
 /// Makes a name again what it was before a block declared its own.

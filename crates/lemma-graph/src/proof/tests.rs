@@ -1442,6 +1442,198 @@ fn a_python_default_is_evaluated_where_the_function_is_defined() {
     assert_eq!(returned("x.ts", typescript, &contract).unwrap(), ["2"]);
 }
 
+fn loop_contract() -> Json {
+    json!({
+        "inputs": {"r": {"ok": "Bool"}, "xs": {"sequence": "Int", "max_length": 2}},
+        "parameters": ["r", "xs"],
+        "ensures": [{"name": "any", "condition": "true"}],
+    })
+}
+
+#[test]
+fn a_loop_runs_its_body_once_for_each_item_of_a_sequence() {
+    let contract = loop_contract();
+    for (file, text, expected) in [
+        (
+            "x.py",
+            "def f(r, xs):\n    total = 0\n    for x in [1, 2, 3]:\n        if x == 2:\n            continue\n        total += x\n    return total\n",
+            vec!["4"],
+        ),
+        (
+            "x.ts",
+            "function f(r, xs) {\n  let total = 0;\n  for (const x of [1, 2, 3]) {\n    total += x;\n  }\n  return total;\n}\n",
+            vec!["6"],
+        ),
+        // A Go `range` names the position first, then the item.
+        (
+            "x.go",
+            "package p\nfunc f(r R, xs []int) int {\n  total := 0\n  for i, x := range []int{5, 6} {\n    total = total + i + x\n  }\n  return total\n}\n",
+            vec!["12"],
+        ),
+        // One path for each length a contract allows an input.
+        (
+            "x.py",
+            "def f(r, xs):\n    total = 0\n    for x in xs:\n        total += x\n    return total\n",
+            vec!["0", "(+ 0 input_2)", "(+ (+ 0 input_2) input_3)"],
+        ),
+    ] {
+        assert_eq!(returned(file, text, &contract).unwrap(), expected, "{text}");
+    }
+}
+
+#[test]
+fn break_else_and_finally_leave_a_loop_as_the_languages_do() {
+    let contract = loop_contract();
+    for (file, text, expected) in [
+        // Python's `else` runs only where the loop was not broken.
+        (
+            "x.py",
+            "def f(r, xs):\n    for x in [1, 2, 3]:\n        if x == 2:\n            break\n    else:\n        return 0\n    return x\n",
+            "2",
+        ),
+        (
+            "x.py",
+            "def f(r, xs):\n    for x in [1, 3]:\n        if x == 2:\n            break\n    else:\n        return 0\n    return x\n",
+            "0",
+        ),
+        // `finally` runs on `continue`, which then goes on with the next pass.
+        (
+            "x.py",
+            "def f(r, xs):\n    seen = 0\n    for x in [1, 2]:\n        try:\n            if x == 1:\n                continue\n            return x + seen\n        finally:\n            seen += 10\n    return 0\n",
+            "12",
+        ),
+        // A `try` in a loop does not run its `else` where the body broke.
+        (
+            "x.py",
+            "def f(r, xs):\n    for x in [1]:\n        try:\n            break\n        except ValueError:\n            pass\n        else:\n            return 7\n    return 0\n",
+            "0",
+        ),
+        // What a TypeScript loop declares ends with the loop.
+        (
+            "x.ts",
+            "function f(r, xs) {\n  const x = 9;\n  for (const x of [1]) {\n  }\n  return x;\n}\n",
+            "9",
+        ),
+    ] {
+        assert_eq!(
+            returned(file, text, &contract).unwrap(),
+            [expected],
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_loop_is_read_only_over_a_sequence_of_known_length() {
+    let contract = loop_contract();
+    let unknown = "def f(r, xs):\n    for x in r:\n        return x\n    return 0\n";
+    let error = returned("x.py", unknown, &contract).unwrap_err();
+    assert!(error.contains("max_length"), "{error}");
+    for (file, text) in [
+        (
+            "x.py",
+            "async def f(r, xs):\n    async for x in xs:\n        return x\n",
+        ),
+        (
+            "x.ts",
+            "function f(r, xs) {\n  for (const k in r) {\n    return k;\n  }\n}\n",
+        ),
+        (
+            "x.ts",
+            "async function f(r, xs) {\n  for await (const x of xs) {\n    return x;\n  }\n}\n",
+        ),
+        (
+            "x.ts",
+            "function f(r, xs) {\n  for (var x of xs) {\n    return x;\n  }\n}\n",
+        ),
+        (
+            "x.ts",
+            "function f(r, xs) {\n  outer: for (const x of xs) {\n    break outer;\n  }\n}\n",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(r R, xs []int) int {\n  for r.ok {\n    return 1\n  }\n  return 0\n}\n",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(r R, xs []int) int {\n  i := 0\n  for i = range xs {\n  }\n  return i\n}\n",
+        ),
+    ] {
+        assert!(source::read(file, text, "f").is_err(), "{text}");
+    }
+    let too_long = json!({
+        "inputs": {"xs": {"sequence": "Int", "max_length": 33}},
+        "ensures": [{"name": "any", "condition": "true"}],
+    });
+    let error = returned("x.py", "def f(xs):\n    return 0\n", &too_long).unwrap_err();
+    assert!(error.contains("max_length"), "{error}");
+}
+
+#[test]
+fn each_pass_of_a_loop_has_its_own_variables_outside_python() {
+    let contract = loop_contract();
+    // The function reads the `x` of the pass that defined it, which has
+    // ended where it is called.
+    let typescript = "function f(r, xs) {\n  let g = () => 0;\n  for (const x of [1, 2]) {\n    if (x === 1) {\n      g = () => x;\n    }\n  }\n  return g();\n}\n";
+    let error = returned("x.ts", typescript, &contract).unwrap_err();
+    assert!(error.contains("another variable"), "{error}");
+    // A Python loop binds one variable of the function, read as it is last.
+    let python = "def f(r, xs):\n    g = lambda: 0\n    for x in [1, 2]:\n        if x == 1:\n            g = lambda: x\n    return g()\n";
+    let [result] = &returned("x.py", python, &contract).unwrap()[..] else {
+        panic!("one path");
+    };
+    assert!(result.contains("code: \"2\""), "{result}");
+}
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn loops_over_an_input_are_proved_for_every_length_it_may_have() {
+    let all = json!({
+        "inputs": {"xs": {"sequence": "Int", "max_length": 2}},
+        "parameters": ["xs"],
+        "ensures": [{"name": "all", "condition": "result == ((xs.length < 1 || xs[0] >= 0) && (xs.length < 2 || xs[1] >= 0))"}],
+    });
+    for (file, text) in [
+        (
+            "x.py",
+            "def f(xs):\n    for x in xs:\n        if x < 0:\n            return False\n    return True\n",
+        ),
+        (
+            "x.ts",
+            "function f(xs) {\n  for (const x of xs) {\n    if (x < 0) {\n      return false;\n    }\n  }\n  return true;\n}\n",
+        ),
+        (
+            "x.go",
+            "package p\nfunc f(xs []int) bool {\n  for _, x := range xs {\n    if x < 0 {\n      return false\n    }\n  }\n  return true\n}\n",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &all);
+        assert_eq!(result["observed"]["status"], "proved", "{file}: {result}");
+        let mutated = check_source(file, &text.replace("x < 0", "x <= 0"), "f", &all);
+        assert_eq!(mutated["observed"]["holds"], false, "{file}: {mutated}");
+    }
+    let counted = json!({
+        "inputs": {"xs": {"sequence": "Int", "max_length": 3}},
+        "parameters": ["xs"],
+        "ensures": [{"name": "count", "condition": "result == xs.length"}],
+    });
+    for (file, text) in [
+        ("x.py", "def f(xs):\n    return len(xs)\n"),
+        ("x.ts", "function f(xs) {\n  return xs.length;\n}\n"),
+        (
+            "x.go",
+            "package p\nfunc f(xs []int) int {\n  return len(xs)\n}\n",
+        ),
+        (
+            "x.py",
+            "def f(xs):\n    count = 0\n    for x in xs:\n        count += 1\n    return count\n",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &counted);
+        assert_eq!(result["observed"]["holds"], true, "{file}: {result}");
+    }
+}
+
 #[test]
 fn a_branch_on_constants_follows_only_the_path_it_takes() {
     let contract = scope_contract();
