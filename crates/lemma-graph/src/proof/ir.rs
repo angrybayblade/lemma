@@ -123,6 +123,12 @@ pub(super) enum Expression {
     /// A function defined where it is used: an arrow function, a function
     /// expression, a lambda, a Go function literal or a nested definition.
     Closure(Box<Function>),
+    /// An object literal with spreads: `{...a, b: 1}`, `{**a, "b": 1}`.
+    Merge(Vec<Entry>),
+    /// `...items` or `*items` as an element of a sequence literal.
+    Spread(Box<Self>),
+    /// `new Constructor(arguments)`, read under the call model `new Constructor`.
+    New(String, Vec<Argument>),
     Conditional(Box<Self>, Box<Self>, Box<Self>),
     Call(Box<Self>, Vec<Argument>),
     /// `await` of a call; any other awaited value is refused.
@@ -200,6 +206,18 @@ pub(super) enum Pattern {
     Sequence(Vec<Pattern>),
     /// Fields read from a record, each bound to its own pattern.
     Record(Vec<(String, Pattern)>),
+    /// Fields read from a record, and the rest of its fields bound together.
+    RecordRest(Vec<(String, Pattern)>, Box<Pattern>),
+    /// `...rest` or `*rest` in a sequence pattern: the items the others leave.
+    Rest(Box<Pattern>),
+}
+
+/// A part of an object literal written with spreads, in order: later parts
+/// replace the fields of earlier ones.
+#[derive(Debug, Clone)]
+pub(super) enum Entry {
+    Field(String, Expression),
+    Spread(Expression),
 }
 
 /// A piece of a formatted string.
@@ -293,34 +311,55 @@ fn lower(expression: &ast::Expression) -> Result<Expression, String> {
 }
 
 impl Expression {
-    /// Whether evaluating the expression may call a function.
-    pub(super) fn has_call(&self) -> bool {
+    /// The expressions directly inside this one, not counting the body of a
+    /// closure, which runs only when called.
+    pub(super) fn parts(&self) -> Vec<&Self> {
         match self {
-            Self::Call(..) | Self::Await(_) => true,
             Self::Member(inner, _)
             | Self::OptionalMember(inner, _)
             | Self::Not(inner)
             | Self::Negate(inner)
-            | Self::Index(inner, _) => inner.has_call(),
+            | Self::Spread(inner)
+            | Self::Await(inner)
+            | Self::Index(inner, _) => vec![inner],
             Self::Binary(_, left, right)
             | Self::Coalesce(left, right)
-            | Self::Contains(left, right) => left.has_call() || right.has_call(),
-            Self::Conditional(test, then, otherwise) => {
-                test.has_call() || then.has_call() || otherwise.has_call()
+            | Self::Contains(left, right) => {
+                vec![left, right]
             }
-            Self::Record(fields) => fields.values().any(Self::has_call),
-            Self::Sequence(items) | Self::Set(items) => items.iter().any(Self::has_call),
-            Self::Template(parts) => parts.iter().any(|part| match part {
-                Part::Text(_) => false,
-                Part::Value(value) => value.has_call(),
-            }),
+            Self::Conditional(test, then, otherwise) => vec![test, then, otherwise],
+            Self::Record(fields) => fields.values().collect(),
+            Self::Sequence(items) | Self::Set(items) => items.iter().collect(),
+            Self::Template(parts) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    Part::Text(_) => None,
+                    Part::Value(value) => Some(value),
+                })
+                .collect(),
+            Self::Merge(entries) => entries
+                .iter()
+                .map(|entry| match entry {
+                    Entry::Field(_, value) | Entry::Spread(value) => value,
+                })
+                .collect(),
+            Self::Call(callee, arguments) => std::iter::once(callee.as_ref())
+                .chain(arguments.iter().map(|argument| &argument.value))
+                .collect(),
+            Self::New(_, arguments) => arguments.iter().map(|argument| &argument.value).collect(),
             Self::Bool(_)
             | Self::Text(_)
             | Self::Integer(_)
             | Self::Null
             | Self::Undefined
             | Self::Name(_)
-            | Self::Closure(_) => false,
+            | Self::Closure(_) => Vec::new(),
         }
+    }
+
+    /// Whether evaluating the expression may call a function.
+    pub(super) fn has_call(&self) -> bool {
+        matches!(self, Self::Call(..) | Self::Await(_) | Self::New(..))
+            || self.parts().into_iter().any(Self::has_call)
     }
 }

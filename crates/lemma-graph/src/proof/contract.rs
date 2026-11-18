@@ -142,7 +142,9 @@ impl Contract {
             }
         }
         for (name, model) in &self.models {
-            if !name.split('.').all(identifier) {
+            // `new Name` models a constructor; `a.b` a function reached by fields.
+            let callee = name.strip_prefix("new ").unwrap_or(name);
+            if !callee.split('.').all(identifier) {
                 return Err(format!("invalid model name `{name}`"));
             }
             model.validate(name)?;

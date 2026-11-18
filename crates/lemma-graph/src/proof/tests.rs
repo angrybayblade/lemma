@@ -1285,3 +1285,58 @@ fn functions_passed_to_models_and_branching_effects_are_refused() {
     let error = symbolic::execute(&function, &contract).err().unwrap();
     assert!(error.contains("different effects"), "{error}");
 }
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn spreads_rest_patterns_and_constructors_follow_their_languages() {
+    let contract = json!({
+        "inputs": {"r": {"id": "Text", "tags": "Text"}},
+        "parameters": ["r"],
+        "models": {"new URL": {"assumption": "a URL keeps the address it is given", "parameters": ["address"], "returns": {"href": {"expr": "address"}}}},
+        "ensures": [{"name": "kept", "condition": "result.id == r.id && result.kind == \"user\""}],
+    });
+    for (file, text) in [
+        (
+            "x.ts",
+            "function f(r) {\n  const base = { kind: 'guest', id: 'none' };\n  const { tags, ...rest } = { ...base, ...r, kind: 'user' };\n  return rest;\n}\n",
+        ),
+        (
+            "x.py",
+            "def f(r):\n    base = {'kind': 'guest'}\n    return {**base, 'id': r.id, 'kind': 'user'}\n",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &contract);
+        assert_eq!(result["observed"]["holds"], true, "{file}: {result}");
+    }
+    let sequences = json!({
+        "inputs": {"r": {"id": "Text"}},
+        "parameters": ["r"],
+        "ensures": [{"name": "middle", "condition": "result == r.id"}],
+    });
+    for (file, text) in [
+        (
+            "x.ts",
+            "function f(r) {\n  const [first, ...others] = ['a', ...[r.id, 'c']];\n  return others[0];\n}\n",
+        ),
+        (
+            "x.py",
+            "def f(r):\n    first, *others, last = ['a', *[r.id], 'c']\n    return others[0]\n",
+        ),
+    ] {
+        let result = check_source(file, text, "f", &sequences);
+        assert_eq!(result["observed"]["holds"], true, "{file}: {result}");
+    }
+    let url = json!({
+        "inputs": {"r": {"id": "Text"}},
+        "parameters": ["r"],
+        "models": {"new URL": {"assumption": "a URL keeps the address it is given", "parameters": ["address"], "returns": {"href": {"expr": "address"}}}},
+        "ensures": [{"name": "address", "condition": "result == r.id"}],
+    });
+    let result = check_source(
+        "x.ts",
+        "function f(r) {\n  return new URL(r.id).href;\n}\n",
+        "f",
+        &url,
+    );
+    assert_eq!(result["observed"]["status"], "conditional", "{result}");
+}

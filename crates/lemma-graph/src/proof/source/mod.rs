@@ -267,8 +267,14 @@ fn check_field_assignments(body: &[Statement]) -> Result<(), String> {
 fn literal_bindings<'b>(body: &'b [Statement], built: &mut std::collections::BTreeSet<&'b str>) {
     for statement in body {
         match &statement.kind {
-            Stmt::Bind(Pattern::Name(name), Expr::Record(_) | Expr::Sequence(_))
-            | Stmt::Assign(Pattern::Name(name), Expr::Record(_) | Expr::Sequence(_)) => {
+            Stmt::Bind(
+                Pattern::Name(name),
+                Expr::Record(_) | Expr::Sequence(_) | Expr::Merge(_),
+            )
+            | Stmt::Assign(
+                Pattern::Name(name),
+                Expr::Record(_) | Expr::Sequence(_) | Expr::Merge(_),
+            ) => {
                 built.insert(name);
             }
             kind => {

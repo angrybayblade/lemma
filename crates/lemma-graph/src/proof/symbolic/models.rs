@@ -133,57 +133,10 @@ fn template_names(template: &Json, names: &mut BTreeSet<String>) -> Result<(), S
 }
 
 fn expression_names(expression: &Expr, names: &mut BTreeSet<String>) {
-    match expression {
-        Expr::Name(name) => {
-            names.insert(name.clone());
-        }
-        Expr::Member(inner, _)
-        | Expr::OptionalMember(inner, _)
-        | Expr::Not(inner)
-        | Expr::Negate(inner)
-        | Expr::Index(inner, _)
-        | Expr::Await(inner) => {
-            expression_names(inner, names);
-        }
-        Expr::Sequence(items) | Expr::Set(items) => {
-            for item in items {
-                expression_names(item, names);
-            }
-        }
-        Expr::Template(parts) => {
-            for part in parts {
-                if let ir::Part::Value(value) = part {
-                    expression_names(value, names);
-                }
-            }
-        }
-        Expr::Binary(_, left, right)
-        | Expr::Coalesce(left, right)
-        | Expr::Contains(left, right) => {
-            expression_names(left, names);
-            expression_names(right, names);
-        }
-        Expr::Conditional(test, then, otherwise) => {
-            for part in [test, then, otherwise] {
-                expression_names(part, names);
-            }
-        }
-        Expr::Record(fields) => {
-            for value in fields.values() {
-                expression_names(value, names);
-            }
-        }
-        Expr::Call(callee, arguments) => {
-            expression_names(callee, names);
-            for argument in arguments {
-                expression_names(&argument.value, names);
-            }
-        }
-        Expr::Bool(_)
-        | Expr::Text(_)
-        | Expr::Integer(_)
-        | Expr::Null
-        | Expr::Undefined
-        | Expr::Closure(_) => {}
+    if let Expr::Name(name) = expression {
+        names.insert(name.clone());
+    }
+    for part in expression.parts() {
+        expression_names(part, names);
     }
 }

@@ -391,13 +391,28 @@ impl Reader<'_> {
                     .map(|part| self.pattern(part))
                     .collect::<Result<_, _>>()?,
             ),
-            "object_pattern" => Pattern::Record(
-                children(node)
-                    .into_iter()
-                    .map(|part| self.record_pattern(part))
-                    .collect::<Result<_, _>>()?,
-            ),
+            "object_pattern" => self.object_pattern(node)?,
+            "rest_pattern" | "list_splat_pattern" => {
+                Pattern::Rest(Box::new(self.pattern(only(node)?)?))
+            }
             _ => return self.unsupported(node),
+        })
+    }
+
+    /// A TypeScript object pattern, with a `...rest` of the fields it leaves.
+    fn object_pattern(&self, node: Node<'_>) -> Result<Pattern, String> {
+        let mut fields = Vec::new();
+        let mut rest = None;
+        for part in children(node) {
+            if part.kind() == "rest_pattern" {
+                rest = Some(Box::new(self.pattern(only(part)?)?));
+                continue;
+            }
+            fields.push(self.record_pattern(part)?);
+        }
+        Ok(match rest {
+            Some(rest) => Pattern::RecordRest(fields, rest),
+            None => Pattern::Record(fields),
         })
     }
 
