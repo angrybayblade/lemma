@@ -10,9 +10,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::ir::{
-    Expression as Expr, Function, Language, Pattern, Statement, StatementKind as Stmt,
+    Clause, Comprehension, Expression as Expr, Function, Language, Pattern, Statement,
+    StatementKind as Stmt,
 };
 use super::calls::local_names;
+use super::comprehensions::bound_names;
 use super::patterns::pattern_names;
 use super::value::Value;
 use super::{Evaluator, State};
@@ -181,9 +183,27 @@ fn expression_names(expression: &Expr, names: &mut BTreeSet<String>) {
             names.insert(name.clone());
         }
         Expr::Closure(function) => names.extend(free_names(function)),
+        Expr::Comprehension(comprehension) => {
+            comprehension_names(comprehension, names);
+            return;
+        }
         _ => {}
     }
     for part in expression.parts() {
         expression_names(part, names);
+    }
+}
+
+/// The names a comprehension reads from around it: all its first iterable
+/// reads, and elsewhere those its own `for` clauses do not bind.
+fn comprehension_names(comprehension: &Comprehension, names: &mut BTreeSet<String>) {
+    let mut inside = BTreeSet::new();
+    for part in comprehension.parts() {
+        expression_names(part, &mut inside);
+    }
+    let bound = bound_names(comprehension);
+    names.extend(inside.difference(&bound).cloned());
+    if let Some(Clause::For(_, first)) = comprehension.clauses.first() {
+        expression_names(first, names);
     }
 }

@@ -1652,3 +1652,189 @@ fn a_raise_python_makes_while_unpacking_or_spreading_is_caught_by_a_handler() {
         assert_eq!(returned("x.py", text, &contract).unwrap(), ["1"], "{text}");
     }
 }
+
+fn comprehension_contract() -> Json {
+    json!({
+        "inputs": {"r": {"ok": "Bool"}, "xs": {"sequence": "Int", "max_length": 2}},
+        "parameters": ["r", "xs"],
+        "models": {
+            "total": {"assumption": "total counts its values", "parameters": ["values"], "returns": {"expr": "values.length"}},
+            "record": {"assumption": "record stores an item", "parameters": ["item"], "effect": {"name": "stored", "fields": {"item": {"expr": "item"}}}, "returns": {"expr": "item"}},
+        },
+        "ensures": [{"name": "any", "condition": "true"}],
+    })
+}
+
+#[test]
+fn a_comprehension_adds_an_item_for_each_pass_its_tests_let_through() {
+    let contract = comprehension_contract();
+    for (body, expected) in [
+        (
+            "ys = [x + 1 for x in [1, 2, 3]]\n    return ys[0] + ys[2]",
+            "6",
+        ),
+        (
+            "ys = [x for x in [1, 2, 3] if x != 2]\n    return ys[1]",
+            "3",
+        ),
+        (
+            "ys = [a * b for a in [1, 2] for b in [10, 20]]\n    return ys[3] + len(ys)",
+            "44",
+        ),
+        (
+            "ys = [a + b for a, b in [(1, 2), (3, 4)]]\n    return ys[1]",
+            "7",
+        ),
+        (
+            "ys = [b for a in [[1], [2, 3]] if len(a) == 2 for b in a]\n    return ys[0]",
+            "2",
+        ),
+        (
+            "d = {k: 1 for k in [\"a\", \"b\"]}\n    return d[\"b\"]",
+            "1",
+        ),
+        // A later entry of a dict replaces an earlier one of the same key.
+        ("d = {\"k\": v for v in [1, 2]}\n    return d[\"k\"]", "2"),
+        ("return 2 in {x + 1 for x in [1, 2]}", "true"),
+        ("return total(x for x in [1, 2, 3])", "3"),
+        // Calls run in order where every input reaches every pass.
+        ("ys = [record(x) for x in [4, 5]]\n    return ys[1]", "5"),
+    ] {
+        let text = format!("def f(r, xs):\n    {body}\n");
+        assert_eq!(
+            returned("x.py", &text, &contract).unwrap(),
+            [expected],
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn the_names_of_a_comprehension_are_its_own() {
+    let contract = comprehension_contract();
+    for (body, expected) in [
+        // The name it binds is not the function's.
+        ("x = 5\n    ys = [x for x in [1, 2]]\n    return x", "5"),
+        // The first iterable is evaluated where the comprehension is written.
+        ("x = [1, 2]\n    ys = [x for x in x]\n    return ys[1]", "2"),
+        // A handler does not see the name either.
+        (
+            "x = 5\n    try:\n        ys = [x.a for x in [None]]\n    except Exception:\n        return x\n    return 0",
+            "5",
+        ),
+    ] {
+        let text = format!("def f(r, xs):\n    {body}\n");
+        assert_eq!(
+            returned("x.py", &text, &contract).unwrap(),
+            [expected],
+            "{text}"
+        );
+    }
+    for (body, why) in [
+        // Python raises: `y` is the comprehension's own, and not bound yet.
+        (
+            "y = [1]\n    return [y for x in [1] for y in y]",
+            "unmodeled name `y`",
+        ),
+        // Python reads the last item: every function shares the one variable.
+        (
+            "fs = [lambda: x for x in [1, 2]]\n    return fs[0]()",
+            "means another variable",
+        ),
+    ] {
+        let text = format!("def f(r, xs):\n    {body}\n");
+        let refused = returned("x.py", &text, &contract).unwrap_err();
+        assert!(refused.contains(why), "{text}: {refused}");
+    }
+}
+
+#[test]
+fn a_comprehension_is_refused_where_its_collection_cannot_be_read() {
+    let contract = comprehension_contract();
+    for (body, why) in [
+        ("return [record(x) for x in xs]", "only some inputs reach"),
+        (
+            "return [record(x) for x in [1, 2] if r.ok]",
+            "only some inputs reach",
+        ),
+        ("return {str(x): 1 for x in xs}", "only some inputs reach"),
+        (
+            "k = r.ok\n    return {k: 1 for x in [1]}",
+            "each key is a constant text",
+        ),
+        (
+            "return [x for x in r]",
+            "a comprehension runs over a value whose items are not known",
+        ),
+        (
+            "return total(record(x) for x in [1])",
+            "a generator expression that calls a function",
+        ),
+        ("return total(x.a for x in [None])", "cannot raise"),
+        (
+            "g = lambda values: 1\n    return g(x for x in [1])",
+            "a generator expression passed to a function",
+        ),
+        (
+            "return len(x for x in [1])",
+            "`len` of a generator expression",
+        ),
+        ("return [x async for x in xs]", "unsupported for_in_clause"),
+        ("return [x for x in 1, 2]", "unsupported"),
+        (
+            "g = (x for x in xs)\n    return 1",
+            "unsupported generator_expression",
+        ),
+    ] {
+        let text = format!("def f(r, xs):\n    {body}\n");
+        let refused = returned("x.py", &text, &contract).unwrap_err();
+        assert!(refused.contains(why), "{text}: {refused}");
+    }
+}
+
+#[test]
+#[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
+fn comprehensions_over_an_input_are_proved_for_every_length_it_may_have() {
+    let contract = |condition: &str| {
+        json!({
+            "inputs": {"xs": {"sequence": "Int", "max_length": 3}},
+            "parameters": ["xs"],
+            "models": {"total": {"assumption": "total counts its values", "parameters": ["values"], "returns": {"expr": "values.length"}}},
+            "ensures": [{"name": "holds", "condition": condition}],
+        })
+    };
+    for (body, condition, mutation) in [
+        (
+            "return [x + 1 for x in xs]",
+            "result.length == xs.length && (xs.length < 3 || result[2] == xs[2] + 1)",
+            ("x + 1", "x + 2"),
+        ),
+        (
+            "return len([x for x in xs if x > 0])",
+            "result <= xs.length && (xs.length != 1 || xs[0] != 0 || result == 0)",
+            ("x > 0", "x >= 0"),
+        ),
+        (
+            "return total(x for x in xs if x != 0)",
+            "xs.length != 2 || xs[0] == 0 || xs[1] == 0 || result == 2",
+            ("x != 0", "x == 0"),
+        ),
+        (
+            "return len([a + b for a in xs for b in xs])",
+            "(xs.length != 0 || result == 0) && (xs.length != 2 || result == 4) && (xs.length != 3 || result == 9)",
+            ("for b in xs", "for b in [1]"),
+        ),
+    ] {
+        let text = format!("def f(xs):\n    {body}\n");
+        // A call model's assumption makes the outcome conditional.
+        let result = check_source("x.py", &text, "f", &contract(condition));
+        assert_eq!(result["observed"]["holds"], true, "{text}: {result}");
+        let mutated = check_source(
+            "x.py",
+            &text.replace(mutation.0, mutation.1),
+            "f",
+            &contract(condition),
+        );
+        assert_eq!(mutated["observed"]["holds"], false, "{text}: {mutated}");
+    }
+}

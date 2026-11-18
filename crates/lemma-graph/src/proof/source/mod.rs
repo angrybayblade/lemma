@@ -6,6 +6,7 @@ use super::ir::{
     Argument, Expression as Expr, Function, Parameter, Pattern, Statement, StatementKind as Stmt,
 };
 
+mod comprehensions;
 mod expressions;
 mod lookup;
 mod loops;
@@ -255,17 +256,41 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// The arguments of a call. Python writes a generator expression that
+    /// is a call's only argument without parentheses of its own.
+    fn arguments(&self, node: Node<'_>) -> Result<Vec<Argument>, String> {
+        if node.kind() == "generator_expression" {
+            return Ok(vec![Argument {
+                name: None,
+                value: self.comprehension(node)?,
+            }]);
+        }
+        children(node)
+            .into_iter()
+            .map(|argument| self.argument(argument))
+            .collect()
+    }
+
     fn argument(&self, node: Node<'_>) -> Result<Argument, String> {
         if node.kind() == "keyword_argument" {
             return Ok(Argument {
                 name: Some(self.identifier(field(node, "name")?)?),
-                value: self.expression(field(node, "value")?)?,
+                value: self.argument_value(field(node, "value")?)?,
             });
         }
         Ok(Argument {
             name: None,
-            value: self.expression(node)?,
+            value: self.argument_value(node)?,
         })
+    }
+
+    /// The value of an argument. A generator expression is read only here,
+    /// where a call takes it as soon as it is made.
+    fn argument_value(&self, node: Node<'_>) -> Result<Expr, String> {
+        if node.kind() == "generator_expression" {
+            return self.comprehension(node);
+        }
+        self.expression(node)
     }
 
     fn identifier(&self, node: Node<'_>) -> Result<String, String> {

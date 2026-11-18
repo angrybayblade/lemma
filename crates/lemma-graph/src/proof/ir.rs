@@ -153,6 +153,57 @@ pub(super) enum Expression {
     Call(Box<Self>, Vec<Argument>),
     /// `await` of a call; any other awaited value is refused.
     Await(Box<Self>),
+    /// A Python comprehension: a collection built by `for` and `if` clauses.
+    Comprehension(Box<Comprehension>),
+}
+
+/// A Python comprehension, such as `[element for item in iterable if test]`.
+#[derive(Debug, Clone)]
+pub(super) struct Comprehension {
+    pub collects: Collects,
+    /// What each pass adds: an item, or the value of a dict's entry.
+    pub element: Expression,
+    /// The `for` and `if` clauses in order. The first is a `for`.
+    pub clauses: Vec<Clause>,
+}
+
+/// What a comprehension builds from the items its passes add.
+#[derive(Debug, Clone)]
+pub(super) enum Collects {
+    /// A list, in the order of the passes.
+    Sequence,
+    Set,
+    /// A dict, with the key of each entry.
+    Record(Expression),
+    /// A generator expression: its items are made only when something reads
+    /// them, which may be later than where it is written, or never.
+    Generator,
+}
+
+/// One clause of a comprehension.
+#[derive(Debug, Clone)]
+pub(super) enum Clause {
+    /// `for pattern in iterable`.
+    For(Pattern, Expression),
+    /// `if test`: the passes go on only where the test holds.
+    If(Expression),
+}
+
+impl Comprehension {
+    /// The expressions of the comprehension, in the order they are written.
+    pub(super) fn parts(&self) -> Vec<&Expression> {
+        let mut parts = Vec::new();
+        if let Collects::Record(key) = &self.collects {
+            parts.push(key);
+        }
+        parts.push(&self.element);
+        for clause in &self.clauses {
+            match clause {
+                Clause::For(_, expression) | Clause::If(expression) => parts.push(expression),
+            }
+        }
+        parts
+    }
 }
 
 /// What a raise raises, as far as a handler needs to know.
@@ -368,6 +419,7 @@ impl Expression {
                 .chain(arguments.iter().map(|argument| &argument.value))
                 .collect(),
             Self::New(_, arguments) => arguments.iter().map(|argument| &argument.value).collect(),
+            Self::Comprehension(comprehension) => comprehension.parts(),
             Self::Bool(_)
             | Self::Text(_)
             | Self::Integer(_)

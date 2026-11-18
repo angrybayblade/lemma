@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use lemma_lang::syntax::ast::BinaryOperator as Op;
 
 use super::super::ir::{self, Expression as Expr, Language, Part};
+use super::calls::is_generator;
 use super::models::assume_decorators;
 use super::scopes::captured;
 use super::value::{
@@ -73,6 +74,7 @@ impl Evaluator<'_> {
                 }))
             }
             Expr::Await(inner) => self.awaited(inner, state)?,
+            Expr::Comprehension(comprehension) => self.comprehension(comprehension, state)?,
         })
     }
 
@@ -250,6 +252,11 @@ impl Evaluator<'_> {
         };
         if argument.name.is_some() {
             return Err("`len` takes no keyword argument".to_owned());
+        }
+        if is_generator(&argument.value) {
+            return Err(
+                "`len` of a generator expression is unsupported: Python raises there".to_owned(),
+            );
         }
         let value = self.expression(&argument.value, state)?;
         if let (Value::Scalar(text), Language::Python) = (&value, self.language) {

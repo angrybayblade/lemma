@@ -11,9 +11,9 @@ use super::{Evaluator, Jump, Shadowed, State, restore};
 
 /// What a loop runs over on the paths where a condition holds: the items of
 /// a sequence, or nothing where looping raises.
-struct Iterated {
-    when: Term,
-    items: Option<Vec<Value>>,
+pub(super) struct Iterated {
+    pub when: Term,
+    pub items: Option<Vec<Value>>,
 }
 
 impl Evaluator<'_> {
@@ -27,7 +27,8 @@ impl Evaluator<'_> {
         let iterable = self.expression(&each.iterable, &mut state)?;
         let mut finished = std::mem::take(&mut state.pending);
         let mut iterated = Vec::new();
-        self.iterated(&iterable, &Term::boolean(true), line, &mut iterated)?;
+        self.iterated(&iterable, &Term::boolean(true), &mut iterated)
+            .map_err(|why| format!("the loop at line {line} {why}"))?;
         for Iterated { when, items } in iterated {
             let mut path = state.clone();
             path.guard = path.guard.and(&when);
@@ -45,12 +46,12 @@ impl Evaluator<'_> {
     }
 
     /// The sequences a value may be, each with the condition it is that one
-    /// under. Looping over null raises in Python and JavaScript.
-    fn iterated(
+    /// under. Looping over null raises in Python and JavaScript. A refusal
+    /// reads on from what loops: "the loop at line 3", "a comprehension".
+    pub(super) fn iterated(
         &self,
         value: &Value,
         when: &Term,
-        line: usize,
         found: &mut Vec<Iterated>,
     ) -> Result<(), String> {
         match value {
@@ -59,8 +60,8 @@ impl Evaluator<'_> {
                 items: Some(items.clone()),
             }),
             Value::Choice(test, then, otherwise) => {
-                self.iterated(then, &when.and(test), line, found)?;
-                self.iterated(otherwise, &when.and(&test.not()), line, found)?;
+                self.iterated(then, &when.and(test), found)?;
+                self.iterated(otherwise, &when.and(&test.not()), found)?;
             }
             // A nil Go slice has no items, but nothing here says a nil value
             // is a slice.
@@ -72,9 +73,10 @@ impl Evaluator<'_> {
             }
             Value::Unreachable => {}
             _ => {
-                return Err(format!(
-                    "the loop at line {line} runs over a value whose items are not known here; a loop is read over a sequence of known length, which a contract states for an input with `max_length`"
-                ));
+                return Err(
+                    "runs over a value whose items are not known here; a loop is read over a sequence of known length, which a contract states for an input with `max_length`"
+                        .to_owned(),
+                );
             }
         }
         Ok(())

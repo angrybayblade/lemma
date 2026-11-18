@@ -30,6 +30,15 @@ impl Evaluator<'_> {
             Value::Model(name) => name,
             Value::Closure(defined) => {
                 check_captured(&defined.captured, state)?;
+                if arguments
+                    .iter()
+                    .any(|argument| is_generator(&argument.value))
+                {
+                    return Err(
+                        "a generator expression passed to a function defined in the checked code is unsupported: the function may read it twice, or later than the call"
+                            .to_owned(),
+                    );
+                }
                 return self.call_closure(&defined, arguments, is_awaited, state);
             }
             _ => return Err("call target has no call model".to_owned()),
@@ -272,6 +281,16 @@ impl Evaluator<'_> {
             ),
         })
     }
+}
+
+/// Whether an argument is a generator expression, whose items are made only
+/// as the callee reads them.
+pub(super) fn is_generator(expression: &Expr) -> bool {
+    matches!(
+        expression,
+        Expr::Comprehension(comprehension)
+            if matches!(comprehension.collects, ir::Collects::Generator)
+    )
 }
 
 /// Continues the caller from the paths a called function returned on.

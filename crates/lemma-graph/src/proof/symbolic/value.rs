@@ -111,6 +111,32 @@ impl Term {
 
     /// Whether the term is written as a constant: `true`, `7`, `"text"`.
     /// Each constant has one spelling here.
+    /// The text a constant text term spells, the reverse of [`quote`].
+    pub(in crate::proof) fn constant_text(&self) -> Option<String> {
+        if self.sort != Sort::Text {
+            return None;
+        }
+        let mut rest = self.code.strip_prefix('"')?.strip_suffix('"')?;
+        let mut text = String::new();
+        while let Some(character) = rest.chars().next() {
+            if let Some(after) = rest.strip_prefix("\\u{") {
+                let (digits, after) = after.split_once('}')?;
+                text.push(char::from_u32(u32::from_str_radix(digits, 16).ok()?)?);
+                rest = after;
+            } else if let Some(after) = rest.strip_prefix("\"\"") {
+                text.push('"');
+                rest = after;
+            } else if character == '"' {
+                // A lone quote ends a literal: this is a larger term.
+                return None;
+            } else {
+                text.push(character);
+                rest = &rest[character.len_utf8()..];
+            }
+        }
+        Some(text)
+    }
+
     fn is_constant(&self) -> bool {
         match self.sort {
             Sort::Bool => matches!(self.code.as_str(), "true" | "false"),

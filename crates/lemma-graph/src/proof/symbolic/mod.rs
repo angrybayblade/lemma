@@ -6,6 +6,7 @@
 //! normal returns only.
 
 mod calls;
+mod comprehensions;
 mod exceptions;
 mod expressions;
 mod flow;
