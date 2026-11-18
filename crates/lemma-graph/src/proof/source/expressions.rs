@@ -168,16 +168,29 @@ impl Reader<'_> {
             .child_by_field_name("subscript")
             .or_else(|| node.child_by_field_name("index"))
             .ok_or("missing index")?;
+        // Python's `a[b, c]` is keyed by a tuple, which nothing here is.
+        let mut cursor = node.walk();
+        if node
+            .children_by_field_name("subscript", &mut cursor)
+            .count()
+            > 1
+        {
+            return self.unsupported(node);
+        }
         let target = Box::new(self.expression(target)?);
-        // Only constant keys: a variable key may name a field the contract
-        // never declared, whose value nothing gives.
         if let Some(position) = self.constant_integer(key) {
             if has_optional_chain(node) {
                 return self.unsupported(node);
             }
             return Ok(Expr::Index(target, position));
         }
-        let key = self.string(key)?;
+        let Some(key) = self.constant_text(key) else {
+            // `a?.[b]` with a computed key is not read.
+            if has_optional_chain(node) {
+                return self.unsupported(node);
+            }
+            return Ok(Expr::Subscript(target, Box::new(self.expression(key)?)));
+        };
         if has_optional_chain(node) {
             return Ok(Expr::OptionalMember(target, key));
         }
@@ -187,6 +200,18 @@ impl Reader<'_> {
             return Ok(Expr::Member(target, key));
         }
         Ok(Expr::Subscript(target, Box::new(Expr::Text(key))))
+    }
+
+    /// The text of a string literal without interpolated values.
+    fn constant_text(&self, node: Node<'_>) -> Option<String> {
+        let is_literal = matches!(
+            node.kind(),
+            "string" | "interpreted_string_literal" | "raw_string_literal" | "template_string"
+        );
+        if !is_literal {
+            return None;
+        }
+        self.string(node).ok()
     }
 
     /// An integer literal, possibly negated.

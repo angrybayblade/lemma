@@ -137,7 +137,7 @@ impl Term {
         Some(text)
     }
 
-    fn is_constant(&self) -> bool {
+    pub(in crate::proof) fn is_constant(&self) -> bool {
         match self.sort {
             Sort::Bool => matches!(self.code.as_str(), "true" | "false"),
             Sort::Integer => self.constant_integer().is_some(),
@@ -451,6 +451,119 @@ pub(in crate::proof) fn element(
         Value::Choice(test, then, otherwise) => {
             let (then, then_fails) = element(then, position, language)?;
             let (otherwise, otherwise_fails) = element(otherwise, position, language)?;
+            let fails = test.and(&then_fails).or(&test.not().and(&otherwise_fails));
+            Ok((Value::choice(test, then, otherwise), fails))
+        }
+        _ => Err("only a sequence has elements at positions".to_owned()),
+    }
+}
+
+/// What `target[key]` reads: the value, and the condition under which the
+/// read raises. A key that depends on an input reads whichever entry or item
+/// it names.
+pub(in crate::proof) fn entry(
+    target: &Value,
+    key: &Value,
+    language: Language,
+    missing: Missing,
+) -> Result<(Value, Term), String> {
+    let key = match key {
+        Value::Scalar(key) => key,
+        Value::Choice(test, then, otherwise) => {
+            let (then, then_fails) = entry(target, then, language, missing)?;
+            let (otherwise, otherwise_fails) = entry(target, otherwise, language, missing)?;
+            let fails = test.and(&then_fails).or(&test.not().and(&otherwise_fails));
+            return Ok((Value::choice(test, then, otherwise), fails));
+        }
+        _ => return Err("a key is a text or an integer".to_owned()),
+    };
+    match (key.sort, key.constant_integer()) {
+        (Sort::Text, _) => keyed(target, key, missing),
+        (Sort::Integer, Some(position)) => element(target, position, language),
+        (Sort::Integer, None) => positioned(target, key, language),
+        // Python reads `True` as the position 1; JavaScript as the key "true".
+        (Sort::Bool, _) => Err("a Boolean key differs between languages".to_owned()),
+    }
+}
+
+/// The entry of an object under a text key.
+fn keyed(target: &Value, key: &Term, missing: Missing) -> Result<(Value, Term), String> {
+    if let Some(name) = key.constant_text() {
+        return read_field(target, &name, false, missing);
+    }
+    match target {
+        Value::Object(fields) => {
+            let mut value = match missing {
+                Missing::Raises => Value::Unreachable,
+                Missing::IsUndefined => Value::Undefined,
+                Missing::IsUnsupported => {
+                    return Err("a key the object may lack reads a zero value that is unknown".to_owned());
+                }
+            };
+            let mut is_found = Term::boolean(false);
+            for (name, field) in fields.iter().rev() {
+                let is_this = equal_terms(key, &Term::text(name))?;
+                value = Value::choice(&is_this, field.clone(), value);
+                is_found = is_found.or(&is_this);
+            }
+            let fails = match missing {
+                Missing::Raises => is_found.not(),
+                _ => Term::boolean(false),
+            };
+            Ok((value, fails))
+        }
+        Value::Record(_) => Err(
+            "a key that is not a constant may name a field the contract never declared, whose value nothing gives"
+                .to_owned(),
+        ),
+        Value::Null | Value::Undefined => Ok((Value::Unreachable, Term::boolean(true))),
+        Value::Unreachable => Ok((Value::Unreachable, Term::boolean(false))),
+        Value::Choice(test, then, otherwise) => {
+            let (then, then_fails) = keyed(then, key, missing)?;
+            let (otherwise, otherwise_fails) = keyed(otherwise, key, missing)?;
+            let fails = test.and(&then_fails).or(&test.not().and(&otherwise_fails));
+            Ok((Value::choice(test, then, otherwise), fails))
+        }
+        _ => Err("only an object has entries under text keys".to_owned()),
+    }
+}
+
+/// The item of a sequence at a position that depends on an input. Outside
+/// the sequence Python and Go raise and JavaScript reads undefined; Python
+/// counts negative positions from the end.
+fn positioned(target: &Value, key: &Term, language: Language) -> Result<(Value, Term), String> {
+    match target {
+        Value::Sequence(items) => {
+            let length = i64::try_from(items.len()).map_err(|e| e.to_string())?;
+            let raises = language != Language::TypeScript;
+            let mut value = if raises {
+                Value::Unreachable
+            } else {
+                Value::Undefined
+            };
+            let mut is_found = Term::boolean(false);
+            let mut position = length;
+            for item in items.iter().rev() {
+                position -= 1;
+                let mut is_this = equal_terms(key, &Term::integer(position))?;
+                if language == Language::Python {
+                    is_this = is_this.or(&equal_terms(key, &Term::integer(position - length))?);
+                }
+                value = Value::choice(&is_this, item.clone(), value);
+                is_found = is_found.or(&is_this);
+            }
+            let fails = if raises {
+                is_found.not()
+            } else {
+                Term::boolean(false)
+            };
+            Ok((value, fails))
+        }
+        Value::Null | Value::Undefined => Ok((Value::Unreachable, Term::boolean(true))),
+        Value::Unreachable => Ok((Value::Unreachable, Term::boolean(false))),
+        Value::Choice(test, then, otherwise) => {
+            let (then, then_fails) = positioned(then, key, language)?;
+            let (otherwise, otherwise_fails) = positioned(otherwise, key, language)?;
             let fails = test.and(&then_fails).or(&test.not().and(&otherwise_fails));
             Ok((Value::choice(test, then, otherwise), fails))
         }

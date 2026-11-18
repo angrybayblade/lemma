@@ -9,8 +9,8 @@ use super::calls::is_generator;
 use super::models::assume_decorators;
 use super::scopes::captured;
 use super::value::{
-    Absent, Defined, Missing, Sort, Term, Value, arithmetic, contains, element, equal, length,
-    negate, order, read_field, to_text,
+    Absent, Defined, Missing, Sort, Term, Value, arithmetic, contains, element, entry, equal,
+    length, negate, order, read_field, to_text,
 };
 use super::{Evaluator, State, is_pure, lookup};
 
@@ -249,8 +249,8 @@ impl Evaluator<'_> {
         Ok(value)
     }
 
-    /// `target[key]` in Python and Go: the entry of a dict or a declared
-    /// record under a constant key.
+    /// `target[key]`: the entry of an object under a text key, or the item
+    /// of a sequence at a position, either of which may depend on an input.
     pub(super) fn subscript(
         &mut self,
         target: &Expr,
@@ -259,14 +259,14 @@ impl Evaluator<'_> {
     ) -> Result<Value, String> {
         let target = self.target(target, state)?;
         let key = self.expression(key, state)?;
-        let name = match &key {
-            Value::Scalar(term) => term.constant_text(),
-            _ => None,
-        };
-        let Some(name) = name else {
-            return Err("a subscript is read with a constant key".to_owned());
-        };
-        let (value, fails) = read_field(&target, &name, false, self.missing())?;
+        let (value, fails) = entry(&target, &key, self.language, self.missing())?;
+        let is_computed = !matches!(&key, Value::Scalar(term) if term.is_constant());
+        if is_computed && self.language == Language::TypeScript && holds_object(&target) {
+            self.assumptions.insert(
+                "a computed key of an object names one of its own fields or no property at all, not one every object inherits, such as `toString`"
+                    .to_owned(),
+            );
+        }
         self.narrow(&fails, state);
         Ok(value)
     }

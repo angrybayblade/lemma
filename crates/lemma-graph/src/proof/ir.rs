@@ -125,8 +125,9 @@ pub(super) enum Expression {
     /// `target.name`; in JavaScript also `target["name"]`, which means the
     /// same.
     Member(Box<Self>, String),
-    /// `target[key]` in Python and Go, where an entry under a key is not an
-    /// attribute or a field.
+    /// `target[key]`: with a constant text key in Python and Go, where an
+    /// entry under a key is not an attribute or a field, and with a computed
+    /// key in every language.
     Subscript(Box<Self>, Box<Self>),
     /// JavaScript `a?.b`: undefined where `a` is null or undefined.
     OptionalMember(Box<Self>, String),
