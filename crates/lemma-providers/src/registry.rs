@@ -335,6 +335,27 @@ mod tests {
     }
 
     #[test]
+    fn python_servers_search_a_projects_src_directory() {
+        let registry = ProviderRegistry::builtin().unwrap();
+
+        // Sending a server its analysis settings without this one turns it
+        // off, and references from a project's tests to a package kept
+        // under `src/` are then missing.
+        for (id, section) in [("pyright", "python"), ("basedpyright", "basedpyright")] {
+            let definition = registry
+                .definitions()
+                .iter()
+                .find(|definition| definition.id == id)
+                .unwrap();
+            let settings = definition.settings.as_ref().unwrap();
+            assert_eq!(
+                settings[section]["analysis"]["autoSearchPaths"], true,
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
     fn builtin_providers_say_how_to_install_them() {
         let registry = ProviderRegistry::builtin().unwrap();
 

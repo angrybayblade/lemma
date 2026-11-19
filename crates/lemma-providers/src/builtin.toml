@@ -58,7 +58,13 @@ install = "npm install -g pyright"
 ready_messages = ["Found * source file*", "No source files found*"]
 
 # logLevel keeps the ready message above from being filtered out.
+#
+# autoSearchPaths is on by default, but pyright turns it off when a client
+# sends this section without it. A project that keeps its package under
+# `src/` then has `import package` unresolved everywhere outside it, and
+# references from its tests are silently missing.
 [provider.settings.python.analysis]
+autoSearchPaths = true
 diagnosticMode = "openFilesOnly"
 logLevel = "Information"
 
@@ -80,7 +86,9 @@ args = ["--stdio"]
 install = "uv tool install basedpyright"
 ready_messages = ["Found * source file*", "No source files found*"]
 
+# autoSearchPaths: as for pyright above.
 [provider.settings.basedpyright.analysis]
+autoSearchPaths = true
 diagnosticMode = "openFilesOnly"
 logLevel = "Information"
 
