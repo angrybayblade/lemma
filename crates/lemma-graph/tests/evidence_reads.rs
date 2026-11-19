@@ -1,8 +1,9 @@
 //! Evidence kept by what its checker's run read (spec 13, section 10): a
 //! change to a file the run did not read leaves it standing, a change to
 //! one it read ends it, and it stands again when the files are as they
-//! were. These need something that can watch a run, and pass without
-//! looking where there is none.
+//! were. These need something that can watch a run: they fail on Linux
+//! without `strace`, and are ignored, not passed, where Lemma has no
+//! recorder yet.
 
 #![allow(clippy::unwrap_used, reason = "test setup should fail loudly")]
 
@@ -36,12 +37,16 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-/// Whether this machine can watch a run: on Linux, with `strace`.
-fn can_watch_runs() -> bool {
+/// Fails unless this machine can watch a run: on Linux, with `strace`.
+/// A test that cannot watch would otherwise pass without testing anything.
+fn require_recorder() {
     let traced = Command::new("strace")
         .args(["-qq", "-e", "trace=chdir", "-o", "/dev/null", "true"])
         .status();
-    cfg!(target_os = "linux") && traced.is_ok_and(|status| status.success())
+    assert!(
+        traced.is_ok_and(|status| status.success()),
+        "these tests watch runs with `strace`; install it"
+    );
 }
 
 const MODULE: &str = r#"module shelf
@@ -134,10 +139,12 @@ fn outcomes(report: &Report) -> Vec<(&str, &str)> {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "no recorder watches runs on this platform yet (spec 13, section 10)"
+)]
 fn evidence_outlives_a_change_to_a_file_its_run_did_not_read() {
-    if !can_watch_runs() {
-        return;
-    }
+    require_recorder();
     let workspace = shelf();
     run(workspace.path(), true);
 
@@ -166,10 +173,12 @@ fn evidence_outlives_a_change_to_a_file_its_run_did_not_read() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "no recorder watches runs on this platform yet (spec 13, section 10)"
+)]
 fn evidence_stands_again_when_the_files_are_as_they_were() {
-    if !can_watch_runs() {
-        return;
-    }
+    require_recorder();
     let workspace = shelf();
     run(workspace.path(), true);
     write(
@@ -187,10 +196,12 @@ fn evidence_stands_again_when_the_files_are_as_they_were() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "no recorder watches runs on this platform yet (spec 13, section 10)"
+)]
 fn evidence_ends_when_a_path_its_run_looked_for_appears() {
-    if !can_watch_runs() {
-        return;
-    }
+    require_recorder();
     let workspace = shelf();
     run(workspace.path(), true);
 
@@ -206,10 +217,12 @@ fn evidence_ends_when_a_path_its_run_looked_for_appears() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "no recorder watches runs on this platform yet (spec 13, section 10)"
+)]
 fn a_run_that_changes_a_file_it_read_keeps_no_evidence() {
-    if !can_watch_runs() {
-        return;
-    }
+    require_recorder();
     let workspace = shelf();
     // A checker that appends to the book it reads: no state of the book is
     // the one its answer holds for.
@@ -228,10 +241,12 @@ fn a_run_that_changes_a_file_it_read_keeps_no_evidence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "no recorder watches runs on this platform yet (spec 13, section 10)"
+)]
 fn a_state_come_back_to_keeps_its_evidence_through_many_others() {
-    if !can_watch_runs() {
-        return;
-    }
+    require_recorder();
     let workspace = shelf();
     let book = workspace.path().join("shelf/books/a.txt");
     run(workspace.path(), true);
@@ -272,10 +287,12 @@ fn point_books_at(workspace: &Path, edition: &str) {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "no recorder watches runs on this platform yet (spec 13, section 10)"
+)]
 fn evidence_ends_when_a_path_looked_for_through_a_link_appears() {
-    if !can_watch_runs() {
-        return;
-    }
+    require_recorder();
     let workspace = shelf();
     // A checker that looks for the new book by another name of the
     // repository: a link beside it.
@@ -303,10 +320,12 @@ fn evidence_ends_when_a_path_looked_for_through_a_link_appears() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "no recorder watches runs on this platform yet (spec 13, section 10)"
+)]
 fn evidence_ends_when_a_link_on_the_way_to_a_file_points_elsewhere() {
-    if !can_watch_runs() {
-        return;
-    }
+    require_recorder();
     let workspace = shelf_of_editions();
     run(workspace.path(), true);
 
@@ -322,10 +341,12 @@ fn evidence_ends_when_a_link_on_the_way_to_a_file_points_elsewhere() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "no recorder watches runs on this platform yet (spec 13, section 10)"
+)]
 fn evidence_ends_when_a_link_the_run_resolved_points_elsewhere() {
-    if !can_watch_runs() {
-        return;
-    }
+    require_recorder();
     let workspace = shelf_of_editions();
     // A checker that resolves the link itself and opens the file where it
     // led, as a module loader does.
