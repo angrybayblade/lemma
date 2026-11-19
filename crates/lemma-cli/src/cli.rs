@@ -347,7 +347,10 @@ pub(crate) struct LspTarget {
     pub languages: Vec<String>,
     /// Only these providers, by id (see `lemma providers`); for starting,
     /// the provider to use instead of the first installed one.
-    #[arg(long = "provider", value_name = "ID")]
+    // Its own id: the one clap would derive from the field's name belongs
+    // to the global `--providers`, and two arguments with one id panic
+    // when either is read.
+    #[arg(id = "provider", long = "provider", value_name = "ID")]
     pub providers: Vec<String>,
 }
 
@@ -523,9 +526,36 @@ pub(crate) struct Filters {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
     use super::Cli;
+
+    #[test]
+    fn a_provider_can_be_named_beside_the_providers_file() {
+        let parsed = Cli::try_parse_from([
+            "lemma",
+            "--providers",
+            "servers.toml",
+            "daemon",
+            "lsp",
+            "start",
+            "--provider",
+            "ty",
+        ]);
+
+        let cli = parsed.unwrap();
+        assert_eq!(cli.providers.unwrap().to_str(), Some("servers.toml"));
+        let super::Command::Daemon(daemon) = cli.command else {
+            panic!("not the daemon command");
+        };
+        let Some(super::DaemonAction::Lsp(lsp)) = daemon.action else {
+            panic!("not the lsp command");
+        };
+        let Some(super::LspAction::Start(start)) = lsp.action else {
+            panic!("not the start command");
+        };
+        assert_eq!(start.target.providers, ["ty"]);
+    }
 
     /// The command reference, which every command and option must be in.
     const REFERENCE: &str = include_str!("../../../docs/commands.md");
