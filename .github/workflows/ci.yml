@@ -52,6 +52,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The read-keyed evidence tests watch runs with strace on Linux.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install -y strace
       # Tests that need Soufflé or language servers are ignored by default.
       - run: cargo test --workspace --locked
 
