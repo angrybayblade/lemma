@@ -153,6 +153,16 @@ fn evidence_outlives_a_change_to_a_file_its_run_did_not_read() {
         "{:#?}",
         changed.behaviors[0]
     );
+    let stale = changed.behaviors[0].cases.iter().find_map(|case| {
+        let problem = case.problem.as_ref()?;
+        Some(problem.message.as_str())
+    });
+    assert_eq!(
+        stale,
+        Some(
+            "the stored evidence is stale: books/b.txt changed since the evidence was kept, and checkers may not run"
+        )
+    );
 }
 
 #[test]

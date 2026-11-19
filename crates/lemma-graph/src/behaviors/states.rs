@@ -53,6 +53,15 @@ struct Memory {
     is_changed: bool,
 }
 
+/// What comparing a part of a read set with the files found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Compared {
+    /// Every path is in the state the part gives it.
+    Holds,
+    /// The first path that is not, and how it differs.
+    Differs(String),
+}
+
 /// The state of paths now. Each is found once for as long as no checker
 /// runs: many cases read the same files, and a run may write any of them.
 pub(crate) struct Current {
@@ -63,8 +72,8 @@ pub(crate) struct Current {
     kept_at: Option<PathBuf>,
     /// For each path, its state and its state as a listing, once found.
     found: Mutex<HashMap<String, [Option<String>; 2]>>,
-    /// Whether a part of a read set, read from a directory, holds there.
-    parts: Mutex<HashMap<(String, String), bool>>,
+    /// What comparing a part of a read set with a directory found.
+    parts: Mutex<HashMap<(String, String), Compared>>,
 }
 
 impl Default for Current {
@@ -191,17 +200,17 @@ impl Current {
         state
     }
 
-    /// Whether the part named `digest` is known to hold, or not to, for
-    /// the paths under `directory`.
-    pub(crate) fn part(&self, directory: &str, digest: &str) -> Option<bool> {
+    /// What comparing the part named `digest` with the paths under
+    /// `directory` found, if it was compared.
+    pub(crate) fn part(&self, directory: &str, digest: &str) -> Option<Compared> {
         let key = (directory.to_owned(), digest.to_owned());
-        locked(&self.parts).get(&key).copied()
+        locked(&self.parts).get(&key).cloned()
     }
 
-    /// Keeps whether a part holds for the paths under `directory`.
-    pub(crate) fn found_part(&self, directory: &str, digest: &str, holds: bool) {
+    /// Keeps what comparing a part with the paths under `directory` found.
+    pub(crate) fn found_part(&self, directory: &str, digest: &str, compared: Compared) {
         let key = (directory.to_owned(), digest.to_owned());
-        locked(&self.parts).insert(key, holds);
+        locked(&self.parts).insert(key, compared);
     }
 }
 
