@@ -18,7 +18,7 @@ use std::time::SystemTime;
 
 use serde_json::{Value as Json, json};
 
-use super::states::{ABSENT, Current, changed_since};
+use super::states::{ABSENT, Compared, Current, changed_since};
 use crate::recorder::Recorded;
 
 /// A directory with more paths than this under it is kept as a part of
@@ -31,37 +31,45 @@ const INLINE_UP_TO: usize = 16;
 /// Where each repository a checker reads has its files.
 pub(crate) type Roots = BTreeMap<String, PathBuf>;
 
-/// Whether the part named `digest` holds for the paths under `directory`;
+/// The first path under `directory` that is not in the state the part
+/// named `digest` gives it, with how it differs; none if the part holds.
 /// `part` gives a part's text. A part is compared once for a check.
-fn part_holds(
+fn part_difference(
     current: &Current,
     directory: &str,
     digest: &str,
     part: &dyn Fn(&str) -> Option<String>,
-) -> bool {
-    if let Some(known) = current.part(directory, digest) {
-        return known;
+) -> Option<String> {
+    match current.part(directory, digest) {
+        Some(Compared::Holds) => return None,
+        Some(Compared::Differs(difference)) => return Some(difference),
+        None => {}
     }
-    let holds = part(digest).is_some_and(|text| {
-        text.lines()
-            .all(|line| line_holds(current, directory, line, part))
-    });
-    current.found_part(directory, digest, holds);
-    holds
+    let difference = match part(digest) {
+        Some(text) => text
+            .lines()
+            .find_map(|line| line_difference(current, directory, line, part)),
+        None => Some(format!("what was read under {directory} is no longer kept")),
+    };
+    let compared = difference
+        .clone()
+        .map_or(Compared::Holds, Compared::Differs);
+    current.found_part(directory, digest, compared);
+    difference
 }
 
-/// Whether one line of a part holds: a path in its state, or a part for a
-/// directory below.
-fn line_holds(
+/// How one line of a part differs from the files now: a path not in its
+/// state, or a difference in the part of a directory below.
+fn line_difference(
     current: &Current,
     directory: &str,
     line: &str,
     part: &dyn Fn(&str) -> Option<String>,
-) -> bool {
+) -> Option<String> {
     let mut fields = line.splitn(3, '\t');
     let (Some(kind), Some(value), Some(name)) = (fields.next(), fields.next(), fields.next())
     else {
-        return false;
+        return Some(format!("what was read under {directory} does not read"));
     };
     let name = unescaped(name);
     let path = if name.is_empty() {
@@ -69,17 +77,23 @@ fn line_holds(
     } else {
         format!("{directory}/{name}")
     };
-    match kind {
-        PATH => {
-            let now = current.state(&path, value.starts_with("l:"));
-            if now != value {
-                log::debug!("evidence: {path} was {value} and is {now}");
-            }
-            now == value
-        }
-        PART => part_holds(current, &path, value, part),
-        _ => false,
+    if kind == PART {
+        return part_difference(current, &path, value, part);
     }
+    let now = current.state(&path, value.starts_with("l:"));
+    if now == value {
+        return None;
+    }
+    let how = if value == ABSENT {
+        "appeared"
+    } else if now == ABSENT {
+        "is gone"
+    } else if value.starts_with("l:") {
+        "has other entries"
+    } else {
+        "changed"
+    };
+    Some(format!("{path} {how}"))
 }
 
 /// A line of a part that gives a path's state.
@@ -200,17 +214,23 @@ pub(crate) struct KeptReads {
 }
 
 impl KeptReads {
-    /// Whether every path is still in the state the run read it in;
-    /// `part` gives a part's text.
-    pub(crate) fn holds(
+    /// The first path that is no longer in the state the run read it in,
+    /// with how it differs; none while the read set holds. `part` gives a
+    /// part's text.
+    pub(crate) fn difference(
         &self,
         roots: &Roots,
         current: &Current,
         part: &dyn Fn(&str) -> Option<String>,
-    ) -> bool {
-        self.repositories.iter().all(|(repository, digest)| {
-            let root = roots.get(repository).and_then(|root| root.to_str());
-            root.is_some_and(|root| part_holds(current, root, digest, part))
+    ) -> Option<String> {
+        self.repositories.iter().find_map(|(repository, digest)| {
+            let Some(root) = roots.get(repository).and_then(|root| root.to_str()) else {
+                return Some(format!("repository `{repository}` is not read"));
+            };
+            let difference = part_difference(current, root, digest, part)?;
+            // Named inside its repository, as a read set names it.
+            let inside = difference.strip_prefix(root).unwrap_or(&difference);
+            Some(inside.trim_start_matches('/').to_owned())
         })
     }
 
@@ -370,7 +390,7 @@ mod tests {
         let (kept, parts) = reads.kept();
         let kept = KeptReads::from_json(&kept.to_json()).unwrap();
         let part = |digest: &str| parts.get(digest).cloned();
-        kept.holds(roots, &Current::default(), &part)
+        kept.difference(roots, &Current::default(), &part).is_none()
     }
 
     #[test]
@@ -403,6 +423,27 @@ mod tests {
         assert!(!after_appearing);
         assert!(after_removing);
         assert!(!after_listing);
+    }
+
+    #[test]
+    fn a_read_set_that_no_longer_holds_says_which_path_differs_and_how() {
+        let (directory, roots, recorded) = repository();
+        let reads = read_set(&roots, &recorded);
+        let (kept, parts) = reads.kept();
+        let part = |digest: &str| parts.get(digest).cloned();
+        let difference = || kept.difference(&roots, &Current::default(), &part);
+
+        write(&directory.path().join("conftest.py"), "");
+        let appeared = difference();
+        std::fs::remove_file(directory.path().join("conftest.py")).unwrap();
+        write(&directory.path().join("src/used.py"), "x = 2\n");
+        let changed = difference();
+        std::fs::remove_file(directory.path().join("src/used.py")).unwrap();
+        let gone = difference();
+
+        assert_eq!(appeared.as_deref(), Some("conftest.py appeared"));
+        assert_eq!(changed.as_deref(), Some("src/used.py changed"));
+        assert_eq!(gone.as_deref(), Some("src has other entries"));
     }
 
     #[test]

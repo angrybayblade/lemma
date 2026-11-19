@@ -294,43 +294,59 @@ impl Store {
     /// asks nothing of where a commit's files are, which only running
     /// needs.
     pub(crate) fn reusable(&self, request: &Request<'_>) -> Option<Evidence> {
+        self.kept(request).ok()
+    }
+
+    /// Stored evidence for `request` that still holds; failing that, the
+    /// first path its latest run read that has changed since, if the
+    /// evidence was kept by what the run read.
+    fn kept(&self, request: &Request<'_>) -> Result<Evidence, Option<String>> {
         if !request.checker.is_cached {
-            return None;
+            return Err(None);
         }
-        let (key, stored) = self
-            .kept_by_reads(request)
-            .or_else(|| self.kept_by_state(request))?;
+        let (key, stored) = match self.kept_by_reads(request) {
+            Ok(found) => found,
+            Err(difference) => self.kept_by_state(request).ok_or(difference)?,
+        };
         log::info!(
             "evidence: {} reused for {}",
             request.checker.address,
             request.case
         );
-        Some(stored.into_evidence(&key, true))
+        Ok(stored.into_evidence(&key, true))
     }
 
-    /// Evidence of a run whose every read still finds what it found. A
+    /// Evidence of a run whose every read still finds what it found;
+    /// failing that, the first path the latest run read that differs. A
     /// read set found again that is not the latest becomes the latest:
     /// the oldest is dropped when another is kept, and one that keeps
     /// being come back to, such as the state before an edit, must not be.
-    fn kept_by_reads(&self, request: &Request<'_>) -> Option<(String, Decoded)> {
+    fn kept_by_reads(&self, request: &Request<'_>) -> Result<(String, Decoded), Option<String>> {
         if !request.is_kept_by_reads() {
-            return None;
+            return Err(None);
         }
         let roots = request.root_paths();
         let part = |digest: &str| std::fs::read_to_string(self.part(digest)).ok();
         let invariant = invariant_key(request);
         let mut read_sets = self.read_sets(&invariant);
+        let mut latest_difference = None;
         let found = read_sets.iter().position(|(key, reads)| {
-            reads.holds(&roots, &self.current, &part) && self.record(key).exists()
-        })?;
-        let stored = self.stored(&read_sets[found].0)?;
+            let difference = reads.difference(&roots, &self.current, &part);
+            let holds = difference.is_none() && self.record(key).exists();
+            latest_difference.get_or_insert(difference);
+            holds
+        });
+        let Some(found) = found else {
+            return Err(latest_difference.flatten());
+        };
+        let stored = self.stored(&read_sets[found].0).ok_or(None)?;
         if found > 0 {
             read_sets[..=found].rotate_right(1);
             if let Err(why) = self.write_read_sets(&invariant, &read_sets) {
                 log::warn!("what {} read was not kept: {why}", request.case);
             }
         }
-        Some((read_sets[0].0.clone(), stored))
+        Ok((read_sets[0].0.clone(), stored))
     }
 
     /// Evidence kept for the state every repository read is in.
@@ -348,17 +364,25 @@ impl Store {
     pub(crate) fn demand(&self, request: &Request<'_>) -> Evidence {
         let key = evidence_key(request);
         let case = case_key(request);
-        if let Some(stored) = self.reusable(request) {
-            return stored;
-        }
+        let difference = match self.kept(request) {
+            Ok(stored) => return stored,
+            Err(difference) => difference,
+        };
         if !self.may_run {
-            return self.not_run(request, &case, &key);
+            return self.not_run(request, &case, &key, difference.as_deref());
         }
-        log::info!(
-            "evidence: running {} for {}",
-            request.checker.address,
-            request.case
-        );
+        match &difference {
+            Some(difference) => log::info!(
+                "evidence: running {} for {} again: {difference}",
+                request.checker.address,
+                request.case
+            ),
+            None => log::info!(
+                "evidence: running {} for {}",
+                request.checker.address,
+                request.case
+            ),
+        }
         let recorder = self.recorder_for(request);
         let started = SystemTime::now();
         let ran = self.run(request, &key, recorder);
@@ -445,17 +469,24 @@ impl Store {
     }
 
     /// Why there is no evidence when checkers may not run: stale when the
-    /// case last ran with other inputs, otherwise none was ever kept.
-    fn not_run(&self, request: &Request<'_>, case: &str, key: &str) -> Evidence {
+    /// case last ran with other inputs, naming the `difference` if one is
+    /// known, otherwise none was ever kept.
+    fn not_run(
+        &self,
+        request: &Request<'_>,
+        case: &str,
+        key: &str,
+        difference: Option<&str>,
+    ) -> Evidence {
         let latest = std::fs::read_to_string(self.latest(case)).ok();
         // Evidence kept by what a run read has no key until it runs; had
         // the last run's still held, it would have been reused.
         let is_other = |previous: &str| request.is_kept_by_reads() || previous.trim() != key;
+        let changed = difference.unwrap_or("its inputs changed");
         match latest {
-            Some(previous) if is_other(&previous) => Evidence::Stale(
-                "its inputs changed since the evidence was kept, and checkers may not run"
-                    .to_owned(),
-            ),
+            Some(previous) if is_other(&previous) => Evidence::Stale(format!(
+                "{changed} since the evidence was kept, and checkers may not run"
+            )),
             _ => Evidence::Unavailable(
                 "checkers may not run, and no evidence is kept for these inputs".to_owned(),
             ),
