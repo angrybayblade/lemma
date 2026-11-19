@@ -8,7 +8,13 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "linux")]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "built on every platform so its parser's tests run on captured text; only Linux runs commands under it"
+    )
+)]
 mod strace;
 
 /// What one run did to files, by absolute path.
