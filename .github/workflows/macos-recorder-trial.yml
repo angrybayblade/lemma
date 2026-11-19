@@ -1,0 +1,55 @@
+# Trial for a macOS recorder (Lemma spec 13, section 10): does eslogger see
+# every file operation of a probe with a known answer, and what does the
+# injected library miss against it? Results are uploaded as artifacts.
+name: macos-recorder-trial
+
+on:
+  push:
+    branches: [trial/macos-recorder]
+  workflow_dispatch:
+
+jobs:
+  trial:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Machine
+        run: |
+          mkdir -p out
+          {
+            sw_vers; uname -m; csrutil status || true
+            sudo -n true && echo "sudo -n: ok"
+            sudo -n softwareupdate --install-rosetta --agree-to-license > /dev/null 2>&1 && echo "rosetta: installed"
+            echo "--- full disk access grants"
+            sudo -n sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
+              "select client, auth_value from access where service = 'kTCCServiceSystemPolicyAllFiles'" || true
+            echo "--- runner process tree"
+            ps -o pid,ppid,comm -p $$ -p $PPID
+            echo "--- eslogger events"
+            /usr/bin/eslogger --list-events | tr '\n' ' '
+          } 2>&1 | tee out/machine.txt
+      - name: Build
+        run: sh trial/build.sh
+      - name: "A: probe"
+        run: sh trial/eslogger.sh out/a "$PWD/trial/probe" /tmp/probe-a
+      - name: "A: probe under Rosetta"
+        run: sh trial/eslogger.sh out/a-x86 "$PWD/trial/probe-x86" /tmp/probe-a-x86
+      - name: "A and C together: probe"
+        run: sh trial/eslogger.sh out/ac sh trial/with-c.sh "$PWD/out/ac/calls" "$PWD/trial/probe" /tmp/probe-ac
+      - name: "A: load and drops"
+        run: sh trial/eslogger.sh out/stress sh trial/stress.sh
+      - name: Pack
+        if: always()
+        run: |
+          find out -name events.json -exec gzip -9 {} \;
+          du -sh out/*
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trial-${{ matrix.os }}
+          path: out
