@@ -991,12 +991,14 @@ fn call_seed(call: &Call) -> Seed {
     }
 }
 
-/// The identifiers in some source text.
+/// The identifiers in some source text. A `$` is part of one, as JavaScript
+/// allows: split there, a name such as `$ZodType` would be mentioned by
+/// nothing, and a change to it would reach nothing.
 pub(crate) fn identifiers(text: &str) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     let mut current = String::new();
     for character in text.chars() {
-        if character.is_alphanumeric() || character == '_' {
+        if character.is_alphanumeric() || character == '_' || character == '$' {
             current.push(character);
             continue;
         }
@@ -1320,6 +1322,20 @@ mod tests {
             .map(|function| function.name.as_str())
             .collect();
         assert_eq!(names, ["run"]);
+    }
+
+    #[test]
+    fn a_dollar_is_part_of_an_identifier() {
+        assert_eq!(
+            identifiers("core.$constructor($ZodType, `${total$}`)"),
+            BTreeSet::from([
+                "$".to_owned(),
+                "$ZodType".to_owned(),
+                "$constructor".to_owned(),
+                "core".to_owned(),
+                "total$".to_owned()
+            ])
+        );
     }
 
     #[test]
