@@ -15,6 +15,19 @@ use super::value::{
 use super::{Evaluator, State, is_pure, lookup};
 
 impl Evaluator<'_> {
+    /// A Python set literal. Python raises `TypeError` for an element it
+    /// cannot hash. A tuple can be hashed and a list cannot, and both are
+    /// one kind of value here, so neither is modeled.
+    fn set(&mut self, items: &[Expr], state: &mut State) -> Result<Value, String> {
+        let elements = self.expressions(items, state)?;
+        if elements.iter().any(Value::may_be_unhashable) {
+            return Err(
+                "a set holding a sequence, a set or a dictionary is not modeled".to_owned(),
+            );
+        }
+        Ok(Value::Set(elements))
+    }
+
     pub(super) fn expression(
         &mut self,
         expression: &Expr,
@@ -53,7 +66,7 @@ impl Evaluator<'_> {
             Expr::New(constructor, arguments) => {
                 self.call_model(&format!("new {constructor}"), arguments, false, state)?
             }
-            Expr::Set(items) => Value::Set(self.expressions(items, state)?),
+            Expr::Set(items) => self.set(items, state)?,
             Expr::Index(target, position) => self.element(target, *position, state)?,
             Expr::Contains(needle, haystack) => {
                 let needle = self.expression(needle, state)?;

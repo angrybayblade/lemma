@@ -201,6 +201,18 @@ pub(in crate::proof) enum Value {
 }
 
 impl Value {
+    /// Whether Python may refuse this value as a set's element: a list, a
+    /// set or a dictionary cannot be hashed.
+    pub(in crate::proof) fn may_be_unhashable(&self) -> bool {
+        match self {
+            Self::Sequence(_) | Self::Set(_) | Self::Record(_) | Self::Object(_) => true,
+            Self::Choice(_, first, second) => {
+                first.may_be_unhashable() || second.may_be_unhashable()
+            }
+            _ => false,
+        }
+    }
+
     pub(in crate::proof) fn boolean(value: bool) -> Self {
         Self::Scalar(Term::boolean(value))
     }

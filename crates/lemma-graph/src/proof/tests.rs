@@ -1012,6 +1012,25 @@ fn a_set_is_read_for_membership_only_and_chains_with_calls_are_refused() {
 }
 
 #[test]
+fn a_set_holding_a_list_is_refused() {
+    let contract: Contract = serde_json::from_value(json!({
+        "inputs": {"r": {"role": "Text"}},
+        "parameters": ["r"],
+        "ensures": [{"name": "any", "condition": "true"}],
+    }))
+    .unwrap();
+    let execute = |body: &str| {
+        let (_, function) = source::read("x.py", body, "f").unwrap();
+        symbolic::execute(&function, &contract)
+    };
+
+    // Python raises TypeError here; saying nothing would let a proof hold
+    // for code that cannot run.
+    assert!(execute("def f(r):\n    seen = {[1, 2]}\n    return 1\n").is_err());
+    assert!(execute("def f(r):\n    return r.role in {'admin', 'owner'}\n").is_ok());
+}
+
+#[test]
 #[ignore = "requires native Z3; set LEMMA_SMT_SOLVER and run with --ignored"]
 fn locals_are_reassigned_and_fresh_objects_are_built_field_by_field() {
     let contract = json!({
