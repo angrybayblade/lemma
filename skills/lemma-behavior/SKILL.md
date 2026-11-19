@@ -5,7 +5,7 @@ description: Prove a runtime claim by running the real code, and keep the proof 
 
 # Prove it by running it
 
-A contract check shows that shapes agree. Whether a handler passes an upstream error's `retriable` flag on, retries, or keeps a default needs the code to run. A behavior is that run kept as a requirement: its checker runs the handler, and every later `lemma check` runs it again when anything changes in a repository it reads. Behaviors are beta: their syntax and the checker protocol may change.
+A contract check shows that shapes agree. Whether a handler passes an upstream error's `retriable` flag on, retries, or keeps a default needs the code to run. A behavior is that run kept as a requirement: its checker runs the handler, and every later `lemma check` runs it again when what its run rests on changes: a file its run read changes where Lemma can watch runs (Linux with `strace`), otherwise any file in a repository it reads. Behaviors are beta: their syntax and the checker protocol may change.
 
 ## Steps
 

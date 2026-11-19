@@ -9,8 +9,8 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | Candidate | Focus | State |
 | --- | --- | --- |
 | 0.1.0-rc0 | Internal launch: code intelligence in four languages, contract checks across repositories, install script, agent skills | Released |
-| 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up; one store file in place of SQLite; one daemon per workspace, with sentry (see [New in rc1](#new-in-rc1)) | Released |
-| 0.1.0-rc2 and later | Behavior simulation scaffolded for Python, TypeScript and Go; evidence kept by the files a checker's run read; fixes from internal use; CI green for two weeks; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
+| 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up; one store file in place of SQLite; one daemon per workspace, with sentry; evidence kept by the files a checker's run read; source contracts, experimental (see [New in rc1](#new-in-rc1)) | Released |
+| 0.1.0-rc2 and later | Behavior simulation scaffolded for Python, TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; fixes from internal use; CI green for two weeks; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
 
 ## Feature surfaces
 
@@ -21,6 +21,7 @@ What Lemma does falls into four surfaces. Each is at a different level in this c
 | Code discovery | `lemma symbols`, `outline`, `refs`, `definition`, `implementations`, `signature`, the MCP tools | Ready | Daily use. The first lookup in a repository waits for its language server to load the project |
 | Code impact | `lemma check --change`, `lemma graph` | Ready for HTTP contracts | Every finding on the replayed changes below, and every known caller of the synthetic breaks. Links other than HTTP with OpenAPI are declared by hand |
 | Behavior simulation | behaviors and checkers in `.lm`, `lm new behavior` | [Beta](#behaviors-beta) | Runs real code in any language a command can run. The scaffold writes a complete checker only for Python |
+| Source contracts | a checker with `engine: "proof"` | Experimental | Checks a small, explicit subset of TypeScript, Python and Go against a contract, with an SMT solver you install. Code it cannot read gives `unknown`, never a pass ([source contracts](source-contracts.md)) |
 | Verification loop | `lemma check` on work in progress, sentry, the MCP `check` tool, the `lemma-verify` skill's stop hook | Experimental | Sentry's answers equalled a fresh check in every replayed case. How much the loop helps an agent is not yet measured on public tasks |
 
 ## Ready
@@ -76,7 +77,8 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 | Limitation | Effect | Until fixed |
 | --- | --- | --- |
 | `lm new behavior` writes a complete checker script only for Python | For TypeScript it leaves replacing the outbound call to you; for Go it writes a placeholder; for other languages it writes none | Write the checker by hand: any command that reads `LEMMA_INPUT` and writes `LEMMA_OUTPUT` works |
-| Evidence is keyed on whole repositories | Any commit to a repository a checker reads runs that checker again, even when the code it ran is unchanged | None; keep checkers fast |
+| Evidence is kept by the files a run read only where Lemma can watch the run: Linux with `strace` installed, for a checker run in a working directory | On macOS, at a commit, and without `strace`, any change to a repository a checker reads runs it again | Install `strace` on Linux; keep checkers fast elsewhere |
+| A run that lists a directory rests on that listing | A new file in a directory the run listed runs it again, even when nothing uses the file | None |
 | A checker's cases run one after another unless it says `concurrent: true` | A check with many cases takes as long as all of them together | Mark a checker whose runs write only where `LEMMA_OUTPUT` says `concurrent: true` ([language](language.md)) |
 | Behaviors read stated graphs only | Facts Lemma reads from code (`calls` and the rest of `lemma.http`) are not available to them | Declare the links a behavior needs |
 | Evidence stays on the machine that ran the checker | CI and each developer run checkers themselves | Copy the cache's `evidence/` directory |
@@ -115,6 +117,8 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 - **Generated documents.** `http.openapi("openapi.json", command: ...)` names the command that generates a document, so a handler edit is checked against consumers before the document is regenerated; a command's `inputs` decide when it runs again (see [Read operations from code](adapters.md)). `http.adapter_command(...)` is removed: write `command(...)`.
 - **Adapters outside TypeScript run on every change.** A change to a Python or Go handler under an adapter, or to code a command reads, used to reuse the base commit's document. Documents kept that way are dropped the first time rc1 runs.
 - **A repository's own adapter script.** `http.adapter("tools/lemma-adapter.ts", ...)` names a script in the repository, run with the interpreter its extension calls for. A `.ts` script is patched on a TypeScript edit as a built-in adapter is, where the same script under `command(...)` runs every time.
+- **Evidence by what a run read.** On Linux with `strace`, Lemma watches a checker's run and keeps its evidence until a file that run read, listed or looked for changes, so an edit elsewhere in the repository runs nothing again. Over 72 one-file changes in six public repositories, no reused evidence was contradicted by a fresh run, and the share of cases run again fell from all of them to between 11% and 100%, depending on how much each test imports ([spec 13](../.specs/13-lm-grammar.md), section 10).
+- **Source contracts (experimental).** A checker with `engine: "proof"` reads a TypeScript, Python or Go function and checks it against a contract with an SMT solver ([source contracts](source-contracts.md)). It needs Z3 installed and reads a subset of each language: what it cannot read, and a call the contract gives no model for, make the case `unknown`.
 - **One daemon per workspace, with sentry.** Commands run in a background daemon that `lemma` starts on first use. Its sentry watches the workspace's repositories and keeps a check's inputs prepared, so a check after an edit reads only what changed. Sentry is experimental ([`lemma daemon`](commands.md#lemma-daemon)).
 - **Checkers and warm runtimes.** `concurrent: true` on a checker lets its cases run at once. While the daemon runs, a repository's Python resolvers and type reads run in a process that has already imported its dependencies ([`lemma daemon`](commands.md#lemma-daemon)).
 
@@ -127,6 +131,7 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 - [x] Behavior simulation: the tutorial's behavior written for a Python, a TypeScript and a Go service; each is violated when the flag is dropped, satisfied when it is passed on, and reused on the next check.
 - [x] Verification loop: an uncommitted change that breaks a caller in another repository is an error from `lemma check --change` through sentry in 0.1 s, `--since` lists it as new, and it is gone once the caller is fixed.
 - [x] Python references in a project that keeps its package under `src/`. The fresh clone showed pyright reporting none from the tests directory: Lemma's settings had switched off its search of `src`. Fixed in this candidate; on flask, references to `url_for` went from 2 to 57.
+- [x] Source contracts: the example's handlers in Python, TypeScript and Go hold against one contract, and a guard switched off in each is reported, with Z3 4.15.4.
 - [ ] All of the above from a cold start on macOS.
 - [ ] Install script run on a clean macOS and Linux machine, after the tag.
 

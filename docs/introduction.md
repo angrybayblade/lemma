@@ -23,7 +23,7 @@ In a system of several repositories, one repository's change breaks code in anot
 - **Calls found in code.** Lemma reads the services' OpenAPI documents and the code of the clients that call them, and reports a call the change breaks: an operation that no longer exists, a parameter or request field now required that the client never sends, a response field the client reads that is gone. Describing which repositories serve and call what is all it needs.
 - **Links you declare.** A link names an operation that calls and the operation it calls. Lemma checks that both still exist, that their code anchors still resolve, and that the caller's types and the provider's schemas still agree, in both directions.
 - **Requirements you write.** A requirement is a rule over facts about the system, such as "no code calls a deprecated operation". Lemma reports each match as a finding.
-- **Behaviors you test (beta).** A behavior runs statements that may ask a checker, a command that exercises your code, for evidence, such as "when billing says a failure may be retried, orders passes that on". Lemma runs the checker, keeps what it observed, and reuses it until something changes in a repository the checker reads.
+- **Behaviors you test (beta).** A behavior runs statements that may ask a checker, a command that exercises your code, for evidence, such as "when billing says a failure may be retried, orders passes that on". Lemma runs the checker, keeps what it observed, and reuses it until a file the run read changes (on Linux with `strace`; elsewhere, until anything changes in a repository the checker reads).
 
 An allowance allows a known finding with a reason and, optionally, a date after which it counts again.
 

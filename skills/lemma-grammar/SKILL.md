@@ -84,7 +84,7 @@ A property a query over facts cannot settle (what a handler returns when its ups
 - Keep relational properties in `require`, where change-driven evaluation narrows what is read; loop in a behavior only over cases the checker must run.
 - Start a behavior with `expect link.exists` (or similar) so deleting what it tests makes it violated rather than passing through an empty loop.
 - A behavior's outcome is `violated`, `unknown` (no evidence, a missing condition, no assertion ran, or a loop over facts read from code), `stale` (under `--no-run`, when kept evidence no longer matches) or `satisfied`. At level `check`, only violated error-severity behaviors fail; at `strict`, unknown and stale ones fail too.
-- A checker reads `$LEMMA_INPUT` (its arguments, operations with their file and symbol, and `roots`, each repository's checkout) and writes `{"observed": ...}` or `{"unavailable": "why"}` to `$LEMMA_OUTPUT`. Its evidence is kept and reused while the repositories it reads and its arguments are unchanged; have Git ignore what it writes into the repository, or every run changes the working directory's state.
+- A checker reads `$LEMMA_INPUT` (its arguments, operations with their file and symbol, and `roots`, each repository's checkout) and writes `{"observed": ...}` or `{"unavailable": "why"}` to `$LEMMA_OUTPUT`. Its evidence is kept and reused while its arguments and what its run rests on are unchanged (a file the run read where Lemma can watch runs, on Linux with `strace`; otherwise any file in a repository it reads); have Git ignore what it writes into the repository, or every run changes the working directory's state.
 
 The full language is in [The `.lm` language](https://github.com/angrybayblade/lemma/blob/main/docs/language.md).
 
