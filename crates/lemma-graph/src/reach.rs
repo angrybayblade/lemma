@@ -367,6 +367,9 @@ impl Walked<'_> {
 }
 
 #[cfg(test)]
+mod measure;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
     use std::process::Command;

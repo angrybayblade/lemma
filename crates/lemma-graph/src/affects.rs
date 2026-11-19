@@ -1031,7 +1031,11 @@ fn read_functions(
 }
 
 /// One file's functions, methods and values, then its top-level code.
-fn file_functions(path: &str, contents: &str, symbols: Vec<lemma_model::Symbol>) -> Vec<Function> {
+pub(crate) fn file_functions(
+    path: &str,
+    contents: &str,
+    symbols: Vec<lemma_model::Symbol>,
+) -> Vec<Function> {
     let lines: Vec<&str> = contents.lines().collect();
     let mut covered = vec![false; lines.len()];
     let mut functions = Vec::new();
