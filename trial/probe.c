@@ -111,6 +111,7 @@ static void once(void) {
         if (strcmp(entry->d_name, "secret.txt") != 0) continue;
         say("openbyid_np", "byid/secret.txt");
         int fd = openbyid_np(&volume.f_fsid, (fsobj_id_t *)&entry->d_ino, O_RDONLY);
+        printf("openbyid_np-result fd %d errno %d\n", fd, fd < 0 ? errno : 0);
         if (fd >= 0) close(fd);
         say("fsgetpath", "byid/secret.txt");
         fsgetpath(buffer, sizeof buffer, &volume.f_fsid, entry->d_ino);

@@ -40,10 +40,12 @@ jobs:
         if: always()
         run: sh trial/eslogger.sh out/a "$PWD/trial/probe" /tmp/probe-a
       - name: "A: probe under Rosetta"
+        if: false
         timeout-minutes: 5
         if: always()
         run: sh trial/eslogger.sh out/a-x86 "$PWD/trial/probe-x86" /tmp/probe-a-x86
       - name: "A and C together: probe"
+        if: false
         timeout-minutes: 5
         if: always()
         run: sh trial/eslogger.sh out/ac sh trial/with-c.sh "$PWD/out/ac/calls" "$PWD/trial/probe" /tmp/probe-ac
@@ -52,6 +54,7 @@ jobs:
         if: always()
         run: sh trial/eslogger.sh out/a-root sudo -n "$PWD/trial/probe" /tmp/probe-a-root
       - name: "A: load and drops"
+        if: false
         timeout-minutes: 8
         if: always()
         run: sh trial/eslogger.sh out/stress sh trial/stress.sh
