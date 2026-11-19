@@ -22,8 +22,9 @@ const revealObserver = new IntersectionObserver(entries => {
 document.querySelectorAll('[data-reveal]').forEach(element => revealObserver.observe(element));
 const story = document.querySelector('[data-diagram="story"]');
 const storyRail = document.querySelector('.story-rail');
-// The behavior is the chapter's last code block; the setup block comes before it.
-const stageStop = [...document.querySelectorAll('.verification-copy .config-example')].at(-1);
+// The stage stops beside the story's last code block, the stop gate's message, so the replay
+// stays in view while the copy explains what the gate does with it.
+const stageStop = [...document.querySelectorAll('.story-copy .config-example')].at(-1);
 const stageStopDropPx = 48;
 const chapters = [...document.querySelectorAll('[data-scene-step]')];
 const sceneAnchors = [...document.querySelectorAll('[data-scene-anchor]')];
@@ -63,7 +64,7 @@ function scheduleStory() { if (!storyFrame) storyFrame = requestAnimationFrame(u
 function positionStory() {
   story.style.setProperty('--stage-offset', `${Math.max(24,(window.innerHeight-story.offsetHeight)/2)}px`);
   // A sticky element stops at its parent's end, so ending the rail here leaves the stage
-  // just below the center of the behavior example, rather than following the copy to the section's end.
+  // just below the center of that last code block, rather than following the copy to the section's end.
   const stopBounds = stageStop.getBoundingClientRect();
   const stopCenter = stopBounds.top + stopBounds.height / 2 + stageStopDropPx;
   storyRail.style.setProperty('--rail-height', `${stopCenter - storyRail.getBoundingClientRect().top + story.offsetHeight / 2}px`);
@@ -72,7 +73,7 @@ function positionStory() {
 window.addEventListener('scroll', scheduleStory, {passive:true});
 window.addEventListener('resize', positionStory);
 mobileStory.addEventListener('change', positionStory);
-// The copy is watched too: a late web font moves the behavior example without resizing the window.
+// The copy is watched too: a late web font moves that code block without resizing the window.
 const storyResize = new ResizeObserver(positionStory);
 storyResize.observe(story);
 storyResize.observe(document.querySelector('.story-copy'));

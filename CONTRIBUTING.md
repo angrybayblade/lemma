@@ -154,9 +154,17 @@ fn resolve(reference: &Reference, index: &SymbolIndex) -> Resolution {
 | harness | The program in a language pack that runs one operation's handler for a case, answers chosen calls in their place, and reports what happened | runner, simulator, driver |
 | replay case | The language-neutral interface a harness speaks: the handler, its input, the links to answer and their answers, and what was observed | scenario, fixture |
 | warm runtime | A service's interpreter kept by the daemon with its dependencies imported, which a check's runs of the repository's Python fork from | fork server, worker, warm interpreter |
+| recorder | An adapter that watches a command run and reports the files its processes read, listed, looked for and wrote | tracer, monitor, sandbox |
+| read set | The paths a run's result rests on, each with the state it was in; evidence is kept by it | dependencies, inputs, manifest |
 | language pack | An installable directory holding a manifest and a harness for one language; always written in full, never "pack", which names no Lemma concept | plugin, extension, package |
 | generator | A command Lemma runs to write an `OpenAPI` document from code, `command(...)` or a built-in adapter, kept by its inputs | script, hook, builder |
 | inputs | The paths a generator's document depends on, which key the document it writes; declared by the user and not checked | triggers, cache keys, watch list |
+| contract | What a proof checker checks one function against: its inputs, preconditions, postconditions and call models | spec, specification |
+| call model | An assumed meaning for a function the checked code calls, with the assumption it rests on; a proof that uses one reports it | mock, stub, summary, dependency model |
+| proof status | What a proof checker's observation says: proved, conditional or violated; a behavior reads it, and it is not an outcome | verdict, result |
+| decorator model | An assumed meaning for a decorator in a contract: that the decorated function runs its body with the same arguments | decorator mock, wrapper model |
+| context model | An assumed meaning for a context manager of a `with` in a contract: entering returns the manager, leaving has no other effect | context mock, scope model |
+| capture | A name a nested function reads from the functions around it, given an input by the contract | closure variable, free variable, upvalue |
 
 Extend this table when a new domain concept appears, in the same change that introduces it.
 

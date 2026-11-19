@@ -104,10 +104,9 @@ impl Checker<'_> {
                 format!("a checker produces `Evidence<...>`, not `{returns}`"),
             );
         }
-        let mut command = optional("command", COMMAND);
-        command.is_optional = false;
         let schema = [
-            command,
+            optional("command", COMMAND),
+            optional("engine", Type::Text),
             optional("directory", Type::Text),
             optional("setup", COMMAND),
             optional("reads", Type::List(Box::new(Type::Text))),
@@ -122,12 +121,12 @@ impl Checker<'_> {
         if !checker
             .fields
             .iter()
-            .any(|field| field.name.text == "command")
+            .any(|field| matches!(field.name.text.as_str(), "command" | "engine"))
         {
             self.error(
                 module,
                 self.declarations[id].name_span,
-                "a checker needs `command`, the argument list that runs it",
+                "a checker needs `command`, the argument list that runs it, or `engine: \"proof\"`",
             );
         }
         let signature = self.function_signature(module, &checker.parameters, &checker.returns);
@@ -157,6 +156,73 @@ impl Checker<'_> {
         columns
     }
 
+    /// Reports `setup` and `directory` on a proof checker: it runs no program,
+    /// so either would be silently ignored, or run for nothing.
+    fn has_program_fields(
+        &mut self,
+        module: &str,
+        checker: &ast::CheckerDeclaration,
+        values: &BTreeMap<String, Value>,
+    ) -> bool {
+        let Some(unused) = ["setup", "directory"]
+            .into_iter()
+            .find(|field| values.contains_key(*field))
+        else {
+            return false;
+        };
+        self.error(
+            module,
+            field_span(checker, unused),
+            format!(
+                "a checker with `engine: \"proof\"` runs no program, so `{unused}` has no effect"
+            ),
+        );
+        true
+    }
+
+    fn checker_runner(
+        &mut self,
+        module: &str,
+        checker: &ast::CheckerDeclaration,
+        values: &BTreeMap<String, Value>,
+    ) -> Option<model::CheckerRunner> {
+        Some(match (values.get("command"), values.get("engine")) {
+            (Some(_), Some(_)) => {
+                self.error(
+                    module,
+                    checker.span,
+                    "a checker names either `command` or `engine`, not both",
+                );
+                return None;
+            }
+            (None, Some(Value::Text(engine))) if engine == "proof" => {
+                if self.has_program_fields(module, checker, values) {
+                    return None;
+                }
+                model::CheckerRunner::Proof
+            }
+            (None, Some(Value::Text(engine))) => {
+                self.error(
+                    module,
+                    field_span(checker, "engine"),
+                    format!("unknown checker engine `{engine}`; expected `proof`"),
+                );
+                return None;
+            }
+            (Some(Value::List(items)), None) => model::CheckerRunner::Command(texts(items)),
+            (Some(Value::Text(_)), None) => {
+                let span = field_span(checker, "command");
+                self.error(
+                    module,
+                    span,
+                    "a checker's command is an argument list, run without a shell: `[\"go\", \"run\", \"./tool\"]`",
+                );
+                return None;
+            }
+            _ => return None,
+        })
+    }
+
     /// Adds a checker whose fields are known to the model.
     fn add_checker(
         &mut self,
@@ -171,18 +237,8 @@ impl Checker<'_> {
             Type::Evidence(inner) => (**inner).clone(),
             _ => Type::Unknown,
         };
-        let command = match values.get("command") {
-            Some(Value::List(items)) => texts(items),
-            Some(Value::Text(_)) => {
-                let span = field_span(checker, "command");
-                self.error(
-                    module,
-                    span,
-                    "a checker's command is an argument list, run without a shell: `[\"go\", \"run\", \"./tool\"]`",
-                );
-                return;
-            }
-            _ => return,
+        let Some(runner) = self.checker_runner(module, checker, values) else {
+            return;
         };
         let repository = self
             .loaded
@@ -196,7 +252,7 @@ impl Checker<'_> {
             repository,
             parameters,
             observes,
-            command,
+            runner,
             directory: values
                 .get("directory")
                 .and_then(Value::as_text)

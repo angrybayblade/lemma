@@ -121,6 +121,8 @@ allow lemma.http.consumer_calls_removed_operation {
 
 ## Behaviors and checkers
 
+A checker can also use the experimental [`engine: "proof"`](source-contracts.md) to check a source-bound TypeScript, Python or Go function against a contract.
+
 > **Beta.** Behaviors, checkers and the checker protocol may change between releases. See the [known limitations](pre-release.md#behaviors-beta).
 
 A behavior is a requirement checked by running statements. It may demand evidence from a checker, a command that exercises the code and reports what it observed:
@@ -183,7 +185,7 @@ export behavior forwards_upstream_retriable {
 - A checker runs `command` without a shell in its repository at the snapshot, in a worktree for a commit. `LEMMA_INPUT` names a JSON file with its arguments: operations by address with their implementation's file and symbol, facts by relation and values, and each repository's checkout. It writes `{ "observed": ... }` or `{ "unavailable": "why" }` to the file `LEMMA_OUTPUT` names. Spec 13 section 10 has the whole protocol.
 - A checker also takes `directory` (where it runs, inside its repository), `setup` (a command run once per state of the repository's code, before its first run), `env`, and `timeout_ms` (ten minutes if absent).
 - A checker's cases run one after another. `concurrent: true` on a checker says its runs may overlap, and a check then runs its cases at once: use it when a run writes only where `LEMMA_OUTPUT` says, not to a fixed file or port.
-- Lemma keeps evidence in its cache under a key of the checker's declaration, its arguments, the `env` it declares and the state of the code in the repositories it reads (Git trees, plus changed files in a working directory), and reuses it while that key holds. A checker reads its own repository unless `reads: ["orders", "billing"]` names others: a change in a repository left out does not run it again. `cache: false` runs it every time. `lemma check --no-run` uses kept evidence only: a case whose code changed is `stale`, one never run is `unknown`.
+- Lemma keeps evidence in its cache and reuses it until what it rests on changes: the checker's declaration, its arguments, the `env` it declares, and code. A checker reads its own repository unless `reads: ["orders", "billing"]` names others: a change in a repository left out does not run it again. On Linux with `strace` installed, Lemma watches a checker run in a working directory and the code is exactly what the run read: the files it opened or looked at, the directories it listed and the paths it looked for and did not find, inside the repositories the checker reads. A change to any other file leaves the evidence standing. At a commit, or where no run can be watched, the code is the whole state of those repositories (Git trees, plus changed files in a working directory). A checker whose result depends on something that is not a file there, such as a network service or an environment variable it does not declare, says `cache: false`, which runs it every time. `lemma check --no-run` uses kept evidence only: a case whose code changed is `stale`, one never run is `unknown`.
 - A behavior with parameters runs from a check with arguments: `run forwards(field: "retriable")`.
 
 ## Checks and levels

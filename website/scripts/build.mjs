@@ -102,9 +102,17 @@ const ordersCaller = `export async function placeOrder(order: Order) {
 }`;
 // The behavior from the same tutorial, shortened.
 const verification = `let link = links[orders.charge, api.createCharge]\nfor retriable in [${story.behavior.cases.join(', ')}] {\n  // Ask the checker for this case's evidence; it fakes billing's answer on link.\n  let trace = need ${story.behavior.checker}(\n    handler: orders.place_order,\n    through: link,\n    retriable: retriable\n  )\n  expect trace.response.status == 502\n  ${story.behavior.expect}\n    because "clients retry only when billing says they may"\n}`;
+// The stop gate's message for the tutorial's failing cases (docs/tutorials/4-behaviors.md), each finding shortened.
+const gate = [
+  '`lemma check --change` found errors your edits introduced in orders:',
+  '- [orders::passes_on_retriable] `retriable` is missing; retriable = false',
+  '- [orders::passes_on_retriable] `retriable` is missing; retriable = true',
+  'Fix them, or say why each is expected, before finishing.',
+].join('\n');
 for (const [marker, source, filename, caption, label, kind] of [
   ['IMPACT_CONFIG', finding, 'lemma check --change billing', 'From the quickstart.', 'example finding'],
   ['REQUIREMENT_CONFIG', requirement, 'mod.lm', 'From the requirements tutorial.', 'Lemma requirement example', 'config'],
+  ['GATE_CONFIG', gate, 'stop gate', 'What the agent hears when it tries to finish, shortened.', 'stop gate message'],
   ['VERIFICATION_CONFIG', verification, 'orders/mod.lm', 'The behavior: both cases, checked against what orders sent back.', 'behavior replay example'],
 ]) html = html.replace(`<!-- ${marker} -->`, renderSnippet(source, filename, caption, label, kind));
 html = html.replace('<!-- CALLER_CONFIG -->', renderSnippet(ordersCaller, 'checkout.ts', 'The caller offers a retry only when retriable is true. With the breaking change it never arrives, so every decline looks final.', 'caller code', 'snippet', {showFilename: false}));

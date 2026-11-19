@@ -58,10 +58,11 @@
             <p>Declare a behavior, and Lemma catches that change before it merges by running the code. Its checker is a script you write: it fakes a declined charge, calls <code>place_order</code>, and reports what orders sent back. The behavior runs it for both answers billing can give, so a fix that hard-codes the flag still fails.</p>
             <div class="chapter-diagram" data-chapter-scene="verification" data-caption="Simulate the failure. Verify the fix."></div>
             <!-- VERIFICATION_CONFIG -->
-            <p><strong>With the change,</strong> <code>retriable</code> is missing from orders’ response in both cases. The agent gets that missing field, adds <code>retriable</code> to the helper, and reruns the check. <strong>With the fix,</strong> it matches billing’s answer in both.<span class="verification-note">Illustrative replay · evidence is kept until the repository it ran on changes.</span></p>
+            <p><strong>With the change,</strong> <code>retriable</code> is missing from orders’ response in both cases. The agent gets that missing field, adds <code>retriable</code> to the helper, and reruns the check. <strong>With the fix,</strong> it matches billing’s answer in both.<span class="verification-note">Illustrative replay · evidence is kept until the code it ran on changes.</span></p>
             <a class="plain-link" href="/docs/tutorials/4-behaviors/">Behavior simulations <span aria-hidden="true">↗</span></a>
           </div>
         </section>
+        <section class="story-chapter workflow-step gate-step" data-scene-step="verification" aria-labelledby="gate-title"><h2 id="gate-title">Done means checked.</h2><p>Turn on the stop gate, a Claude Code hook, and Lemma runs the check when your agent says it’s finished. The helper still drops <code>retriable</code>, so <code>passes_on_retriable</code> fails in both cases and the agent is sent back.</p><!-- GATE_CONFIG --><p>It finishes once orders passes billing’s answer on in both. The behavior you declared keeps watch on every finish, not only when the agent remembers to ask.</p><a class="plain-link workflow-link" href="/docs/lemma-mode/#enforce-the-check">Stop gate <span aria-hidden="true">↗</span></a></section>
       </div>
     </div>
   </section>

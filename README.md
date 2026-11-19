@@ -111,3 +111,5 @@ The [landing page](website/README.md) leads with agent speed and system precisio
 | `lemma-cli` | The `lemma` and `lm` commands, the background daemon with sentry, and the MCP server |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions.
+
+Experimental: [verify TypeScript, Python and Go implementations against source contracts](docs/source-contracts.md).

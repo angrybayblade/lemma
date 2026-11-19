@@ -21,7 +21,7 @@ A contract check shows that shapes agree. Whether a handler passes an upstream e
 3. **Fill in the TODOs**: the input each case sends, what the replaced call answers, and the `expect` lines stating the fact from step 1. Keep one fact per behavior.
 4. **Run it**: `lm check` for the module, then `lemma check --select passes_on_retriable` from the workspace. A case's outcome is satisfied, violated, unknown (the checker could not run) or stale.
 5. **Make it fail once.** Break the code the claim is about, or flip an `expect`, and see the case turn violated, then put it back. A behavior that cannot fail proves nothing.
-6. **Keep it.** Commit the behavior with the change. Later checks reuse its evidence until a repository it reads changes, in any file, then run it again.
+6. **Keep it.** Commit the behavior with the change. Later checks reuse its evidence until what its run rests on changes, then run it again: a file the run read where Lemma can watch runs (Linux with `strace`), otherwise any file in a repository it reads.
 
 ## What to hand back
 
