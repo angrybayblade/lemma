@@ -31,9 +31,9 @@ use super::states::Current;
 use crate::recorder::{self, Recorded, Recorder};
 use crate::repos::{self, Checkout};
 
-/// Bumped when what checkers are given, or how their output is read,
-/// changes.
-const PROTOCOL: &str = "2";
+/// Bumped when what checkers are given, how their output is read, or
+/// what a read set holds changes.
+const PROTOCOL: &str = "3";
 
 /// How many read sets are kept for one checker and arguments: enough to
 /// come back to a state left a few changes ago, as after a branch switch.
@@ -399,6 +399,7 @@ impl Store {
             return decoded.into_evidence(&key, false);
         };
         let roots = request.root_paths();
+        let seen = reads::inside_repositories(&seen, &roots);
         let reads = match changed_input(&seen, &roots) {
             Some(path) => Err(format!("the checker changed {path}, which it read")),
             None => ReadSet::of(&seen, &roots, started, &self.current),

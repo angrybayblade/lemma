@@ -712,11 +712,12 @@ The input:
 - **By what the run read.** Where a recorder can watch the checker's command (today: every repository of `reads` at its working directory, on Linux with `strace` installed), the code is the run's **read set**: each path inside those repositories that the command's processes opened, ran or looked at, each directory they listed, and each path they looked for and did not find, with the state it was in. A file's state is a digest of its contents, a listed directory's a digest of its entries' names. Kept evidence is reused for as long as every path of a read set is in its state. So a change to a file the run never read leaves the evidence standing, and putting files back as they were brings it back: for a checker and its arguments, the 8 read sets last kept or found to hold again are kept, so the state before an edit outlasts any number of edits come back from.
 - **By whole repositories.** Elsewhere (a commit, a machine with no recorder, a proof) the code is the state of each repository of `reads`: its Git tree, plus a digest of each changed file for a working directory, or the base commit's tree when a change's walk reaches none of the checker's code, as the limits below describe. Kept evidence with an equal key is reused.
 
-What a read set holds follows three rules, each there so that evidence is never reused wrongly:
+What a read set holds follows four rules, each there so that evidence is never reused wrongly:
 
 - **Looking at a file counts as reading it.** A tool that keeps a cache decides by a file's time and size whether to open it, so the file it only looked at is one its result rests on.
 - **What a run writes is its product, not its input,** and is left out. The exception is a file Git tracks that the run read and then wrote: the run changed what it rests on, no state of that file is the one its result holds for, and no evidence is kept.
 - **A file that changed while the run went on keeps no evidence,** since its state afterwards is not the one the run read.
+- **A link is read as where it points and what is there.** A path is kept as the run asked for it, beside the file the system says it led to, and the state of a link holds a digest of its target. So a link pointed elsewhere (a dependency's directory after an upgrade, where a package manager links each one into place) ends the evidence of the runs that went through it, even when the files it used to lead to are still there unchanged. A path that reaches a repository through a link outside it, as `/tmp` is on some systems, is named by where it is in the repository.
 
 Two consequences follow from keeping to what a run was seen to do, and both cost reruns, never a wrong answer:
 

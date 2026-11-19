@@ -12,13 +12,13 @@
 //! directory (a dependency, most often) keep that part once, and a check
 //! compares it with the files once.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use serde_json::{Value as Json, json};
 
-use super::states::{ABSENT, Compared, Current, changed_since};
+use super::states::{ABSENT, Compared, Current, changed_since, is_of_listing};
 use crate::recorder::Recorded;
 
 /// A directory with more paths than this under it is kept as a part of
@@ -80,7 +80,7 @@ fn line_difference(
     if kind == PART {
         return part_difference(current, &path, value, part);
     }
-    let now = current.state(&path, value.starts_with("l:"));
+    let now = current.state(&path, is_of_listing(value));
     if now == value {
         return None;
     }
@@ -88,7 +88,7 @@ fn line_difference(
         "appeared"
     } else if now == ABSENT {
         "is gone"
-    } else if value.starts_with("l:") {
+    } else if is_of_listing(value) {
         "has other entries"
     } else {
         "changed"
@@ -282,9 +282,9 @@ impl ReadSet {
             }
             let state = current.state(&path.to_string_lossy(), false);
             // A directory's own time changes with its entries, which a
-            // listing covers; only a file's says its contents changed.
-            let is_changed_file = state.starts_with("f:") && changed_since(path, started);
-            if state == ABSENT || is_changed_file {
+            // listing covers; a file's says its contents changed, and a
+            // link's that it was pointed elsewhere.
+            if state == ABSENT || changed_since(path, started) {
                 return Err(format!("{} changed while the checker ran", path.display()));
             }
             keep(path, state);
@@ -334,6 +334,57 @@ pub(crate) fn rewritten(recorded: &Recorded, roots: &Roots) -> BTreeMap<PathBuf,
         }
     }
     found
+}
+
+/// `recorded` with each path that reaches a repository through a link
+/// outside it named by where it is in the repository: `/tmp` is a link on
+/// some systems, and a clone can be reached by more than one name. The
+/// rest of such a path is kept as it was asked for, so that a link inside
+/// the repository still counts as read.
+pub(crate) fn inside_repositories(recorded: &Recorded, roots: &Roots) -> Recorded {
+    let mut resolved: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
+    let mut inside = |paths: &BTreeSet<PathBuf>| -> BTreeSet<PathBuf> {
+        let through = |path: &PathBuf| through_links(path, roots, &mut resolved);
+        paths.iter().map(through).collect()
+    };
+    Recorded {
+        read: inside(&recorded.read),
+        listed: inside(&recorded.listed),
+        absent: inside(&recorded.absent),
+        written: inside(&recorded.written),
+    }
+}
+
+/// `path` from the first directory on its way that is, by another name,
+/// a repository's root or inside one; `path` itself when there is none or
+/// it is inside a repository as named.
+fn through_links(
+    path: &Path,
+    roots: &Roots,
+    resolved: &mut HashMap<PathBuf, Option<PathBuf>>,
+) -> PathBuf {
+    let is_inside = |path: &Path| roots.values().any(|root| path.starts_with(root));
+    if is_inside(path) {
+        return path.to_path_buf();
+    }
+    let mut ancestors: Vec<&Path> = path.ancestors().skip(1).collect();
+    ancestors.reverse();
+    for ancestor in ancestors {
+        let real = resolved
+            .entry(ancestor.to_path_buf())
+            .or_insert_with(|| ancestor.canonicalize().ok());
+        let Some(real) = real else {
+            break;
+        };
+        if !is_inside(real) {
+            continue;
+        }
+        return match path.strip_prefix(ancestor) {
+            Ok(rest) => real.join(rest),
+            Err(_) => path.to_path_buf(),
+        };
+    }
+    path.to_path_buf()
 }
 
 /// The repository `path` is in and its path there; none for a path outside
@@ -458,6 +509,26 @@ mod tests {
         assert_eq!(
             reads.paths["app"].keys().collect::<Vec<_>>(),
             ["conftest.py", "src"]
+        );
+    }
+
+    #[test]
+    fn a_path_through_a_link_outside_is_named_inside_its_repository() {
+        let (directory, roots, _) = repository();
+        let root = directory.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = outside.path().join("clone");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let recorded = Recorded {
+            absent: BTreeSet::from([link.join("src/new.py"), outside.path().join("none.py")]),
+            ..Recorded::default()
+        };
+
+        let inside = inside_repositories(&recorded, &roots);
+
+        assert_eq!(
+            inside.absent,
+            BTreeSet::from([root.join("src/new.py"), outside.path().join("none.py")])
         );
     }
 
