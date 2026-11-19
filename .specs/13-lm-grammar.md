@@ -718,6 +718,13 @@ What a read set holds follows three rules, each there so that evidence is never 
 - **What a run writes is its product, not its input,** and is left out. The exception is a file Git tracks that the run read and then wrote: the run changed what it rests on, no state of that file is the one its result holds for, and no evidence is kept.
 - **A file that changed while the run went on keeps no evidence,** since its state afterwards is not the one the run read.
 
+Two consequences follow from keeping to what a run was seen to do, and both cost reruns, never a wrong answer:
+
+- **A new or removed file ends the evidence of every run that listed its directory,** whether or not the run would have used the file: a run that lists a directory rests on the names in it, and nothing seen from outside says which names it cares about. A test runner that searches the whole tree for its files therefore runs every case again when any file is added, while an edit to a file still reruns only the cases that read it. Giving the runner the one file, or the one directory, it should look in keeps its listings narrow.
+- **A tool that looks at every file makes every file its input.** A runner that checks each file's time to keep an index of the tree up to date is, by the first rule above, resting on all of them.
+
+A stale case and the log say which path ended the evidence, which shows either at once: `src has other entries` on every case after one new file is the first.
+
 A recorder sees files. A read set does not hold environment variables beyond `env`, the network, files outside the repositories read (a toolchain, the system's libraries), or a repository's Git directory, which holds history and not code. A checker whose result depends on any of them says `cache: false`.
 
 The reported toolchain, artifacts and coverage are kept with the evidence but are not part of the key, since they are only known after running.
