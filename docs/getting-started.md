@@ -49,14 +49,16 @@ typescript-language-server   typescript,tsx   /usr/local/bin/typescript-language
 typescript-native            typescript,tsx   /usr/local/bin/tsc
 pyright                      python           /usr/local/bin/pyright-langserver
 ty                           python           /Users/me/.local/bin/ty
-basedpyright                 python           not found: basedpyright-langserver
+basedpyright                 python           not found: basedpyright-langserver (install: uv tool install basedpyright)
 gopls                        go               /Users/me/go/bin/gopls
+rust-analyzer                rust             /Users/me/.cargo/bin/rust-analyzer
 
 Tried in order for each language:
   typescript   typescript-language-server, then typescript-native
   tsx          typescript-language-server, then typescript-native
   python       pyright, then ty
   go           gopls
+  rust         rust-analyzer
 ```
 
 Install each project's own dependencies first (`npm install`, a Python virtual environment, `go mod download`, `cargo fetch`). Without them, references that go through imports may be missing.
@@ -90,12 +92,13 @@ indexed /Users/me/code/my-project (212 files, 1840 symbols)
   python       180 files
   typescript   32 files
 revision 4f2c1e9a..., uncommitted changes
+exports: 0 operations, 0 endpoints (0 at their handlers), 0 symbols; 0 links
 index /Users/me/code/my-project/.lemma/index.ls
 ```
 
-Lemma reads every `.ts`, `.mts`, `.cts`, `.tsx`, `.py`, `.pyi` and `.go` file, respecting `.gitignore`, and stores what it finds in `.lemma/index.ls` inside the project. Add `.lemma/` to the project's `.gitignore`.
+Lemma reads every `.ts`, `.mts`, `.cts`, `.tsx`, `.py`, `.pyi`, `.go` and `.rs` file, respecting `.gitignore`, and stores what it finds in `.lemma/index.ls` inside the project. Add `.lemma/` to the project's `.gitignore`.
 
-Indexing starts no language server and works offline. Run it again when the code changes: Lemma reads only changed files, so on a large repository it takes a fraction of a second, and prints `unchanged` if nothing changed.
+Indexing needs no language server and works offline. In the daemon it also starts the repository's servers in the background, so the first lookup waits less. Run it again when the code changes: Lemma reads only changed files, so on a large repository it takes a fraction of a second, and prints `unchanged` if nothing changed.
 
 ## 4. Find a symbol
 
@@ -109,7 +112,7 @@ lemma symbols Router
 ```text
 #31919f572763121e class      Router  src/router.py:8:7
 #f256e26e20067a8c method     Router.delete  src/router.py:31:9
-#418     method     Router.register  src/router.py:44:9
+#9dac4c7ba294da7b method     Router.register  src/router.py:44:9
 ```
 
 Each line shows the symbol's id, kind, qualified name, and where it is defined. Positions are `line:column`, counted from 1 as in an editor.

@@ -69,8 +69,7 @@ diagnosticMode = "openFilesOnly"
 logLevel = "Information"
 
 # ty (from Astral) answers in milliseconds once loaded, even on very large
-# workspaces, but reads the whole repository into memory. Like the TypeScript servers, it does not count import
-# statements as references; pyright does.
+# workspaces, but reads the whole repository into memory.
 [[provider]]
 id = "ty"
 languages = ["python"]

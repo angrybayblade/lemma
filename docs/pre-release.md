@@ -102,7 +102,7 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 
 ## New in rc1
 
-- **`lemma check`**: `.lm` modules describe a system; links between services are declared or inferred from specs and calling code, their schemas compared, and what a break affects traced up through the services that pass it on. Lemma reads only the code a change's findings can rest on. Without `--base`, it checks the work in progress since the branch left the default branch.
+- **`lemma check`**: `.lm` modules describe a system; links between services are declared or inferred from specs and calling code, their schemas compared, and what a break affects traced up through the services that pass it on. Lemma reads only the code a change's findings can rest on. With `--change <repository>` and no `--base`, it checks the work in progress since the branch left the default branch.
 - **Is it wired up?** Warnings for an operation a change adds that no route serves or no code calls, and a route a change adds that its spec leaves out; an error for a call of an operation whose route the change removed.
 - **Adapters** read a service's operations from its code (built in: Hono with zod-openapi, FastAPI, Express, Flask and Go routers; any other through a script), remember a failure per clone and environment, and fail a `--level strict` check when they cannot run.
 - **`.lm` modules and `lm`**: typed modules for services, links, rules, requirements, behaviors (requirements checked by running checkers) and allowances; `lm check`, `lm fmt`, `lm new behavior` to scaffold a behavior and its checker, and `lm lsp` with VS Code and Zed extensions.
