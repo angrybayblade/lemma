@@ -13,7 +13,7 @@
 | `lemma signature <symbol>` | The declaration and the server's hover text. |
 | `lemma providers` | Configured language servers and whether each is installed. |
 | `lemma mcp` | Serves these commands as MCP tools over stdin and stdout. |
-| `lemma check [mod.lm]` | Checks a change across the repositories a workspace composes. |
+| `lemma check [mod.lm]` | With `--change`, checks a change across the repositories a workspace composes; without it, checks the workspace as it stands. |
 | `lemma verify [mod.lm]` | Checks that a description still matches the code at one snapshot. |
 | `lemma daemon status` / `stop` | Inspects or stops the background daemon. |
 

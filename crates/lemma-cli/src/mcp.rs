@@ -30,8 +30,8 @@ used, defined or implemented\" and \"what calls this\" from each language's own 
 symbols with the same name and mentions in comments and strings, and follows imports and aliases. \
 Once its servers are warm an answer takes milliseconds, so ask on every step, especially for common \
 names; use text search for strings, configuration and other files.\n\n\
-Workflow: `search_symbols` (or `outline` for a file) gives each definition an id like `#415`, or \
-`#billing:415` in a workspace, where ids are numbered per repository; pass the id as shown to \
+Workflow: `search_symbols` (or `outline` for a file) gives each definition an id like `#8bce55e22bc817fe`, or \
+`#billing:8bce55e22bc817fe` in a workspace, where each repository's ids are its own; pass the id as shown to \
 `references`, `implementations`, `signature` or `graph`. `definition` takes a file, line and column. \
 `check` with `change` reports what your edits to a repository break in the others, and what they \
 add without wiring up (an operation with no route or caller); run it as you build a feature, and \

@@ -125,10 +125,10 @@ pub(crate) enum Command {
     ///
     /// Exits with 4 if any finding is an error (level `check`).
     Check(CheckArgs),
-    /// Run, inspect, stop, or install the background daemon.
+    /// Run, inspect or stop the background daemon.
     ///
     /// Every other command starts the daemon automatically; run this to keep
-    /// it in the foreground, check on it, stop it, or start it at login.
+    /// it in the foreground, check on it, or stop it.
     Daemon(DaemonArgs),
 }
 
@@ -290,7 +290,8 @@ pub(crate) struct SentryArgs {
 
 #[derive(Subcommand)]
 pub(crate) enum SentryCommand {
-    /// Attach to the workspace of a manifest, in a daemon already running.
+    /// Attach to the workspace of a manifest, starting its daemon if none
+    /// runs.
     Start {
         /// The workspace's mod.lm.
         #[arg(default_value = "mod.lm")]
@@ -347,7 +348,10 @@ pub(crate) struct LspTarget {
     pub languages: Vec<String>,
     /// Only these providers, by id (see `lemma providers`); for starting,
     /// the provider to use instead of the first installed one.
-    #[arg(long = "provider", value_name = "ID")]
+    // Its own id: the one clap would derive from the field's name belongs
+    // to the global `--providers`, and two arguments with one id panic
+    // when either is read.
+    #[arg(id = "provider", long = "provider", value_name = "ID")]
     pub providers: Vec<String>,
 }
 
@@ -509,7 +513,7 @@ pub(crate) struct Filters {
     /// Only symbols of this kind, such as `function` or `method`.
     #[arg(long)]
     pub kind: Option<SymbolKind>,
-    /// Only symbols in this language: typescript, tsx, python, or go.
+    /// Only symbols in this language: typescript, tsx, python, go, or rust.
     #[arg(long)]
     pub language: Option<Language>,
     /// Only symbols whose file path contains this text.
@@ -523,9 +527,36 @@ pub(crate) struct Filters {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
     use super::Cli;
+
+    #[test]
+    fn a_provider_can_be_named_beside_the_providers_file() {
+        let parsed = Cli::try_parse_from([
+            "lemma",
+            "--providers",
+            "servers.toml",
+            "daemon",
+            "lsp",
+            "start",
+            "--provider",
+            "ty",
+        ]);
+
+        let cli = parsed.unwrap();
+        assert_eq!(cli.providers.unwrap().to_str(), Some("servers.toml"));
+        let super::Command::Daemon(daemon) = cli.command else {
+            panic!("not the daemon command");
+        };
+        let Some(super::DaemonAction::Lsp(lsp)) = daemon.action else {
+            panic!("not the lsp command");
+        };
+        let Some(super::LspAction::Start(start)) = lsp.action else {
+            panic!("not the start command");
+        };
+        assert_eq!(start.target.providers, ["ty"]);
+    }
 
     /// The command reference, which every command and option must be in.
     const REFERENCE: &str = include_str!("../../../docs/commands.md");

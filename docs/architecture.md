@@ -16,7 +16,7 @@ Lemma answers questions about code: where a symbol is defined, used and implemen
 
 ## Operations
 
-Every interface offers the same six questions, from spec 07's normalized operations:
+Every interface offers the same questions. Six come from spec 07's normalized operations, and `lemma graph` follows references to a depth:
 
 | Operation | CLI | Answered by |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ Provider answers share one shape: an outcome with a `state` (`found`, `empty`, `
 
 ### Consumption
 
-`lemma-cli` turns commands into operations and prints their answers. The daemon (`daemon.rs`) and the MCP server (`mcp.rs`) deliver the same commands: the daemon keeps state warm between them, and the MCP server exposes each operation as a tool whose result is the command's text output, which carries the same facts and ids as its JSON in a fraction of the size. Output shapes are defined in `output/`, separately from internal types, so internals can change without breaking scripts or agents.
+`lemma-cli` turns commands into operations and prints their answers. There is one daemon per workspace, started by the first command there (`.specs/21-workspace-daemons.md`); its sentry (`sentry.rs`, experimental) watches the workspace's repositories and keeps a check's inputs prepared between checks. The daemon (`daemon.rs`) and the MCP server (`mcp.rs`) deliver the same commands: the daemon keeps state warm between them, and the MCP server exposes each operation as a tool whose result is the command's text output, which carries the same facts and ids as its JSON in a fraction of the size. Output shapes are defined in `output/`, separately from internal types, so internals can change without breaking scripts or agents.
 
 ### Query
 
@@ -44,7 +44,7 @@ Provider answers share one shape: an outcome with a `state` (`found`, `empty`, `
 3. If a stored answer matches the snapshot, provider and configuration, return it.
 4. Otherwise ask the installed providers in order. Skip one that cannot start, report one that fails, and store a definitive answer.
 
-Each kind of question implements a small `Ask` trait: how to ask a provider, and how to load and save its answer. A new question means a new `Ask`, not a new path. The query layer depends only on the `FactStore` and `SemanticProvider` traits.
+Each kind of question implements a small `Ask` trait: how to ask a provider, and how to load and save its answer. A new question means a new `Ask`, not a new path. Semantic lookups depend only on the `FactStore` and `SemanticProvider` traits; symbol search reads the store directly.
 
 ### Storage
 
@@ -61,11 +61,27 @@ Two producers fill the store:
 
 `lemma-index` walks and watches directories and decides which files to re-parse. `lemma-model` holds the types every layer shares and depends on nothing else.
 
+## Checking
+
+`lemma check`, `lemma verify` and `lm` are built from the crates beside those four layers:
+
+| Crate | What it does |
+| --- | --- |
+| `lemma-lang` | The `.lm` language: parsing, name resolution and type checking of modules |
+| `lemma-lm` | The `lm` command: check, format and scaffold modules, and serve them to editors |
+| `lemma-lang-server` | The language server for `.lm` modules: diagnostics, hovers, definitions, symbols and completion |
+| `lemma-http` | HTTP contract facts: operations from OpenAPI documents and route code, and the calls consumers make |
+| `lemma-grammar` | Relations, rules and requirements, compiled to Lemma's Datalog |
+| `lemma-logic` | Lemma's Datalog: programs, facts, the engine interface and a reference evaluator |
+| `lemma-souffle` | Soufflé as an engine for those programs |
+| `lemma-verify` | Runs a grammar's requirements over the facts extracted from a set of repositories |
+| `lemma-graph` | Checks the links between operations declared in descriptions, and runs behaviors and their checkers |
+
 ## Optimization points
 
 | Layer | Room to grow |
 | --- | --- |
-| Consumption | Batched requests, streaming large answers, several commands at once in the daemon |
-| Query | Graph questions (callers of callers, impact of a change) over stored answers, picking the cheapest source per question |
-| Storage | Memory-mapped tables, answers invalidated per file instead of per snapshot, a shared map across repositories |
+| Consumption | Batched requests, streaming large answers, several provider commands at once in the daemon |
+| Query | Graph questions answered from stored answers alone, picking the cheapest source per question |
+| Storage | Answers invalidated per file instead of per snapshot, a shared map across repositories |
 | Symbol generation | Filling answers ahead of time while idle, batch producers for languages where language servers are slow |

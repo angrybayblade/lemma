@@ -169,7 +169,7 @@ Schemas inside JSON documents: a committed file, `document(file)`, or a command'
 
 ## `lemma.hono`
 
-Reads a service's operations from its code with Lemma's built-in `hono` adapter: `app(entry: [...])`. See docs/adapters.md.
+Reads a service's operations from its code with Lemma's built-in `hono-zod-openapi` adapter: `app(entry: [...])`. See docs/adapters.md.
 
 ### Functions
 

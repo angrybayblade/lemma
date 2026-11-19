@@ -49,7 +49,7 @@ Add `--json` to any command for machine-readable output. For agents, `lemma mcp`
 
 Lemma does not bundle language servers. Install the ones you need: `typescript-language-server` or TypeScript 7's `tsc`, `pyright` or `ty` (faster, more memory), `gopls`, and `rust-analyzer`.
 
-Lemma is built to be called in a loop by agents. Commands run in a background daemon that watches indexed directories and keeps language servers warm. Across 241 randomly drawn symbols in five repositories, 96% of the lines Lemma reported were real references, against 31% for ripgrep; with Lemma running, a lookup took 19-126 ms the first time a symbol was asked and 1-3 ms once cached, in one repository. From a workspace's root, each query first checks every member for changes, which took about 0.1 s across six repositories. Text search remains better for one-off questions, small repositories, strings and other text, and as a cross-check before a rename. See [the comparison](docs/comparison.md) and [Performance](docs/performance.md).
+Lemma is built to be called in a loop by agents. Commands run in a background daemon that watches indexed directories and keeps language servers warm. Across 241 randomly drawn symbols in five repositories, 96% of the lines Lemma reported were real references, against 31% for ripgrep; with Lemma running, a lookup took 19-126 ms the first time a symbol was asked and 1-3 ms once cached, in one repository, measured with ty as the Python server. Pyright, which Lemma now tries first for Python, takes longer on a first lookup. From a workspace's root, each query first checks every member for changes, which took about 0.1 s across six repositories. Text search remains better for one-off questions, small repositories, strings and other text, and as a cross-check before a rename. See [the comparison](docs/comparison.md) and [Performance](docs/performance.md).
 
 Lemma keeps "no answer" separate from "no references". "No references found" means the server looked and saw nothing; it does not prove a symbol is unused.
 
@@ -104,7 +104,11 @@ The [landing page](website/README.md) leads with agent speed and system precisio
 | `lemma-grammar` | Relations, rules and requirements compiled to Datalog |
 | `lemma-http` | HTTP contract facts from OpenAPI documents and code |
 | `lemma-verify` | Extracting facts from documents and code, and evaluating requirements over them |
-| `lemma-cli` | The `lemma` command, its background daemon, and the MCP server |
+| `lemma-graph` | Checking the links between operations declared in `.lm` descriptions |
+| `lemma-lang` | The `.lm` language: parsing, name resolution and type checking |
+| `lemma-lm` | The `lm` command: check, format and scaffold `.lm` modules |
+| `lemma-lang-server` | The language server for `.lm` modules (`lm lsp`) |
+| `lemma-cli` | The `lemma` and `lm` commands, the background daemon with sentry, and the MCP server |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions.
 

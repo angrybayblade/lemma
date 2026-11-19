@@ -9,8 +9,19 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | Candidate | Focus | State |
 | --- | --- | --- |
 | 0.1.0-rc0 | Internal launch: code intelligence in four languages, contract checks across repositories, install script, agent skills | Released |
-| 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up (see [New in rc1](#new-in-rc1)) | Released |
-| 0.1.0-rc2 and later | One store file in place of SQLite (see [New in rc2](#new-in-rc2)); fixes from internal use; CI green for two weeks; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
+| 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up; one store file in place of SQLite; one daemon per workspace, with sentry (see [New in rc1](#new-in-rc1)) | Released |
+| 0.1.0-rc2 and later | Behavior simulation scaffolded for Python, TypeScript and Go; evidence kept by the files a checker's run read; fixes from internal use; CI green for two weeks; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
+
+## Feature surfaces
+
+What Lemma does falls into four surfaces. Each is at a different level in this candidate.
+
+| Surface | Commands | Level in rc1 | What that means |
+| --- | --- | --- | --- |
+| Code discovery | `lemma symbols`, `outline`, `refs`, `definition`, `implementations`, `signature`, the MCP tools | Ready | Daily use. The first lookup in a repository waits for its language server to load the project |
+| Code impact | `lemma check --change`, `lemma graph` | Ready for HTTP contracts | Every finding on the replayed changes below, and every known caller of the synthetic breaks. Links other than HTTP with OpenAPI are declared by hand |
+| Behavior simulation | behaviors and checkers in `.lm`, `lm new behavior` | [Beta](#behaviors-beta) | Runs real code in any language a command can run. The scaffold writes a complete checker only for Python |
+| Verification loop | `lemma check` on work in progress, sentry, the MCP `check` tool, the `lemma-verify` skill's stop hook | Experimental | Sentry's answers equalled a fresh check in every replayed case. How much the loop helps an agent is not yet measured on public tasks |
 
 ## Ready
 
@@ -19,7 +30,7 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | Code intelligence: TypeScript, TSX, Python, Go, Rust | Daily use by people and agents | Symbols, outlines, references, definitions, implementations and signatures, each through the language's own server. Across 241 random symbols in five repositories, 96% of reported lines were real references ([comparison](comparison.md)); 1-3 ms once cached ([performance](performance.md)). |
 | MCP server | Agents in Claude Code and other MCP clients | Agent benchmark rounds r0-r6 ([results](agent-benchmark.md)) |
 | `lemma.http` requirements for HTTP contracts | Internal use, errors gating CI after a reporting period | In rc0, 318 historical changes replayed on a production system of ten repositories with no false error; every error matched a real break. |
-| `lemma check` across a system's repositories | Internal use, errors gating CI after a reporting period | On a production system of six repositories, for rc1: 54 past contract changes replayed with every finding, severity and trace as reviewed; synthetic breaks found every known caller (47 of 47 for new required fields, 33 of 33 for removed operations) and no other; change-driven evaluation gave the same findings as reading all code on 34 changes and 30 breaks, in about 60% of the time. On a generated system of 100,000 files, a warm change-driven check took 2.2 s and 192 MB. |
+| `lemma check` across a system's repositories | Internal use, errors gating CI after a reporting period | On a production system of six repositories, for rc1: 54 past contract changes replayed with every finding, severity and trace as reviewed; synthetic breaks found every known caller (47 of 47 for new required fields, 33 of 33 for removed operations) and no other; change-driven evaluation gave the same findings as reading all code on 54 changes and 30 breaks, in about 60% of the time; sentry gave the same findings as a fresh check in 214 cases, each asked once the files had settled and once while they were still changing. On a generated system of 100,000 files, a warm change-driven check took 2.7 s and 365 MB. |
 | `.lm` modules and `lm` | Describing systems, requirements and allowances; behaviors are in [beta](#behaviors-beta) | The tutorials run as written in CI; a production system of six repositories is described and checked in `.lm`. Editor support through `lm lsp`. |
 | Requirements and rules in `.lm` | Teams adding, removing and tuning checks | [Requirements and rules](grammar.md) |
 
@@ -66,7 +77,7 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 | --- | --- | --- |
 | `lm new behavior` writes a complete checker script only for Python | For TypeScript it leaves replacing the outbound call to you; for Go it writes a placeholder; for other languages it writes none | Write the checker by hand: any command that reads `LEMMA_INPUT` and writes `LEMMA_OUTPUT` works |
 | Evidence is keyed on whole repositories | Any commit to a repository a checker reads runs that checker again, even when the code it ran is unchanged | None; keep checkers fast |
-| Checkers run one at a time | A check with many behaviors takes as long as all their checkers together | None |
+| A checker's cases run one after another unless it says `concurrent: true` | A check with many cases takes as long as all of them together | Mark a checker whose runs write only where `LEMMA_OUTPUT` says `concurrent: true` ([language](language.md)) |
 | Behaviors read stated graphs only | Facts Lemma reads from code (`calls` and the rest of `lemma.http`) are not available to them | Declare the links a behavior needs |
 | Evidence stays on the machine that ran the checker | CI and each developer run checkers themselves | Copy the cache's `evidence/` directory |
 
@@ -75,6 +86,7 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 | Limitation | Effect | Until fixed |
 | --- | --- | --- |
 | Answers come from language servers, which must be installed and can be slow on first use | First lookups in a large repository take seconds; servers without dependencies installed miss references through imports | Install dependencies; the daemon keeps servers warm |
+| Some large TypeScript files do not parse whole (four in zod's sources) | `lemma index` names each such file; symbols after the point of failure may be missing from `symbols` and `outline` | Look the symbol up by a file that uses it, or use text search |
 | `lemma index` reads no JavaScript files (`.js`, `.jsx`, `.mjs`, `.cjs`) | What they define cannot be looked up by `lemma symbols`, `refs` or `graph`; `lemma check` still reads them for calls to operations | Ask about the TypeScript that uses them, or use text search |
 | pyright and ty do not answer implementation lookups | `lemma implementations` says the server does not support it for Python | Use `lemma refs` |
 | gopls finds references only within one module without `go.work` | Cross-module references are missed | Add a `go.work` |
@@ -86,26 +98,37 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 | --- | --- | --- |
 | Binaries are unstripped | Larger downloads | Fine for now |
 | No Windows build | Does not run natively on Windows | Use WSL |
-| CI's macOS jobs moved to `macos-15` runners in rc1, after GitHub stopped running `macos-14` ones | Until a run passes on them, macOS builds and tests are unproven in CI | Run `cargo fmt`, `cargo clippy` and `cargo test` locally ([CONTRIBUTING](../CONTRIBUTING.md)) |
 | Soufflé is optional and not bundled | `lemma check` is about six times slower without it, same results | `brew install souffle` |
-
-## New in rc2
-
-- **One store file.** `.lemma/index.ls` replaces the SQLite index and `lemma check`'s separate cache: files, symbols, cached answers and what checks keep between runs, in one append-only file. An index from an earlier release is replaced the first time it is opened, and indexing again rebuilds it; nothing needs migrating.
-- **Symbol ids** are 128-bit hashes of a symbol's identity, shown as 16 hexadecimal digits (`#8bce55e22bc817fe`), and stay the same while a symbol keeps its path, name, kind and position among same-named symbols.
-- **One parse per file in a check.** Each file is parsed once per check, for its code facts and for tracing together, rather than three times.
-- **Generated documents.** `http.openapi("openapi.json", command: ...)` names the command that generates a document, so a handler edit is checked against consumers before the document is regenerated; a command's `inputs` decide when it runs again (see [Read operations from code](adapters.md)). `http.adapter_command(...)` is removed: write `command(...)`.
-- **Adapters outside TypeScript run on every change.** A change to a Python or Go handler under an adapter, or to code a command reads, used to reuse the base commit's document. Documents kept that way are dropped the first time rc2 runs.
-- **A repository's own adapter script.** `http.adapter("tools/lemma-adapter.ts", ...)` names a script in the repository, run with the interpreter its extension calls for. A `.ts` script is patched on a TypeScript edit as a built-in adapter is, where the same script under `command(...)` runs every time.
 
 ## New in rc1
 
-- **`lemma check`**: `.lm` modules describe a system; links between services are declared or inferred from specs and calling code, their schemas compared, and what a break affects traced up through the services that pass it on. Lemma reads only the code a change's findings can rest on. Without `--base`, it checks the work in progress since the branch left the default branch.
+- **`lemma check`**: `.lm` modules describe a system; links between services are declared or inferred from specs and calling code, their schemas compared, and what a break affects traced up through the services that pass it on. Lemma reads only the code a change's findings can rest on. With `--change <repository>` and no `--base`, it checks the work in progress since the branch left the default branch.
 - **Is it wired up?** Warnings for an operation a change adds that no route serves or no code calls, and a route a change adds that its spec leaves out; an error for a call of an operation whose route the change removed.
 - **Adapters** read a service's operations from its code (built in: Hono with zod-openapi, FastAPI, Express, Flask and Go routers; any other through a script), remember a failure per clone and environment, and fail a `--level strict` check when they cannot run.
 - **`.lm` modules and `lm`**: typed modules for services, links, rules, requirements, behaviors (requirements checked by running checkers) and allowances; `lm check`, `lm fmt`, `lm new behavior` to scaffold a behavior and its checker, and `lm lsp` with VS Code and Zed extensions.
 - **Code intelligence**: `lemma graph` shows what uses a symbol and what it uses, across a workspace; warnings where a language server leaves files out of references; workspaces index each repository and answer by name or export address from the workspace's root.
 - **MCP**: `check` and `graph` tools, and guidance for agents to check their edits as they build.
+- **Python references across a `src` layout.** In a project that keeps its package under `src/`, references from outside that directory, its tests among them, were missing without a warning. They are found now.
+- **One store file.** `.lemma/index.ls` replaces the SQLite index and `lemma check`'s separate cache: files, symbols, cached answers and what checks keep between runs, in one append-only file. An index from an earlier release is replaced the first time it is opened, and indexing again rebuilds it; nothing needs migrating.
+- **Symbol ids** are 128-bit hashes of a symbol's identity, shown as 16 hexadecimal digits (`#8bce55e22bc817fe`), and stay the same while a symbol keeps its path, name, kind and position among same-named symbols.
+- **One parse per file in a check.** Each file is parsed once per check, for its code facts and for tracing together, rather than three times.
+- **Generated documents.** `http.openapi("openapi.json", command: ...)` names the command that generates a document, so a handler edit is checked against consumers before the document is regenerated; a command's `inputs` decide when it runs again (see [Read operations from code](adapters.md)). `http.adapter_command(...)` is removed: write `command(...)`.
+- **Adapters outside TypeScript run on every change.** A change to a Python or Go handler under an adapter, or to code a command reads, used to reuse the base commit's document. Documents kept that way are dropped the first time rc1 runs.
+- **A repository's own adapter script.** `http.adapter("tools/lemma-adapter.ts", ...)` names a script in the repository, run with the interpreter its extension calls for. A `.ts` script is patched on a TypeScript edit as a built-in adapter is, where the same script under `command(...)` runs every time.
+- **One daemon per workspace, with sentry.** Commands run in a background daemon that `lemma` starts on first use. Its sentry watches the workspace's repositories and keeps a check's inputs prepared, so a check after an edit reads only what changed. Sentry is experimental ([`lemma daemon`](commands.md#lemma-daemon)).
+- **Checkers and warm runtimes.** `concurrent: true` on a checker lets its cases run at once. While the daemon runs, a repository's Python resolvers and type reads run in a process that has already imported its dependencies ([`lemma daemon`](commands.md#lemma-daemon)).
+
+## Checklist for rc1
+
+- [x] CI green on Linux and macOS for the tagged commit.
+- [x] The replays above pass on the tagged build: findings, recall, change-driven against full, and sentry against a fresh check.
+- [x] Code discovery from a cold start on Linux, on a fresh clone of one public repository per language (Python, TypeScript, Go, Rust): index, `symbols`, `outline`, `refs`, `signature`, `implementations`, `graph`. A first `refs` took 0.5 to 2 s, and 16 s in the Rust workspace while its server loaded; every other answer came in under 0.3 s.
+- [x] Code impact: the replays above; `lemma graph` on each of those repositories.
+- [x] Behavior simulation: the tutorial's behavior written for a Python, a TypeScript and a Go service; each is violated when the flag is dropped, satisfied when it is passed on, and reused on the next check.
+- [x] Verification loop: an uncommitted change that breaks a caller in another repository is an error from `lemma check --change` through sentry in 0.1 s, `--since` lists it as new, and it is gone once the caller is fixed.
+- [x] Python references in a project that keeps its package under `src/`. The fresh clone showed pyright reporting none from the tests directory: Lemma's settings had switched off its search of `src`. Fixed in this candidate; on flask, references to `url_for` went from 2 to 57.
+- [ ] All of the above from a cold start on macOS.
+- [ ] Install script run on a clean macOS and Linux machine, after the tag.
 
 ## Before 0.1.0
 
