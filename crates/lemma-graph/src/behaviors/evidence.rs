@@ -2,28 +2,41 @@
 //! everything a result depends on, so it is reused while those inputs hold
 //! (spec 13, section 10).
 //!
-//! A key covers the checker's address and declaration, the arguments, the
-//! state of the code in every repository it reads, and its environment.
-//! Code is named by its Git tree, plus a digest of changed files for a
-//! working directory, as adapters' documents are. Results are kept under
-//! `evidence/` in Lemma's cache, one JSON file per key, with the key each
-//! case last ran with, so a run that may not start checkers can tell stale
-//! evidence from none.
+//! A key covers the checker's address and declaration, the arguments, its
+//! environment, and the code its result rests on. Where a run can be
+//! watched, that code is what the run read: each file, listing and missing
+//! path a recorder saw, with its state, so a change to anything else
+//! leaves the evidence standing. Elsewhere it is the whole state of every
+//! repository the checker reads: its Git tree, plus a digest of changed
+//! files for a working directory, as adapters' documents are.
+//!
+//! Results are kept under `evidence/` in Lemma's cache, one JSON file per
+//! key, with the key each case last ran with, so a run that may not start
+//! checkers can tell stale evidence from none. `evidence/reads/` holds,
+//! for each checker and arguments, the read sets of its latest runs: the
+//! key of a run's evidence is not known until what it read is.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::SystemTime;
 
 use lemma_lang::eval::Evidence;
 use lemma_lang::model::{Checker, CheckerRunner};
 use serde_json::{Value as Json, json};
 
 use super::encode::{Decoded, decode_output};
+use super::reads::{self, Current, ReadSet, Roots};
+use crate::recorder::{self, Recorded, Recorder};
 use crate::repos::{self, Checkout};
 
 /// Bumped when what checkers are given, or how their output is read,
 /// changes.
-const PROTOCOL: &str = "1";
+const PROTOCOL: &str = "2";
+
+/// How many read sets are kept for one checker and arguments: enough to
+/// come back to a state left a few changes ago, as after a branch switch.
+const KEPT_READ_SETS: usize = 8;
 
 /// How long a checker may run when it does not say.
 const CHECKER_TIMEOUT_MS: u64 = 600_000;
@@ -46,6 +59,11 @@ pub(crate) struct Store {
     setting_up: Mutex<()>,
     /// Digests of the proof verifier and solvers, read once per check.
     digests: crate::proof::Digests,
+    /// What watches a checker run, looked for when the first one starts;
+    /// `None` on a machine with nothing that can.
+    recorder: OnceLock<Option<Box<dyn Recorder>>>,
+    /// The state now of the paths kept evidence rests on.
+    current: Current,
 }
 
 /// Where a repository's code is read, and the state of that code: `None`
@@ -79,6 +97,7 @@ pub(crate) struct RecordedDemand {
     reads: BTreeMap<String, Option<String>>,
     place: Place,
     roots: BTreeMap<String, String>,
+    is_at_work: bool,
     engine_key: Option<String>,
 }
 
@@ -92,6 +111,7 @@ impl RecordedDemand {
             reads: request.reads.clone(),
             place: request.place.clone(),
             roots: request.roots.clone(),
+            is_at_work: request.is_at_work,
             engine_key: request.engine_key.clone(),
         }
     }
@@ -104,6 +124,7 @@ impl RecordedDemand {
             reads: self.reads.clone(),
             place: &self.place,
             roots: &self.roots,
+            is_at_work: self.is_at_work,
             engine_key: self.engine_key.clone(),
         }
     }
@@ -122,14 +143,38 @@ pub(crate) struct Request<'r> {
     /// snapshot checked, which the checker is told but the key leaves out,
     /// so evidence holds on any machine.
     pub(crate) roots: &'r BTreeMap<String, String>,
+    /// Whether every repository the checker reads is read at its working
+    /// directory, with `roots` saying where: there, what a run reads can
+    /// be recorded and compared with what the files hold now.
+    pub(crate) is_at_work: bool,
     /// Native verifier and solver identity; absence disables proof reuse.
     pub(crate) engine_key: Option<String>,
 }
 
 impl Request<'_> {
-    /// The key of this demand's evidence: equal demands have equal keys.
+    /// The key of this demand within one check: equal demands have equal
+    /// keys. Evidence kept by whole repositories is kept under it.
     pub(crate) fn key(&self) -> String {
         evidence_key(self)
+    }
+
+    /// Whether the evidence can be kept by what a run reads: a command,
+    /// run where its files can be watched.
+    fn is_kept_by_reads(&self) -> bool {
+        self.is_at_work
+            && !self.roots.is_empty()
+            && matches!(self.checker.runner, CheckerRunner::Command(_))
+    }
+
+    /// Where each repository the checker reads has its files.
+    fn root_paths(&self) -> Roots {
+        self.roots
+            .iter()
+            .map(|(name, root)| {
+                let root = PathBuf::from(root);
+                (name.clone(), root.canonicalize().unwrap_or(root))
+            })
+            .collect()
     }
 }
 
@@ -144,6 +189,8 @@ impl Store {
             states: Arc::default(),
             setting_up: Mutex::new(()),
             digests: crate::proof::Digests::default(),
+            recorder: OnceLock::new(),
+            current: Current::default(),
         }
     }
 
@@ -235,19 +282,16 @@ impl Store {
             .map_err(|error| error.to_string())
     }
 
-    /// The evidence for `request`: stored evidence with an equal key, or
-    /// the checker's answer after running it.
-    /// Stored evidence for `request`, if its key holds some; asks nothing
-    /// of the request's roots, which only running needs.
+    /// Stored evidence for `request`, if some is kept that still holds;
+    /// asks nothing of where a commit's files are, which only running
+    /// needs.
     pub(crate) fn reusable(&self, request: &Request<'_>) -> Option<Evidence> {
-        let key = evidence_key(request);
-        let is_reusable = request.checker.is_cached
-            && request.reads.values().all(Option::is_some)
-            && (request.checker.runner != CheckerRunner::Proof || request.engine_key.is_some());
-        if !is_reusable {
+        if !request.checker.is_cached {
             return None;
         }
-        let stored = self.stored(&key)?;
+        let (key, stored) = self
+            .kept_by_reads(request)
+            .or_else(|| self.kept_by_state(request))?;
         log::info!(
             "evidence: {} reused for {}",
             request.checker.address,
@@ -256,32 +300,120 @@ impl Store {
         Some(stored.into_evidence(&key, true))
     }
 
+    /// Evidence of a run whose every read still finds what it found.
+    fn kept_by_reads(&self, request: &Request<'_>) -> Option<(String, Decoded)> {
+        if !request.is_kept_by_reads() {
+            return None;
+        }
+        let roots = request.root_paths();
+        self.read_sets(&invariant_key(request))
+            .into_iter()
+            .filter(|(_, reads)| reads.holds(&roots, &self.current))
+            .find_map(|(key, _)| Some((key.clone(), self.stored(&key)?)))
+    }
+
+    /// Evidence kept for the state every repository read is in.
+    fn kept_by_state(&self, request: &Request<'_>) -> Option<(String, Decoded)> {
+        if !is_kept_by_state(request) {
+            return None;
+        }
+        let key = evidence_key(request);
+        let stored = self.stored(&key)?;
+        Some((key, stored))
+    }
+
+    /// The evidence for `request`: kept evidence that still holds, or the
+    /// checker's answer after running it.
     pub(crate) fn demand(&self, request: &Request<'_>) -> Evidence {
         let key = evidence_key(request);
         let case = case_key(request);
         if let Some(stored) = self.reusable(request) {
             return stored;
         }
-        let is_reusable = request.checker.is_cached
-            && request.reads.values().all(Option::is_some)
-            && (request.checker.runner != CheckerRunner::Proof || request.engine_key.is_some());
         if !self.may_run {
-            return self.not_run(&case, &key);
+            return self.not_run(request, &case, &key);
         }
         log::info!(
             "evidence: running {} for {}",
             request.checker.address,
             request.case
         );
-        match self.run(request, &key) {
-            Ok((decoded, output)) => {
-                if is_reusable {
-                    self.keep(request, &key, &case, &output);
-                }
+        let recorder = self.recorder_for(request);
+        let started = SystemTime::now();
+        let ran = self.run(request, &key, recorder);
+        // Whatever the run wrote, kept evidence is compared with afresh.
+        self.current.forget();
+        let (decoded, output, seen) = match ran {
+            Ok(ran) => ran,
+            Err(why) => return Evidence::Unavailable(why),
+        };
+        let Some(seen) = seen else {
+            if is_kept_by_state(request) {
+                self.keep(request, &key, &case, &output);
+            }
+            return decoded.into_evidence(&key, false);
+        };
+        let roots = request.root_paths();
+        let reads = match changed_input(&seen, &roots) {
+            Some(path) => Err(format!("the checker changed {path}, which it read")),
+            None => ReadSet::of(&seen, &roots, started),
+        };
+        match reads {
+            Ok(reads) => {
+                let key = reads_key(request, &reads);
+                log::info!(
+                    "evidence: {} is kept by the {} paths its run read",
+                    request.case,
+                    reads.len()
+                );
+                self.keep(request, &key, &case, &output);
+                self.keep_read_set(request, &key, &reads);
                 decoded.into_evidence(&key, false)
             }
-            Err(why) => Evidence::Unavailable(why),
+            Err(why) => {
+                log::info!("evidence for {} is not kept: {why}", request.case);
+                decoded.into_evidence(&key, false)
+            }
         }
+    }
+
+    /// What watches this request's run, when its evidence is to be kept
+    /// by what the run reads.
+    fn recorder_for(&self, request: &Request<'_>) -> Option<&dyn Recorder> {
+        if !request.checker.is_cached || !request.is_kept_by_reads() {
+            return None;
+        }
+        let found = self.recorder.get_or_init(|| {
+            let none = BTreeMap::new();
+            let found = recorder::find(repos::Environment {
+                base: self.environment.as_deref(),
+                added: &none,
+            });
+            match &found {
+                Some(recorder) => log::info!("evidence: runs are watched by {}", recorder.name()),
+                None => {
+                    log::info!("evidence: no run can be watched here; kept by whole repositories");
+                }
+            }
+            found
+        });
+        found.as_deref()
+    }
+
+    /// The read sets kept for a checker and arguments, latest first, each
+    /// with the key of its evidence.
+    fn read_sets(&self, invariant: &str) -> Vec<(String, ReadSet)> {
+        let read = || {
+            let text = std::fs::read_to_string(self.read_sets_of(invariant)).ok()?;
+            let kept: Json = serde_json::from_str(&text).ok()?;
+            let entries = kept["entries"].as_array()?;
+            let sets = entries.iter().filter_map(|entry| {
+                let reads = ReadSet::from_json(&entry["reads"])?;
+                Some((entry["evidence"].as_str()?.to_owned(), reads))
+            });
+            Some(sets.collect())
+        };
+        read().unwrap_or_default()
     }
 
     fn stored(&self, key: &str) -> Option<Decoded> {
@@ -292,10 +424,13 @@ impl Store {
 
     /// Why there is no evidence when checkers may not run: stale when the
     /// case last ran with other inputs, otherwise none was ever kept.
-    fn not_run(&self, case: &str, key: &str) -> Evidence {
+    fn not_run(&self, request: &Request<'_>, case: &str, key: &str) -> Evidence {
         let latest = std::fs::read_to_string(self.latest(case)).ok();
+        // Evidence kept by what a run read has no key until it runs; had
+        // the last run's still held, it would have been reused.
+        let is_other = |previous: &str| request.is_kept_by_reads() || previous.trim() != key;
         match latest {
-            Some(previous) if previous.trim() != key => Evidence::Stale(
+            Some(previous) if is_other(&previous) => Evidence::Stale(
                 "its inputs changed since the evidence was kept, and checkers may not run"
                     .to_owned(),
             ),
@@ -305,9 +440,15 @@ impl Store {
         }
     }
 
-    /// Runs the checker in its repository at the snapshot; its decoded
-    /// output and the output as written.
-    fn run(&self, request: &Request<'_>, key: &str) -> Result<(Decoded, Json), String> {
+    /// Runs the checker in its repository at the snapshot, watched by
+    /// `recorder` if there is one; its decoded output, the output as
+    /// written, and what the run was seen to do.
+    fn run(
+        &self,
+        request: &Request<'_>,
+        key: &str,
+        recorder: Option<&dyn Recorder>,
+    ) -> Result<(Decoded, Json, Option<Recorded>), String> {
         let checker = request.checker;
         let root = request
             .place
@@ -347,10 +488,13 @@ impl Store {
             base: self.environment.as_deref(),
             added: &env,
         };
+        let mut seen = None;
         match &checker.runner {
             CheckerRunner::Command(command) => {
-                repos::run_program(&directory, command, environment, Some(timeout_ms))
+                let watched = Watched::start(recorder, command, &run)?;
+                repos::run_program(&directory, watched.command(), environment, Some(timeout_ms))
                     .map_err(|error| format!("the checker failed: {}", describe(&error)))?;
+                seen = watched.finish(&directory)?;
             }
             CheckerRunner::Proof => {
                 let result =
@@ -358,7 +502,8 @@ impl Store {
                 write_json(&output, &result)?;
             }
         }
-        read_output(&output, checker)
+        let (decoded, written) = read_output(&output, checker)?;
+        Ok((decoded, written, seen))
     }
 
     /// Runs the checker's `setup` once per state of its repository's code.
@@ -421,6 +566,37 @@ impl Store {
         }
     }
 
+    /// Puts a run's read set first among those kept for its checker and
+    /// arguments, dropping the oldest past [`KEPT_READ_SETS`]. Without it
+    /// the evidence is only run again, so a failure to write is logged.
+    fn keep_read_set(&self, request: &Request<'_>, key: &str, reads: &ReadSet) {
+        let invariant = invariant_key(request);
+        let mut entries = vec![json!({ "evidence": key, "reads": reads.to_json() })];
+        let earlier = self.read_sets(&invariant);
+        let others = earlier.iter().filter(|(other, _)| other != key);
+        entries.extend(
+            others
+                .take(KEPT_READ_SETS - 1)
+                .map(|(other, reads)| json!({ "evidence": other, "reads": reads.to_json() })),
+        );
+        // Written whole beside its place and moved there, so a check
+        // reading it at the same moment sees the old sets or the new.
+        let path = self.read_sets_of(&invariant);
+        let beside = path.with_extension(format!("{}.tmp", std::process::id()));
+        let kept = write_json(&beside, &json!({ "entries": entries })).and_then(|()| {
+            std::fs::rename(&beside, &path).map_err(|error| format!("{}: {error}", path.display()))
+        });
+        if let Err(why) = kept {
+            log::warn!("what {} read was not kept: {why}", request.case);
+        }
+    }
+
+    fn read_sets_of(&self, invariant: &str) -> PathBuf {
+        self.directory
+            .join("reads")
+            .join(format!("{invariant}.json"))
+    }
+
     fn record(&self, key: &str) -> PathBuf {
         self.directory.join(format!("{key}.json"))
     }
@@ -430,10 +606,102 @@ impl Store {
     }
 }
 
-/// The key of a demand's evidence: everything its result depends on.
-// TODO(release): the key holds the whole state of each repository in
-// `reads`, so any commit makes every checker run again; key on the files a
-// checker read (reported, or declared as paths) instead.
+/// A command to run, watched if there is a recorder.
+struct Watched<'r> {
+    recorder: Option<&'r dyn Recorder>,
+    command: Vec<String>,
+    scratch: PathBuf,
+}
+
+impl<'r> Watched<'r> {
+    /// `command`, to run under `recorder` with what it sees left in a
+    /// fresh directory of the run's.
+    fn start(
+        recorder: Option<&'r dyn Recorder>,
+        command: &[String],
+        run: &Path,
+    ) -> Result<Self, String> {
+        let scratch = run.join("watched");
+        let Some(recorder) = recorder else {
+            return Ok(Self {
+                recorder: None,
+                command: command.to_vec(),
+                scratch,
+            });
+        };
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch)
+            .map_err(|error| format!("{}: {error}", scratch.display()))?;
+        Ok(Self {
+            recorder: Some(recorder),
+            command: recorder.watching(command, &scratch),
+            scratch,
+        })
+    }
+
+    fn command(&self) -> &[String] {
+        &self.command
+    }
+
+    /// What the run, started in `directory` and now ended, was seen to do.
+    fn finish(self, directory: &Path) -> Result<Option<Recorded>, String> {
+        let Some(recorder) = self.recorder else {
+            return Ok(None);
+        };
+        let seen = recorder
+            .recorded(&self.scratch, directory)
+            .map_err(|why| format!("the checker ran, but what it read is not known: {why}"));
+        let _ = std::fs::remove_dir_all(&self.scratch);
+        seen.map(Some)
+    }
+}
+
+/// A file the run read and then wrote that its repository keeps in Git:
+/// the run changed what it rests on, so no state of that file is the one
+/// its result holds for. What Git does not keep, such as a cache, is the
+/// run's product.
+fn changed_input(seen: &Recorded, roots: &Roots) -> Option<String> {
+    reads::rewritten(seen, roots)
+        .into_iter()
+        .find_map(|(root, paths)| {
+            let mut arguments = vec!["ls-files", "--"];
+            arguments.extend(paths.iter().map(String::as_str));
+            // Outside Git nothing is kept, and everything is a product.
+            let tracked = repos::git(&root, &arguments).ok()?;
+            tracked.lines().next().map(str::to_owned)
+        })
+}
+
+/// Whether evidence may be kept for the state of the repositories read:
+/// each has one to name, and a proof's engine is known.
+fn is_kept_by_state(request: &Request<'_>) -> bool {
+    request.checker.is_cached
+        && request.reads.values().all(Option::is_some)
+        && (request.checker.runner != CheckerRunner::Proof || request.engine_key.is_some())
+}
+
+/// What a checker's evidence depends on apart from code: the checker as
+/// declared, the arguments and its environment.
+fn invariant_key(request: &Request<'_>) -> String {
+    let checker = request.checker;
+    let described = json!({
+        "protocol": PROTOCOL,
+        "checker": checker.address.to_string(),
+        "declaration": checker.text,
+        "arguments": request.arguments,
+        "env": checker.env,
+    });
+    lemma_model::content_hash(described.to_string().as_bytes())
+}
+
+/// The key of evidence kept by what its run read.
+fn reads_key(request: &Request<'_>, reads: &ReadSet) -> String {
+    let described = json!({ "invariant": invariant_key(request), "reads": reads.to_json() });
+    lemma_model::content_hash(described.to_string().as_bytes())
+}
+
+/// The key of a demand's evidence kept by whole repositories: everything
+/// its result depends on, with the state of each repository read.
 fn evidence_key(request: &Request<'_>) -> String {
     let checker = request.checker;
     let mut described = json!({
