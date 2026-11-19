@@ -125,10 +125,10 @@ pub(crate) enum Command {
     ///
     /// Exits with 4 if any finding is an error (level `check`).
     Check(CheckArgs),
-    /// Run, inspect, stop, or install the background daemon.
+    /// Run, inspect or stop the background daemon.
     ///
     /// Every other command starts the daemon automatically; run this to keep
-    /// it in the foreground, check on it, stop it, or start it at login.
+    /// it in the foreground, check on it, or stop it.
     Daemon(DaemonArgs),
 }
 
@@ -290,7 +290,8 @@ pub(crate) struct SentryArgs {
 
 #[derive(Subcommand)]
 pub(crate) enum SentryCommand {
-    /// Attach to the workspace of a manifest, in a daemon already running.
+    /// Attach to the workspace of a manifest, starting its daemon if none
+    /// runs.
     Start {
         /// The workspace's mod.lm.
         #[arg(default_value = "mod.lm")]
@@ -512,7 +513,7 @@ pub(crate) struct Filters {
     /// Only symbols of this kind, such as `function` or `method`.
     #[arg(long)]
     pub kind: Option<SymbolKind>,
-    /// Only symbols in this language: typescript, tsx, python, or go.
+    /// Only symbols in this language: typescript, tsx, python, go, or rust.
     #[arg(long)]
     pub language: Option<Language>,
     /// Only symbols whose file path contains this text.
