@@ -725,6 +725,19 @@ Two consequences follow from keeping to what a run was seen to do, and both cost
 
 A stale case and the log say which path ended the evidence, which shows either at once: `src has other entries` on every case after one new file is the first.
 
+**Measured, 2026-11-19.** Six public repositories, each test unit a case of one behavior whose checker runs that unit with the repository's own runner, eight at once. For each of 12 files taken from the repository's history, a line that breaks the file was appended and `lemma check` run, then a check with an empty cache gave what every unit does now, and the edit was undone. Over 72 such changes no evidence was reused that the fresh run contradicted, and undoing an edit ran nothing again.
+
+| Repository | Cases | Ran again per change, whole-repository key | By read sets | Cases the change broke | Warm check, before and after | Cold check, before and after |
+| --- | --- | --- | --- | --- | --- | --- |
+| hono (TypeScript) | 125 | 100% | 11% | 9% | 0.03 s, 0.09 s | 25 s, 38 s |
+| zustand (TypeScript) | 14 | 100% | 18% | 18% | 0.01 s, 0.05 s | 3.1 s, 5.7 s |
+| gin (Go, by package) | 6 | 100% | 42% | 42% | 0.01 s, 0.02 s | 1.8 s, 2.6 s |
+| echo (Go, by package) | 3 | 100% | 83% | 83% | 0.02 s, 0.02 s | 2.1 s, 2.8 s |
+| flask (Python) | 22 | 100% | 100% | 91% | 0.02 s, 0.02 s | 3.4 s, 4.3 s |
+| starlette (Python) | 31 | 100% | 100% | 85% | 0.01 s, 0.04 s | 9.0 s, 13.7 s |
+
+Percentages are medians over the changes. What runs again is what the change broke, plus in hono two units that read a results file the other units rewrite. In flask and starlette every test imports the whole package, so every case reads every file of it. Watching a run costs between a quarter and four fifths more time on a cold check, most where the runner makes the most system calls; a warm check costs what it did.
+
 A recorder sees files. A read set does not hold environment variables beyond `env`, the network, files outside the repositories read (a toolchain, the system's libraries), or a repository's Git directory, which holds history and not code. A checker whose result depends on any of them says `cache: false`.
 
 The reported toolchain, artifacts and coverage are kept with the evidence but are not part of the key, since they are only known after running.
