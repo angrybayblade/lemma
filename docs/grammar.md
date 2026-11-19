@@ -86,7 +86,7 @@ rule reaches(a: Text, c: Text) {
 
 ### Rule validity
 
-Lemma checks every rule before running it and says which rule is wrong and why. `lm check` reports most of these with their line; a wildcard in a negation and a relation depending on its own negation are reported when `lemma check` compiles the rules, and stop it with exit 1:
+Lemma checks every rule before running it and says which rule is wrong and why. `lm check` reports most of these with their line; a wildcard in a negation and a relation depending on its own negation are reported when `lemma check` compiles the rules, and stop it with exit 1. It compiles them only when it infers links (with `--change`, or where a service reads its operations from code), so try a new rule with a change; the message names the rule by its number:
 
 - **Safe.** Every variable in the head, in a negated atom and in a comparison appears in a positive atom of the body.
 - **No wildcards in negation.** `!parameter@head(op, _, loc)` is rejected; derive the projection first with a rule `has_parameter(op, loc)` over `parameter@head(op, _, loc)`, then write `!has_parameter(op, loc)`.
@@ -131,11 +131,11 @@ By default `lemma check` reads only the consumer code a finding can rest on (`--
 - **Anchored**: every call it rests on is a call of an operation held by a relation computed without consumer code (`removed_operation(op)`), and its other consumer facts are about the calling code: its function, its file, and the files that file imports. Imports followed through a recursive rule are not bounded, so such a requirement is not anchored.
 - **Change-local**: each consumer fact it rests on is guarded by the negation of the same row at the base, through a rule that reads only that input at the base, with no conditions, and keeps its calling code (`!called_before(c, m, p)`), so it can hold only for code the change edits. Its other negations may only be such guards, or the service membership of the guarded call's file.
 
-When any requirement is none of these, Lemma reads every consumer file and the report's `evaluation` names the requirement.
+When any requirement is none of these, Lemma reads every consumer file. `lemma check` does not say which requirement caused it; `--evaluation both` shows whether the two readings agree.
 
 ## Extractor relations
 
-`lemma check` fills these input relations of `lemma.http`, in both snapshots unless noted. Operations are named `METHOD /path` with path parameters as `{}`; consumers are `repository:file::Function` (or `repository:file` outside functions); files are `repository:file`.
+`lemma check` fills these input relations of `lemma.http`, in both snapshots unless noted. Operations are named `METHOD /path` with path parameters as `{}`; services are `#repository:service`; consumers are `#repository:service:file::Function` (or `#repository:service:file` outside functions); files are `#repository:service:file`.
 
 | Relation | Columns | From |
 | --- | --- | --- |
@@ -147,6 +147,7 @@ When any requirement is none of these, Lemma reads every consumer file and the r
 | `response_field` | operation, field path, last name | service documents, 2xx responses |
 | `strict_request` | operation | service documents: `additionalProperties: false` |
 | `route` | service, method, path, file, line | service route code |
+| `code_names_path` | service, path | service route code: a spec path the code writes, whole or as a router's prefix and a path under it, whether or not a route is read from it |
 | `route_schema` | service, method, path, part (`body`/`query`), file, schema | service route code |
 | `inline_strict_route` | service, method, path, part | a route's own schema is `.strict()` |
 | `strict_schema` | file, name | `const name = z.object(..).strict()` |

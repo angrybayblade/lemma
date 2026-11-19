@@ -63,6 +63,8 @@ extraPaths = ["src"]
 | `initialization_options` | no | A table sent to the server when it starts, as LSP `initializationOptions`. Check the server's documentation for what it accepts. |
 | `settings` | no | A table the server can read back through `workspace/configuration`. Write keys the way the server documents them, for example `[provider.settings.python.analysis]` for pyright's `python.analysis` section. |
 | `ready_messages` | no | Patterns for a log message, or the title of a progress report that finishes, that the server sends once it has loaded the project. `*` matches any text. Lemma waits for one before asking, instead of guessing from diagnostics and quiet periods. If none arrives within 10 seconds, a quiet spell counts instead. |
+| `project_markers` | no | File names, such as `tsconfig.json` or `Cargo.toml`, that mark a separate project the server searches only once one of its files is open. Before a project-wide question, Lemma opens a file in each project that mentions the symbol. |
+| `install` | no | How to install the server. `lemma providers` shows it when the command is not found. |
 
 Lemma rejects unknown fields, so a typo such as `comand` causes an error instead of being ignored.
 
@@ -110,7 +112,7 @@ On the repository above, with `when_slow = "next"` and ty installed, all 11 of t
 What to know before turning it on:
 
 - **Memory.** The next server may hold more than the first. ty reads the whole repository into memory: 12.3 GB on that repository. The slow server is stopped when it times out and is not started again while it is passed over, so the two do not run side by side for long.
-- **Answers differ between servers.** ty does not count import statements as references, and pyright found one reference ty missed (see the notes below). A graph can hold answers from both: the ones pyright gave in time and kept, and the ones ty gave after.
+- **Answers differ between servers.** Pyright found one reference ty missed (see the notes below). A graph can hold answers from both: the ones pyright gave in time and kept, and the ones ty gave after.
 - **Only a timeout is handed on.** A server that crashes, or answers with an error, is still reported, whatever the setting.
 - **Only when there is a next server.** If the slow server is the last one installed for the language, its timeout is reported as before, and it is not passed over: the slowest answer is better than none. `lemma providers` shows what is installed.
 - **Only once the next server has answered** is the slow one passed over, so a machine too busy for any server does not lose its first choice.
@@ -132,15 +134,15 @@ If the first server is too slow for most questions in a repository, not a few, l
 
 ## Caching and configuration changes
 
-Lemma caches answers per snapshot, provider, and provider configuration. Changing a provider's `command`, `args`, `initialization_options`, `settings` or `ready_messages` changes its fingerprint, so its old answers are no longer used and the next lookup asks the server again.
+Lemma caches answers per snapshot, provider, and provider configuration. Changing a provider's `command`, `args`, `initialization_options`, `settings`, `ready_messages` or `project_markers` changes its fingerprint, so its old answers are no longer used and the next lookup asks the server again.
 
 Upgrading a server binary without changing its configuration does not invalidate the cache. `lemma refs --refresh` asks again.
 
 ## Server notes
 
 - **pyright** is tried first for Python. Compared with ty on a large repository, it found every reference ty did plus one ty missed (a classmethod called through an instance of a generic subclass of a metaclass-built class), and it counts import statements and `__all__` entries as references. It used less memory there (2.7 GB against 7.3 GB), but each lookup took seconds where ty took a fraction of one.
-- **ty** comes next: much faster on large projects (on a 73,000-file repository a cold lookup takes about 2 seconds and a warm one under 20 milliseconds), but it reads the whole repository into memory and, like the TypeScript servers, does not count import statements as references. To prefer it, list it in `.lemma/providers.toml`, which is tried before the built-in order. Install it with `uv tool install ty` or `pip install ty`.
+- **ty** comes next: much faster on large projects (on a 73,000-file repository a cold lookup takes about 2 seconds and a warm one under 20 milliseconds), but it reads the whole repository into memory. To prefer it, list it in `.lemma/providers.toml`, which is tried before the built-in order. Install it with `uv tool install ty` or `pip install ty`.
 - **pyright and basedpyright** are configured to check only open files (`diagnosticMode = "openFilesOnly"`), which keeps start-up fast. Reference lookups still search the whole project, and pyright re-reads it for every lookup: on very large projects each lookup takes seconds even with a warm server. They count import statements as references. On a repository of a few thousand files, setting `diagnosticMode = "workspace"` makes lookups several times faster after a slower start (about a minute on django); on very large ones it does not help (see [Performance](performance.md#python-servers-measured)). Lemma waits for their "Found N source files" message before asking, since earlier answers miss most of the project. Pyright does not report its version, so output names it without one.
-- **TypeScript servers** find the project through `tsconfig.json`. Imports from packages need `node_modules`. A TypeScript import statement is not counted as a reference to the imported symbol, only its uses are. Lemma waits for typescript-language-server's "Initializing JS/TS language features" progress to finish before asking.
+- **TypeScript servers** find the project through `tsconfig.json`. Imports from packages need `node_modules`. An import statement that names a symbol is listed as a reference to it, like its uses. Lemma waits for typescript-language-server's "Initializing JS/TS language features" progress to finish before asking.
 - **gopls** works from the module containing the indexed files, so index from inside a directory with a `go.mod`. In a repository with several Go modules and no `go.work`, references from other modules are not found.
 - **rust-analyzer** loads the Cargo workspace with `cargo metadata` and indexes it before it can answer; Lemma waits for its "Indexing" progress to finish, and asks again while it answers "content modified". On this repository a cold lookup takes about 5 seconds.
