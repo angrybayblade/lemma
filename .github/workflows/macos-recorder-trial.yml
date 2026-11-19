@@ -47,8 +47,12 @@ jobs:
         timeout-minutes: 5
         if: always()
         run: sh trial/eslogger.sh out/ac sh trial/with-c.sh "$PWD/out/ac/calls" "$PWD/trial/probe" /tmp/probe-ac
-      - name: "A: load and drops"
+      - name: "A: probe as root (openbyid_np)"
         timeout-minutes: 5
+        if: always()
+        run: sh trial/eslogger.sh out/a-root sudo -n "$PWD/trial/probe" /tmp/probe-a-root
+      - name: "A: load and drops"
+        timeout-minutes: 8
         if: always()
         run: sh trial/eslogger.sh out/stress sh trial/stress.sh
       - name: Pack

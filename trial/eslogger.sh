@@ -7,7 +7,8 @@ mkdir -p "$out"
 events="access chdir clone copyfile create exchangedata exec exit fork fsgetpath getattrlist getextattr link listextattr lookup open readdir readlink rename searchfs stat truncate unlink write"
 echo "== starting eslogger"
 # eslogger mutes every process in its own process group, so it gets a group of its own.
-sudo -n /usr/bin/perl -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' /usr/bin/eslogger $events > "$out/events.json" 2> "$out/eslogger-err.txt" &
+# A background job of a non-interactive shell starts with SIGINT ignored, so it is reset before exec.
+sudo -n /usr/bin/perl -e '$SIG{INT} = "DEFAULT"; setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' /usr/bin/eslogger $events > "$out/events.json" 2> "$out/eslogger-err.txt" &
 sleep 4
 if ! pgrep -x eslogger > /dev/null; then
   echo "eslogger did not start:"; cat "$out/eslogger-err.txt"; exit 1
@@ -28,7 +29,18 @@ fi
 wait $command; status=$?
 end=$(date +%s)
 echo "== command ended: status $status after $((end - start))s"
-sleep 3
+# A marker: a lookup of a unique missing path. Events reach a client in order, so once the
+# marker is in the output, every event of the command before it is too.
+marker="/tmp/lemma-marker-$$-$(date +%s)"
+stat "$marker" > /dev/null 2>&1
+marked=$(date +%s)
+waited=0
+while ! grep -q "lemma-marker-$$-" "$out/events.json" && [ $waited -lt 240 ]; do sleep 1; waited=$((waited + 1)); done
+if grep -q "lemma-marker-$$-" "$out/events.json"; then
+  echo "== marker seen $(( $(date +%s) - marked ))s after the command ended" | tee "$out/marker.txt"
+else
+  echo "== marker NOT seen after 240s" | tee "$out/marker.txt"
+fi
 echo "== stopping eslogger"
 sudo -n pkill -INT -x eslogger
 waited=0
