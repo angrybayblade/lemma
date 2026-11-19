@@ -25,7 +25,7 @@ description: Prove a change keeps repositories in agreement with `lemma check` -
 5. Before handing over, `lemma check --change <repository> --level strict` fails when an adapter could not read the code, so a pass is not resting on documents alone.
 6. Report each run and its result. A warning you leave in place needs a reason, such as an operation meant for callers outside the workspace (state it in a graph of `lemma.http.public_operation` so the check expects no caller).
 
-## With sentry
+## With sentry (experimental)
 
 When the daemon's sentry is attached to the workspace (`lemma daemon sentry status` says so; `lemma daemon sentry start` attaches it), a check is answered from what earlier checks read: a check after an edit takes about a second, and one with nothing changed is instant. Checking at the end of each unit costs little then, but the rule stands: a half-made change still reports breaks you are about to fix.
 
@@ -35,7 +35,7 @@ Each answer ends with `sentry token: <token>`. After fixing what a check reporte
 
 Run with `--all` to see informational findings, and `lemma verify --links` to see which caller Lemma matched to which operation. A wrong finding is usually one wrong match: a path built at run time matched to the wrong operation, or a common field name counted as a use. Say so in the report rather than working around it in code.
 
-## The stop gate
+## The stop gate (experimental)
 
 The stop gate is opt-in. `hooks/stop-check.py` beside this file, a Claude Code Stop hook, runs `lemma check --change` for each repository with uncommitted edits when the agent tries to stop, and sends it back to work once when the change introduced errors. It is off unless a project turns it on in `.claude/settings.json`:
 
@@ -49,4 +49,6 @@ The stop gate is opt-in. `hooks/stop-check.py` beside this file, a Claude Code S
 }
 ```
 
-It reads the workspace from the directory the agent runs in (a `mod.lm` there composes the repositories, each a directory beside it) and checks only repositories with uncommitted changes. It blocks at most once per stop, so an error the agent cannot fix is reported rather than looped on.
+The path above is for skills copied into the project. Skills installed with `LEMMA_SKILLS=1` are in `~/.claude/skills`: name `stop-check.py` there instead.
+
+It works when the agent runs in the workspace's directory and each repository is a directory inside it (`repo billing = local("billing")`), and it checks only repositories with uncommitted changes. With repositories beside the workspace (`local("../billing")`), or an agent started inside one repository, it checks nothing and says nothing. It also lets the agent stop when `lemma check` cannot run or times out. It blocks at most once per stop, so an error the agent cannot fix is reported rather than looped on.
