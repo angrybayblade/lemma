@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15]
+        os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -36,12 +36,20 @@ jobs:
       - name: Build
         run: sh trial/build.sh
       - name: "A: probe"
+        timeout-minutes: 5
+        if: always()
         run: sh trial/eslogger.sh out/a "$PWD/trial/probe" /tmp/probe-a
       - name: "A: probe under Rosetta"
+        timeout-minutes: 5
+        if: always()
         run: sh trial/eslogger.sh out/a-x86 "$PWD/trial/probe-x86" /tmp/probe-a-x86
       - name: "A and C together: probe"
+        timeout-minutes: 5
+        if: always()
         run: sh trial/eslogger.sh out/ac sh trial/with-c.sh "$PWD/out/ac/calls" "$PWD/trial/probe" /tmp/probe-ac
       - name: "A: load and drops"
+        timeout-minutes: 5
+        if: always()
         run: sh trial/eslogger.sh out/stress sh trial/stress.sh
       - name: Pack
         if: always()
