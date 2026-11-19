@@ -24,7 +24,7 @@ Lemma answers code questions through each language's own server (references, def
 | Does a `mod.lm` still match the code? | `lemma verify` | Finds `include` patterns matching nothing, missing documents, anchors that do not resolve. Compares no commits; run when a description changes |
 | Strings, log messages, config keys, one-off lookups in small repositories | `rg` / grep | Text is the question |
 
-Prefer Lemma's MCP tools when they are available (`references`, `definition`, `implementations`, `signature`, `outline`, `search_symbols`, `index`, `check`, `verify`); they answer the same questions. Before deleting something "unused", cross-check with text search: "no references found" means the server saw none, not that nothing uses it dynamically.
+Prefer Lemma's MCP tools when they are available (`references`, `definition`, `implementations`, `signature`, `graph`, `outline`, `search_symbols`, `index`, `check`, `verify`); they answer the same questions. Before deleting something "unused", cross-check with text search: "no references found" means the server saw none, not that nothing uses it dynamically.
 
 ## Name symbols precisely
 
@@ -64,7 +64,7 @@ error   request: the receiver requires `currency` at the root; the sender may le
 - `(introduced)` means the change caused it; `(already there)` findings are informational when a change is given.
 - `affects` lists, by distance, the operations whose handlers reach the problem (with the calls from each handler down to it), the code elsewhere that calls them, the operations reached through that code, and so on; each group shows three, and `--all` lists them all. It is traced by name, so treat it as where to look, not as proof.
 
-Without `--head`, the working directory is checked, uncommitted edits included; without `--base`, the change starts where the branch left the default branch. `--change` takes a repository's name or its directory: `web-app` is the repository named `web_app`, and findings print `#web_app`.
+With `--change <repo>` and no `--head`, the working directory is checked, uncommitted edits included; without `--base`, the change starts where the branch left the default branch. Without `--change`, `lemma check` reports the state of the workspace and says nothing about an edit, committed or not. `--change` takes a repository's name or its directory's name: `web-app` is the repository named `web_app`, and findings print `#web_app`.
 
 To check a finding, rerun with `--explain`: it prints the facts behind it, indented. Read from the bottom: input facts from specs and code. A wrong finding is usually one wrong fact there, such as a call matched to the wrong operation or a common name counted as a use.
 
@@ -73,7 +73,7 @@ To see what calls what at the working directory, print a relation with `lemma ve
 ## When changing a service's API
 
 1. Before editing: `lemma refs` on the handler or schema to see local uses.
-2. After editing, committed or not: `lemma check --change <repo>` from the workspace.
+2. After editing: `lemma check --change <repo>` from the workspace. It covers uncommitted edits and the branch's commits since it left the default branch. Commits made on the default branch itself are not part of the change: pass `--base <commit before your work>` for those.
 3. For each error: update the caller in the same change, or keep the old field or parameter accepted.
 4. For each warning: decide whether the caller still works; say so in the pull request.
 5. For each `affects` entry in another repository: check whether it passes the changed field on to its own callers.

@@ -58,7 +58,7 @@
             <p>Declare a behavior, and Lemma catches that change before it merges by running the code. Its checker is a script you write: it fakes a declined charge, calls <code>place_order</code>, and reports what orders sent back. The behavior runs it for both answers billing can give, so a fix that hard-codes the flag still fails.</p>
             <div class="chapter-diagram" data-chapter-scene="verification" data-caption="Simulate the failure. Verify the fix."></div>
             <!-- VERIFICATION_CONFIG -->
-            <p><strong>With the change,</strong> <code>retriable</code> is missing from orders’ response in both cases. <strong>With the fix,</strong> it matches billing’s answer in both.<span class="verification-note">Illustrative replay · evidence is kept until the code it ran on changes.</span></p>
+            <p><strong>With the change,</strong> <code>retriable</code> is missing from orders’ response in both cases. The agent gets that missing field, adds <code>retriable</code> to the helper, and reruns the check. <strong>With the fix,</strong> it matches billing’s answer in both.<span class="verification-note">Illustrative replay · evidence is kept until the code it ran on changes.</span></p>
             <a class="plain-link" href="/docs/tutorials/4-behaviors/">Behavior simulations <span aria-hidden="true">↗</span></a>
           </div>
         </section>

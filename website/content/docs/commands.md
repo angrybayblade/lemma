@@ -110,7 +110,7 @@ Each definition shows its location and, when it is an indexed symbol, its qualif
 
 Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters (`--kind`, `--language`, `--path`) work as for `refs`, and so do `--refresh` and `--timeout-secs`. When a name is ambiguous, only symbols that can have implementations count (interfaces, classes, structs, enums, type aliases and methods), so a field named after its type (`store Store`) does not make `Store` ambiguous. Implementations in the repository are listed before those in libraries.
 
-Lemma indexes interface methods as symbols qualified by their interface (`Shape.area`), so `<symbol>` names them directly. Support varies by server: gopls, rust-analyzer and the TypeScript servers answer; pyright and ty say they do not support it (`does not support implementation lookup`), which is not the same as finding none.
+Lemma indexes interface methods as symbols qualified by their interface (`Shape.area`), so `<symbol>` names them directly. Support varies by server: gopls, rust-analyzer, the TypeScript servers and ty answer; pyright says it does not support it (`does not support implementation lookup`), which is not the same as finding none. Pyright is tried first for Python, so list ty first in `.lemma/providers.toml` to get implementations there.
 
 ## `lemma signature <symbol>`
 
@@ -252,7 +252,7 @@ The check is answered by the daemon of the workspace the entry module is in, whi
 | `--all` | List informational findings too, not just their count. |
 | `--select <name>` | Run this check of a parent `mod.lm` instead of its `check main`; or, when no check has the name, just the behavior or requirement it names, by address (`checks::retries`, `lemma.http.operation_without_consumer`) or by name alone when only one thing has it. A behavior that takes arguments runs only from a check. From a description with no program, it names one requirement of the built-in HTTP checks and lists only its findings. |
 | `--since <token>` | With the daemon's sentry attached to the workspace: list only the findings that came and went since the answer the token names (the `sentry token:` line under an earlier answer with the same options), then the counts. A token sentry no longer keeps gets the whole report, saying so. |
-| `--no-run` | Run no checkers: behaviors use the evidence already kept in Lemma's cache. A case whose inputs changed since is `stale`; one never run is `unknown`. |
+| `--no-run` | Run no checkers: behaviors use the evidence already kept in Lemma's cache. A case whose inputs changed since is `stale`, and where Lemma watched its last run it names the first file that changed, appeared or went; one never run is `unknown`. |
 | `--run-base` | With `--change`, also run checkers at the base, so a case that ended violated before the change and holds after it is reported as fixed: the behavior's line ends with `N fixed by this change`, and each fixed case follows with how it ended at the base, its operands' values there included. Without it, the base uses kept evidence only and a fix is reported only when that evidence was kept. Doubles the checkers' runs when nothing is kept. |
 | `--engine <name>` | The rule engine for inferred links: `souffle` or `reference`. Default: Soufflé if installed. |
 | `--evaluation <how>` | `demand` (the default) reads only the consumer code inferred findings can rest on, asking for more callers as traces reach further operations; `full` reads everything; `both` runs the two and fails if their findings differ. |
@@ -281,7 +281,7 @@ The workspace is the module given, or else the editor's `manifest` initializatio
 
 ## `lemma daemon`
 
-Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground. Language servers start when a lookup needs one, when `lemma index` runs (in the background), or with `lemma daemon lsp start`; there is one per indexed root and language, and the settings below pause and stop idle ones.
+Runs commands for `lemma` with warm state: open databases, watchers on indexed directories, running language servers, and symbol names in memory. Every command starts it automatically; `lemma daemon` on its own runs it in the foreground. Language servers start when a lookup needs one, in the background when `lemma symbols` or `lemma outline` finds code of theirs or `lemma index` runs on a repository, or with `lemma daemon lsp start`; there is one per indexed root and language, and the settings below pause and stop idle ones.
 
 **One daemon for each workspace.** A workspace is the nearest directory above a command with a `mod.lm` that declares a `workspace`, together with the repositories it names; otherwise the Git checkout the command runs in; otherwise the directory itself. A command walks up from where it runs to the nearest running daemon that serves it. If there is none, it starts one at the workspace's root, wherever in the workspace it was run, so the first command's directory does not matter.
 
@@ -297,7 +297,7 @@ A repository the `mod.lm` names outside the workspace's root (`local("../billing
 | `lemma daemon status [--all]` | The workspace the daemon serving this directory serves, with a warning for each repository it names outside its root; then its language servers: starting, running or paused, how long idle, and memory, and any passed over for being too slow (`[servers] when_slow`), or, while the daemon is answering a lookup that may ask a language server, which command that is, for how long, and how many wait behind it; and for each watched directory, how many directories it watches, or why every index walks it instead (such as the limit on watches). On Linux only the directories Lemma indexes are watched, one by one, not `node_modules`, hidden or Git-ignored ones. With `--all`, every daemon of the user. |
 | `lemma daemon stop [--all]` | Stop the daemon serving this directory, or with `--all` every daemon of the user; it returns once each daemon and its language servers have stopped. A daemon answers the lookup it is on before it stops. |
 | `lemma daemon lsp [path]`, or `lemma daemon lsp list [path]` | The language servers for the code indexed at `path` (a repository, or a workspace's members; the current directory by default): for each language, the server it uses and what it is doing (`stopped`, `starting`, `running`, `paused`, `failed` and why, or `not installed` and how to install one), then servers running elsewhere. `--json` prints the rows. |
-| `lemma daemon lsp start [path] [--language <l>] [--provider <id>] [--wait]` | Start those servers in the daemon, in the background, or with `--wait` until each has loaded its project, reporting how long it took or why it failed (exit 1). A language's providers are tried in order, as a lookup tries them: when the first cannot start (typescript-language-server without a TypeScript it can use), the next serves. |
+| `lemma daemon lsp start [path] [--language <l>] [--provider <id>] [--wait]` | Start those servers in the daemon, in the background, or with `--wait` until each has loaded its project, reporting how long after the command it was ready or why it failed (exit 1). The servers are started together, so the wait is the slowest one's. A language's providers are tried in order, as a lookup tries them: when the first cannot start (typescript-language-server without a TypeScript it can use), the next serves. |
 | `lemma daemon lsp stop [path] [--language <l>] [--provider <id>]` | Stop those servers. |
 | `lemma daemon sentry start [manifest]` | Attach the daemon's sentry to a workspace (its `mod.lm`, by default the one in this directory). Sentry watches the workspace's repositories, and the daemon then answers `lemma check` on that workspace through it: what earlier checks read is kept and only what changed is read again, and a check is answered again at once when nothing it read changed. The report is the same as without sentry. It starts the workspace's daemon if none serves it. Asked for this way, sentry stays until `sentry stop`, or until no client holds it and no check has used it for `[servers] stop_after`. |
 | `lemma daemon sentry stop` | Detach sentry. It also detaches when the workspace's directory is gone and when the daemon exits. |
@@ -391,7 +391,7 @@ Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `no
 
 The daemon pauses a server, and every process it started, with `SIGSTOP`: it uses no CPU, and the operating system can compress or swap out its memory under pressure. The next lookup resumes it, which took about 45 ms for gopls in testing, against seconds to start a server again.
 
-There is one daemon per user. It talks to `lemma` over a Unix socket in the temporary directory that only your user can open, and finds language servers on the `PATH` of each command it runs. A daemon started by a different build of Lemma is replaced automatically. The daemon is not available on Windows; commands there always run in-process.
+Each workspace's daemon talks to `lemma` over a Unix socket of its own that only your user can open, in `$XDG_RUNTIME_DIR/lemma`, or in `/tmp/lemma-<uid>` where that is not set, and finds language servers on the `PATH` of each command it runs. A daemon started by a different build of Lemma is replaced automatically. The daemon is not available on Windows; commands there always run in-process.
 
 ### Repositories that are not cloned
 
@@ -410,7 +410,7 @@ clone = "ask"              # "ask", "always" or "never"
 | --- | --- |
 | `0` | Success. For `refs`, the server answered, including "no references found". |
 | `1` | Error, such as no index, an unknown symbol, or an invalid configuration file. The message is printed to stderr. |
-| `2` | `refs`, `implementations`, `signature` and `graph`: the name matches several symbols. The candidates are printed. |
+| `2` | `refs`, `implementations`, `signature` and `graph`: the name matches several symbols. The candidates are printed. Also any command given an option or a value Lemma does not know: the usage message is printed to stderr. |
 | `3` | `refs`, `definition`, `implementations`, `signature` and `graph`: no answer. The file is stale, no server is installed, the server failed, or it does not support the question. |
 | `4` | `verify` and `check` only: a finding is an error. |
 | `5` | `check` only: it finished, but a `git(...)` repository was not cloned, so what reaches it was not checked. A finding that is an error exits `4` instead. |

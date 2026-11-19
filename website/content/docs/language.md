@@ -103,7 +103,7 @@ Write it in a workspace's root module, or in a module the root module imports, a
 
 ### Allowances
 
-An allowance covers a known finding that should not fail the check, with a reason and, optionally, a date after which the finding counts again:
+An allowance covers a known finding that should not fail the check, with a reason (without one the report says only `allowed`) and, optionally, a date after which the finding counts again:
 
 ```lm
 module contracts
@@ -111,13 +111,13 @@ module contracts
 import lemma.http
 
 allow lemma.http.consumer_calls_removed_operation {
-    when: f == "src/legacy/sessions.ts"
+    when: f == "#web:web:src/legacy/sessions.ts"
     reason: "the legacy client is removed with the next major version"
     until: "2027-01-31"
 }
 ```
 
-`when` reads the requirement's message variables. Lemma reports a covered finding as allowed and informational, with the reason. It compares `until` with the committer date of the newest commit the check reads (a change's head), never the clock, so the same commits always give the same answer; past it, the findings count again and Lemma reports the allowance as expired. Lemma reports an allowance for a behavior that ran and covered none of its cases, so stale ones get removed. It evaluates requirements only over what a change touches, so it does not report allowances for them.
+`when` reads the requirement's message variables, whose values are written as findings print them: a file is `#repository:service:path`, an operation `METHOD /path`. Lemma reports a covered finding as allowed and informational, with the reason. It compares `until` with the committer date of the newest commit the check reads (a change's head), never the clock, so the same commits always give the same answer; past it, the findings count again and Lemma reports the allowance as expired. Lemma reports an allowance for a behavior that ran and covered none of its cases, so stale ones get removed. It evaluates requirements only over what a change touches, so it does not report allowances for them.
 
 ## Behaviors and checkers
 
@@ -183,13 +183,16 @@ export behavior forwards_upstream_retriable {
 - `need` takes the checker's evidence, or ends the case as unknown when there is none. Reading a JSON field that is absent gives a missing value, and an `expect` on it fails saying so (`trace.http.body.retriable` is missing).
 - A behavior that ran no `expect` is unknown, unless it says `allow_empty: true`. One that loops over facts Lemma reads from code is at best unknown, since behaviors read only stated graphs and the rules over them for now.
 - A checker runs `command` without a shell in its repository at the snapshot, in a worktree for a commit. `LEMMA_INPUT` names a JSON file with its arguments: operations by address with their implementation's file and symbol, facts by relation and values, and each repository's checkout. It writes `{ "observed": ... }` or `{ "unavailable": "why" }` to the file `LEMMA_OUTPUT` names. Spec 13 section 10 has the whole protocol.
+- A checker also takes `directory` (where it runs, inside its repository), `setup` (a command run once per state of the repository's code, before its first run), `env`, and `timeout_ms` (ten minutes if absent).
 - A checker's cases run one after another. `concurrent: true` on a checker says its runs may overlap, and a check then runs its cases at once: use it when a run writes only where `LEMMA_OUTPUT` says, not to a fixed file or port.
-- Lemma keeps evidence in its cache under a key of the checker's declaration, its arguments, the state of the code it reads (Git trees, plus changed files in a working directory) and its environment, and reuses it while that key holds. `lemma check --no-run` uses kept evidence only: a case whose code changed is `stale`, one never run is `unknown`.
+- Lemma keeps evidence in its cache and reuses it until what it rests on changes: the checker's declaration, its arguments, the `env` it declares, and code. A checker reads its own repository unless `reads: ["orders", "billing"]` names others: a change in a repository left out does not run it again. On Linux with `strace` installed, Lemma watches a checker run in a working directory and the code is exactly what the run read: the files it opened or looked at, the directories it listed and the paths it looked for and did not find, inside the repositories the checker reads. A change to any other file leaves the evidence standing. At a commit, or where no run can be watched, the code is the whole state of those repositories (Git trees, plus changed files in a working directory). A checker whose result depends on something that is not a file there, such as a network service or an environment variable it does not declare, says `cache: false`, which runs it every time. `lemma check --no-run` uses kept evidence only: a case whose code changed is `stale`, one never run is `unknown`.
 - A behavior with parameters runs from a check with arguments: `run forwards(field: "retriable")`.
 
 ## Checks and levels
 
 ```lm
+import lemma.http
+
 check main {
     run lemma.http.*
     run platform.forwards_upstream_retriable { severity: warning }

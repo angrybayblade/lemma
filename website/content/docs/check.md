@@ -111,13 +111,13 @@ Lemma reads the entry module, then every repository its `repo` declarations name
 | `repo billing = local("../billing", rev: "3f2a1c9e04")` | The same clone, read at that commit. |
 | `repo billing = git(url: "...", rev: "3f2a1c9e04")` | A repository cloned into Lemma's cache (`~/.cache/lemma/repos`), read at `rev`. A commit is preferred: it keeps checks reproducible. |
 
-A repository's name is its root module's, so it is an identifier: a directory called `web-app` has the module `web_app`, and findings print `#web_app`. `--change` takes either the name or the directory.
+A repository's name is its root module's, so it is an identifier: a directory called `web-app` has the module `web_app`, and findings print `#web_app`. `--change` takes either the name or the directory's name (`web-app`), not a path to it.
 
 A missing `local(...)` repository is an error. A `git(...)` repository that is not cloned follows [the `clone` setting](commands.md#repositories-that-are-not-cloned).
 
 ### Operations
 
-An operation is something a service provides or calls, with a request and a response. A `client operation` is one the service calls: its schemas are `sends` and `accepts` where a provider's are `request` and `response`. Each one names where it is in code (`implementation`, which must resolve) and where its schemas come from:
+An operation is something a service provides or calls, with a request and a response. A `client operation` is one the service calls: its schemas are `sends` and `accepts` where a provider's are `request` and `response`. Each one names where it is in code (`implementation`, which is checked to resolve when a declared link names the operation) and where its schemas come from:
 
 | Schema source | Example | Read by |
 | --- | --- | --- |
@@ -257,7 +257,7 @@ Add requirements of your own, or change which of these run, in a module: see [Re
 lemma check [mod.lm] [--change <name or directory> [--base <commit>] [--head <commit>]] [--level audit|check|strict] [--all] [--explain] [--evaluation demand|full|both] [--engine souffle|reference] [--json]
 ```
 
-`--change` names the changed repository as the workspace names it, by its directory, or `self` for the entry module's own repository. `--base` is read from Git; `--head` too when given, and otherwise the working directory is the head, uncommitted changes included. Every other repository is read at its `rev`, or its working directory. Without a change, inferred links are checked only where a service reads its operations from code: its committed documents are compared with the code.
+`--change` names the changed repository as the workspace names it, by its directory's name, or `self` for the entry module's own repository. `--base` is read from Git; `--head` too when given, and otherwise the working directory is the head, uncommitted changes included. Every other repository is read at its `rev`, or its working directory. Without a change, inferred links are checked only where a service reads its operations from code: its committed documents are compared with the code.
 
 When a commit predates the repository's `mod.lm`, Lemma uses the working directory's and skips documents it names that did not exist then; the report says so. History from before a team adopted Lemma replays this way.
 

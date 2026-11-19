@@ -105,7 +105,7 @@ An adapter is a process run in `directory` with:
 
 It writes an OpenAPI 3 document and exits with 0. The document is kept only if the process succeeds and the file is valid JSON; anything else is a failure, reported as a warning, and the service is checked against its committed documents. By convention, 2 means a missing variable and 3 that no route was found.
 
-The document may carry three extensions:
+The document may carry four extensions:
 
 | Extension | Where | Meaning |
 | --- | --- | --- |

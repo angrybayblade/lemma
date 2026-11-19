@@ -1,6 +1,6 @@
 # JSON output
 
-Add `--json` to any command for output meant for scripts and agents. The shapes below are the output contract. New fields may be added; existing fields keep their meaning.
+Add `--json` to a command for output meant for scripts and agents. The commands that manage the daemon print text either way, except `lemma daemon lsp` and `lemma daemon sentry events`. The shapes below are the output contract. New fields may be added; existing fields keep their meaning.
 
 ## Positions
 
@@ -10,6 +10,7 @@ JSON positions differ from text output:
 - `column` counts **UTF-8 bytes** from the start of the line, not characters.
 - A `span` runs from `start` (inclusive) to `end` (exclusive).
 - `path` is relative to the indexed directory, with `/` separators, unless it is outside that directory (then it is absolute).
+- From a workspace's directory, a symbol's `path` and `qualified_id` carry its repository: `#orders:orders/billing.py`, `#orders:1b2bf84963323329`.
 
 ```json
 { "start": { "line": 0, "column": 4 }, "end": { "line": 0, "column": 9 } }
@@ -39,7 +40,7 @@ Used by `symbols`, `refs`, and ambiguous results.
 
 ```json
 {
-  "database": "./.lemma/index.ls",
+  "database": "/Users/me/code/my-project/.lemma/index.ls",
   "snapshot_id": 1,
   "root": "/Users/me/code/my-project",
   "revision": "4f2c1e9a...",
@@ -49,7 +50,8 @@ Used by `symbols`, `refs`, and ambiguous results.
   "files_by_language": { "python": 2 },
   "symbol_count": 1,
   "files_with_syntax_errors": [],
-  "unreadable_files": []
+  "unreadable_files": [],
+  "exports": { "operations": 0, "endpoints": 0, "endpoints_at_handlers": 0, "handlers_found_by": {}, "symbols": 0, "links": 0 }
 }
 ```
 
@@ -123,7 +125,7 @@ Every command that asks a language server (`refs`, `definition`, `implementation
 
 ### Ambiguous names
 
-When the name matches several symbols, `refs`, `implementations` and `signature` print this and exit with 2:
+When the name matches several symbols, `refs`, `implementations`, `signature` and `graph` print this and exit with 2:
 
 ```json
 {
@@ -196,7 +198,7 @@ The same shape as `refs`, with `outcome.implementations` holding entries like `d
 ]
 ```
 
-`executable` is `null` when the command is not on `PATH`. Entries are in the order they are tried.
+`executable` is `null` when the command is not on `PATH`; the entry then has `install`, how to install it, when one is configured, or `off_path`, where it was found outside `PATH`. Entries are in the order they are tried.
 
 ## `lemma --json check`
 
@@ -206,7 +208,7 @@ The same shape as `refs`, with `outcome.implementations` holding entries like `d
   "links": 13,
   "inferred_links": 42,
   "repositories": [
-    { "name": "#billing", "root": "/work/billing", "base": "3f2a1c9e04", "head": null, "manifest_from_working_directory": false }
+    { "name": "#billing", "root": "/work/billing", "base": "3f2a1c9e04b7d6a5c8e1f2093a4b5c6d7e8f9012", "head": null, "manifest_from_working_directory": false }
   ],
   "findings": [
     { "severity": "error", "link": "#web:services.web.pay -> #billing:services.api.charge", "check": "link", "message": "the provider operation #billing:services.api.charge no longer exists", "introduced": true }
@@ -230,6 +232,8 @@ The same shape as `refs`, with `outcome.implementations` holding entries like `d
 | `findings[].affects` | For a problem: what reaches it, nearest first. Absent when empty. |
 | `findings[].allowed` | The reason of the `allow` covering it. Absent when none does. |
 | `findings[].derivation` | With `--explain`: why an inferred finding holds. |
+| `behaviors` | Every behavior with its `outcome`, `severity`, `cases` and the `evidence` each case used; see [`lemma check`](commands.md#lemma-check-modlm). |
+| `sentry` | Present when sentry answered: its `token`, whether the answer was `reused`, and `evaluation_ms`. |
 | `not_checked` | Repositories that are not cloned, and how many links reach each. Absent when empty; when present, `lemma check` exits 5 unless a finding is an error. |
 
 ## `lemma --json verify`

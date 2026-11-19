@@ -7,10 +7,10 @@ Lemma gives a coding agent what an IDE gives a person, without an editor open. I
 
 ## What an agent does with it
 
-1. **Find code.** `lemma refs`, `lemma definition` and `lemma implementations` answer from the language server, so they skip other symbols with the same name and mentions in comments and strings, and follow imports and aliases. Inside one repository a cached answer takes 1 to 3 ms and a symbol's first lookup tens of milliseconds ([performance](performance.md)).
+1. **Find code.** `lemma refs`, `lemma definition` and `lemma implementations` answer from the language server, so they skip other symbols with the same name and mentions in comments and strings, and follow imports and aliases. Inside one repository a cached answer takes 1 to 3 ms and a symbol's first lookup from tens of milliseconds to a second or two, depending on the language server ([performance](performance.md)).
 2. **Trace it.** `lemma graph <symbol>` shows what calls a function and what it calls, each with its file and line, across the repositories of a workspace.
 3. **Catch a break.** `lemma check --change <repository>` reports what a change breaks in the code that depends on it: a response field a client still reads, a parameter now required that a caller never sends, an operation that no longer exists. Those breaks cross HTTP calls and generated clients, where the compiler cannot see them. A check reads only the code the change can reach, so it fits in the loop.
-4. **Gate the work.** A stop gate, which a project turns on, runs the check when the agent tries to finish, and sends it back if its change introduced errors (the [`lemma-verify`](../skills/lemma-verify/SKILL.md) skill). [Behaviors](tutorials/4-behaviors.md) (beta) add checks that run the real code.
+4. **Gate the work (experimental).** A stop gate, which a project turns on, runs the check when the agent tries to finish, and sends it back if its change introduced errors (the [`lemma-verify`](../skills/lemma-verify/SKILL.md) skill). [Behaviors](tutorials/4-behaviors.md) (beta) add checks that run the real code.
 
 Agents reach all of it as MCP tools (`lemma mcp`), and the [agent skills](../skills/README.md) teach them when to use which.
 
@@ -23,7 +23,7 @@ In a system of several repositories, one repository's change breaks code in anot
 - **Calls found in code.** Lemma reads the services' OpenAPI documents and the code of the clients that call them, and reports a call the change breaks: an operation that no longer exists, a parameter or request field now required that the client never sends, a response field the client reads that is gone. Describing which repositories serve and call what is all it needs.
 - **Links you declare.** A link names an operation that calls and the operation it calls. Lemma checks that both still exist, that their code anchors still resolve, and that the caller's types and the provider's schemas still agree, in both directions.
 - **Requirements you write.** A requirement is a rule over facts about the system, such as "no code calls a deprecated operation". Lemma reports each match as a finding.
-- **Behaviors you test (beta).** A behavior runs statements that may ask a checker, a command that exercises your code, for evidence, such as "when billing says a failure may be retried, orders passes that on". Lemma runs the checker, keeps what it observed, and reuses it while the code is unchanged.
+- **Behaviors you test (beta).** A behavior runs statements that may ask a checker, a command that exercises your code, for evidence, such as "when billing says a failure may be retried, orders passes that on". Lemma runs the checker, keeps what it observed, and reuses it until something changes in a repository the checker reads.
 
 An allowance allows a known finding with a reason and, optionally, a date after which it counts again.
 
@@ -60,7 +60,7 @@ Modules are typed. Lemma checks them before anything runs and reports a misspell
 | Command | For |
 | --- | --- |
 | `lm` | Writing modules: `lm check` checks them, `lm fmt` formats them, and `lm lsp` serves them to editors. |
-| `lemma` | Working on code: `lemma refs`, `lemma definition`, `lemma graph` and more find code with language servers; `lemma check` checks a change against the code that depends on it, and `lemma verify` checks that a description still matches the code. `lemma mcp` serves all of it to agents. |
+| `lemma` | Working on code: `lemma refs`, `lemma definition`, `lemma graph` and more find code with language servers; `lemma check --change <repository>` checks a change against the code that depends on it, and `lemma verify` checks that a description still matches the code. `lemma mcp` serves all of it to agents. |
 
 ## Terms
 

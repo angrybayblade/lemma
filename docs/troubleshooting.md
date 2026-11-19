@@ -12,7 +12,7 @@ Run `lemma index <project>` first, then run other commands from inside that proj
 - check whether `lemma index` reported syntax errors in that file;
 - re-index if the symbol was added since the last run.
 
-Lemma indexes only definitions: functions, methods, classes, interfaces, structs, enums, type aliases, and top-level constants and variables. It skips local variables and parameters.
+Lemma indexes only definitions: functions, methods, classes, interfaces, structs, enums, type aliases, fields (class attributes and fields, interface properties, struct fields), and top-level constants and variables. It skips local variables and parameters.
 
 ## `matches N symbols`
 
@@ -41,8 +41,7 @@ The server answered, but did not see the uses. Check that:
 
 - the project's dependencies are installed, so the server can follow imports;
 - the server is looking at the right project root, such as the directory with `tsconfig.json`, `pyproject.toml`, or `go.mod`. Index from that directory;
-- the uses are not dynamic, such as `getattr(obj, "name")` or string-based dispatch, which no server can follow;
-- for TypeScript and ty, the "missing" ones are not import statements, which these servers do not count. Pyright does.
+- the uses are not dynamic, such as `getattr(obj, "name")` or string-based dispatch, which no server can follow.
 
 Then ask again with `lemma refs <symbol> --refresh`, because the earlier answer is cached.
 
@@ -54,9 +53,9 @@ Then ask again with `lemma refs <symbol> --refresh`, because the earlier answer 
 - Lemma finds language servers on the `PATH` of the command you run, but a server already running keeps its environment. After changing a server's environment, stop the daemon.
 - A warm server learns about edits when they are indexed, which every query does first.
 
-## `index uses schema version ...`
+## `store layout N is not supported`
 
-The index was written by another version of Lemma. Run `lemma index`; it rebuilds the index automatically.
+The index was written by another version of Lemma. Commands rebuild it by themselves, so this appears only when `--db` names the file: run `lemma index` in that project.
 
 ## Results look out of date
 
