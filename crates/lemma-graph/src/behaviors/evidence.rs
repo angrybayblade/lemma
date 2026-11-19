@@ -26,7 +26,7 @@ use lemma_lang::model::{Checker, CheckerRunner};
 use serde_json::{Value as Json, json};
 
 use super::encode::{Decoded, decode_output};
-use super::reads::{self, Current, ReadSet, Roots};
+use super::reads::{self, Current, KeptReads, Parts, ReadSet, Roots};
 use crate::recorder::{self, Recorded, Recorder};
 use crate::repos::{self, Checkout};
 
@@ -300,16 +300,29 @@ impl Store {
         Some(stored.into_evidence(&key, true))
     }
 
-    /// Evidence of a run whose every read still finds what it found.
+    /// Evidence of a run whose every read still finds what it found. A
+    /// read set found again that is not the latest becomes the latest:
+    /// the oldest is dropped when another is kept, and one that keeps
+    /// being come back to, such as the state before an edit, must not be.
     fn kept_by_reads(&self, request: &Request<'_>) -> Option<(String, Decoded)> {
         if !request.is_kept_by_reads() {
             return None;
         }
         let roots = request.root_paths();
-        self.read_sets(&invariant_key(request))
-            .into_iter()
-            .filter(|(_, reads)| reads.holds(&roots, &self.current))
-            .find_map(|(key, _)| Some((key.clone(), self.stored(&key)?)))
+        let part = |digest: &str| std::fs::read_to_string(self.part(digest)).ok();
+        let invariant = invariant_key(request);
+        let mut read_sets = self.read_sets(&invariant);
+        let found = read_sets.iter().position(|(key, reads)| {
+            reads.holds(&roots, &self.current, &part) && self.record(key).exists()
+        })?;
+        let stored = self.stored(&read_sets[found].0)?;
+        if found > 0 {
+            read_sets[..=found].rotate_right(1);
+            if let Err(why) = self.write_read_sets(&invariant, &read_sets) {
+                log::warn!("what {} read was not kept: {why}", request.case);
+            }
+        }
+        Some((read_sets[0].0.clone(), stored))
     }
 
     /// Evidence kept for the state every repository read is in.
@@ -360,14 +373,15 @@ impl Store {
         };
         match reads {
             Ok(reads) => {
-                let key = reads_key(request, &reads);
+                let (kept, parts) = reads.kept();
+                let key = reads_key(request, &kept);
                 log::info!(
                     "evidence: {} is kept by the {} paths its run read",
                     request.case,
                     reads.len()
                 );
                 self.keep(request, &key, &case, &output);
-                self.keep_read_set(request, &key, &reads);
+                self.keep_read_set(request, &key, &kept, &parts);
                 decoded.into_evidence(&key, false)
             }
             Err(why) => {
@@ -402,13 +416,13 @@ impl Store {
 
     /// The read sets kept for a checker and arguments, latest first, each
     /// with the key of its evidence.
-    fn read_sets(&self, invariant: &str) -> Vec<(String, ReadSet)> {
+    fn read_sets(&self, invariant: &str) -> Vec<(String, KeptReads)> {
         let read = || {
             let text = std::fs::read_to_string(self.read_sets_of(invariant)).ok()?;
             let kept: Json = serde_json::from_str(&text).ok()?;
             let entries = kept["entries"].as_array()?;
             let sets = entries.iter().filter_map(|entry| {
-                let reads = ReadSet::from_json(&entry["reads"])?;
+                let reads = KeptReads::from_json(&entry["reads"])?;
                 Some((entry["evidence"].as_str()?.to_owned(), reads))
             });
             Some(sets.collect())
@@ -567,28 +581,43 @@ impl Store {
     }
 
     /// Puts a run's read set first among those kept for its checker and
-    /// arguments, dropping the oldest past [`KEPT_READ_SETS`]. Without it
-    /// the evidence is only run again, so a failure to write is logged.
-    fn keep_read_set(&self, request: &Request<'_>, key: &str, reads: &ReadSet) {
+    /// arguments, dropping the oldest past [`KEPT_READ_SETS`], with the
+    /// parts not kept yet. Without it the evidence is only run again, so a
+    /// failure to write is logged.
+    fn keep_read_set(&self, request: &Request<'_>, key: &str, reads: &KeptReads, parts: &Parts) {
         let invariant = invariant_key(request);
-        let mut entries = vec![json!({ "evidence": key, "reads": reads.to_json() })];
+        let mut read_sets = vec![(key.to_owned(), reads.clone())];
         let earlier = self.read_sets(&invariant);
-        let others = earlier.iter().filter(|(other, _)| other != key);
-        entries.extend(
-            others
-                .take(KEPT_READ_SETS - 1)
-                .map(|(other, reads)| json!({ "evidence": other, "reads": reads.to_json() })),
-        );
-        // Written whole beside its place and moved there, so a check
-        // reading it at the same moment sees the old sets or the new.
-        let path = self.read_sets_of(&invariant);
-        let beside = path.with_extension(format!("{}.tmp", std::process::id()));
-        let kept = write_json(&beside, &json!({ "entries": entries })).and_then(|()| {
-            std::fs::rename(&beside, &path).map_err(|error| format!("{}: {error}", path.display()))
-        });
+        let others = earlier.into_iter().filter(|(other, _)| other != key);
+        read_sets.extend(others.take(KEPT_READ_SETS - 1));
+        let mut new_parts = parts
+            .iter()
+            .filter(|(digest, _)| !self.part(digest).exists());
+        let kept = new_parts
+            .try_for_each(|(digest, text)| write_whole(&self.part(digest), text))
+            .and_then(|()| self.write_read_sets(&invariant, &read_sets));
         if let Err(why) = kept {
             log::warn!("what {} read was not kept: {why}", request.case);
         }
+    }
+
+    /// Keeps the read sets of a checker and arguments, latest first.
+    fn write_read_sets(
+        &self,
+        invariant: &str,
+        read_sets: &[(String, KeptReads)],
+    ) -> Result<(), String> {
+        let entries: Vec<Json> = read_sets
+            .iter()
+            .map(|(key, reads)| json!({ "evidence": key, "reads": reads.to_json() }))
+            .collect();
+        let text = json!({ "entries": entries }).to_string();
+        write_whole(&self.read_sets_of(invariant), &text)
+    }
+
+    /// Where the part of a read set named `digest` is kept.
+    fn part(&self, digest: &str) -> PathBuf {
+        self.directory.join("parts").join(digest)
     }
 
     fn read_sets_of(&self, invariant: &str) -> PathBuf {
@@ -694,8 +723,26 @@ fn invariant_key(request: &Request<'_>) -> String {
     lemma_model::content_hash(described.to_string().as_bytes())
 }
 
+/// Writes a file whole beside its place and moves it there, so a check
+/// reading it at the same moment sees the old text or the new.
+fn write_whole(path: &Path, text: &str) -> Result<(), String> {
+    let failed = |error: std::io::Error| format!("{}: {error}", path.display());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(failed)?;
+    }
+    // Named by process and thread: cases run at once may keep one part.
+    let writer = format!(
+        "{}.{:?}.tmp",
+        std::process::id(),
+        std::thread::current().id()
+    );
+    let beside = path.with_extension(writer);
+    std::fs::write(&beside, text).map_err(failed)?;
+    std::fs::rename(&beside, path).map_err(failed)
+}
+
 /// The key of evidence kept by what its run read.
-fn reads_key(request: &Request<'_>, reads: &ReadSet) -> String {
+fn reads_key(request: &Request<'_>, reads: &KeptReads) -> String {
     let described = json!({ "invariant": invariant_key(request), "reads": reads.to_json() });
     lemma_model::content_hash(described.to_string().as_bytes())
 }

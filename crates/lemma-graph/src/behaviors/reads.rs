@@ -5,6 +5,12 @@
 //!
 //! Paths are named by repository, never by where a clone is, so a read set
 //! means the same on another machine.
+//!
+//! A read set is kept as parts: the paths under one directory, split again
+//! by the directories below wherever there are many. A part is named by a
+//! digest of its text, so the cases that read the same files of a
+//! directory (a dependency, most often) keep that part once, and a check
+//! compares it with the files once.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -14,6 +20,13 @@ use std::time::SystemTime;
 use serde_json::{Value as Json, json};
 
 use crate::recorder::Recorded;
+
+/// A directory with more paths than this under it is kept as a part of
+/// its own entries, each large directory below being a part in turn.
+const SPLIT_ABOVE: usize = 128;
+/// A directory below a split one stays in its parent's part up to this
+/// many paths: a part per small directory would be a file per directory.
+const INLINE_UP_TO: usize = 16;
 
 /// A path that is not there.
 const ABSENT: &str = "-";
@@ -27,13 +40,21 @@ pub(crate) type Roots = BTreeMap<String, PathBuf>;
 /// runs: many cases read the same files, and a run may write any of them.
 #[derive(Default)]
 pub(crate) struct Current {
-    found: Mutex<HashMap<(PathBuf, bool), String>>,
+    /// For each path, its state and its state as a listing, once found.
+    found: Mutex<HashMap<String, [Option<String>; 2]>>,
+    /// Whether a part, read from a directory, holds there.
+    parts: Mutex<HashMap<(String, String), bool>>,
 }
 
 impl Current {
-    /// Forgets every state found: a checker ran, and may have changed any.
+    /// Forgets everything found: a checker ran, and may have changed any
+    /// path.
     pub(crate) fn forget(&self) {
         self.found
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.parts
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clear();
@@ -42,15 +63,175 @@ impl Current {
     /// The state of `path`: absent, a directory (with a digest of its
     /// entries' names when `is_listed`), or a file with a digest of its
     /// contents.
-    fn state(&self, path: &Path, is_listed: bool) -> String {
-        let key = (path.to_path_buf(), is_listed);
+    fn state(&self, path: &str, is_listed: bool) -> String {
         let lock = || self.found.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(found) = lock().get(&key) {
-            return found.clone();
+        let index = usize::from(is_listed);
+        if let Some(found) = lock().get(path).and_then(|states| states[index].clone()) {
+            return found;
         }
-        let state = state_of(path, is_listed);
-        lock().insert(key, state.clone());
+        let state = state_of(Path::new(path), is_listed);
+        lock().entry(path.to_owned()).or_default()[index] = Some(state.clone());
         state
+    }
+
+    /// Whether the part named `digest` holds for the paths under
+    /// `directory`; `part` gives a part's text.
+    fn part_holds(
+        &self,
+        directory: &str,
+        digest: &str,
+        part: &dyn Fn(&str) -> Option<String>,
+    ) -> bool {
+        let key = (directory.to_owned(), digest.to_owned());
+        let lock = || self.parts.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(known) = lock().get(&key) {
+            return *known;
+        }
+        let holds = part(digest).is_some_and(|text| {
+            text.lines()
+                .all(|line| self.line_holds(directory, line, part))
+        });
+        lock().insert(key, holds);
+        holds
+    }
+
+    /// Whether one line of a part holds: a path in its state, or a part
+    /// for a directory below.
+    fn line_holds(
+        &self,
+        directory: &str,
+        line: &str,
+        part: &dyn Fn(&str) -> Option<String>,
+    ) -> bool {
+        let mut fields = line.splitn(3, '\t');
+        let (Some(kind), Some(value), Some(name)) = (fields.next(), fields.next(), fields.next())
+        else {
+            return false;
+        };
+        let name = unescaped(name);
+        let path = if name.is_empty() {
+            directory.to_owned()
+        } else {
+            format!("{directory}/{name}")
+        };
+        match kind {
+            PATH => {
+                let now = self.state(&path, value.starts_with("l:"));
+                if now != value {
+                    log::debug!("evidence: {path} was {value} and is {now}");
+                }
+                now == value
+            }
+            PART => self.part_holds(&path, value, part),
+            _ => false,
+        }
+    }
+}
+
+/// A line of a part that gives a path's state.
+const PATH: &str = "=";
+/// A line of a part that names the part of a directory below.
+const PART: &str = ">";
+
+/// A name as a part's line holds it: on one line, with no tab.
+fn escaped(name: &str) -> String {
+    name.replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\n', "\\n")
+}
+
+fn unescaped(name: &str) -> String {
+    if !name.contains('\\') {
+        return name.to_owned();
+    }
+    let mut found = String::with_capacity(name.len());
+    let mut characters = name.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            found.push(character);
+            continue;
+        }
+        match characters.next() {
+            Some('t') => found.push('\t'),
+            Some('n') => found.push('\n'),
+            Some(other) => found.push(other),
+            None => {}
+        }
+    }
+    found
+}
+
+/// The part for the sorted `paths` under one directory, added to `parts`
+/// with the parts of large directories below; its digest.
+fn part_of(paths: &[(&str, &str)], parts: &mut Parts) -> String {
+    let mut text = String::new();
+    let mut line = |kind: &str, value: &str, name: &str| {
+        text.push_str(kind);
+        text.push('\t');
+        text.push_str(value);
+        text.push('\t');
+        text.push_str(&escaped(name));
+        text.push('\n');
+    };
+    let mut index = 0;
+    while index < paths.len() {
+        let (path, state) = paths[index];
+        let below = path.split_once('/').filter(|_| paths.len() > SPLIT_ABOVE);
+        let Some((name, _)) = below else {
+            line(PATH, state, path);
+            index += 1;
+            continue;
+        };
+        let group = &paths[index..index + under(&paths[index..], name)];
+        index += group.len();
+        if group.len() <= INLINE_UP_TO {
+            for (path, state) in group {
+                line(PATH, state, path);
+            }
+            continue;
+        }
+        // A directory holding nothing but one directory is no part of its
+        // own: the part is the deepest directory every path is under.
+        let name = &path[..shared_directory(group, name.len())];
+        let inside: Vec<(&str, &str)> = group
+            .iter()
+            .map(|(path, state)| (&path[name.len() + 1..], *state))
+            .collect();
+        line(PART, &part_of(&inside, parts), name);
+    }
+    let digest = lemma_model::content_hash(text.as_bytes());
+    parts.insert(digest.clone(), text);
+    digest
+}
+
+/// How many of the sorted `paths`, from the first, are under the directory
+/// `name`.
+fn under(paths: &[(&str, &str)], name: &str) -> usize {
+    let is_under = |(path, _): &&(&str, &str)| {
+        path.strip_prefix(name)
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    paths.iter().take_while(is_under).count()
+}
+
+/// The length of the deepest directory all of the sorted `group` is under,
+/// which its first `known` bytes already name.
+fn shared_directory(group: &[(&str, &str)], known: usize) -> usize {
+    let (Some((first, _)), Some((last, _))) = (group.first(), group.last()) else {
+        return known;
+    };
+    let mut shared = known;
+    loop {
+        let next = first[shared + 1..].find('/').map(|at| shared + 1 + at);
+        let Some(next) = next else {
+            return shared;
+        };
+        let is_shared =
+            last.len() > next && last.as_bytes()[next] == b'/' && last[..next] == first[..next];
+        if !is_shared {
+            return shared;
+        }
+        shared = next;
     }
 }
 
@@ -76,6 +257,41 @@ fn state_of(path: &Path, is_listed: bool) -> String {
         .collect();
     names.sort();
     format!("l:{}", lemma_model::content_hash(&names.join(&0u8)))
+}
+
+/// The text of each part, by its digest.
+pub(crate) type Parts = BTreeMap<String, String>;
+
+/// A read set as it is kept: for each repository, the digest of the part
+/// its paths start from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct KeptReads {
+    repositories: BTreeMap<String, String>,
+}
+
+impl KeptReads {
+    /// Whether every path is still in the state the run read it in;
+    /// `part` gives a part's text.
+    pub(crate) fn holds(
+        &self,
+        roots: &Roots,
+        current: &Current,
+        part: &dyn Fn(&str) -> Option<String>,
+    ) -> bool {
+        self.repositories.iter().all(|(repository, digest)| {
+            let root = roots.get(repository).and_then(|root| root.to_str());
+            root.is_some_and(|root| current.part_holds(root, digest, part))
+        })
+    }
+
+    pub(crate) fn to_json(&self) -> Json {
+        json!(self.repositories)
+    }
+
+    pub(crate) fn from_json(value: &Json) -> Option<Self> {
+        let repositories = serde_json::from_value(value.clone()).ok()?;
+        Some(Self { repositories })
+    }
 }
 
 /// What a run read: for each repository, each path with its state.
@@ -113,7 +329,7 @@ impl ReadSet {
             if place(path, roots).is_none() {
                 continue;
             }
-            let state = current.state(path, false);
+            let state = current.state(&path.to_string_lossy(), false);
             // A directory's own time changes with its entries, which a
             // listing covers; only a file's says its contents changed.
             let is_changed_file = state.starts_with("f:") && changed_since(path, started);
@@ -124,38 +340,32 @@ impl ReadSet {
         }
         for path in &recorded.listed {
             if place(path, roots).is_some() {
-                keep(path, current.state(path, true));
+                keep(path, current.state(&path.to_string_lossy(), true));
             }
         }
         Ok(Self { paths })
     }
 
-    /// Whether every path is still in the state the run read it in.
-    pub(crate) fn holds(&self, roots: &Roots, current: &Current) -> bool {
-        self.paths.iter().all(|(repository, paths)| {
-            let Some(root) = roots.get(repository) else {
-                return false;
-            };
-            paths.iter().all(|(path, state)| {
-                let is_listed = state.starts_with("l:");
-                current.state(&root.join(path), is_listed) == *state
+    /// The read set as it is kept, and the text of each of its parts.
+    pub(crate) fn kept(&self) -> (KeptReads, Parts) {
+        let mut parts = Parts::new();
+        let repositories = self
+            .paths
+            .iter()
+            .map(|(repository, paths)| {
+                let paths: Vec<(&str, &str)> = paths
+                    .iter()
+                    .map(|(path, state)| (path.as_str(), state.as_str()))
+                    .collect();
+                (repository.clone(), part_of(&paths, &mut parts))
             })
-        })
+            .collect();
+        (KeptReads { repositories }, parts)
     }
 
     /// How many paths the run rested on.
     pub(crate) fn len(&self) -> usize {
         self.paths.values().map(BTreeMap::len).sum()
-    }
-
-    pub(crate) fn to_json(&self) -> Json {
-        json!(self.paths)
-    }
-
-    pub(crate) fn from_json(value: &Json) -> Option<Self> {
-        serde_json::from_value(value.clone())
-            .ok()
-            .map(|paths| Self { paths })
     }
 }
 
@@ -231,15 +441,24 @@ mod tests {
         ReadSet::of(recorded, roots, later).unwrap()
     }
 
+    /// Whether a read set, kept and read back, holds for the files now.
+    fn holds(reads: &ReadSet, roots: &Roots) -> bool {
+        let (kept, parts) = reads.kept();
+        let kept = KeptReads::from_json(&kept.to_json()).unwrap();
+        kept.holds(roots, &Current::default(), &|digest| {
+            parts.get(digest).cloned()
+        })
+    }
+
     #[test]
     fn it_holds_until_a_file_the_run_read_changes() {
         let (directory, roots, recorded) = repository();
         let reads = read_set(&roots, &recorded);
 
         write(&directory.path().join("src/unused.py"), "y = 2\n");
-        let after_unread = reads.holds(&roots, &Current::default());
+        let after_unread = holds(&reads, &roots);
         write(&directory.path().join("src/used.py"), "x = 2\n");
-        let after_read = reads.holds(&roots, &Current::default());
+        let after_read = holds(&reads, &roots);
 
         assert_eq!(reads.len(), 3, "{reads:?}");
         assert!(after_unread);
@@ -252,11 +471,11 @@ mod tests {
         let reads = read_set(&roots, &recorded);
 
         write(&directory.path().join("conftest.py"), "");
-        let after_appearing = reads.holds(&roots, &Current::default());
+        let after_appearing = holds(&reads, &roots);
         std::fs::remove_file(directory.path().join("conftest.py")).unwrap();
-        let after_removing = reads.holds(&roots, &Current::default());
+        let after_removing = holds(&reads, &roots);
         write(&directory.path().join("src/new.py"), "");
-        let after_listing = reads.holds(&roots, &Current::default());
+        let after_listing = holds(&reads, &roots);
 
         assert!(!after_appearing);
         assert!(after_removing);
@@ -273,11 +492,7 @@ mod tests {
         let reads = read_set(&roots, &recorded);
 
         assert_eq!(
-            reads.to_json()["app"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .collect::<Vec<_>>(),
+            reads.paths["app"].keys().collect::<Vec<_>>(),
             ["conftest.py", "src"]
         );
     }
@@ -311,11 +526,63 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_read_set_survives_being_written_down() {
-        let (_directory, roots, recorded) = repository();
+    /// A repository whose dependency has `count` files, and a run that
+    /// read them all and one source file.
+    fn with_a_dependency(count: usize, source: &str) -> (tempfile::TempDir, Roots, ReadSet) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let mut recorded = Recorded::default();
+        for index in 0..count {
+            let path = root.join(format!("deps/big/lib/file{index}.py"));
+            write(&path, "pass\n");
+            recorded.read.insert(path);
+        }
+        write(&root.join(source), "x = 1\n");
+        recorded.read.insert(root.join(source));
+        let roots = Roots::from([("app".to_owned(), root)]);
         let reads = read_set(&roots, &recorded);
+        (directory, roots, reads)
+    }
 
-        assert_eq!(ReadSet::from_json(&reads.to_json()), Some(reads));
+    #[test]
+    fn runs_that_read_the_same_large_directory_keep_its_part_once() {
+        let (_one, _, first) = with_a_dependency(SPLIT_ABOVE + 1, "src/a.py");
+        let (_other, _, second) = with_a_dependency(SPLIT_ABOVE + 1, "src/b.py");
+
+        let (kept_first, parts_first) = first.kept();
+        let (kept_second, parts_second) = second.kept();
+
+        let shared: Vec<&String> = parts_first
+            .keys()
+            .filter(|digest| parts_second.contains_key(*digest))
+            .collect();
+        assert_ne!(kept_first, kept_second);
+        assert_eq!(shared.len(), 1, "{parts_first:#?}");
+        assert!(parts_first[shared[0]].contains("\tfile0.py\n"));
+        let starts: Vec<&String> = parts_first
+            .values()
+            .filter(|text| text.contains(PART))
+            .collect();
+        assert!(starts[0].contains("\tdeps/big/lib\n"), "{starts:#?}");
+    }
+
+    #[test]
+    fn a_change_inside_a_part_of_its_own_is_noticed() {
+        let (directory, roots, reads) = with_a_dependency(SPLIT_ABOVE + 1, "src/a.py");
+
+        let before = holds(&reads, &roots);
+        write(&directory.path().join("deps/big/lib/file7.py"), "raise\n");
+        let after = holds(&reads, &roots);
+
+        assert!(before);
+        assert!(!after);
+    }
+
+    #[test]
+    fn a_name_with_a_tab_or_a_line_break_keeps_its_line() {
+        let name = "odd\tna\\me\n.py";
+
+        assert_eq!(escaped(name), "odd\\tna\\\\me\\n.py");
+        assert_eq!(unescaped(&escaped(name)), name);
     }
 }
