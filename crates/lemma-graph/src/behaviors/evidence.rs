@@ -26,7 +26,8 @@ use lemma_lang::model::{Checker, CheckerRunner};
 use serde_json::{Value as Json, json};
 
 use super::encode::{Decoded, decode_output};
-use super::reads::{self, Current, KeptReads, Parts, ReadSet, Roots};
+use super::reads::{self, KeptReads, Parts, ReadSet, Roots};
+use super::states::Current;
 use crate::recorder::{self, Recorded, Recorder};
 use crate::repos::{self, Checkout};
 
@@ -64,6 +65,13 @@ pub(crate) struct Store {
     recorder: OnceLock<Option<Box<dyn Recorder>>>,
     /// The state now of the paths kept evidence rests on.
     current: Current,
+}
+
+impl Drop for Store {
+    /// Digests taken during the check are written down for the next one.
+    fn drop(&mut self) {
+        self.current.remember();
+    }
 }
 
 /// Where a repository's code is read, and the state of that code: `None`
@@ -190,7 +198,7 @@ impl Store {
             setting_up: Mutex::new(()),
             digests: crate::proof::Digests::default(),
             recorder: OnceLock::new(),
-            current: Current::default(),
+            current: Current::remembering(cache.join("evidence").join("states")),
         }
     }
 
@@ -369,7 +377,7 @@ impl Store {
         let roots = request.root_paths();
         let reads = match changed_input(&seen, &roots) {
             Some(path) => Err(format!("the checker changed {path}, which it read")),
-            None => ReadSet::of(&seen, &roots, started),
+            None => ReadSet::of(&seen, &roots, started, &self.current),
         };
         match reads {
             Ok(reads) => {
@@ -506,9 +514,14 @@ impl Store {
         match &checker.runner {
             CheckerRunner::Command(command) => {
                 let watched = Watched::start(recorder, command, &run)?;
-                repos::run_program(&directory, watched.command(), environment, Some(timeout_ms))
-                    .map_err(|error| format!("the checker failed: {}", describe(&error)))?;
-                seen = watched.finish(&directory)?;
+                let ran = repos::run_program(
+                    &directory,
+                    watched.command(),
+                    environment,
+                    Some(timeout_ms),
+                );
+                seen = watched.finish(&directory, ran.is_ok());
+                ran.map_err(|error| format!("the checker failed: {}", describe(&error)))?;
             }
             CheckerRunner::Proof => {
                 let result =
@@ -672,16 +685,21 @@ impl<'r> Watched<'r> {
         &self.command
     }
 
-    /// What the run, started in `directory` and now ended, was seen to do.
-    fn finish(self, directory: &Path) -> Result<Option<Recorded>, String> {
-        let Some(recorder) = self.recorder else {
-            return Ok(None);
-        };
-        let seen = recorder
-            .recorded(&self.scratch, directory)
-            .map_err(|why| format!("the checker ran, but what it read is not known: {why}"));
+    /// What the run, started in `directory` and now ended, was seen to do,
+    /// if it was watched and `succeeded`. A record that cannot be read
+    /// leaves the checker's answer standing: its evidence is then kept by
+    /// whole repositories, as with no recorder.
+    fn finish(self, directory: &Path, succeeded: bool) -> Option<Recorded> {
+        let recorder = self.recorder?;
+        let seen = succeeded.then(|| recorder.recorded(&self.scratch, directory));
         let _ = std::fs::remove_dir_all(&self.scratch);
-        seen.map(Some)
+        match seen? {
+            Ok(seen) => Some(seen),
+            Err(why) => {
+                log::warn!("what the checker read is not known: {why}");
+                None
+            }
+        }
     }
 }
 
