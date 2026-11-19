@@ -29,6 +29,7 @@ pub mod lm;
 pub mod openapi;
 mod proof;
 mod reach;
+mod recorder;
 pub mod repos;
 pub mod runtime;
 pub mod schema;

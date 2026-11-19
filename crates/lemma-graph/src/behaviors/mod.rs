@@ -10,6 +10,7 @@
 
 mod encode;
 mod evidence;
+mod reads;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -520,6 +521,21 @@ impl CheckWorld<'_> {
         (read, reads)
     }
 
+    /// Where the repositories a checker reads, and its `own`, have their
+    /// files, when every one is read at its working directory: those are
+    /// where they are, and kept evidence is compared with what their files
+    /// hold.
+    fn at_work(&mut self, read: &[String], own: &str) -> Option<BTreeMap<String, String>> {
+        let is_at_work = read.iter().map(String::as_str).chain([own]).all(|name| {
+            let checkout = self.checkouts.get(name);
+            checkout.is_some_and(|checkout| checkout.commit.is_none())
+        });
+        if !is_at_work {
+            return None;
+        }
+        self.roots(read, own).ok()
+    }
+
     /// Where repository `name` is read, and the state of its code.
     fn place(&mut self, name: &str) -> Option<Place> {
         if let Some(found) = self.places.get(name) {
@@ -564,15 +580,17 @@ impl World for CheckWorld<'_> {
         let engine_key = self.store.engine_key(checker);
         // Kept evidence needs no checkout of what the checker reads; only a
         // run does, and for a commit that means a worktree.
+        let at_work = self.at_work(&read, &checker.repository);
         let none = BTreeMap::new();
         let probe = Request {
             checker,
             case: demand.case,
-            arguments: serde_json::Value::Object(arguments.clone()),
-            reads: reads.clone(),
+            arguments: serde_json::Value::Object(arguments),
+            reads,
             place: &place,
-            roots: &none,
-            engine_key: engine_key.clone(),
+            roots: at_work.as_ref().unwrap_or(&none),
+            is_at_work: at_work.is_some(),
+            engine_key,
         };
         // Before what is kept: evidence that ran for this check was kept
         // too, and would be reported as reused.
@@ -585,18 +603,17 @@ impl World for CheckWorld<'_> {
         if self.recorded.is_some() && !checker.is_concurrent {
             return eval::Evidence::Unavailable("runs in the evaluation that follows".to_owned());
         }
-        let roots = match self.roots(&read, &checker.repository) {
+        let roots = match &at_work {
+            Some(roots) => Ok(roots.clone()),
+            None => self.roots(&read, &checker.repository),
+        };
+        let roots = match roots {
             Ok(roots) => roots,
             Err(why) => return eval::Evidence::Unavailable(why),
         };
         let request = Request {
-            checker,
-            case: demand.case,
-            arguments: serde_json::Value::Object(arguments),
-            reads,
-            place: &place,
             roots: &roots,
-            engine_key,
+            ..probe
         };
         if let Some(recorded) = &mut self.recorded {
             recorded.push(RecordedDemand::of(&request));
