@@ -250,3 +250,100 @@ fn a_state_come_back_to_keeps_its_evidence_through_many_others() {
     assert_eq!(behavior.outcome, "satisfied", "{behavior:#?}");
     assert!(behavior.evidence.iter().all(|used| used.reused));
 }
+
+/// The shelf with `books` a link to one of two editions, committed.
+fn shelf_of_editions() -> tempfile::TempDir {
+    let workspace = shelf();
+    let root = workspace.path().join("shelf");
+    std::fs::create_dir_all(root.join("editions")).unwrap();
+    std::fs::rename(root.join("books"), root.join("editions/first")).unwrap();
+    write(&root.join("editions/second/a.txt"), "first, again\n");
+    write(&root.join("editions/second/b.txt"), "second, again\n");
+    std::os::unix::fs::symlink("editions/first", root.join("books")).unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "editions"]);
+    workspace
+}
+
+fn point_books_at(workspace: &Path, edition: &str) {
+    let books = workspace.join("shelf/books");
+    std::fs::remove_file(&books).unwrap();
+    std::os::unix::fs::symlink(format!("editions/{edition}"), books).unwrap();
+}
+
+#[test]
+fn evidence_ends_when_a_path_looked_for_through_a_link_appears() {
+    if !can_watch_runs() {
+        return;
+    }
+    let workspace = shelf();
+    // A checker that looks for the new book by another name of the
+    // repository: a link beside it.
+    std::os::unix::fs::symlink("shelf", workspace.path().join("linked")).unwrap();
+    let by_another_name = READ.replace(
+        "path = os.path.join(given[\"root\"], \"books\", name + \".new\")",
+        "path = os.path.join(given[\"root\"], \"..\", \"linked\", \"books\", name + \".new\")",
+    );
+    assert_ne!(by_another_name, READ);
+    write(
+        &workspace.path().join("shelf/tools/read.py"),
+        &by_another_name,
+    );
+    run(workspace.path(), true);
+
+    write(&workspace.path().join("shelf/books/a.new"), "rewritten\n");
+    let appeared = run(workspace.path(), false);
+
+    assert_eq!(
+        outcomes(&appeared),
+        [("a", "stale"), ("b", "satisfied")],
+        "{:#?}",
+        appeared.behaviors[0]
+    );
+}
+
+#[test]
+fn evidence_ends_when_a_link_on_the_way_to_a_file_points_elsewhere() {
+    if !can_watch_runs() {
+        return;
+    }
+    let workspace = shelf_of_editions();
+    run(workspace.path(), true);
+
+    point_books_at(workspace.path(), "second");
+    let moved = run(workspace.path(), false);
+
+    assert_eq!(
+        outcomes(&moved),
+        [("a", "stale"), ("b", "stale")],
+        "{:#?}",
+        moved.behaviors[0]
+    );
+}
+
+#[test]
+fn evidence_ends_when_a_link_the_run_resolved_points_elsewhere() {
+    if !can_watch_runs() {
+        return;
+    }
+    let workspace = shelf_of_editions();
+    // A checker that resolves the link itself and opens the file where it
+    // led, as a module loader does.
+    let resolving = READ.replace(
+        "given[\"root\"], \"books\", name + \".txt\")",
+        "os.path.realpath(os.path.join(given[\"root\"], \"books\")), name + \".txt\")",
+    );
+    assert_ne!(resolving, READ);
+    write(&workspace.path().join("shelf/tools/read.py"), &resolving);
+    run(workspace.path(), true);
+
+    point_books_at(workspace.path(), "second");
+    let moved = run(workspace.path(), false);
+
+    assert_eq!(
+        outcomes(&moved),
+        [("a", "stale"), ("b", "stale")],
+        "{:#?}",
+        moved.behaviors[0]
+    );
+}

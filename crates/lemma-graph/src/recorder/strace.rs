@@ -111,6 +111,7 @@ fn read_traces(traces: &BTreeMap<u64, Vec<u8>>, directory: &Path) -> Recorded {
         traces,
         recorded: Recorded::default(),
         done: BTreeSet::new(),
+        asked_as: BTreeMap::new(),
     };
     // The processes nothing here started come first, each followed into
     // what it started, so that a child is read from where its parent was.
@@ -130,6 +131,9 @@ struct Reading<'t> {
     traces: &'t BTreeMap<u64, Vec<u8>>,
     recorded: Recorded,
     done: BTreeSet<u64>,
+    /// For a path the system says was opened, the paths it was asked for
+    /// by, where they differ: the way there went through a link.
+    asked_as: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
 }
 
 impl Reading<'_> {
@@ -162,6 +166,7 @@ impl Reading<'_> {
         match call.name.as_str() {
             "chdir" if call.succeeded() => {
                 if let Some(path) = from(0) {
+                    self.recorded.read.insert(path.clone());
                     *directory = path;
                 }
             }
@@ -177,7 +182,11 @@ impl Reading<'_> {
                 self.looked(call, at(0));
             }
             "getdents" | "getdents64" if call.succeeded() => {
-                self.recorded.listed.extend(call.descriptor(0));
+                if let Some(path) = call.descriptor(0) {
+                    let asked = self.asked_as.get(&path).into_iter().flatten();
+                    self.recorded.listed.extend(asked.cloned());
+                    self.recorded.listed.insert(path);
+                }
             }
             "unlink" | "rmdir" | "mkdir" | "truncate" => self.wrote(call, [from(0)]),
             "unlinkat" | "mkdirat" => self.wrote(call, [at(0)]),
@@ -189,8 +198,10 @@ impl Reading<'_> {
         }
     }
 
-    /// An `open`: the file the system says was opened, read or written by
-    /// its flags, or a path not found.
+    /// An `open`: the path asked for and the file the system says was
+    /// opened, read or written by the flags, or a path not found. Both
+    /// paths are kept: where a link is on the way, the path asked for
+    /// says the result rests on where the link points.
     fn opened(&mut self, call: &Call, asked: Option<PathBuf>, flags: usize) {
         let flags = call.arguments.get(flags).map_or("", String::as_str);
         let writes = call.name == "creat"
@@ -203,14 +214,22 @@ impl Reading<'_> {
             }
             return;
         }
-        let Some(path) = call.result_path().or(asked) else {
-            return;
-        };
-        if writes {
-            self.recorded.written.insert(path.clone());
+        // A file made without a name is asked for by its directory.
+        let asked = asked.filter(|_| !flags.contains("O_TMPFILE"));
+        let led_to = call.result_path();
+        if let (Some(asked), Some(led_to)) = (&asked, &led_to) {
+            if asked != led_to {
+                let known = self.asked_as.entry(led_to.clone()).or_default();
+                known.insert(asked.clone());
+            }
         }
-        if !flags.contains("O_WRONLY") {
-            self.recorded.read.insert(path);
+        for path in asked.into_iter().chain(led_to) {
+            if writes {
+                self.recorded.written.insert(path.clone());
+            }
+            if !flags.contains("O_WRONLY") {
+                self.recorded.read.insert(path);
+            }
         }
     }
 
@@ -462,14 +481,27 @@ mod tests {
     }
 
     #[test]
-    fn an_open_is_a_read_of_the_file_the_system_opened() {
+    fn an_open_is_a_read_of_the_path_asked_for_and_the_file_it_led_to() {
         let found = recorded(&[(
             1,
             "openat(AT_FDCWD</work>, \"link.txt\", O_RDONLY|O_CLOEXEC) = 3</work/real.txt>\n",
         )]);
 
-        assert_eq!(paths(&found.read), ["/work/real.txt"]);
+        assert_eq!(paths(&found.read), ["/work/link.txt", "/work/real.txt"]);
         assert!(found.written.is_empty());
+    }
+
+    #[test]
+    fn a_listing_through_a_link_is_also_of_the_path_asked_for() {
+        let found = recorded(&[(
+            1,
+            "openat(AT_FDCWD</work>, \"current\", O_RDONLY|O_DIRECTORY) = 3</work/v2>\n\
+             getdents64(3</work/v2>, 0x55d /* 4 entries */, 32768) = 104\n\
+             chdir(\"current\") = 0\n",
+        )]);
+
+        assert_eq!(paths(&found.listed), ["/work/current", "/work/v2"]);
+        assert_eq!(paths(&found.read), ["/work/current", "/work/v2"]);
     }
 
     #[test]
@@ -534,7 +566,12 @@ mod tests {
 
         assert_eq!(
             paths(&found.read),
-            ["/work/app/data", "/work/app/here", "/work/app/run.sh"]
+            [
+                "/work/app",
+                "/work/app/data",
+                "/work/app/here",
+                "/work/app/run.sh"
+            ]
         );
     }
 

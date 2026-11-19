@@ -18,6 +18,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(crate) const ABSENT: &str = "-";
 /// A directory that is there, whatever it holds.
 pub(crate) const DIRECTORY: &str = "d";
+/// What the state of a link starts with: a digest of where it points
+/// follows, then the state of what is there.
+const LINK: &str = "s:";
+
+/// The state of what is at a path, past a link there.
+fn there(state: &str) -> &str {
+    match state.strip_prefix(LINK) {
+        Some(rest) => rest.split_once(':').map_or("", |(_, there)| there),
+        None => state,
+    }
+}
+
+/// Whether a state is a digest of a directory's entries.
+pub(crate) fn is_of_listing(state: &str) -> bool {
+    there(state).starts_with("l:")
+}
 
 /// How long before a digest is taken a file must have last changed for its
 /// times to be trusted to show the next change.
@@ -165,14 +181,30 @@ impl Current {
     /// The state of `path` from the file system, with its digest taken
     /// only if the one remembered no longer stands.
     fn state_now(&self, path: &str, is_listed: bool) -> String {
-        let Ok(metadata) = std::fs::metadata(path) else {
+        let Ok(own) = std::fs::symlink_metadata(path) else {
             return ABSENT.to_owned();
         };
+        if !own.file_type().is_symlink() {
+            return self.state_of(path, &own, is_listed);
+        }
+        // A link is read as where it points and what is there: pointed
+        // elsewhere, it is another path's file under the same name.
+        let target = std::fs::read_link(path).unwrap_or_default();
+        let target = lemma_model::content_hash(target.as_os_str().as_encoded_bytes());
+        let there = match std::fs::metadata(path) {
+            Ok(metadata) => self.state_of(path, &metadata, is_listed),
+            Err(_) => ABSENT.to_owned(),
+        };
+        format!("{LINK}{target}:{there}")
+    }
+
+    /// The state of what `metadata` describes at `path`.
+    fn state_of(&self, path: &str, metadata: &std::fs::Metadata, is_listed: bool) -> String {
         if metadata.is_dir() && !is_listed {
             return DIRECTORY.to_owned();
         }
         let index = usize::from(metadata.is_dir());
-        let identity = identity(&metadata);
+        let identity = identity(metadata);
         let remembered = locked(&self.memory)
             .known
             .get(path)
@@ -218,13 +250,23 @@ impl Current {
 /// `started`: its contents' time or, where the system keeps one, the time
 /// its metadata last changed, which moving an older file there also sets.
 pub(crate) fn changed_since(path: &Path, started: SystemTime) -> bool {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return false;
-    };
+    let link = std::fs::symlink_metadata(path)
+        .ok()
+        .filter(|own| own.file_type().is_symlink());
+    let is_file_there = std::fs::metadata(path)
+        .ok()
+        .filter(std::fs::Metadata::is_file);
+    [link, is_file_there]
+        .iter()
+        .flatten()
+        .any(|metadata| is_changed_since(metadata, started))
+}
+
+fn is_changed_since(metadata: &std::fs::Metadata, started: SystemTime) -> bool {
     let started_ns = started
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos());
-    match identity(&metadata) {
+    match identity(metadata) {
         Some(identity) => identity[1].max(identity[2]) > started_ns,
         None => metadata.modified().is_ok_and(|modified| modified > started),
     }
@@ -351,6 +393,30 @@ mod tests {
                 .state(&format!("{root}/a.txt"), false)
                 .starts_with("f:")
         );
+    }
+
+    #[test]
+    fn a_link_is_in_another_state_once_it_points_elsewhere() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        for edition in ["first", "second"] {
+            std::fs::create_dir(root.join(edition)).unwrap();
+            write(&root.join(edition).join("a.txt"), "same");
+        }
+        let link = root.join("current");
+        std::os::unix::fs::symlink("first", &link).unwrap();
+        let state = |listed: bool| Current::default().state(link.to_str().unwrap(), listed);
+        let (before, listed_before) = (state(false), state(true));
+
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink("second", &link).unwrap();
+
+        assert_ne!(state(false), before);
+        assert_ne!(state(true), listed_before);
+        assert!(is_of_listing(&listed_before) && !is_of_listing(&before));
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink("first", &link).unwrap();
+        assert_eq!(state(false), before);
     }
 
     #[test]
