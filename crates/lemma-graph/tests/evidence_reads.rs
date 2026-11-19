@@ -216,3 +216,27 @@ fn a_run_that_changes_a_file_it_read_keeps_no_evidence() {
     assert_eq!(behavior.outcome, "unknown", "{behavior:#?}");
     assert!(behavior.evidence.iter().all(|used| !used.reused));
 }
+
+#[test]
+fn a_state_come_back_to_keeps_its_evidence_through_many_others() {
+    if !can_watch_runs() {
+        return;
+    }
+    let workspace = shelf();
+    let book = workspace.path().join("shelf/books/a.txt");
+    run(workspace.path(), true);
+
+    // More states than read sets are kept for one case, with the first
+    // come back to after each.
+    for edit in 0..10 {
+        write(&book, &format!("edit {edit}\n"));
+        run(workspace.path(), true);
+        write(&book, "first\n");
+        run(workspace.path(), false);
+    }
+    let restored = run(workspace.path(), false);
+
+    let behavior = &restored.behaviors[0];
+    assert_eq!(behavior.outcome, "satisfied", "{behavior:#?}");
+    assert!(behavior.evidence.iter().all(|used| used.reused));
+}
