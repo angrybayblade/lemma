@@ -12,13 +12,13 @@
 //! directory (a dependency, most often) keep that part once, and a check
 //! compares it with the files once.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
 use serde_json::{Value as Json, json};
 
+use super::states::{ABSENT, Current, changed_since};
 use crate::recorder::Recorded;
 
 /// A directory with more paths than this under it is kept as a part of
@@ -28,103 +28,57 @@ const SPLIT_ABOVE: usize = 128;
 /// many paths: a part per small directory would be a file per directory.
 const INLINE_UP_TO: usize = 16;
 
-/// A path that is not there.
-const ABSENT: &str = "-";
-/// A directory that is there, whatever it holds.
-const DIRECTORY: &str = "d";
-
 /// Where each repository a checker reads has its files.
 pub(crate) type Roots = BTreeMap<String, PathBuf>;
 
-/// The state of paths now, each found once for as long as no checker
-/// runs: many cases read the same files, and a run may write any of them.
-#[derive(Default)]
-pub(crate) struct Current {
-    /// For each path, its state and its state as a listing, once found.
-    found: Mutex<HashMap<String, [Option<String>; 2]>>,
-    /// Whether a part, read from a directory, holds there.
-    parts: Mutex<HashMap<(String, String), bool>>,
+/// Whether the part named `digest` holds for the paths under `directory`;
+/// `part` gives a part's text. A part is compared once for a check.
+fn part_holds(
+    current: &Current,
+    directory: &str,
+    digest: &str,
+    part: &dyn Fn(&str) -> Option<String>,
+) -> bool {
+    if let Some(known) = current.part(directory, digest) {
+        return known;
+    }
+    let holds = part(digest).is_some_and(|text| {
+        text.lines()
+            .all(|line| line_holds(current, directory, line, part))
+    });
+    current.found_part(directory, digest, holds);
+    holds
 }
 
-impl Current {
-    /// Forgets everything found: a checker ran, and may have changed any
-    /// path.
-    pub(crate) fn forget(&self) {
-        self.found
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
-        self.parts
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
-    }
-
-    /// The state of `path`: absent, a directory (with a digest of its
-    /// entries' names when `is_listed`), or a file with a digest of its
-    /// contents.
-    fn state(&self, path: &str, is_listed: bool) -> String {
-        let lock = || self.found.lock().unwrap_or_else(PoisonError::into_inner);
-        let index = usize::from(is_listed);
-        if let Some(found) = lock().get(path).and_then(|states| states[index].clone()) {
-            return found;
-        }
-        let state = state_of(Path::new(path), is_listed);
-        lock().entry(path.to_owned()).or_default()[index] = Some(state.clone());
-        state
-    }
-
-    /// Whether the part named `digest` holds for the paths under
-    /// `directory`; `part` gives a part's text.
-    fn part_holds(
-        &self,
-        directory: &str,
-        digest: &str,
-        part: &dyn Fn(&str) -> Option<String>,
-    ) -> bool {
-        let key = (directory.to_owned(), digest.to_owned());
-        let lock = || self.parts.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(known) = lock().get(&key) {
-            return *known;
-        }
-        let holds = part(digest).is_some_and(|text| {
-            text.lines()
-                .all(|line| self.line_holds(directory, line, part))
-        });
-        lock().insert(key, holds);
-        holds
-    }
-
-    /// Whether one line of a part holds: a path in its state, or a part
-    /// for a directory below.
-    fn line_holds(
-        &self,
-        directory: &str,
-        line: &str,
-        part: &dyn Fn(&str) -> Option<String>,
-    ) -> bool {
-        let mut fields = line.splitn(3, '\t');
-        let (Some(kind), Some(value), Some(name)) = (fields.next(), fields.next(), fields.next())
-        else {
-            return false;
-        };
-        let name = unescaped(name);
-        let path = if name.is_empty() {
-            directory.to_owned()
-        } else {
-            format!("{directory}/{name}")
-        };
-        match kind {
-            PATH => {
-                let now = self.state(&path, value.starts_with("l:"));
-                if now != value {
-                    log::debug!("evidence: {path} was {value} and is {now}");
-                }
-                now == value
+/// Whether one line of a part holds: a path in its state, or a part for a
+/// directory below.
+fn line_holds(
+    current: &Current,
+    directory: &str,
+    line: &str,
+    part: &dyn Fn(&str) -> Option<String>,
+) -> bool {
+    let mut fields = line.splitn(3, '\t');
+    let (Some(kind), Some(value), Some(name)) = (fields.next(), fields.next(), fields.next())
+    else {
+        return false;
+    };
+    let name = unescaped(name);
+    let path = if name.is_empty() {
+        directory.to_owned()
+    } else {
+        format!("{directory}/{name}")
+    };
+    match kind {
+        PATH => {
+            let now = current.state(&path, value.starts_with("l:"));
+            if now != value {
+                log::debug!("evidence: {path} was {value} and is {now}");
             }
-            PART => self.part_holds(&path, value, part),
-            _ => false,
+            now == value
         }
+        PART => part_holds(current, &path, value, part),
+        _ => false,
     }
 }
 
@@ -235,30 +189,6 @@ fn shared_directory(group: &[(&str, &str)], known: usize) -> usize {
     }
 }
 
-fn state_of(path: &Path, is_listed: bool) -> String {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return ABSENT.to_owned();
-    };
-    if !metadata.is_dir() {
-        return match std::fs::read(path) {
-            Ok(contents) => format!("f:{}", lemma_model::content_hash(&contents)),
-            Err(_) => ABSENT.to_owned(),
-        };
-    }
-    if !is_listed {
-        return DIRECTORY.to_owned();
-    }
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return ABSENT.to_owned();
-    };
-    let mut names: Vec<Vec<u8>> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name().as_encoded_bytes().to_vec())
-        .collect();
-    names.sort();
-    format!("l:{}", lemma_model::content_hash(&names.join(&0u8)))
-}
-
 /// The text of each part, by its digest.
 pub(crate) type Parts = BTreeMap<String, String>;
 
@@ -280,7 +210,7 @@ impl KeptReads {
     ) -> bool {
         self.repositories.iter().all(|(repository, digest)| {
             let root = roots.get(repository).and_then(|root| root.to_str());
-            root.is_some_and(|root| current.part_holds(root, digest, part))
+            root.is_some_and(|root| part_holds(current, root, digest, part))
         })
     }
 
@@ -309,9 +239,10 @@ impl ReadSet {
         recorded: &Recorded,
         roots: &Roots,
         started: SystemTime,
+        current: &Current,
     ) -> Result<Self, String> {
         // Found afresh: states found before the run ended may be stale.
-        let current = &Current::default();
+        let current = &current.afresh();
         let mut paths: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         let mut keep = |path: &Path, state: String| {
             if let Some((repository, relative)) = place(path, roots) {
@@ -399,13 +330,6 @@ fn place(path: &Path, roots: &Roots) -> Option<(String, String)> {
     Some((repository.clone(), relative.to_string_lossy().into_owned()))
 }
 
-/// Whether a file was written after `started`.
-fn changed_since(path: &Path, started: SystemTime) -> bool {
-    std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .is_ok_and(|modified| modified > started)
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -438,16 +362,15 @@ mod tests {
 
     fn read_set(roots: &Roots, recorded: &Recorded) -> ReadSet {
         let later = SystemTime::now() + Duration::from_secs(60);
-        ReadSet::of(recorded, roots, later).unwrap()
+        ReadSet::of(recorded, roots, later, &Current::default()).unwrap()
     }
 
     /// Whether a read set, kept and read back, holds for the files now.
     fn holds(reads: &ReadSet, roots: &Roots) -> bool {
         let (kept, parts) = reads.kept();
         let kept = KeptReads::from_json(&kept.to_json()).unwrap();
-        kept.holds(roots, &Current::default(), &|digest| {
-            parts.get(digest).cloned()
-        })
+        let part = |digest: &str| parts.get(digest).cloned();
+        kept.holds(roots, &Current::default(), &part)
     }
 
     #[test]
@@ -517,7 +440,7 @@ mod tests {
         let (_directory, roots, recorded) = repository();
         let before = SystemTime::now() - Duration::from_secs(60);
 
-        let refused = ReadSet::of(&recorded, &roots, before);
+        let refused = ReadSet::of(&recorded, &roots, before, &Current::default());
 
         assert!(
             refused

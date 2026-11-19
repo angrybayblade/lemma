@@ -11,6 +11,7 @@
 mod encode;
 mod evidence;
 mod reads;
+mod states;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
