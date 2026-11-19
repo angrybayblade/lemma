@@ -110,7 +110,7 @@ Each definition shows its location and, when it is an indexed symbol, its qualif
 
 Finds what implements an interface, or an interface or abstract method, and what overrides a method. `<symbol>` and its filters (`--kind`, `--language`, `--path`) work as for `refs`, and so do `--refresh` and `--timeout-secs`. When a name is ambiguous, only symbols that can have implementations count (interfaces, classes, structs, enums, type aliases and methods), so a field named after its type (`store Store`) does not make `Store` ambiguous. Implementations in the repository are listed before those in libraries.
 
-Lemma indexes interface methods as symbols qualified by their interface (`Shape.area`), so `<symbol>` names them directly. Support varies by server: gopls, rust-analyzer and the TypeScript servers answer; pyright and ty say they do not support it (`does not support implementation lookup`), which is not the same as finding none.
+Lemma indexes interface methods as symbols qualified by their interface (`Shape.area`), so `<symbol>` names them directly. Support varies by server: gopls, rust-analyzer, the TypeScript servers and ty answer; pyright says it does not support it (`does not support implementation lookup`), which is not the same as finding none. Pyright is tried first for Python, so list ty first in `.lemma/providers.toml` to get implementations there.
 
 ## `lemma signature <symbol>`
 
@@ -391,7 +391,7 @@ Durations take `s`, `m`, `h` or `d`, or `never`; sizes take `MB` or `GB`, or `no
 
 The daemon pauses a server, and every process it started, with `SIGSTOP`: it uses no CPU, and the operating system can compress or swap out its memory under pressure. The next lookup resumes it, which took about 45 ms for gopls in testing, against seconds to start a server again.
 
-There is one daemon per user. It talks to `lemma` over a Unix socket in the temporary directory that only your user can open, and finds language servers on the `PATH` of each command it runs. A daemon started by a different build of Lemma is replaced automatically. The daemon is not available on Windows; commands there always run in-process.
+Each workspace's daemon talks to `lemma` over a Unix socket of its own that only your user can open, in `$XDG_RUNTIME_DIR/lemma`, or in `/tmp/lemma-<uid>` where that is not set, and finds language servers on the `PATH` of each command it runs. A daemon started by a different build of Lemma is replaced automatically. The daemon is not available on Windows; commands there always run in-process.
 
 ### Repositories that are not cloned
 
@@ -410,7 +410,7 @@ clone = "ask"              # "ask", "always" or "never"
 | --- | --- |
 | `0` | Success. For `refs`, the server answered, including "no references found". |
 | `1` | Error, such as no index, an unknown symbol, or an invalid configuration file. The message is printed to stderr. |
-| `2` | `refs`, `implementations`, `signature` and `graph`: the name matches several symbols. The candidates are printed. |
+| `2` | `refs`, `implementations`, `signature` and `graph`: the name matches several symbols. The candidates are printed. Also any command given an option or a value Lemma does not know: the usage message is printed to stderr. |
 | `3` | `refs`, `definition`, `implementations`, `signature` and `graph`: no answer. The file is stale, no server is installed, the server failed, or it does not support the question. |
 | `4` | `verify` and `check` only: a finding is an error. |
 | `5` | `check` only: it finished, but a `git(...)` repository was not cloned, so what reaches it was not checked. A finding that is an error exits `4` instead. |

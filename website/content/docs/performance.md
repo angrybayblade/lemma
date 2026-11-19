@@ -11,6 +11,8 @@ Measured on an Apple M4 Max (14 cores), macOS 15, with two private monorepos:
 
 Times are wall-clock medians from [hyperfine](https://github.com/sharkdp/hyperfine), with warm file system caches. On this machine starting any process, even `/usr/bin/true`, takes about 15 ms, so that is the floor for any command, Lemma's included.
 
+Most figures on this page were measured in late October 2026, on the SQLite index that `.lemma/index.ls` replaced in rc1 and with ty as the first Python server, and have not been measured again on this build. Rows that mention SQLite or table rows describe that index.
+
 ## Method
 
 The work ran in four rounds, each checking the one before:
@@ -76,9 +78,9 @@ Each change was measured against the previous best and kept only if it helped wi
 | One parser per thread, created only when needed | 1.7 s → 0.71 s. Building a parser compiles every Tree-sitter query (about 10 ms), and the first version did that hundreds of times per run. |
 | Walk directories in parallel; run Git, the walk and loading the stored index at the same time | 0.71 s → 0.34 s. |
 | Ask Git about every file only on the first index or a new commit, otherwise only about changed files | 0.34 s → 0.15 s. |
-| Run every command in a per-user daemon; the `lemma` command only forwards it | Cached lookups 43 ms → 16 ms, the process floor. |
+| Run every command in a background daemon (now one per workspace); the `lemma` command only forwards it | Cached lookups 43 ms → 16 ms, the process floor. |
 | Keep language servers running in the daemon, telling them which files changed between snapshots | Lookups after the first: TypeScript 2.8 s → about 100-250 ms for a new symbol and 32-64 ms when repeated; Python similar. |
-| Use ty as the first Python server | monorepo A lookups 6-10 s (pyright) → 2 s cold, under 20 ms warm. |
+| Use ty as the first Python server (since reversed: pyright is tried first, see [Language servers](providers.md)) | monorepo A lookups 6-10 s (pyright) → 2 s cold, under 20 ms warm. |
 | Keep documents open in warm servers instead of reopening them per lookup | Server time per lookup 43 ms → 29 ms. |
 | Watch indexed directories and update the in-memory index per changed file, with an order-independent fingerprint | Re-index on monorepo A: nothing changed 147 ms → 32 ms, one edit 213 ms → 85 ms. |
 | Start `git status` for the changed paths before parsing, in parallel | Part of the above. |
@@ -97,7 +99,7 @@ Warm servers make lookups fast, so the daemon keeps them and looks after them wh
 
 ## Python servers measured
 
-Server choice matters most for Python. Besides ty (the default), pyright and the jedi library were measured on Linux, on django (about 2,900 files) and monorepo A (71,500 Python files), with the same random symbols as the comparison:
+Server choice matters most for Python. Besides ty, pyright (now tried first) and the jedi library were measured on Linux, on django (about 2,900 files) and monorepo A (71,500 Python files), with the same random symbols as the comparison:
 
 | Repository | pyright mode | Load | Peak memory | First lookup, median / p90 | Repeat |
 | --- | --- | --- | --- | --- | --- |
@@ -108,7 +110,7 @@ Server choice matters most for Python. Besides ty (the default), pyright and the
 
 - pyright keeps no reference index. Every lookup searches the project's text for the name and then checks each candidate, so analysing the workspace up front helps on a few thousand files and not at all on monorepo A.
 - jedi resolves one position in 3-8 ms, but its project-wide reference search is capped internally (30 parsed files) and missed references for 2 of 32 django symbols and 4 of 32 monorepo A symbols. Resolving every identifier in monorepo A (40.8 million) one at a time would take about 38 hours on one core.
-- ty answered monorepo A lookups in about 2 s cold and under 20 ms warm, with the most memory (more than 6.6 GB). It stays the default; pyright in workspace mode is a reasonable choice for repositories of a few thousand files.
+- ty answered monorepo A lookups in about 2 s cold and under 20 ms warm, with the most memory (more than 6.6 GB). Lemma now tries pyright first, because it finds more references, and ty next; list ty in `.lemma/providers.toml` to prefer it on a very large repository.
 
 ## Correctness bugs found by benchmarking
 
@@ -139,4 +141,4 @@ Providers can declare the message they send once a project is loaded (`ready_mes
 - **Lookups with thousands of results** spend most of their time naming the enclosing function of each reference, one query each.
 - **The first lookup of each symbol** costs the language server's own search (about 100-250 ms here, seconds for very common names). Lemma cannot make the server faster, but it could store answers as symbol occurrences shared across lookups and fill them in while idle, so most lookups never reach a server.
 - **The first index** of monorepo A takes 5-6 s. Writing the store while parsing, and a hand-written tree walk instead of Tree-sitter queries, could shorten it.
-- **The daemon** runs one command at a time.
+- **The daemon** answers index lookups (`symbols`, `outline`) beside one provider command, and provider commands one at a time.

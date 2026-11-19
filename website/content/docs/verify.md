@@ -36,13 +36,13 @@ lemma verify [mod.lm] [--all] [--links] [--relation <name>] [--json]
 | `--all` | List every informational finding, not just the first ten. |
 | `--links` | Also list every link, declared and inferred. |
 | `--relation <name>` | Also print every row of a relation `lemma.http` or a module derives, such as `calls`. Repeatable. Relations that compare the code before and after a change are empty, since there is no change. |
-| `--json` | Print findings, and the links and relations asked for, as JSON. |
+| `--json` | Print findings, every link, and the relations asked for, as JSON. |
 
 The entry module sets the scope. A workspace verifies every repository it composes. A repository's root module verifies that repository alone. There is no `--change`, `--base` or `--head`: it reads the working directory, and CI verifies what it checked out.
 
 A repository that is not cloned follows [the `clone` setting](commands.md#repositories-that-are-not-cloned), and one it stops without is listed as `not looked at`.
 
-`lemma verify` reads the whole workspace with full evaluation, so a run takes about as long as a `lemma check` that reads every repository. It runs what the description says to run (adapter commands and schema resolvers), as `lemma check` does, so it needs a repository's dependencies installed. Run it when a description changes, on a schedule, and when `lemma check` finds fewer links than expected, not after every edit. A description that does not load is a failure, and prints the same errors as `lm check`.
+`lemma verify` reads the whole workspace with full evaluation, so a run takes about as long as a `lemma check` that reads every repository. It runs what the description says to run (adapter commands, schema resolvers and the checkers of its behaviors), as `lemma check` does, so it needs a repository's dependencies installed. It keeps the checkers' evidence and reports nothing about behaviors: `lemma check` reports those. Run it when a description changes, on a schedule, and when `lemma check` finds fewer links than expected, not after every edit. A description that does not load is a failure, and prints the same errors as `lm check`.
 
 It exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
@@ -57,7 +57,7 @@ The MCP server has a `verify` tool with the arguments `module`, `all` and `links
 | `include_matches_nothing` | error | An `include` or `exclude` pattern matches no tracked file. |
 | `document_missing` | error | A document a service exports does not exist. |
 | `document_unreadable` | error | A document does not parse, or describes no operations. |
-| `schema_unresolved` | error | A type or document location does not resolve, or a schema command fails. |
+| `schema_unresolved` | error | A type or document location does not resolve. A schema command, resolver or adapter that fails to run is not reported here: `lemma check` warns about it (`resolver`, `adapter`) and fails on it at `--level strict`. |
 | `schema_open` | informational | A schema uses types Lemma could not follow, so the fields under them go uncompared. |
 | `runtime_missing` | error | An interpreter or toolchain the service's `runtime` names does not exist. |
 | `external_unpinned` | warning | A repository named by `git(...)` has no pinned commit, so what it is read at can change. |
@@ -68,7 +68,7 @@ The MCP server has a `verify` tool with the arguments `module`, `all` and `links
 | Finding | Severity | Meaning |
 | --- | --- | --- |
 | `operation_not_documented` | error | A link names an operation its service's documents do not describe, or that is no longer declared. |
-| `anchor_unresolved` | error | An operation's `implementation` does not resolve. |
+| `anchor_unresolved` | error | The `implementation` of an operation a declared link names does not resolve. An operation no link names is not checked. |
 | `anchor_uncalled` | warning | Nothing outside its type calls an anchored method, while a sibling method of the same type in the same file is called. The anchor probably names the wrong method (a generated client's `Invoke` where the code calls `InvokeWithRuntimeEnv`), and every trace from it is empty. |
 | `previously_still_present` | warning | An operation says what it used to be named (`previously`), and that name is still declared, so the claim of a rename is false. |
 | `link_redundant` | informational | A declared link is one inference finds too, and says nothing more. |
