@@ -3,6 +3,7 @@ name = "lemma-index"
 description = "Builds snapshots of a repository's files and symbols."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 

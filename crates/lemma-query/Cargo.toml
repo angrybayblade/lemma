@@ -3,6 +3,7 @@ name = "lemma-query"
 description = "The operations Lemma answers over an indexed snapshot."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 

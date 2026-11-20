@@ -147,4 +147,4 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 - [ ] Field type and enum value changes compared, or kept out of 0.1 explicitly.
 - [ ] The `.lm` language frozen for 0.1.
 - [ ] Documentation reviewed by someone who did not write it: [Onboarding](onboarding.md), [Requirements and rules](grammar.md), [Verifying descriptions](verify.md).
-- [ ] License chosen and added.
+- [x] License chosen and added: Apache-2.0.

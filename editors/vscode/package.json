@@ -4,6 +4,7 @@
   "description": "Syntax highlighting and language server support for Lemma's .lm files, and, experimentally, what saved changes break across repositories",
   "version": "0.1.0",
   "publisher": "lemma",
+  "license": "Apache-2.0",
   "private": true,
   "engines": {
     "vscode": "^1.82.0"

@@ -3,6 +3,7 @@ name = "lemma-store"
 description = "The index.ls store: a repository's files and symbols in segments, with values computed from them."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 # File locks in the standard library arrived in 1.89.
 rust-version = "1.89"
 publish.workspace = true

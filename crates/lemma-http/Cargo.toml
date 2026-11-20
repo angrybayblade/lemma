@@ -3,6 +3,7 @@ name = "lemma-http"
 description = "Extracts HTTP contract facts: operations from OpenAPI and route code, and the calls consumers make."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 

@@ -3,6 +3,7 @@ name = "lemma-lm"
 description = "The `lm` command's implementation: check, format and convert `.lm` modules, and serve them to editors."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 

@@ -3,6 +3,7 @@ name = "lemma-mapped"
 description = "A read-only memory map of a file: the workspace's one use of unsafe code."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 

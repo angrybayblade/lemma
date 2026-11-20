@@ -65,11 +65,13 @@ This sequence is a proposal. The user has not authorized implementation of these
 - Local store versus shared service, and how do snapshots synchronize?
 - ~~Agent interface: CLI, MCP, API, or several adapters?~~ Implemented: CLI with JSON output and an MCP server over the same commands.
 - First editor and declaration-authoring experience?
-- Open-source license and exact Lemma/Entail boundary?
+- ~~Open-source license?~~ Decided: Apache-2.0.
+- Exact Lemma/Entail boundary?
 - Project/package/domain naming availability?
 
 ## Decisions already clear enough to preserve
 
+- (2026-11-19) Lemma is licensed under Apache-2.0: permissive, with an explicit patent grant, and compatible with every dependency. A hosted product built on it is unaffected.
 - (2026-11-01) Rules are Datalog in a Lemma-defined subset; Soufflé is the first engine, behind a pluggable interface with static dispatch.
 - (2026-11-01) Users define the grammar; relationships are declared in YAML first or in `.ls` files.
 - (2026-11-01) Spec-against-code verification comes first; behavioural verification later.

@@ -3,6 +3,7 @@ name = "lemma-lang-server"
 description = "A language server for .lm modules: diagnostics, hovers, definitions, symbols and completion."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 

@@ -113,3 +113,7 @@ The [landing page](website/README.md) leads with agent speed and system precisio
 See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions.
 
 Experimental: [verify TypeScript, Python and Go implementations against source contracts](docs/source-contracts.md).
+
+## License
+
+Copyright 2026 angrybayblade. Lemma is licensed under the [Apache License, Version 2.0](LICENSE).

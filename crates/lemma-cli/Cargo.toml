@@ -3,6 +3,7 @@ name = "lemma-cli"
 description = "Lemma's commands: `lemma`, and `lm` for `.lm` modules."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 

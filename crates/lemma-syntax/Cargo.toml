@@ -3,6 +3,7 @@ name = "lemma-syntax"
 description = "Tree-sitter symbol extraction for supported languages."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
