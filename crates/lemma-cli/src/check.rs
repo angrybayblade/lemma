@@ -452,6 +452,33 @@ fn print_finding(out: &mut dyn Write, finding: &Finding, all: bool) -> std::io::
     print_affects(out, &finding.affects, all)
 }
 
+/// Why a behavior's evidence was not kept, once for each reason: the next
+/// check runs those cases' checkers again.
+fn print_not_kept<'r>(
+    out: &mut dyn Write,
+    not_kept: impl Iterator<Item = &'r str>,
+) -> std::io::Result<()> {
+    let mut reasons: Vec<(&str, usize)> = Vec::new();
+    for why in not_kept {
+        match reasons.iter_mut().find(|(seen, _)| *seen == why) {
+            Some((_, count)) => *count += 1,
+            None => reasons.push((why, 1)),
+        }
+    }
+    for (why, count) in reasons {
+        let cases = if count == 1 {
+            "1 case"
+        } else {
+            &format!("{count} cases")
+        };
+        writeln!(
+            out,
+            "        not kept for {cases}, so the next check runs them again: {why}"
+        )?;
+    }
+    Ok(())
+}
+
 /// The counts of errors, warnings and informational findings.
 fn print_counts(out: &mut dyn Write, report: &Report, all: bool) -> std::io::Result<()> {
     let count = |severity: Severity| {
@@ -503,6 +530,13 @@ fn print_behaviors(out: &mut dyn Write, report: &Report) -> std::io::Result<()> 
             behavior.identity,
             behavior.outcome,
             behavior.cases.len()
+        )?;
+        print_not_kept(
+            out,
+            behavior
+                .evidence
+                .iter()
+                .filter_map(|used| used.not_kept.as_deref()),
         )?;
         for case in &behavior.cases {
             if let Some(at_base) = &case.at_base {

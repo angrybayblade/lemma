@@ -809,6 +809,10 @@ impl<'m, 'w> Interpreter<'m, 'w> {
                 Evidence::Unavailable(why) | Evidence::Stale(why) => Some(why.clone()),
                 Evidence::Observed { .. } => None,
             },
+            not_kept: match &evidence {
+                Evidence::Observed { not_kept, .. } => not_kept.clone(),
+                _ => None,
+            },
         });
         Datum::Evidence(Box::new(evidence))
     }

@@ -313,7 +313,7 @@ impl Store {
             request.checker.address,
             request.case
         );
-        Ok(stored.into_evidence(&key, true))
+        Ok(stored.into_evidence(&key, true, None))
     }
 
     /// Evidence of a run whose every read still finds what it found;
@@ -393,10 +393,8 @@ impl Store {
             Err(why) => return Evidence::Unavailable(why),
         };
         let Some(seen) = seen else {
-            if is_kept_by_state(request) {
-                self.keep(request, &key, &case, &output);
-            }
-            return decoded.into_evidence(&key, false);
+            let not_kept = self.keep_by_state(request, &key, &case, &output);
+            return decoded.into_evidence(&key, false, not_kept);
         };
         let roots = request.root_paths();
         let seen = reads::inside_repositories(&seen, &roots);
@@ -415,13 +413,33 @@ impl Store {
                 );
                 self.keep(request, &key, &case, &output);
                 self.keep_read_set(request, &key, &kept, &parts);
-                decoded.into_evidence(&key, false)
+                decoded.into_evidence(&key, false, None)
             }
             Err(why) => {
                 log::info!("evidence for {} is not kept: {why}", request.case);
-                decoded.into_evidence(&key, false)
+                decoded.into_evidence(&key, false, Some(why))
             }
         }
+    }
+
+    /// Keeps evidence by the state of the repositories its checker reads,
+    /// or says why it cannot be kept.
+    fn keep_by_state(
+        &self,
+        request: &Request<'_>,
+        key: &str,
+        case: &str,
+        output: &Json,
+    ) -> Option<String> {
+        if is_kept_by_state(request) {
+            self.keep(request, key, case, output);
+            return None;
+        }
+        let why = why_not_kept_by_state(request);
+        if let Some(why) = &why {
+            log::info!("evidence for {} is not kept: {why}", request.case);
+        }
+        why
     }
 
     /// What watches this request's run, when its evidence is to be kept
@@ -757,6 +775,33 @@ fn is_kept_by_state(request: &Request<'_>) -> bool {
     request.checker.is_cached
         && request.reads.values().all(Option::is_some)
         && (request.checker.runner != CheckerRunner::Proof || request.engine_key.is_some())
+}
+
+/// Why evidence kept by the state of the repositories a checker reads
+/// cannot be kept, said so the report can tell a reader why the checker
+/// runs again every time. `None` for a checker that asked not to be kept
+/// (`cache: false`): that is what it asked for.
+fn why_not_kept_by_state(request: &Request<'_>) -> Option<String> {
+    if !request.checker.is_cached {
+        return None;
+    }
+    let outside: Vec<&str> = request
+        .reads
+        .iter()
+        .filter(|(_, state)| state.is_none())
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if !outside.is_empty() {
+        return Some(format!(
+            "{} is not a Git repository, so its code has no state to keep the evidence by",
+            outside
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Some("the proof's solver could not be named, so its answer has no key".to_owned())
 }
 
 /// What a checker's evidence depends on apart from code: the checker as

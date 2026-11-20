@@ -136,4 +136,7 @@ pub struct EvidenceUse {
     pub was_reused: bool,
     /// Why there was none, when there was none.
     pub unavailable: Option<String>,
+    /// Why what was observed was not kept, so the next check runs the
+    /// checker again.
+    pub not_kept: Option<String>,
 }

@@ -58,6 +58,7 @@ fn run(checked: &Checked, evidence: &[(&str, Datum)]) -> (Vec<BehaviorResult>, V
                     value: value.clone(),
                     key: (*key).to_owned(),
                     was_reused: false,
+                    not_kept: None,
                 };
                 ((*key).to_owned(), observed)
             })

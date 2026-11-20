@@ -76,6 +76,9 @@ pub enum Evidence {
         /// Whether stored evidence with an equal key was reused instead of
         /// running the checker.
         was_reused: bool,
+        /// Why what the checker observed was not kept, so the next check
+        /// runs it again; `None` when it was kept or reused.
+        not_kept: Option<String>,
     },
     /// It could not observe anything, with why.
     Unavailable(String),

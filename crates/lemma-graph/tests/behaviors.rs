@@ -177,6 +177,46 @@ fn system(handler: &str) -> tempfile::TempDir {
     workspace
 }
 
+/// A check that runs checkers, with `environment` in place of the
+/// variables it names.
+fn run_with(workspace: &Path, environment: &[(&str, &str)]) -> Report {
+    let mut variables: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    for (name, value) in environment {
+        variables.insert((*name).to_owned(), (*value).to_owned());
+    }
+    let options = CheckOptions {
+        environment: Some(std::sync::Arc::new(variables)),
+        ..options(workspace, Level::Check, true)
+    };
+    check(
+        &workspace.join("platform/mod.lm"),
+        &options,
+        &ReferenceEngine,
+        None,
+    )
+    .unwrap()
+}
+
+fn options(workspace: &Path, level: Level, run_checkers: bool) -> CheckOptions {
+    CheckOptions {
+        change: None,
+        level: Some(level),
+        cache: workspace.join("cache"),
+        cloning: lemma_graph::repos::Cloning::Allowed,
+        explain: false,
+        relations: Vec::new(),
+        facts_cache: None,
+        evaluation: lemma_verify::Evaluation::Full,
+        list_links: false,
+        run_checkers,
+        runs_base_checkers: false,
+        select: None,
+        warm: None,
+        environment: None,
+        runtime: None,
+    }
+}
+
 fn run(workspace: &Path, level: Level, run_checkers: bool) -> Report {
     let options = CheckOptions {
         change: None,
@@ -288,6 +328,48 @@ fn kept_evidence_is_reused_until_the_code_changes_and_is_then_stale_without_runn
         "{:#?}",
         changed.behaviors[0]
     );
+}
+
+#[test]
+fn evidence_that_cannot_be_kept_says_why() {
+    let workspace = system(FORWARDING_HANDLER);
+    // The platform, where the checker runs and which it reads, is no
+    // longer a Git repository: its code has no state to key evidence by.
+    std::fs::remove_dir_all(workspace.path().join("platform/.git")).unwrap();
+    // Where a run can be watched, evidence is kept by what it read; this
+    // is about what happens where none can be, as on macOS: a `PATH` with
+    // the checker's interpreter and Git, and no `strace`.
+    let bin = workspace.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for program in ["python3", "git"] {
+        let found = Command::new("sh")
+            .args(["-c", &format!("command -v {program}")])
+            .output()
+            .unwrap();
+        let found = String::from_utf8(found.stdout).unwrap();
+        std::os::unix::fs::symlink(found.trim(), bin.join(program)).unwrap();
+    }
+    let without_a_recorder = [("PATH", bin.to_str().unwrap())];
+
+    let first = run_with(workspace.path(), &without_a_recorder);
+    let second = run_with(workspace.path(), &without_a_recorder);
+
+    let reasons: Vec<&str> = first.behaviors[0]
+        .evidence
+        .iter()
+        .filter_map(|used| used.not_kept.as_deref())
+        .collect();
+    assert_eq!(
+        reasons.len(),
+        first.behaviors[0].evidence.len(),
+        "{:#?}",
+        first.behaviors[0]
+    );
+    assert!(
+        reasons[0].contains("`platform` is not a Git repository"),
+        "{reasons:?}"
+    );
+    assert!(second.behaviors[0].evidence.iter().all(|used| !used.reused));
 }
 
 /// The platform with an allowance appended to its module, committed.

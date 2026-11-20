@@ -148,13 +148,19 @@ pub(crate) enum Decoded {
 }
 
 impl Decoded {
-    /// As evidence with `key`.
-    pub(crate) fn into_evidence(self, key: &str, was_reused: bool) -> Evidence {
+    /// As evidence with `key`; `not_kept` says why it was not kept.
+    pub(crate) fn into_evidence(
+        self,
+        key: &str,
+        was_reused: bool,
+        not_kept: Option<String>,
+    ) -> Evidence {
         match self {
             Decoded::Observed(value) => Evidence::Observed {
                 value,
                 key: key.to_owned(),
                 was_reused,
+                not_kept,
             },
             Decoded::Unavailable(reason) => Evidence::Unavailable(reason),
         }

@@ -119,6 +119,10 @@ pub struct EvidenceReport {
     /// Why there was none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unavailable: Option<String>,
+    /// Why what the checker observed was not kept, so the next check runs
+    /// it again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_kept: Option<String>,
 }
 
 /// A requirement or behavior a change added, removed or changed.
@@ -773,6 +777,7 @@ fn report(
                 key: used.key.clone(),
                 reused: used.was_reused,
                 unavailable: used.unavailable.clone(),
+                not_kept: used.not_kept.clone(),
             })
             .collect(),
     }
