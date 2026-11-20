@@ -1,11 +1,16 @@
 # Builds `lemma` and `lm` for each platform when a version tag is pushed and attaches
 # the archives, their checksums, the agent skills and install.sh to a GitHub
 # release. Tags with a pre-release suffix (v0.1.0-rc0) make pre-releases.
+#
+# Run by hand, it builds every platform and publishes nothing: a tag whose
+# build fails on one platform publishes no release at all, so try the builds
+# before tagging.
 name: release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -53,6 +58,7 @@ jobs:
 
   release:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
