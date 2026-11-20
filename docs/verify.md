@@ -42,7 +42,7 @@ The entry module sets the scope. A workspace verifies every repository it compos
 
 A repository that is not cloned follows [the `clone` setting](commands.md#repositories-that-are-not-cloned), and one it stops without is listed as `not looked at`.
 
-`lemma verify` reads the whole workspace with full evaluation, so a run takes about as long as a `lemma check` that reads every repository. It runs what the description says to run (adapter commands, schema resolvers and the checkers of its behaviors), as `lemma check` does, so it needs a repository's dependencies installed. It keeps the checkers' evidence and reports nothing about behaviors: `lemma check` reports those. Run it when a description changes, on a schedule, and when `lemma check` finds fewer links than expected, not after every edit. A description that does not load is a failure, and prints the same errors as `lm check`.
+`lemma verify` reads the whole workspace with full evaluation, so a run takes about as long as a `lemma check` that reads every repository. It runs what the description says to run to read schemas and operations (adapter commands and schema resolvers), as `lemma check` does, so it needs a repository's dependencies installed. It runs no behavior's checker and reports nothing about behaviors: `lemma check` does. Run it when a description changes, on a schedule, and when `lemma check` finds fewer links than expected, not after every edit. A description that does not load is a failure, and prints the same errors as `lm check`.
 
 It exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 

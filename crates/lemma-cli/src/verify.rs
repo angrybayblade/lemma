@@ -72,7 +72,9 @@ fn verify(args: &VerifyArgs, lsp: &LanguageServers) -> anyhow::Result<Descriptio
         facts_cache: facts_cache(),
         evaluation: lemma_verify::Evaluation::Full,
         list_links: true,
-        run_checkers: true,
+        // Behaviors are `lemma check`'s to report; verify reports none, so
+        // running their checkers here only cost time.
+        run_checkers: false,
         runs_base_checkers: false,
         select: None,
         warm: None,

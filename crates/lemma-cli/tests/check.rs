@@ -423,6 +423,31 @@ fn verify_finds_a_document_that_does_not_exist_and_a_pattern_that_matches_nothin
 }
 
 #[test]
+fn verify_runs_no_checker() {
+    let scratch = tempfile::tempdir().unwrap();
+    let directory = scratch.path();
+    let marker = directory.join("checker-ran");
+    // A checker that leaves a mark outside the repository when it runs.
+    write(
+        &directory.join("repo/tools/mark.py"),
+        "import json, os\nopen(os.environ[\"MARK\"], \"w\").close()\njson.dump({\"observed\": True}, open(os.environ[\"LEMMA_OUTPUT\"], \"w\"))\n",
+    );
+    write(
+        &directory.join("repo/mod.lm"),
+        &format!(
+            "module shop\n\nexport checker mark(): Evidence<Bool> {{\n    command: [\"python3\", \"tools/mark.py\"]\n    env: {{ MARK: \"{}\" }}\n}}\n\nexport behavior marked {{\n    expect need mark()\n}}\n",
+            marker.display()
+        ),
+    );
+    commit_all(&directory.join("repo"));
+
+    let output = lemma(&directory.join("repo"), &["verify", "--no-daemon"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    assert!(!marker.exists(), "lemma verify ran the checker");
+}
+
+#[test]
 fn verify_passes_a_description_that_matches() {
     let scratch = tempfile::tempdir().unwrap();
     let directory = scratch.path();
