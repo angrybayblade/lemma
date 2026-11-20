@@ -434,7 +434,13 @@ fn print_finding(out: &mut dyn Write, finding: &Finding, all: bool) -> std::io::
     } else {
         "already there"
     };
-    writeln!(out, "{label:<7} {}", finding.message)?;
+    // A message of several lines, such as a checker's output, keeps the
+    // report's shape: its later lines are indented under the first.
+    let mut lines = finding.message.lines();
+    writeln!(out, "{label:<7} {}", lines.next().unwrap_or_default())?;
+    for line in lines {
+        writeln!(out, "        {line}")?;
+    }
     writeln!(
         out,
         "        [{}] {}  ({origin})",

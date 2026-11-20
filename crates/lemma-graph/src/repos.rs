@@ -494,21 +494,46 @@ fn run_process(
         )));
     };
     if !status.success() {
-        return Err(failure(failure_message(&stdout, &stderr)));
+        return Err(failure(failure_message(status.code(), &stdout, &stderr)));
     }
     Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
-/// What a failed command said: its standard error, or the end of its
-/// standard output, where some tools (pnpm) report failures.
-fn failure_message(stdout: &[u8], stderr: &[u8]) -> String {
-    let stderr = String::from_utf8_lossy(stderr).trim().to_owned();
-    if !stderr.is_empty() {
-        return stderr;
-    }
+/// The most lines of a failed command's output a message keeps: the first
+/// few, where tools such as Node print the error before its stack, and the
+/// last, where most others put it.
+const FAILURE_HEAD_LINES: usize = 4;
+const FAILURE_TAIL_LINES: usize = 16;
+
+/// What a failed command said, and how it ended: its standard error, or
+/// its standard output where it wrote nothing there (pnpm reports failures
+/// on standard output), cut to its first and last lines when long, so an
+/// agent reading the report gets the error rather than pages of progress.
+fn failure_message(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> String {
+    let ended = code.map_or_else(
+        || "stopped by a signal".to_owned(),
+        |code| format!("exited with {code}"),
+    );
+    let stderr = String::from_utf8_lossy(stderr);
     let stdout = String::from_utf8_lossy(stdout);
-    let lines: Vec<&str> = stdout.trim().lines().collect();
-    lines[lines.len().saturating_sub(20)..].join("\n")
+    let said = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    if said.is_empty() {
+        return format!("{ended}, printing nothing");
+    }
+    let lines: Vec<&str> = said.lines().collect();
+    if lines.len() <= FAILURE_HEAD_LINES + FAILURE_TAIL_LINES {
+        return format!("{ended}:\n{said}");
+    }
+    let left_out = lines.len() - FAILURE_HEAD_LINES - FAILURE_TAIL_LINES;
+    format!(
+        "{ended}:\n{}\n[{left_out} lines left out]\n{}",
+        lines[..FAILURE_HEAD_LINES].join("\n"),
+        lines[lines.len() - FAILURE_TAIL_LINES..].join("\n")
+    )
 }
 
 fn read_in_background(
@@ -603,6 +628,50 @@ fn sanitize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_command_says_how_it_ended_and_what_it_printed() {
+        let message = failure_message(Some(2), b"", b"Traceback\nValueError: no such file\n");
+
+        assert_eq!(
+            message,
+            "exited with 2:\nTraceback\nValueError: no such file"
+        );
+    }
+
+    #[test]
+    fn a_long_failure_keeps_its_first_and_last_lines() {
+        use std::fmt::Write as _;
+
+        let mut output = String::new();
+        for line in 1..=100 {
+            let _ = writeln!(output, "line {line}");
+        }
+
+        let message = failure_message(Some(1), b"", output.as_bytes());
+
+        let lines: Vec<&str> = message.lines().collect();
+        assert_eq!(lines[0], "exited with 1:");
+        assert_eq!(lines[1], "line 1");
+        assert_eq!(lines[5], "[80 lines left out]");
+        assert_eq!(lines.last(), Some(&"line 100"));
+        assert_eq!(lines.len(), 1 + FAILURE_HEAD_LINES + 1 + FAILURE_TAIL_LINES);
+    }
+
+    #[test]
+    fn a_failure_on_standard_output_alone_is_read_there() {
+        let message = failure_message(Some(1), b"ERR_PNPM_ABORTED\n", b"  \n");
+
+        assert_eq!(message, "exited with 1:\nERR_PNPM_ABORTED");
+    }
+
+    #[test]
+    fn a_command_stopped_by_a_signal_or_printing_nothing_says_so() {
+        assert_eq!(
+            failure_message(None, b"", b""),
+            "stopped by a signal, printing nothing"
+        );
+    }
 
     /// A repository on `main` with one commit, made with a fixed author.
     fn repository() -> tempfile::TempDir {
