@@ -75,7 +75,7 @@ export service api {
 }
 ```
 
-This declares one service, `api`, and takes its operations from the OpenAPI document. `lemma.http` is the standard library's module for HTTP contracts.
+This declares one service, `api`, and takes its operations from the OpenAPI document. `lemma.http` is the standard library's module for HTTP contracts. A service without a document needs none: its types, or its routes read from code, are the contract ([Onboarding](onboarding.md#4-describe-the-system)).
 
 Save `web/mod.lm`:
 

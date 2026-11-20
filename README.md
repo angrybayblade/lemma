@@ -6,6 +6,8 @@ On your own, that keeps your agent precise and trustworthy on long tasks. In a t
 
 **Start here:** [Introduction](docs/introduction.md) · [Getting started](docs/getting-started.md) · [Quickstart](docs/quickstart.md) · [Tutorials](docs/tutorials/README.md)
 
+No OpenAPI document is needed: a service's contract can be its functions and types in code, or its routes, in any of the four languages and across them.
+
 Lemma is in release candidates; see the [pre-release checklist](docs/pre-release.md) for what is ready and what is not.
 
 ## Install

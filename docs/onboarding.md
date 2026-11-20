@@ -110,6 +110,38 @@ export service api {
 }
 ```
 
+A service that serves several documents lists them: `operations: [http.openapi("openapi.json"), http.openapi("openapi-internal.json")]`.
+
+**No OpenAPI file? The code is the contract.** Lemma does not need a document. Use whichever of these the service already has:
+
+| The service has | Write | Lemma compares |
+| --- | --- | --- |
+| Request and response types in code | An `operation` with its function and types (below) | The caller's types with the provider's, field by field, in both directions |
+| Routes in a framework (Hono, FastAPI, Express, Flask, Go routers) | `operations: hono.app(...)`, `fastapi.app(...)` or `http.adapter(...)` ([Read operations from code](adapters.md)) | Callers with the routes as the code defines them now |
+| A script that prints its schemas | `json.command("...")` and `request: spec.at("$.path")` ([Check links](check.md#operations)) | Callers with what the script prints at each commit |
+
+With types, the provider declares the operation by the function that implements it:
+
+```lm
+module billing
+
+import * as typescript from lemma.typescript
+
+let charges = typescript.file("src/charges.ts")
+
+export service api {
+    index: { include: ["src"] }
+
+    export operation create_charge {
+        implementation: charges.symbol("createCharge")
+        request: charges.type("ChargeRequest")
+        response: charges.type("ChargeResponse")
+    }
+}
+```
+
+The caller declares the call the same way, with `sends` and `accepts` where the provider has `request` and `response`, and a link joins the two ([Declare a link](tutorials/1-links.md)). `lemma check` then reports `the receiver requires \`currency\` at the root; the sender may leave it out` when the two sets of types disagree, with no document anywhere. The same works in Python, Go and Rust, and across them: a Go struct on one side and a Python model on the other.
+
 **Compose it.** Name each repository in the workspace's `mod.lm`:
 
 ```lm
