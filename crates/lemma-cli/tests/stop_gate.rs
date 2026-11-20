@@ -168,6 +168,12 @@ impl Shop {
         );
     }
 
+    /// An edit `lemma check` reports as a warning: a response field web
+    /// reads is gone.
+    fn drop_a_response_field(&self) {
+        self.edit_billing(r#", "receipt_url": { "type": "string" }"#, "");
+    }
+
     /// What the gate prints when the agent tries to stop, run with `lemma`
     /// from `bin` first on `PATH`.
     fn gate_with(&self, bin: &Path, settings: &[(&str, &str)]) -> String {
@@ -185,6 +191,7 @@ impl Shop {
             .env("HOME", self.root.path())
             .env("XDG_CACHE_HOME", self.root.path().join(".cache"))
             .env("LEMMA_NO_DAEMON", "1")
+            .env_remove("LEMMA_GATE_LEVEL")
             .envs(settings.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -257,6 +264,17 @@ fn repositories_beside_the_workspace_are_checked() {
     let reason = blocked(&shop.gate(&[]));
 
     assert!(reason.contains("currency"), "{reason}");
+}
+
+#[test]
+fn an_introduced_warning_sends_the_agent_back_only_when_asked() {
+    let shop = Shop::new(Layout::Inside);
+    shop.drop_a_response_field();
+
+    assert_eq!(shop.gate(&[]), "");
+    let reason = blocked(&shop.gate(&[("LEMMA_GATE_LEVEL", "warning")]));
+
+    assert!(reason.contains("receipt_url"), "{reason}");
 }
 
 #[test]

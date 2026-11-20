@@ -2,7 +2,10 @@
 """Claude Code Stop hook: before the agent finishes, check each of the
 workspace's repositories that has uncommitted edits with `lemma check
 --change`, and send the agent back once when the change introduced errors,
-or when a check could not run. Opt-in; see ../SKILL.md."""
+or when a check could not run. Opt-in; see ../SKILL.md.
+
+Set LEMMA_GATE_LEVEL=warning to send the agent back for introduced
+warnings too."""
 import json
 import os
 import re
@@ -61,7 +64,7 @@ def main():
     root = hook.get("cwd") or os.getcwd()
     if not os.path.exists(os.path.join(root, "mod.lm")):
         return
-    blocking = {"error"}
+    blocking = {"error", "warning"} if os.environ.get("LEMMA_GATE_LEVEL") == "warning" else {"error"}
     found = []
     unchecked = []
     for name, directory in repositories(root):
