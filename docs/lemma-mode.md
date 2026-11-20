@@ -56,7 +56,7 @@ A claim the agent could not prove is named in the report. Read that part first.
 
 ## Enforce the check
 
-Lemma mode asks the agent to check its work, and an agent can skip what it is asked. The opt-in stop gate (experimental), a Stop hook in `skills/lemma-verify/hooks/stop-check.py`, runs `lemma check --change` for each repository with uncommitted edits when the agent tries to finish, and sends it back once if the change introduced errors or warnings, or if the check could not run. `LEMMA_GATE_LEVEL=error` in the hook's environment makes it errors only. The [`lemma-verify`](../skills/lemma-verify/SKILL.md) skill shows how to turn it on, what each level is for and where the gate looks.
+Lemma mode asks the agent to check its work, and an agent can skip what it is asked. The opt-in stop gate (experimental), a Stop hook in `skills/lemma-verify/hooks/stop-check.py`, runs `lemma check --change` for each repository the agent changed, committed or not, when the agent tries to finish, and sends it back once if the change introduced errors or warnings, or if the check could not run. `LEMMA_GATE_LEVEL=error` in the hook's environment makes it errors only. The [`lemma-verify`](../skills/lemma-verify/SKILL.md) skill shows how to turn it on, what each level is for and where the gate looks.
 
 ## The skills it uses
 

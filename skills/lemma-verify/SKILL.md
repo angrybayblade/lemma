@@ -37,7 +37,7 @@ Run with `--all` to see informational findings, and `lemma verify --links` to se
 
 ## The stop gate (experimental)
 
-The stop gate is opt-in. `hooks/stop-check.py` beside this file, a Claude Code Stop hook, runs `lemma check --change` for each repository with uncommitted edits when the agent tries to stop, and sends it back to work once when the change introduced errors or warnings. It is off unless a project turns it on in `.claude/settings.json`:
+The stop gate is opt-in. `hooks/stop-check.py` beside this file, a Claude Code Stop hook, runs `lemma check --change` for each repository the agent changed when it tries to stop, and sends it back to work once when the change introduced errors or warnings. It is off unless a project turns it on in `.claude/settings.json`:
 
 ```json
 {
@@ -72,8 +72,10 @@ A level the gate does not know is not guessed at: the gate uses the default and 
 
 ### Where it looks, and what it says when it cannot
 
-- It reads the workspace's repositories from the `mod.lm` in the directory the agent runs in (`repo billing = local("billing")`). A repository may sit inside the workspace, beside it (`local("../billing")`), or be a Git worktree.
-- It checks the repositories with uncommitted changes. Edits already committed are not checked: run `lemma check --change <repository>` for those.
-- An agent started inside one repository, where no workspace module is, gets no check.
+- It finds the workspace from the directory the agent runs in: the nearest directory at or above it whose `mod.lm` declares a `workspace`. An agent started inside one of its repositories is checked from there too.
+- An agent working in a repository that sits beside the workspace (`local("../billing")`) cannot find it by looking up. Name the workspace with `LEMMA_WORKSPACE` in the hook's environment: `LEMMA_WORKSPACE=/path/to/workspace .claude/skills/lemma-verify/hooks/stop-check.py`.
+- It reads the repositories from that module, wherever their directories are, Git worktrees included.
+- It checks each repository the agent changed: one with uncommitted edits, or with commits that are not on its default branch, so work an orchestrator commits before the agent stops is checked.
+- A repository with a module of its own and no workspace above it is checked alone. A directory with no Lemma module anywhere above it is left alone: the gate has nothing to hold the agent to.
 - When `lemma check` cannot run or does not finish, the gate says so and sends the agent back to run it by hand, rather than letting it pass.
 - It blocks at most once per stop, so an error the agent cannot fix is reported rather than looped on.

@@ -1,46 +1,122 @@
 #!/usr/bin/env python3
-"""Claude Code Stop hook: before the agent finishes, check each of the
-workspace's repositories that has uncommitted edits with `lemma check
---change`, and send the agent back once when the change introduced errors
-or warnings, or when a check could not run. Opt-in; see ../SKILL.md.
+"""Claude Code Stop hook: before the agent finishes, check each repository
+of its workspace that it changed with `lemma check --change`, and send the
+agent back once when the change introduced errors or warnings, or when a
+check could not run. Opt-in; see ../SKILL.md.
+
+A repository counts as changed when it has uncommitted edits or commits
+that are not on its default branch, so work an orchestrator commits before
+the agent stops is checked too.
 
 LEMMA_GATE_LEVEL says what sends the agent back: `warning` (the default)
-for introduced errors and warnings, `error` for errors only."""
+for introduced errors and warnings, `error` for errors only.
+LEMMA_WORKSPACE names the workspace's directory when the agent runs
+somewhere the gate cannot find it from, such as a repository that sits
+beside the workspace rather than inside it."""
 import json
 import os
 import re
 import subprocess
 import sys
 
+MODULE = "mod.lm"
 # A repository of the workspace, as its module names it: `repo web = local("../web")`.
 REPOSITORY = re.compile(r'\brepo\s+([A-Za-z_]\w*)\s*=\s*local\(\s*"([^"]+)"\s*\)')
+DECLARES_WORKSPACE = re.compile(r"^\s*workspace\s*\{", re.MULTILINE)
+# The branches Lemma takes for a repository's default branch, in its order
+# (`default_branches` in crates/lemma-graph/src/repos.rs): keep them in step.
+DEFAULT_BRANCHES = ["main", "master", "develop", "trunk"]
 TIMEOUT_SECONDS = 240
 # What sends the agent back at each level of LEMMA_GATE_LEVEL.
 LEVELS = {"warning": {"error", "warning"}, "error": {"error"}}
 DEFAULT_LEVEL = "warning"
 
 
-def repositories(root):
-    """The workspace's repositories with their directories, read from its
-    module rather than from the directories beside it: a repository may sit
-    inside the workspace, next to it, or be a Git worktree."""
-    with open(os.path.join(root, "mod.lm"), encoding="utf-8") as module:
-        named = REPOSITORY.findall(module.read())
-    return [(name, os.path.normpath(os.path.join(root, path))) for name, path in named]
-
-
 def git(directory, *arguments):
     return subprocess.run(["git", "-C", directory, *arguments], capture_output=True, text=True)
 
 
-def is_edited(directory):
-    """Whether `directory` is a repository's own checkout with uncommitted
-    changes. A plain directory inside another repository is not one."""
+def lines_of(directory, *arguments):
+    done = git(directory, *arguments)
+    return [line.strip() for line in done.stdout.splitlines() if line.strip()] if done.returncode == 0 else []
+
+
+def read_module(directory):
+    try:
+        with open(os.path.join(directory, MODULE), encoding="utf-8") as module:
+            return module.read()
+    except OSError:
+        return None
+
+
+def is_checkout(directory):
+    """Whether `directory` is a repository's own checkout, not a directory
+    inside another repository's."""
     top = git(directory, "rev-parse", "--show-toplevel")
-    if top.returncode != 0 or os.path.realpath(top.stdout.strip()) != os.path.realpath(directory):
+    return top.returncode == 0 and os.path.realpath(top.stdout.strip()) == os.path.realpath(directory)
+
+
+def workspace_of(place):
+    """Where to check from, and the repositories to check: (root, [(name,
+    directory)]). The workspace is the one LEMMA_WORKSPACE names, else the
+    nearest directory at or above `place` whose module declares a
+    workspace, else the nearest repository with a module of its own, which
+    is checked alone. `None` where no Lemma module is anywhere above."""
+    named = os.environ.get("LEMMA_WORKSPACE")
+    candidates = [os.path.abspath(named)] if named else [place, *parents(place)]
+    for directory in candidates:
+        text = read_module(directory)
+        if text is not None and DECLARES_WORKSPACE.search(text):
+            members = [(name, os.path.normpath(os.path.join(directory, path)))
+                       for name, path in REPOSITORY.findall(text)]
+            own = [("self", directory)] if is_checkout(directory) else []
+            return directory, own + members
+    for directory in [place, *parents(place)]:
+        if read_module(directory) is not None and is_checkout(directory):
+            return directory, [("self", directory)]
+    return None
+
+
+def parents(place):
+    found = []
+    directory = os.path.abspath(place)
+    while os.path.dirname(directory) != directory:
+        directory = os.path.dirname(directory)
+        found.append(directory)
+    return found
+
+
+def fork_point(directory):
+    """Where the checked-out commit left the default branch, as Lemma finds
+    it (`fork_point` in crates/lemma-graph/src/repos.rs): the merge base
+    with the first default branch that exists."""
+    remotes = sorted(lines_of(directory, "remote"), key=lambda remote: remote != "origin")
+    configured = lines_of(directory, "config", "--get", "init.defaultBranch")
+    names = DEFAULT_BRANCHES + configured
+    candidates = lines_of(directory, "for-each-ref", "--format=%(symref)", "refs/remotes/*/HEAD")
+    candidates += [f"{remote}/{name}" for remote in remotes for name in names] + names
+    for candidate in candidates:
+        if git(directory, "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}").returncode != 0:
+            continue
+        base = git(directory, "merge-base", "HEAD", candidate)
+        if base.returncode == 0:
+            return base.stdout.strip()
+    return None
+
+
+def is_changed(directory, members_inside):
+    """Whether the repository at `directory` has uncommitted edits, leaving
+    out the workspace's own repositories kept inside it, or commits since
+    it left its default branch."""
+    if not is_checkout(directory):
         return False
-    status = git(directory, "status", "--porcelain")
-    return status.returncode == 0 and status.stdout.strip() != ""
+    status = lines_of(directory, "status", "--porcelain")
+    edited = [line for line in status if not any(line[3:].rstrip("/") == member for member in members_inside)]
+    if edited:
+        return True
+    head = git(directory, "rev-parse", "HEAD").stdout.strip()
+    base = fork_point(directory)
+    return base is not None and base != head
 
 
 def check(root, name):
@@ -64,15 +140,18 @@ def main():
     # Already sent back once for this stop: report, don't loop.
     if hook.get("stop_hook_active"):
         return
-    root = hook.get("cwd") or os.getcwd()
-    if not os.path.exists(os.path.join(root, "mod.lm")):
+    found_workspace = workspace_of(hook.get("cwd") or os.getcwd())
+    if found_workspace is None:
         return
+    root, repositories = found_workspace
+    inside = [os.path.relpath(directory, root) for _, directory in repositories
+              if os.path.realpath(directory).startswith(os.path.realpath(root) + os.sep)]
     level = os.environ.get("LEMMA_GATE_LEVEL") or DEFAULT_LEVEL
     blocking = LEVELS.get(level, LEVELS[DEFAULT_LEVEL])
     found = []
     unchecked = []
-    for name, directory in repositories(root):
-        if not is_edited(directory):
+    for name, directory in repositories:
+        if not is_changed(directory, inside if name == "self" else []):
             continue
         findings, problem = check(root, name)
         if findings is None:
@@ -93,14 +172,15 @@ def main():
         if len(found) > 10:
             lines.append(f"- and {len(found) - 10} more")
         checked = ", ".join(sorted({name for name, _, _, _ in found}))
-        parts.append(f"`lemma check --change` found problems your edits introduced in {checked}:\n"
+        parts.append(f"`lemma check --change` found problems your changes introduced in {checked}:\n"
                      + "\n".join(lines)
                      + "\nFix them, or say why each is expected, before finishing: a warning can be "
                      "a false alarm, such as a common field name the code uses for something else. "
-                     "Run `lemma check --change <repository>` to see them again.")
+                     f"Run `lemma check --change <repository>` from {root} to see them again.")
     for name, problem in unchecked:
-        parts.append(f"The stop gate could not check your edits in {name}: {problem}. "
-                     f"Run `lemma check --change {name}` yourself and report what it says before finishing.")
+        parts.append(f"The stop gate could not check your changes in {name}: {problem}. "
+                     f"Run `lemma check --change {name}` from {root} yourself and report what it says "
+                     "before finishing.")
     print(json.dumps({"decision": "block", "reason": "\n".join(parts)}))
 
 

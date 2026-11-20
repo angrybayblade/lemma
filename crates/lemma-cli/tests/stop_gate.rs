@@ -174,9 +174,33 @@ impl Shop {
         self.edit_billing(r#", "receipt_url": { "type": "string" }"#, "");
     }
 
+    /// Commits whatever billing holds, on the branch it is on.
+    fn commit_billing(&self) {
+        self.git(&self.billing, &["commit", "-q", "-a", "-m", "the change"]);
+    }
+
+    /// What the gate prints when an agent working in `place` tries to stop.
+    fn gate_from(&self, place: &Path, settings: &[(&str, &str)]) -> String {
+        self.gate_in(place, &self.bin(), settings)
+    }
+
+    fn bin(&self) -> PathBuf {
+        let bin = self.root.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let lemma = bin.join("lemma");
+        if !lemma.exists() {
+            std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_lemma"), lemma).unwrap();
+        }
+        bin
+    }
+
     /// What the gate prints when the agent tries to stop, run with `lemma`
     /// from `bin` first on `PATH`.
     fn gate_with(&self, bin: &Path, settings: &[(&str, &str)]) -> String {
+        self.gate_in(&self.workspace, bin, settings)
+    }
+
+    fn gate_in(&self, place: &Path, bin: &Path, settings: &[(&str, &str)]) -> String {
         let hook = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../skills/lemma-verify/hooks/stop-check.py");
         let path = format!(
@@ -186,18 +210,19 @@ impl Shop {
         );
         let mut child = Command::new("python3")
             .arg(hook)
-            .current_dir(&self.workspace)
+            .current_dir(place)
             .env("PATH", path)
             .env("HOME", self.root.path())
             .env("XDG_CACHE_HOME", self.root.path().join(".cache"))
             .env("LEMMA_NO_DAEMON", "1")
             .env_remove("LEMMA_GATE_LEVEL")
+            .env_remove("LEMMA_WORKSPACE")
             .envs(settings.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        let input = serde_json::json!({ "cwd": self.workspace, "stop_hook_active": false });
+        let input = serde_json::json!({ "cwd": place, "stop_hook_active": false });
         child
             .stdin
             .take()
@@ -210,13 +235,7 @@ impl Shop {
     }
 
     fn gate(&self, settings: &[(&str, &str)]) -> String {
-        let bin = self.root.path().join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let lemma = bin.join("lemma");
-        if !lemma.exists() {
-            std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_lemma"), lemma).unwrap();
-        }
-        self.gate_with(&bin, settings)
+        self.gate_with(&self.bin(), settings)
     }
 }
 
@@ -309,4 +328,57 @@ fn a_check_that_could_not_run_is_said_not_passed() {
 
     assert!(reason.contains("could not check"), "{reason}");
     assert!(reason.contains("the index is locked"), "{reason}");
+}
+
+#[test]
+fn a_change_committed_on_a_branch_is_checked() {
+    let shop = Shop::new(Layout::Worktree);
+    shop.require_a_new_field();
+    shop.commit_billing();
+
+    let reason = blocked(&shop.gate(&[]));
+
+    assert!(reason.contains("currency"), "{reason}");
+}
+
+#[test]
+fn an_agent_inside_a_repository_is_checked_from_the_workspace_above() {
+    let shop = Shop::new(Layout::Inside);
+    shop.require_a_new_field();
+
+    let reason = blocked(&shop.gate_from(&shop.billing, &[]));
+
+    assert!(reason.contains("currency"), "{reason}");
+}
+
+#[test]
+fn a_workspace_beside_the_repository_is_found_through_lemma_workspace() {
+    let shop = Shop::new(Layout::Beside);
+    shop.require_a_new_field();
+    let workspace = shop.workspace.display().to_string();
+
+    let reason = blocked(&shop.gate_from(&shop.billing, &[("LEMMA_WORKSPACE", &workspace)]));
+
+    assert!(reason.contains("currency"), "{reason}");
+}
+
+#[test]
+fn a_workspace_that_is_a_repository_does_not_count_its_repositories_as_edits() {
+    let shop = Shop::new(Layout::Inside);
+    // The workspace's own repository holds its module; the repositories
+    // inside it are their own, untracked here.
+    shop.git(&shop.workspace, &["init", "-q"]);
+    shop.git(&shop.workspace, &["add", "mod.lm"]);
+    shop.git(&shop.workspace, &["commit", "-q", "-m", "workspace"]);
+
+    assert_eq!(shop.gate(&[]), "");
+}
+
+#[test]
+fn a_project_without_lemma_is_left_alone() {
+    let shop = Shop::new(Layout::Inside);
+    let elsewhere = shop.root.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    assert_eq!(shop.gate_from(&elsewhere, &[]), "");
 }
