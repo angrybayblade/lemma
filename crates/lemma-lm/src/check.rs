@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use anyhow::Context;
 use lemma_graph::repos::{Checkout, cache_directory};
-use lemma_lang::{Checked, Severity, check_program};
+use lemma_lang::{Checked, Diagnostic, Severity, Span, check_program};
 
 /// Loads and checks the program `file` is the entry module of; the
 /// checked program and the directory `file` is in.
@@ -31,7 +31,9 @@ pub(crate) fn load(file: &Path) -> anyhow::Result<(Checked, PathBuf)> {
 /// Checks the program `file` is the entry module of and prints what it
 /// found: as `file:line:column` lines, or as JSON.
 pub(crate) fn run(file: &Path, json: bool) -> anyhow::Result<ExitCode> {
-    let (checked, root) = load(file)?;
+    let (mut checked, root) = load(file)?;
+    let rules = rule_problems(&checked);
+    checked.diagnostics.extend(rules);
     let mut stdout = std::io::stdout().lock();
     if json {
         print_json(&mut stdout, &checked, &root)?;
@@ -47,6 +49,58 @@ pub(crate) fn run(file: &Path, json: bool) -> anyhow::Result<ExitCode> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// What stops a well-typed program's rules from running: a wildcard in a
+/// negation, a relation that depends on its own negation, and the rest
+/// the rule compiler checks. Without this they surfaced only when `lemma
+/// check` inferred links, and passed silently otherwise. Reported against
+/// the entry module, with the rule's text, since a compiled rule keeps no
+/// place in its source.
+fn rule_problems(checked: &Checked) -> Vec<Diagnostic> {
+    let has_errors = checked
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error);
+    if has_errors {
+        return Vec::new();
+    }
+    let problem = |message: String| Diagnostic {
+        severity: Severity::Error,
+        module: checked.loaded.entry.clone(),
+        span: Span { start: 0, end: 0 },
+        message,
+        is_removed_link_end: false,
+    };
+    let file = match lemma_grammar::lm::grammar_file(&checked.model, &checked.loaded.entry, None) {
+        Ok(file) => file,
+        Err(error) => return vec![problem(format!("the rules cannot run: {error}"))],
+    };
+    match lemma_grammar::compile(&file) {
+        Ok(_) => Vec::new(),
+        Err(error) => vec![problem(format!(
+            "the rules cannot run: {}",
+            describe(&error, &file)
+        ))],
+    }
+}
+
+/// A compile error in words, quoting the rule it is about where the error
+/// names one by its number.
+fn describe(error: &lemma_grammar::GrammarError, file: &lemma_grammar::GrammarFile) -> String {
+    let lemma_grammar::GrammarError::Logic(logic) = error else {
+        return error.to_string();
+    };
+    let message = logic.to_string();
+    let rule = message
+        .strip_prefix("rule ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|number| number.parse::<usize>().ok())
+        .and_then(|number| file.rules.get(number));
+    match rule {
+        Some(rule) => format!("{message}, in `{rule}`"),
+        None => message,
+    }
 }
 
 /// Where a diagnostic's module is, for messages: a path under the entry's

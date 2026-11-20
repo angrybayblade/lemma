@@ -86,7 +86,7 @@ rule reaches(a: Text, c: Text) {
 
 ### Rule validity
 
-Lemma checks every rule before running it and says which rule is wrong and why. `lm check` reports most of these with their line; a wildcard in a negation and a relation depending on its own negation are reported when `lemma check` compiles the rules, and stop it with exit 1. It compiles them only when it infers links (with `--change`, or where a service reads its operations from code), so try a new rule with a change; the message names the rule by its number:
+Lemma checks every rule before running it and says which rule is wrong and why. `lm check` reports these: most with their line, and a wildcard in a negation or a relation depending on its own negation against the entry module, quoting the rule, since they are found once the rules are compiled. `lemma check` stops with exit 1 on them too:
 
 - **Safe.** Every variable in the head, in a negated atom and in a comparison appears in a positive atom of the body.
 - **No wildcards in negation.** `!parameter@head(op, _, loc)` is rejected; derive the projection first with a rule `has_parameter(op, loc)` over `parameter@head(op, _, loc)`, then write `!has_parameter(op, loc)`.

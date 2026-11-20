@@ -664,6 +664,7 @@ version = "0.1.0-rc1"
 dependencies = [
  "anyhow",
  "clap",
+ "lemma-grammar",
  "lemma-graph",
  "lemma-lang",
  "lemma-lang-server",
