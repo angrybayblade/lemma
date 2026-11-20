@@ -111,7 +111,7 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 - **Code intelligence**: `lemma graph` shows what uses a symbol and what it uses, across a workspace; warnings where a language server leaves files out of references; workspaces index each repository and answer by name or export address from the workspace's root.
 - **MCP**: `check` and `graph` tools, and guidance for agents to check their edits as they build.
 - **Python references across a `src` layout.** In a project that keeps its package under `src/`, references from outside that directory, its tests among them, were missing without a warning. They are found now.
-- **One store file.** `.lemma/index.ls` replaces the SQLite index and `lemma check`'s separate cache: files, symbols, cached answers and what checks keep between runs, in one append-only file. An index from an earlier release is replaced the first time it is opened, and indexing again rebuilds it; nothing needs migrating.
+- **One store file.** `.lemma/index.ls` replaces the SQLite index and `lemma check`'s separate cache: files, symbols, cached answers and what checks keep between runs, in one append-only file. rc0's index (`.lemma/index.db`) is not read: after upgrading, a command says to run `lemma index`, which builds the new file; the old `index.db` files can be deleted. Stop rc0's daemon first with `lemma daemon stop`: the two builds' daemons do not see each other.
 - **Symbol ids** are 128-bit hashes of a symbol's identity, shown as 16 hexadecimal digits (`#8bce55e22bc817fe`), and stay the same while a symbol keeps its path, name, kind and position among same-named symbols.
 - **One parse per file in a check.** Each file is parsed once per check, for its code facts and for tracing together, rather than three times.
 - **Generated documents.** `http.openapi("openapi.json", command: ...)` names the command that generates a document, so a handler edit is checked against consumers before the document is regenerated; a command's `inputs` decide when it runs again (see [Read operations from code](adapters.md)). `http.adapter_command(...)` is removed: write `command(...)`.
@@ -132,6 +132,8 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 - [x] Verification loop: an uncommitted change that breaks a caller in another repository is an error from `lemma check --change` through sentry in 0.1 s, `--since` lists it as new, and it is gone once the caller is fixed.
 - [x] Python references in a project that keeps its package under `src/`. The fresh clone showed pyright reporting none from the tests directory: Lemma's settings had switched off its search of `src`. Fixed in this candidate; on flask, references to `url_for` went from 2 to 57.
 - [x] Source contracts: the example's handlers in Python, TypeScript and Go hold against one contract, and a guard switched off in each is reported, with Z3 4.15.4.
+- [x] Upgrading from rc0 on Linux: the old index is left alone and `lemma index` builds the new one; this install script installs rc0's archives and skills with their checksum verified.
+- [x] Behaviors where `strace` is not installed: they run, and evidence falls back to whole repositories.
 - [ ] All of the above from a cold start on macOS.
 - [ ] Install script run on a clean macOS and Linux machine, after the tag.
 
