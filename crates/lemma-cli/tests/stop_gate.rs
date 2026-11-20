@@ -267,14 +267,25 @@ fn repositories_beside_the_workspace_are_checked() {
 }
 
 #[test]
-fn an_introduced_warning_sends_the_agent_back_only_when_asked() {
+fn an_introduced_warning_sends_the_agent_back_unless_the_gate_is_set_to_errors() {
     let shop = Shop::new(Layout::Inside);
     shop.drop_a_response_field();
 
-    assert_eq!(shop.gate(&[]), "");
-    let reason = blocked(&shop.gate(&[("LEMMA_GATE_LEVEL", "warning")]));
+    let reason = blocked(&shop.gate(&[]));
+    let errors_only = shop.gate(&[("LEMMA_GATE_LEVEL", "error")]);
 
     assert!(reason.contains("receipt_url"), "{reason}");
+    assert!(reason.contains("- warning ["), "{reason}");
+    assert_eq!(errors_only, "");
+}
+
+#[test]
+fn a_level_the_gate_does_not_know_is_said_and_not_guessed_at() {
+    let shop = Shop::new(Layout::Inside);
+
+    let reason = blocked(&shop.gate(&[("LEMMA_GATE_LEVEL", "errors")]));
+
+    assert!(reason.contains("must be `warning` or `error`"), "{reason}");
 }
 
 #[test]

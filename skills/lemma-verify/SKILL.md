@@ -37,7 +37,7 @@ Run with `--all` to see informational findings, and `lemma verify --links` to se
 
 ## The stop gate (experimental)
 
-The stop gate is opt-in. `hooks/stop-check.py` beside this file, a Claude Code Stop hook, runs `lemma check --change` for each repository with uncommitted edits when the agent tries to stop, and sends it back to work once when the change introduced errors. It is off unless a project turns it on in `.claude/settings.json`:
+The stop gate is opt-in. `hooks/stop-check.py` beside this file, a Claude Code Stop hook, runs `lemma check --change` for each repository with uncommitted edits when the agent tries to stop, and sends it back to work once when the change introduced errors or warnings. It is off unless a project turns it on in `.claude/settings.json`:
 
 ```json
 {
@@ -51,4 +51,29 @@ The stop gate is opt-in. `hooks/stop-check.py` beside this file, a Claude Code S
 
 The path above is for skills copied into the project. Skills installed with `LEMMA_SKILLS=1` are in `~/.claude/skills`: name `stop-check.py` there instead.
 
-It reads the workspace's repositories from the `mod.lm` in the directory the agent runs in (`repo billing = local("billing")`), so a repository may sit inside the workspace, beside it (`local("../billing")`), or be a Git worktree, and it checks those with uncommitted changes. An agent started inside one repository, where no workspace module is, gets no check. When `lemma check` cannot run or does not finish, the gate says so and sends the agent back to run it by hand, rather than letting it pass. Set `LEMMA_GATE_LEVEL=warning` in the hook's environment to send the agent back for introduced warnings too: a removed response field the code still reads is a warning, since a common field name can be a false alarm, and an agent can say which it is. It blocks at most once per stop, so an error the agent cannot fix is reported rather than looped on.
+### What sends the agent back
+
+`LEMMA_GATE_LEVEL` in the hook's environment says which introduced findings send the agent back:
+
+| `LEMMA_GATE_LEVEL` | Sends the agent back for | Use it when |
+| --- | --- | --- |
+| `warning` (the default) | Introduced errors and introduced warnings | An agent is at work: it can fix a warning or say why it is a false alarm, and that costs one turn |
+| `error` | Introduced errors only | Warnings in this system are mostly noise, and the extra turn is not worth it |
+
+Warnings count by default because one of them is often a real break: `consumer_uses_removed_response_field`, a response field the change removed that the calling code still reads, is a warning, since a common name such as `id` can be the caller's own field. Read off the answer and passed on, it fails at run time. The gate asks the agent to fix each finding or say why it is expected.
+
+Set the level in the command, or in the `env` of `settings.json`:
+
+```json
+{ "type": "command", "command": "LEMMA_GATE_LEVEL=error .claude/skills/lemma-verify/hooks/stop-check.py", "timeout": 300 }
+```
+
+A level the gate does not know is not guessed at: the gate uses the default and tells the agent to have the setting corrected. Informational findings never send an agent back, and neither does a finding that was already there before the change.
+
+### Where it looks, and what it says when it cannot
+
+- It reads the workspace's repositories from the `mod.lm` in the directory the agent runs in (`repo billing = local("billing")`). A repository may sit inside the workspace, beside it (`local("../billing")`), or be a Git worktree.
+- It checks the repositories with uncommitted changes. Edits already committed are not checked: run `lemma check --change <repository>` for those.
+- An agent started inside one repository, where no workspace module is, gets no check.
+- When `lemma check` cannot run or does not finish, the gate says so and sends the agent back to run it by hand, rather than letting it pass.
+- It blocks at most once per stop, so an error the agent cannot fix is reported rather than looped on.

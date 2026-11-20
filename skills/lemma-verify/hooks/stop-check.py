@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Claude Code Stop hook: before the agent finishes, check each of the
 workspace's repositories that has uncommitted edits with `lemma check
---change`, and send the agent back once when the change introduced errors,
-or when a check could not run. Opt-in; see ../SKILL.md.
+--change`, and send the agent back once when the change introduced errors
+or warnings, or when a check could not run. Opt-in; see ../SKILL.md.
 
-Set LEMMA_GATE_LEVEL=warning to send the agent back for introduced
-warnings too."""
+LEMMA_GATE_LEVEL says what sends the agent back: `warning` (the default)
+for introduced errors and warnings, `error` for errors only."""
 import json
 import os
 import re
@@ -15,6 +15,9 @@ import sys
 # A repository of the workspace, as its module names it: `repo web = local("../web")`.
 REPOSITORY = re.compile(r'\brepo\s+([A-Za-z_]\w*)\s*=\s*local\(\s*"([^"]+)"\s*\)')
 TIMEOUT_SECONDS = 240
+# What sends the agent back at each level of LEMMA_GATE_LEVEL.
+LEVELS = {"warning": {"error", "warning"}, "error": {"error"}}
+DEFAULT_LEVEL = "warning"
 
 
 def repositories(root):
@@ -64,7 +67,8 @@ def main():
     root = hook.get("cwd") or os.getcwd()
     if not os.path.exists(os.path.join(root, "mod.lm")):
         return
-    blocking = {"error", "warning"} if os.environ.get("LEMMA_GATE_LEVEL") == "warning" else {"error"}
+    level = os.environ.get("LEMMA_GATE_LEVEL") or DEFAULT_LEVEL
+    blocking = LEVELS.get(level, LEVELS[DEFAULT_LEVEL])
     found = []
     unchecked = []
     for name, directory in repositories(root):
@@ -76,18 +80,23 @@ def main():
             continue
         for finding in findings:
             if finding.get("severity") in blocking and finding.get("introduced"):
-                found.append((name, finding.get("check", ""), finding.get("message", "")))
-    if not found and not unchecked:
-        return
+                found.append((name, finding["severity"], finding.get("check", ""), finding.get("message", "")))
     parts = []
+    if level not in LEVELS:
+        # Said rather than guessed at: a mistyped level must not quietly loosen the gate.
+        parts.append(f"LEMMA_GATE_LEVEL is `{level}`; it must be `warning` or `error`. "
+                     f"The stop gate used `{DEFAULT_LEVEL}`. Tell the user to correct the hook's settings.")
+    if not found and not unchecked and not parts:
+        return
     if found:
-        lines = [f"- [{kind}] {message}" for _, kind, message in found[:10]]
+        lines = [f"- {severity} [{kind}] {message}" for _, severity, kind, message in found[:10]]
         if len(found) > 10:
             lines.append(f"- and {len(found) - 10} more")
-        checked = ", ".join(sorted({name for name, _, _ in found}))
+        checked = ", ".join(sorted({name for name, _, _, _ in found}))
         parts.append(f"`lemma check --change` found problems your edits introduced in {checked}:\n"
                      + "\n".join(lines)
-                     + "\nFix them, or say why each is expected, before finishing. "
+                     + "\nFix them, or say why each is expected, before finishing: a warning can be "
+                     "a false alarm, such as a common field name the code uses for something else. "
                      "Run `lemma check --change <repository>` to see them again.")
     for name, problem in unchecked:
         parts.append(f"The stop gate could not check your edits in {name}: {problem}. "
