@@ -5,6 +5,7 @@ import path from 'node:path';
 import {Marked} from '../vendor/marked/marked.mjs';
 import {pages,sections} from '../src/docs/navigation.mjs';
 import {SCENES} from '../src/diagram-scenes.js';
+import {agentMarkdown,writeLlmsFiles} from './build_llms.mjs';
 
 const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
 const icon=name=>`<svg class="lm-icon" aria-hidden="true"><use href="/design-system/assets/symbols.svg#${name}"/></svg>`;
@@ -27,14 +28,26 @@ function snapshotSources(root) {
   return {directory:snapshot,...JSON.parse(readFileSync(path.join(snapshot,'source.json'),'utf8'))};
 }
 
-function rewriteLink(href,source,sourceInfo) {
-  if(!href||href.startsWith('#')||/^(https?:|mailto:)/i.test(href))return href;
-  if(/^[a-z][a-z0-9+.-]*:/i.test(href))return '#';
-  const [location,fragment]=href.split('#');
+// What a link written in a page's Markdown names: another documentation page and a fragment, or a URL
+// (the link itself, or the file in the repository at the documented revision).
+function resolveLink(href,source,sourceInfo) {
+  if(!href||href.startsWith('#')||/^(https?:|mailto:)/i.test(href))return {url:href};
+  if(/^[a-z][a-z0-9+.-]*:/i.test(href))return {url:'#'};
+  const [location,fragment]=href.split('#'),suffix=fragment?'#'+fragment:'';
   const normalized=path.posix.normalize(path.posix.join(path.posix.dirname(source),location));
-  const target=pages.find(page=>page.source===normalized);
-  if(target)return target.href+(fragment?'#'+fragment:'');
-  return `https://github.com/${sourceInfo.repository}/blob/${sourceInfo.revision}/${normalized}${fragment?'#'+fragment:''}`;
+  const page=pages.find(candidate=>candidate.source===normalized);
+  if(page)return {page,suffix};
+  return {url:`https://github.com/${sourceInfo.repository}/blob/${sourceInfo.revision}/${normalized}${suffix}`};
+}
+function rewriteLink(href,source,sourceInfo) {
+  const target=resolveLink(href,source,sourceInfo);
+  return target.page?target.page.href+target.suffix:target.url;
+}
+// A link in a page's Markdown for agents: absolute, and to the other page's Markdown, so an agent
+// following it stays in Markdown.
+function agentLink(href,source,sourceInfo) {
+  const target=resolveLink(href,source,sourceInfo);
+  return target.page?SITE_URL+target.page.markdownHref+target.suffix:target.url;
 }
 
 function highlight(source,language) {
@@ -161,11 +174,11 @@ function diagramHead(document) {
 
 function template(page,document,sourceInfo) {
   const nav=navigation(page),toc=outline(document.headings),sourceLink=`<a href="${escape(`https://github.com/${sourceInfo.repository}/blob/${sourceInfo.revision}/${page.source}`)}">View Markdown source ↗</a>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#F3F3EE"><title>${escape(page.title)}; Lemma docs</title><meta name="description" content="${escape(document.description.slice(0,200))}">${socialMeta(`${escape(page.title)}; Lemma docs`,escape(document.description.slice(0,200)),page.href)}<link rel="icon" href="/design-system/assets/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="/design-system/tokens.css"><link rel="stylesheet" href="/design-system/components.css"><link rel="stylesheet" href="/docs/docs.css"><script defer src="/docs/docs.js"></script>${diagramHead(document)}</head>
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#F3F3EE"><title>${escape(page.title)}; Lemma docs</title><meta name="description" content="${escape(document.description.slice(0,200))}">${socialMeta(`${escape(page.title)}; Lemma docs`,escape(document.description.slice(0,200)),page.href)}<link rel="alternate" type="text/markdown" href="${page.markdownHref}" title="Markdown"><link rel="icon" href="/design-system/assets/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="/design-system/tokens.css"><link rel="stylesheet" href="/design-system/components.css"><link rel="stylesheet" href="/docs/docs.css"><script defer src="/docs/docs.js"></script>${diagramHead(document)}</head>
 <body class="lm docs"><a class="docs-skip" href="#main">Skip to content</a>
 <header class="docs-header"><div class="docs-header-inner"><a class="docs-brand" href="/" aria-label="Lemma home">${icon('mark')}<span>lemma</span></a><a class="docs-header-label" href="/docs/">Documentation</a><div class="docs-header-actions"><button type="button" class="docs-search-button" aria-label="Search docs" data-open-search>${icon('search')}<span>Search docs</span><kbd>⌘ K</kbd></button><a class="docs-github" href="https://github.com/angrybayblade/lemma">GitHub ↗</a><button class="docs-menu-button" type="button" data-open-menu aria-label="Open documentation navigation">${icon('repository')}</button></div></div></header>
 <div class="docs-layout"><aside class="docs-sidebar" aria-label="Documentation navigation"><nav aria-label="Documentation">${nav}</nav></aside>
-<main class="docs-main" id="main"><div class="docs-page-heading"><p class="docs-eyebrow">${escape(page.section)}</p><h1>${document.title}</h1></div><details class="docs-mobile-outline"><summary>On this page</summary><nav aria-label="Article sections">${toc}</nav></details><article class="docs-prose">${document.body}</article>${pagination(page)}<footer class="docs-page-footer"><span>Built for people and agents.</span>${sourceLink}</footer></main>
+<main class="docs-main" id="main"><div class="docs-page-heading"><p class="docs-eyebrow">${escape(page.section)}</p><h1>${document.title}</h1></div><details class="docs-mobile-outline"><summary>On this page</summary><nav aria-label="Article sections">${toc}</nav></details><article class="docs-prose">${document.body}</article>${pagination(page)}<footer class="docs-page-footer"><span>Built for people and agents.</span><span class="docs-page-sources"><a href="${page.markdownHref}">Markdown for agents</a>${sourceLink}</span></footer></main>
 <aside class="docs-outline"><nav aria-label="On this page"><p>On this page</p>${toc}</nav><a href="/docs/troubleshooting/" class="docs-help-link">Need a hand? ↗</a></aside></div>
 <dialog id="docs-search" class="docs-search-dialog" aria-labelledby="search-label"><div class="search-heading"><label id="search-label" for="docs-query">Search documentation</label><button type="button" data-close-search aria-label="Close search">${icon('close')}</button></div><div class="search-field">${icon('search')}<input id="docs-query" type="search" placeholder="Find a guide, command, or concept…" autocomplete="off" spellcheck="false" aria-controls="docs-search-results"></div><p id="search-count" role="status">Try “behavior”, “MCP”, or “lm check”.</p><div id="docs-search-results"></div><p class="search-hint"><span><kbd>↓</kbd> to results</span><span><kbd>Esc</kbd> to close</span></p></dialog>
 <dialog id="docs-menu" class="docs-menu-dialog" aria-labelledby="menu-label"><div class="menu-heading"><span id="menu-label">Documentation</span><button type="button" data-close-menu aria-label="Close navigation">${icon('close')}</button></div><nav aria-label="Mobile documentation">${nav}</nav></dialog>
@@ -182,7 +195,7 @@ function writeRedirects(destination) {
 }
 
 export function buildDocs({root,output}) {
-  const sourceInfo=snapshotSources(root),destination=path.join(output,'docs'),search=[];
+  const sourceInfo=snapshotSources(root),destination=path.join(output,'docs'),search=[],documents=[];
   mkdirSync(destination,{recursive:true});
   for(const name of ['docs.css','docs.js','diagrams.js'])cpSync(path.join(root,'src/docs',name),path.join(destination,name));
   writeFileSync(path.join(destination,'diagrams.css'),diagramStyles(readFileSync(path.join(root,'src/styles.css'),'utf8'),Object.keys(SCENES).map(diagramSlot).join('')));
@@ -192,9 +205,11 @@ export function buildDocs({root,output}) {
   for(const page of pages){
     const markdown=readFileSync(path.join(sourceInfo.directory,page.source),'utf8');
     const document=renderDocument(markdown,page,sourceInfo),directory=path.join(destination,page.slug);mkdirSync(directory,{recursive:true});writeFileSync(path.join(directory,'index.html'),template(page,document,sourceInfo));search.push(...document.records);
+    documents.push({page,markdown:agentMarkdown(markdown,href=>agentLink(href,page.source,sourceInfo))});
   }
+  writeLlmsFiles({output,documents,siteUrl:SITE_URL});
   writeRedirects(destination);
   writeFileSync(path.join(destination,'search-index.json'),JSON.stringify(search));
-  writeFileSync(path.join(destination,'pages.json'),JSON.stringify(pages.map(({title,href,source})=>({title,href,source})),null,2));
-  console.log(`Built ${pages.length} documentation pages and ${search.length} searchable sections.`);
+  writeFileSync(path.join(destination,'pages.json'),JSON.stringify(pages.map(({title,href,markdownHref,source})=>({title,href,markdown:markdownHref,source})),null,2));
+  console.log(`Built ${pages.length} documentation pages, their Markdown, /llms.txt and /llms-full.txt, and ${search.length} searchable sections.`);
 }

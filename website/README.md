@@ -7,6 +7,7 @@ The approved landing page and a design-system-compatible documentation site shar
 - All 29 canonical Markdown files in the repository's `docs/`, plus the agent-skills and editor READMEs, render as static pages. The introduction is the entry point, at `/docs/`.
 - `src/docs/navigation.mjs` controls groups, labels, and reading order. The build rejects unlisted documentation files.
 - `scripts/build_docs.mjs` renders headings, stable anchors, tables, file-labeled examples, local links, previous/next navigation, and the search index. Canonical Markdown is unchanged.
+- Agents read the same docs as Markdown. `scripts/build_llms.mjs` writes each page's Markdown beside its HTML (`/docs/check.md` for `/docs/check/`, `/docs/index.md` for the introduction), an index at `/llms.txt` in the [llms.txt](https://llmstxt.org) format, and every page in reading order at `/llms-full.txt`. Links become absolute URLs to the other pages' Markdown, a code block's `<!-- file: -->` label becomes a line before it, and the other comments are dropped; code is copied as written. Each page's line in `/llms.txt` is its `description` in `navigation.mjs`, which is also its meta description, and `isOptional` lists it under "Optional". Each docs page links its Markdown in its head and footer.
 - `src/docs/docs.css` uses the existing design-system tokens and fonts. It is separate from landing-page styles. Reading surfaces stay clear, with muted code backgrounds and restrained copper navigation marks.
 - `src/docs/docs.js` handles local search, keyboard shortcuts, native mobile navigation, active page outlines, and exact code copying. Article content and links render without JavaScript.
 - `content/` is a generated source snapshot used to reproduce the Site build outside the Rust repository. Build from the root checkout to refresh it. `content/source.json` records the latest revision affecting the canonical documentation, so unrelated website commits do not change the generated source links.
@@ -19,7 +20,7 @@ Build and check from the Lemma repository:
 ```sh
 python3 website/scripts/check_content.py   # before the build, which refreshes content/
 node website/scripts/build.mjs
-python3 website/scripts/check_docs.py
+python3 website/scripts/check_docs.py   # also checks the Markdown, /llms.txt and /llms-full.txt
 ```
 
 CI runs the same three steps. Commit `content/` with any docs change; `check_content.py` fails when it lags its sources. `cargo test` also fails when `docs/commands.md` leaves out a `lemma` or `lm` command, an option, or an MCP tool argument.
