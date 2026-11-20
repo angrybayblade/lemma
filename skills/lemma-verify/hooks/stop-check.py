@@ -1,54 +1,95 @@
 #!/usr/bin/env python3
-"""Claude Code Stop hook: before the agent finishes, check each repository
-with uncommitted edits with `lemma check --change`, and send the agent
-back once when the change introduced errors. Opt-in; see ../SKILL.md."""
+"""Claude Code Stop hook: before the agent finishes, check each of the
+workspace's repositories that has uncommitted edits with `lemma check
+--change`, and send the agent back once when the change introduced errors,
+or when a check could not run. Opt-in; see ../SKILL.md."""
 import json
 import os
+import re
 import subprocess
 import sys
 
-hook = json.load(sys.stdin)
-# Already sent back once for this stop: report, don't loop.
-if hook.get("stop_hook_active"):
-    sys.exit(0)
-root = hook.get("cwd") or os.getcwd()
-if not os.path.exists(os.path.join(root, "mod.lm")):
-    sys.exit(0)
+# A repository of the workspace, as its module names it: `repo web = local("../web")`.
+REPOSITORY = re.compile(r'\brepo\s+([A-Za-z_]\w*)\s*=\s*local\(\s*"([^"]+)"\s*\)')
+TIMEOUT_SECONDS = 240
 
 
-def edited(directory):
-    status = subprocess.run(["git", "-C", directory, "status", "--porcelain"], capture_output=True, text=True)
+def repositories(root):
+    """The workspace's repositories with their directories, read from its
+    module rather than from the directories beside it: a repository may sit
+    inside the workspace, next to it, or be a Git worktree."""
+    with open(os.path.join(root, "mod.lm"), encoding="utf-8") as module:
+        named = REPOSITORY.findall(module.read())
+    return [(name, os.path.normpath(os.path.join(root, path))) for name, path in named]
+
+
+def git(directory, *arguments):
+    return subprocess.run(["git", "-C", directory, *arguments], capture_output=True, text=True)
+
+
+def is_edited(directory):
+    """Whether `directory` is a repository's own checkout with uncommitted
+    changes. A plain directory inside another repository is not one."""
+    top = git(directory, "rev-parse", "--show-toplevel")
+    if top.returncode != 0 or os.path.realpath(top.stdout.strip()) != os.path.realpath(directory):
+        return False
+    status = git(directory, "status", "--porcelain")
     return status.returncode == 0 and status.stdout.strip() != ""
 
 
-repositories = sorted(
-    name for name in os.listdir(root)
-    if os.path.isdir(os.path.join(root, name, ".git")) and edited(os.path.join(root, name))
-)
-errors = []
-for name in repositories:
+def check(root, name):
+    """The findings of `lemma check --change name`, or why there are none to read."""
     try:
         run = subprocess.run(["lemma", "check", "--change", name, "--json"], cwd=root,
-                             capture_output=True, text=True, timeout=240)
+                             capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+    except FileNotFoundError:
+        return None, "`lemma` is not on PATH"
     except subprocess.TimeoutExpired:
-        continue
+        return None, f"the check did not finish in {TIMEOUT_SECONDS} seconds"
     try:
-        report = json.loads(run.stdout)
+        return json.loads(run.stdout).get("findings", []), None
     except json.JSONDecodeError:
-        continue
-    for finding in report.get("findings", []):
-        if finding.get("severity") == "error" and finding.get("introduced"):
-            errors.append((name, finding.get("check", ""), finding.get("message", "")))
-if not errors:
-    sys.exit(0)
-lines = [f"- [{check}] {message}" for _, check, message in errors[:10]]
-if len(errors) > 10:
-    lines.append(f"- and {len(errors) - 10} more")
-checked = ", ".join(sorted({name for name, _, _ in errors}))
-reason = (
-    f"`lemma check --change` found errors your edits introduced in {checked}:\n"
-    + "\n".join(lines)
-    + "\nFix them, or say why each is expected, before finishing. "
-    "Run `lemma check --change <repository>` to see them again."
-)
-print(json.dumps({"decision": "block", "reason": reason}))
+        said = (run.stderr.strip() or run.stdout.strip()).splitlines()
+        return None, said[-1][:300] if said else f"`lemma check` exited with {run.returncode}"
+
+
+def main():
+    hook = json.load(sys.stdin)
+    # Already sent back once for this stop: report, don't loop.
+    if hook.get("stop_hook_active"):
+        return
+    root = hook.get("cwd") or os.getcwd()
+    if not os.path.exists(os.path.join(root, "mod.lm")):
+        return
+    blocking = {"error"}
+    found = []
+    unchecked = []
+    for name, directory in repositories(root):
+        if not is_edited(directory):
+            continue
+        findings, problem = check(root, name)
+        if findings is None:
+            unchecked.append((name, problem))
+            continue
+        for finding in findings:
+            if finding.get("severity") in blocking and finding.get("introduced"):
+                found.append((name, finding.get("check", ""), finding.get("message", "")))
+    if not found and not unchecked:
+        return
+    parts = []
+    if found:
+        lines = [f"- [{kind}] {message}" for _, kind, message in found[:10]]
+        if len(found) > 10:
+            lines.append(f"- and {len(found) - 10} more")
+        checked = ", ".join(sorted({name for name, _, _ in found}))
+        parts.append(f"`lemma check --change` found problems your edits introduced in {checked}:\n"
+                     + "\n".join(lines)
+                     + "\nFix them, or say why each is expected, before finishing. "
+                     "Run `lemma check --change <repository>` to see them again.")
+    for name, problem in unchecked:
+        parts.append(f"The stop gate could not check your edits in {name}: {problem}. "
+                     f"Run `lemma check --change {name}` yourself and report what it says before finishing.")
+    print(json.dumps({"decision": "block", "reason": "\n".join(parts)}))
+
+
+main()
