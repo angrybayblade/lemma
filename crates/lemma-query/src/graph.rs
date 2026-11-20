@@ -147,6 +147,36 @@ struct Found {
     note: Option<String>,
 }
 
+/// The names in one body to ask the language server about.
+#[derive(Debug, PartialEq)]
+struct Candidates {
+    /// Where to ask: the first use of each name.
+    asked: Vec<Position>,
+    /// How many more names the body has that are left unasked.
+    left_unasked: usize,
+}
+
+impl Candidates {
+    /// The first [`MAX_ASKED`] of `names`, and how many that leaves out.
+    fn within_the_limit(mut names: Vec<Position>) -> Self {
+        let left_unasked = names.len().saturating_sub(MAX_ASKED);
+        names.truncate(MAX_ASKED);
+        Self {
+            asked: names,
+            left_unasked,
+        }
+    }
+}
+
+/// Says that a body named more symbols than were asked about, so a reader
+/// does not take the callees listed for all of them.
+fn unasked_note(left_unasked: usize) -> String {
+    format!(
+        "only the first {MAX_ASKED} names in its body were asked about, so calls through the \
+         {left_unasked} after them are missing (`--source names` lists every call, less exactly)"
+    )
+}
+
 /// A symbol next to another, or a file's top-level code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Neighbour {
@@ -715,7 +745,7 @@ impl Neighbours for ServerNeighbours<'_, '_> {
         let candidates = self.candidates(of, &body, first_line)?;
         let mut neighbours = Vec::new();
         let mut unanswered = BTreeSet::new();
-        for position in candidates {
+        for position in candidates.asked {
             match self.defined_at(of, position)? {
                 Ok(symbols) => push_new(&mut neighbours, symbols, of),
                 Err(state) => {
@@ -723,8 +753,11 @@ impl Neighbours for ServerNeighbours<'_, '_> {
                 }
             }
         }
-        let note =
-            (!unanswered.is_empty()).then(|| unanswered.into_iter().collect::<Vec<_>>().join(", "));
+        let mut notes: Vec<String> = unanswered.into_iter().collect();
+        if candidates.left_unasked > 0 {
+            notes.push(unasked_note(candidates.left_unasked));
+        }
+        let note = (!notes.is_empty()).then(|| notes.join(", "));
         Ok(Found { neighbours, note })
     }
 }
@@ -737,23 +770,20 @@ impl ServerNeighbours<'_, '_> {
         of: &StoredSymbol,
         body: &str,
         first_line: u32,
-    ) -> Result<Vec<Position>, QueryError> {
-        let mut asked = BTreeSet::new();
-        let mut positions = Vec::new();
+    ) -> Result<Candidates, QueryError> {
+        let mut seen = BTreeSet::new();
+        let mut names = Vec::new();
         for word in code_words(body, first_line, of.language) {
-            if positions.len() == MAX_ASKED {
-                break;
-            }
             let is_candidate = word.name != of.symbol.name
                 && word.position > of.symbol.name_span.start
-                && !asked.contains(&word.name)
+                && !seen.contains(&word.name)
                 && self.catalog.names_a_symbol(&*self.store, &word.name)?;
             if is_candidate {
-                asked.insert(word.name.clone());
-                positions.push(word.position);
+                seen.insert(word.name);
+                names.push(word.position);
             }
         }
-        Ok(positions)
+        Ok(Candidates::within_the_limit(names))
     }
 
     /// The indexed symbols the name at `position` is defined as, or why the
@@ -1342,6 +1372,37 @@ mod tests {
         assert_eq!(pairs(&shallow), [(node(1), node(4)), (node(2), node(1))]);
         assert_eq!(pairs(&deep), [(node(2), node(1)), (node(3), node(2))]);
         assert_eq!(shallow.root, Some(node(1)));
+    }
+
+    #[test]
+    fn a_body_naming_more_symbols_than_are_asked_about_says_how_many_are_left() {
+        let names: Vec<Position> = (0..100).map(|line| Position { line, column: 0 }).collect();
+
+        let candidates = Candidates::within_the_limit(names);
+
+        assert_eq!(candidates.asked.len(), MAX_ASKED);
+        assert_eq!(candidates.asked[0], Position { line: 0, column: 0 });
+        assert_eq!(candidates.left_unasked, 100 - MAX_ASKED);
+        let note = unasked_note(candidates.left_unasked);
+        assert!(note.contains("40 after them are missing"), "{note}");
+    }
+
+    #[test]
+    fn a_body_within_the_limit_is_asked_about_in_full() {
+        let names = vec![
+            Position { line: 3, column: 4 },
+            Position { line: 5, column: 2 },
+        ];
+
+        let candidates = Candidates::within_the_limit(names.clone());
+
+        assert_eq!(
+            candidates,
+            Candidates {
+                asked: names,
+                left_unasked: 0
+            }
+        );
     }
 
     #[test]
