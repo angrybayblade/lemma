@@ -151,6 +151,8 @@ html = html.replace('<!-- SETUP_AGENT_PANELS -->', agentPanels);
 // step and the instruction line in line with skills/lemma-onboarding/SKILL.md.
 const agentPrompt = `Set up Lemma (https://lemma.systems) in this codebase and walk me through it on our own code. Do one step, show me the result and what it shows, then wait for me to say go on. Lemma is pre-release, so expect some misses: https://lemma.systems/docs/pre-release/ lists what it does not do yet.
 
+For the wider picture, read https://lemma.systems/llms.txt first: every docs page as Markdown, with a line on what each is for. Open the pages a step needs, or https://lemma.systems/llms-full.txt for all of them.
+
 Ask me three times: before installing anything, to confirm which repositories make up the system, and before writing to them (a \`mod.lm\`, the throwaway edit, the stop gate or the agent instructions). Do not commit or push.
 
 1. Install. Run:
