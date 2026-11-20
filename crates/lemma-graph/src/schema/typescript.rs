@@ -402,7 +402,7 @@ impl Reader<'_, '_> {
         let short = name.rsplit('.').next().unwrap_or(name);
         let Some(&declaration) = self.declarations.get(short) else {
             self.unresolved.insert(name.to_owned());
-            return json!({});
+            return super::unfollowed(name);
         };
         if self.depth >= MAX_DEPTH {
             return json!({});

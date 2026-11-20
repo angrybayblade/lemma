@@ -268,7 +268,7 @@ impl Reader<'_, '_> {
             .or_else(|| self.classes.get(last_segment(name)));
         let Some(&class) = class else {
             self.unresolved.insert(name.to_owned());
-            return json!({});
+            return super::unfollowed(name);
         };
         self.follow(class)
     }

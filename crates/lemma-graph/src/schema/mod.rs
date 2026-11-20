@@ -35,6 +35,17 @@ pub struct Resolved {
     pub unresolved: Vec<String>,
 }
 
+/// The key of a schema standing for a type a reader could not follow: the
+/// name is its value. Such a schema says nothing about what is sent or
+/// accepted there, which is not the same as accepting anything, so a
+/// comparison leaves it out (see `compare`).
+pub(crate) const UNFOLLOWED: &str = "x-lemma-unfollowed";
+
+/// The schema of a type named `name` that a reader could not follow.
+pub(crate) fn unfollowed(name: &str) -> Value {
+    serde_json::json!({ UNFOLLOWED: name })
+}
+
 /// Which side of a message a schema describes. Most sources describe one
 /// shape for both; Go structs encode and decode by different rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

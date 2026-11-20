@@ -168,7 +168,7 @@ impl Reader<'_, '_> {
         }
         let Some(&(definition, source)) = self.types.get(name) else {
             self.unresolved.insert(name.to_owned());
-            return json!({});
+            return super::unfollowed(name);
         };
         if self.depth >= MAX_DEPTH {
             return json!({});
@@ -185,7 +185,7 @@ impl Reader<'_, '_> {
             "json.RawMessage" => json!({}),
             _ => {
                 self.unresolved.insert(name.to_owned());
-                json!({})
+                super::unfollowed(name)
             }
         }
     }
@@ -391,7 +391,11 @@ type Base struct {
             "R",
         );
 
-        assert_eq!(found.schema["properties"]["m"], json!({}));
+        // Not "anything": a comparison leaves the field out.
+        assert_eq!(
+            found.schema["properties"]["m"],
+            crate::schema::unfollowed("models.Module")
+        );
         assert!(found.unresolved.contains("models.Module"));
     }
 

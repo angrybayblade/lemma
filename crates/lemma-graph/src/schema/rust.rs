@@ -329,7 +329,7 @@ impl Reader<'_, '_> {
         }
         let Some(&item) = self.items.get(short) else {
             self.unresolved.insert(name.to_owned());
-            return json!({});
+            return super::unfollowed(name);
         };
         if self.depth >= MAX_DEPTH {
             return json!({});

@@ -17,6 +17,7 @@ use json_schema_diff::{Change, ChangeKind};
 use serde_json::Value;
 
 use crate::GraphError;
+use crate::schema::UNFOLLOWED;
 
 /// One way the sender's and receiver's schemas differ.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -37,6 +38,7 @@ pub fn compare(
     receiver: &Value,
     expected_fields: bool,
 ) -> Result<Vec<Difference>, GraphError> {
+    let (sender, receiver) = &without_unfollowed(sender, receiver);
     let changes = json_schema_diff::diff(sender.clone(), receiver.clone()).map_err(|source| {
         GraphError::Compare {
             message: source.to_string(),
@@ -52,6 +54,100 @@ pub fn compare(
     });
     differences.dedup();
     Ok(differences)
+}
+
+/// The combinators whose members cannot be paired between two schemas.
+const COMBINATORS: [&str; 3] = ["anyOf", "oneOf", "allOf"];
+
+/// Both schemas with the places left out where either holds a type its
+/// reader could not follow. Such a type says nothing about what is sent or
+/// accepted there: comparing it as "anything" reports a sender that may
+/// leave out every field and send every kind of value, none of it known.
+/// Its reader reports the type by name; here its place compares as equal.
+fn without_unfollowed(sender: &Value, receiver: &Value) -> (Value, Value) {
+    if is_unknown(sender) || is_unknown(receiver) {
+        return (
+            Value::Object(serde_json::Map::new()),
+            Value::Object(serde_json::Map::new()),
+        );
+    }
+    let (Value::Object(outgoing), Value::Object(incoming)) = (sender, receiver) else {
+        return (stripped(sender), stripped(receiver));
+    };
+    let mut outgoing = outgoing.clone();
+    let mut incoming = incoming.clone();
+    for key in ["items", "additionalProperties"] {
+        if let (Some(left), Some(right)) = (outgoing.get(key), incoming.get(key)) {
+            let (left, right) = without_unfollowed(left, right);
+            outgoing.insert(key.to_owned(), left);
+            incoming.insert(key.to_owned(), right);
+        }
+    }
+    if let (Some(Value::Object(left)), Some(Value::Object(right))) = (
+        outgoing.get("properties").cloned(),
+        incoming.get("properties").cloned(),
+    ) {
+        let mut left = left;
+        let mut right = right;
+        let shared: Vec<String> = left
+            .keys()
+            .filter(|name| right.contains_key(*name))
+            .cloned()
+            .collect();
+        for name in shared {
+            let (one, other) = without_unfollowed(&left[&name], &right[&name]);
+            left.insert(name.clone(), one);
+            right.insert(name, other);
+        }
+        outgoing.insert("properties".to_owned(), Value::Object(left));
+        incoming.insert("properties".to_owned(), Value::Object(right));
+    }
+    (
+        stripped(&Value::Object(outgoing)),
+        stripped(&Value::Object(incoming)),
+    )
+}
+
+/// Whether nothing is known of what `schema` describes: it stands for an
+/// unfollowed type, or one of the alternatives it combines does, and the
+/// alternatives of two schemas cannot be paired.
+fn is_unknown(schema: &Value) -> bool {
+    let Value::Object(fields) = schema else {
+        return false;
+    };
+    fields.contains_key(UNFOLLOWED)
+        || COMBINATORS
+            .iter()
+            .any(|combinator| fields.get(*combinator).is_some_and(holds_unfollowed))
+}
+
+/// Whether an unfollowed type's schema is anywhere inside `value`.
+fn holds_unfollowed(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => {
+            fields.contains_key(UNFOLLOWED) || fields.values().any(holds_unfollowed)
+        }
+        Value::Array(items) => items.iter().any(holds_unfollowed),
+        _ => false,
+    }
+}
+
+/// `schema` with each unfollowed type left on one side alone read as
+/// accepting anything: there is nothing across from it to compare with.
+fn stripped(schema: &Value) -> Value {
+    match schema {
+        Value::Object(fields) if fields.contains_key(UNFOLLOWED) => {
+            Value::Object(serde_json::Map::new())
+        }
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), stripped(value)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(stripped).collect()),
+        other => other.clone(),
+    }
 }
 
 fn difference(change: &Change, expected_fields: bool) -> Difference {
@@ -210,5 +306,69 @@ mod tests {
                 .any(|d| d.breaking && d.description.contains("`gone`"))
         );
         assert!(request.iter().all(|d| !d.breaking));
+    }
+
+    #[test]
+    fn a_type_the_reader_could_not_follow_is_not_compared_as_anything() {
+        let sender = crate::schema::unfollowed("z.infer");
+        let receiver = json!({
+            "type": "object",
+            "properties": { "customer": { "type": "string" } },
+            "required": ["customer"]
+        });
+
+        // Read as "anything", the sender would leave `customer` out and
+        // send arrays, numbers and nulls: none of that is known.
+        assert_eq!(compare(&sender, &receiver, false).unwrap(), []);
+        assert_eq!(compare(&receiver, &sender, true).unwrap(), []);
+    }
+
+    #[test]
+    fn fields_beside_an_unfollowed_type_are_still_compared() {
+        let sender = json!({
+            "type": "object",
+            "properties": {
+                "meta": crate::schema::unfollowed("Meta"),
+                "amount": { "type": "string" }
+            },
+            "required": ["meta", "amount"]
+        });
+        let receiver = json!({
+            "type": "object",
+            "properties": {
+                "meta": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] },
+                "amount": { "type": "integer" }
+            },
+            "required": ["meta", "amount"]
+        });
+
+        let differences = compare(&sender, &receiver, false).unwrap();
+
+        assert!(
+            differences
+                .iter()
+                .all(|difference| difference.path.contains("amount")),
+            "{differences:?}"
+        );
+        assert!(
+            differences.iter().any(|difference| difference.breaking),
+            "{differences:?}"
+        );
+    }
+
+    #[test]
+    fn an_alternative_that_could_not_be_followed_leaves_the_whole_choice_out() {
+        let sender = json!({
+            "type": "object",
+            "properties": {
+                "result": { "anyOf": [crate::schema::unfollowed("Outcome"), { "type": "null" }] }
+            }
+        });
+        let receiver = json!({
+            "type": "object",
+            "properties": { "result": { "type": "string" } }
+        });
+
+        assert_eq!(compare(&sender, &receiver, false).unwrap(), []);
     }
 }
