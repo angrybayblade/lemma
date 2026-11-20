@@ -184,10 +184,62 @@ pub(crate) fn print(
             None => Ok(()),
         }),
     };
-    if printed.is_err() {
+    let hinted = if json || args.change.is_some() {
+        Ok(())
+    } else {
+        print_uncommitted_hint(out, &uncommitted(report))
+    };
+    if printed.and(hinted).is_err() {
         return 1;
     }
     exit_code(report)
+}
+
+/// The repositories read from their working directories that have
+/// uncommitted edits to tracked files, by name without its `#`.
+fn uncommitted(report: &Report) -> Vec<String> {
+    report
+        .repositories
+        .iter()
+        .filter(|repository| repository.base.is_none() && repository.head.is_none())
+        .filter(|repository| has_uncommitted_edits(Path::new(&repository.root)))
+        .map(|repository| repository.name.trim_start_matches('#').to_owned())
+        .collect()
+}
+
+fn has_uncommitted_edits(root: &Path) -> bool {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+        ])
+        .output();
+    status.is_ok_and(|status| status.status.success() && !status.stdout.trim_ascii().is_empty())
+}
+
+/// Says that a check without `--change` read uncommitted edits as they are
+/// and compared nothing with a base, so it cannot say what they break: an
+/// agent that ran it would otherwise take its silence for a clean change.
+fn print_uncommitted_hint(out: &mut dyn Write, edited: &[String]) -> std::io::Result<()> {
+    let Some(first) = edited.first() else {
+        return Ok(());
+    };
+    let names = edited
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(
+        out,
+        "note: {names} {} uncommitted edits, read as they are with nothing to compare them \
+         with; to see what they break for the code that depends on them, run \
+         `lemma check --change {first}`",
+        if edited.len() == 1 { "has" } else { "have" }
+    )
 }
 
 /// The token line under a whole report, saying first when `--since` asked
@@ -797,6 +849,32 @@ fn print_repositories(out: &mut dyn Write, report: &Report) -> std::io::Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_check_without_a_change_says_which_repositories_have_uncommitted_edits() {
+        let mut printed = Vec::new();
+
+        print_uncommitted_hint(&mut printed, &["billing".to_owned(), "web".to_owned()]).unwrap();
+
+        let printed = String::from_utf8(printed).unwrap();
+        assert!(
+            printed.starts_with("note: `billing`, `web` have uncommitted edits"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("`lemma check --change billing`"),
+            "{printed}"
+        );
+    }
+
+    #[test]
+    fn nothing_is_said_when_no_repository_has_uncommitted_edits() {
+        let mut printed = Vec::new();
+
+        print_uncommitted_hint(&mut printed, &[]).unwrap();
+
+        assert_eq!(printed, Vec::<u8>::new());
+    }
 
     fn call(repository: &str, location: &str, operation: &str) -> InferredLink {
         InferredLink {

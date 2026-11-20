@@ -203,7 +203,10 @@ $ lemma check
 ...
 behavior orders::passes_on_retriable: satisfied (3 of 3 cases held, 0 of 2 evidence reused)
 0 errors, 0 warnings, 0 informational
+note: `orders` has uncommitted edits, read as they are with nothing to compare them with; to see what they break for the code that depends on them, run `lemma check --change orders`
 ```
+
+The note says the fix is not committed yet: a plain `lemma check` reads `orders` as it is. `lemma check --change orders` would also compare it with the last commit and say what the edit changes for the code that depends on it.
 
 ## Reuse evidence
 
@@ -225,6 +228,7 @@ $ lemma check --no-run
 behavior orders::passes_on_retriable: stale (1 of 3 cases held, 0 of 2 evidence reused)
 ...
 0 errors, 2 warnings, 0 informational
+note: `orders` has uncommitted edits[..]
 ```
 
 At level `check`, only violated behaviors fail. At level `strict` (`config: { level: strict }` or `--level strict`), unknown and stale ones fail too.

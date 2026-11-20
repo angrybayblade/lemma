@@ -257,7 +257,7 @@ Add requirements of your own, or change which of these run, in a module: see [Re
 lemma check [mod.lm] [--change <name or directory> [--base <commit>] [--head <commit>]] [--level audit|check|strict] [--all] [--explain] [--evaluation demand|full|both] [--engine souffle|reference] [--json]
 ```
 
-`--change` names the changed repository as the workspace names it, by its directory's name, or `self` for the entry module's own repository. `--base` is read from Git; `--head` too when given, and otherwise the working directory is the head, uncommitted changes included. Every other repository is read at its `rev`, or its working directory. Without a change, inferred links are checked only where a service reads its operations from code: its committed documents are compared with the code.
+`--change` names the changed repository as the workspace names it, by its directory's name, or `self` for the entry module's own repository. `--base` is read from Git; `--head` too when given, and otherwise the working directory is the head, uncommitted changes included. Every other repository is read at its `rev`, or its working directory. Without a change, inferred links are checked only where a service reads its operations from code: its committed documents are compared with the code. A check without a change reads uncommitted edits as they are and compares them with nothing, so it cannot say what they break; it ends with a note naming each repository that has them and the `lemma check --change <repository>` that would.
 
 When a commit predates the repository's `mod.lm`, Lemma uses the working directory's and skips documents it names that did not exist then; the report says so. History from before a team adopted Lemma replays this way.
 
