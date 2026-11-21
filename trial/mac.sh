@@ -20,8 +20,9 @@ watch() {  # LABEL SRC COMMAND...
   label=$1 src=$2; shift 2
   rm -rf "$work/$label.calls"
   ( cd "$src" && sh "$here/with-c.sh" "$work/$label.calls" "$@" > "$work/$label.output.txt" 2>&1 )
-  echo "$label: exit $?, $(tail -1 "$work/$label.output.txt" | cut -c1-100)"
-  python3 "$here/coverage.py" "$work/$label.calls" "$label"
+  status=$?
+  echo "$label: exit $status, $(tail -1 "$work/$label.output.txt" | cut -c1-100)"
+  python3 "$here/coverage.py" "$work/$label.calls" "$label" "$status"
 }
 rm -rf "$work/probe.dir"
 watch probe "$work" "$here/probe" "$work/probe.dir"

@@ -6,7 +6,7 @@ with posix_spawn that has no file, or a successful execve with no `watched`
 line after it, ran unwatched: its file reads are unseen, so a recorder built
 on C would have to refuse the run.
 
-Usage: python3 coverage.py CALLS_DIR [LABEL]
+Usage: python3 coverage.py CALLS_DIR [LABEL] [EXIT_STATUS]
 """
 import collections
 import os
@@ -14,6 +14,12 @@ import re
 import sys
 
 calls, label = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "")
+status = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+if status >= 128:
+    # Killed by a signal: on the runners, arm64e system binaries were killed
+    # once the library loaded into them. The run itself was changed.
+    print(f"{label}: killed by signal {status - 128} under the library -> C broke this run")
+    sys.exit(0)
 files = {}
 for name in os.listdir(calls):
     if name.startswith("calls."):
