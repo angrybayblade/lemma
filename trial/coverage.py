@@ -46,6 +46,10 @@ for pid, lines in files.items():
                 unwatched["(fork)"] += 1
 
 lost = sum(unwatched.values())
+if not files:
+    # No record at all: the library never loaded, so nothing was seen.
+    print(f"{label}: no process recorded -> C cannot vouch for this run (the library did not load)")
+    sys.exit(0)
 print(f"{label}: {len(files)} processes recorded, {started} starts, {lost} unwatched"
       + (f": {dict(unwatched.most_common(8))}" if lost else "")
       + f" -> {'C would vouch for this run' if lost == 0 else 'C would refuse this run'}")

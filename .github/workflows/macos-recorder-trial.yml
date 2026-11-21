@@ -33,6 +33,10 @@ jobs:
             echo "--- eslogger events"
             /usr/bin/eslogger --list-events | tr '\n' ' '
           } 2>&1 | tee out/machine.txt
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
       - name: Build
         run: sh trial/build.sh
       - name: "A: probe"
@@ -62,7 +66,7 @@ jobs:
       - name: Pack
         if: always()
         run: |
-          rm -rf out/coverage/*/src
+          rm -rf out/coverage/gin out/coverage/flask out/coverage/zustand
           find out -name events.json -exec gzip -9 {} \;
           du -sh out/*
       - uses: actions/upload-artifact@v4
