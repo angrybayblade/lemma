@@ -12,8 +12,9 @@
 //! A path of two segments or more under a marker is taken as written: no
 //! other string looks like `articles/{}/comments`. A single word (`'user'`,
 //! `'tags'`) is also what `cookies.get('user')` passes, so it counts only
-//! when what it is called on is known to make requests: an HTTP library by
-//! its usual name, or a receiver the same file calls with a longer path.
+//! when what it is called on is known to make requests: an HTTP library or
+//! an `api` module by its usual name, or a receiver the same file calls
+//! with a longer path.
 
 use std::collections::BTreeSet;
 
@@ -22,9 +23,20 @@ use tree_sitter::Node;
 use super::{PathReference, Walk, called_method};
 use crate::paths::{canonical_path, canonical_route};
 
-/// HTTP libraries whose verb functions take a path under a configured base:
-/// a single word given to one of them is a path.
-const LIBRARIES: [&str; 6] = ["axios", "requests", "httpx", "ky", "got", "superagent"];
+/// What a single word given to its verb functions is a path for: the HTTP
+/// libraries that take a path under a configured base, and `api`, the
+/// name a module wrapping one goes by (`import * as api from '$lib/api'`).
+/// The other names clients go by (`client`, `session`, `http`) also name
+/// caches and sessions, whose `get('user')` is no request.
+const REQUESTERS: [&str; 7] = [
+    "axios",
+    "requests",
+    "httpx",
+    "ky",
+    "got",
+    "superagent",
+    "api",
+];
 
 /// Paths read without a leading slash: the receivers that proved to make
 /// requests, and the single words waiting on one.
@@ -75,13 +87,13 @@ impl Walk<'_> {
             is_relative: true,
         };
         let receiver = receiver.join(".");
-        let is_library = receiver
+        let is_requester = receiver
             .split('.')
             .next()
-            .is_some_and(|root| LIBRARIES.contains(&root.to_ascii_lowercase().as_str()));
+            .is_some_and(|root| REQUESTERS.contains(&root.to_ascii_lowercase().as_str()));
         if reference.path.matches('/').count() >= 2 {
             self.relative.receivers.insert(receiver);
-        } else if !is_library {
+        } else if !is_requester {
             self.relative.waiting.push((receiver, reference));
             return true;
         }
@@ -181,6 +193,18 @@ mod tests {
         let found = relative_calls(source);
 
         assert_eq!(found, vec![call("DELETE", "/articles/{}")]);
+    }
+
+    #[test]
+    fn a_single_word_is_a_path_on_a_module_named_api() {
+        let source = "import * as api from '$lib/api'
+export const register = (user: User) => api.post('user', { user })
+export const seen = () => session.get('user')
+";
+
+        let found = relative_calls(source);
+
+        assert_eq!(found, vec![call("POST", "/user")]);
     }
 
     #[test]
