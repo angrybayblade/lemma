@@ -23,7 +23,7 @@ impl Walk<'_> {
         };
         match called {
             "Methods" => self.go_methods(function, arguments),
-            "PathPrefix" => {
+            "PathPrefix" | "Group" => {
                 self.consume_strings(arguments);
                 true
             }
@@ -34,7 +34,70 @@ impl Walk<'_> {
             name if VERBS.contains(&name.to_ascii_lowercase().as_str()) => {
                 self.go_verb_route(parts, name, arguments)
             }
-            _ => false,
+            _ => {
+                self.go_router_argument(parts, arguments);
+                false
+            }
+        }
+    }
+
+    /// `users.Register(v1.Group("/users"))`: a router passed to a function
+    /// that registers routes on it, as gin and echo services split their
+    /// routes by package. The function's routes are served under the
+    /// router's prefix, wherever it is defined.
+    fn go_router_argument(&mut self, parts: &[String], arguments: Node<'_>) {
+        if parts.is_empty() {
+            return;
+        }
+        for argument in Self::children(arguments) {
+            let Some(prefix) = self.go_router_expression_prefix(argument) else {
+                continue;
+            };
+            self.facts.mounts.push(super::Mount {
+                prefix,
+                target: parts.join("."),
+            });
+        }
+    }
+
+    /// The prefix of a router expression: `v1.Group("/users")` under `v1`'s
+    /// prefix, or a router variable whose prefix is known.
+    fn go_router_expression_prefix(&self, node: Node<'_>) -> Option<String> {
+        if node.kind() == "identifier" {
+            return self.prefixes.get(self.text(node)).cloned();
+        }
+        if !matches!(
+            self.called_name(node).as_deref(),
+            Some("Group" | "PathPrefix")
+        ) {
+            return None;
+        }
+        let function = node.child_by_field_name("function")?;
+        let arguments = node.child_by_field_name("arguments")?;
+        let prefix = Self::children(arguments)
+            .into_iter()
+            .find_map(|argument| self.go_literal_suffix(argument))?;
+        let parts = self.chain_parts(function);
+        Some(format!("{}{prefix}", self.router_prefix(&parts)))
+    }
+
+    /// Tags the route just added, if any, with the function registering it
+    /// when its router is not one this file gives a prefix: the router is
+    /// then the function's parameter, and a mount naming the function in
+    /// another file supplies the prefix.
+    fn go_tag_router(&mut self, parts: &[String], added_from: usize, node: Node<'_>) {
+        let receiver = parts
+            .len()
+            .checked_sub(2)
+            .and_then(|index| parts.get(index));
+        if receiver.is_none_or(|name| self.prefixes.contains_key(name)) {
+            return;
+        }
+        let Some(function) = self.enclosing_function(node) else {
+            return;
+        };
+        for route in self.facts.method_paths.iter_mut().skip(added_from) {
+            route.router = Some(function.clone());
         }
     }
 
@@ -90,7 +153,9 @@ impl Walk<'_> {
         };
         let template = format!("{}{path}", self.router_prefix(parts));
         let method = method.map(str::to_owned).or(written_method);
+        let added_from = self.facts.method_paths.len();
         self.add_method_path(method.as_deref(), &template, path_node);
+        self.go_tag_router(parts, added_from, path_node);
     }
 
     /// `r.Get("/x", handler)` (chi, gin, echo): a verb-named call with a
@@ -107,11 +172,14 @@ impl Walk<'_> {
             return false;
         }
         let template = format!("{}{path}", self.router_prefix(parts));
+        let added_from = self.facts.method_paths.len();
         self.add_method_path(Some(verb), &template, *path_node);
+        self.go_tag_router(parts, added_from, *path_node);
         true
     }
 
-    /// `api := r.PathPrefix("/api").Subrouter()`: remembers `api`'s prefix.
+    /// `api := r.PathPrefix("/api").Subrouter()` (gorilla/mux) or
+    /// `v1 := r.Group("/api")` (gin, echo): remembers the router's prefix.
     pub(super) fn go_router_prefix(&mut self, node: Node<'_>) {
         if self.dialect != Dialect::Go {
             return;
@@ -125,7 +193,10 @@ impl Walk<'_> {
         let Some(name) = Self::children(left).into_iter().next() else {
             return;
         };
-        let Some(prefix_call) = self.find_call(right, "PathPrefix") else {
+        let Some(prefix_call) = self
+            .find_call(right, "PathPrefix")
+            .or_else(|| self.find_call(right, "Group"))
+        else {
             return;
         };
         let (Some(function), Some(arguments)) = (

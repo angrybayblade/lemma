@@ -7,7 +7,7 @@
 //! its handler, the function around it. A public module's top-level
 //! definitions are exports too.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -59,12 +59,12 @@ pub struct Kept {
 
 /// A repository's routes as kept on disk: by path, the digest of the
 /// contents they were read from, and the routes.
-type StoredRoutes = BTreeMap<String, (String, Vec<Written>)>;
+type StoredRoutes = BTreeMap<String, (String, lemma_http::CodeFacts)>;
 
 /// One file's routes, and the contents they were read from.
 struct ReadRoutes {
     digest: String,
-    routes: Vec<Written>,
+    facts: lemma_http::CodeFacts,
 }
 
 /// A service's documents, and a digest of the texts they were made from.
@@ -112,11 +112,8 @@ impl Kept {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok());
         let mut routes = locked(&self.routes);
-        for (path, (digest, written)) in read.unwrap_or_default() {
-            let kept = ReadRoutes {
-                digest,
-                routes: written,
-            };
+        for (path, (digest, facts)) in read.unwrap_or_default() {
+            let kept = ReadRoutes { digest, facts };
             routes.entry((root.to_path_buf(), path)).or_insert(kept);
         }
     }
@@ -136,7 +133,7 @@ impl Kept {
         let stored: StoredRoutes = locked(&self.routes)
             .iter()
             .filter(|((repository, _), _)| repository == root)
-            .map(|((_, path), kept)| (path.clone(), (kept.digest.clone(), kept.routes.clone())))
+            .map(|((_, path), kept)| (path.clone(), (kept.digest.clone(), kept.facts.clone())))
             .collect();
         let Ok(text) = serde_json::to_vec(&stored) else {
             return;
@@ -154,15 +151,15 @@ impl Kept {
 
     /// The routes kept for the file at `path` of the repository at `root`,
     /// if they were read from contents with this `digest`.
-    fn routes_of(&self, root: &Path, path: &str, digest: &str) -> Option<Vec<Written>> {
+    fn routes_of(&self, root: &Path, path: &str, digest: &str) -> Option<lemma_http::CodeFacts> {
         let routes = locked(&self.routes);
         let kept = routes.get(&(root.to_path_buf(), path.to_owned()))?;
-        (kept.digest == digest).then(|| kept.routes.clone())
+        (kept.digest == digest).then(|| kept.facts.clone())
     }
 
-    fn keep_routes(&self, root: &Path, path: &str, digest: String, routes: Vec<Written>) {
+    fn keep_routes(&self, root: &Path, path: &str, digest: String, facts: lemma_http::CodeFacts) {
         let key = (root.to_path_buf(), path.to_owned());
-        locked(&self.routes).insert(key, ReadRoutes { digest, routes });
+        locked(&self.routes).insert(key, ReadRoutes { digest, facts });
         if let Some(is_changed) = locked(&self.stored).get_mut(root) {
             *is_changed = true;
         }
@@ -566,48 +563,72 @@ fn routes(service: &Service, root: &Path, reading: RouteReading<'_>) -> Result<R
         .collect();
     // Parsed on every core, and taken in the files' order, so the routes
     // and the first error are those reading the files one by one gives.
-    let read: Vec<Result<Vec<Written>, GraphError>> = code
+    let read: Vec<Result<lemma_http::CodeFacts, GraphError>> = code
         .par_iter()
-        .map(|file| written_routes(file, root, reading))
+        .map(|file| route_facts(file, root, reading))
         .collect();
-    let mut found = Vec::new();
+    let mut route_files = Vec::new();
     let mut texts = BTreeMap::new();
-    for (file, declared) in code.iter().zip(read) {
-        let declared = declared?;
+    for (file, facts) in code.iter().zip(read) {
+        let facts = facts?;
         // Kept for finding handlers: files that declare routes, and files
         // that write paths a helper may register.
-        if !declared.is_empty() || file.contents.contains("'/") || file.contents.contains("\"/") {
+        if !facts.method_paths.is_empty()
+            || file.contents.contains("'/")
+            || file.contents.contains("\"/")
+        {
             texts.insert(file.path.clone(), file.contents.clone());
         }
-        found.extend(declared);
+        route_files.push((file.path.as_str(), facts));
     }
+    // Routes as `lemma check` reads them, each under the prefix another
+    // file mounts its router at, so both place an operation alike.
+    let known: BTreeSet<String> = files.iter().map(|file| file.path.clone()).collect();
+    let imports = import_aliases(root)?;
+    let route_files: Vec<(&str, &lemma_http::CodeFacts)> = route_files
+        .iter()
+        .map(|(path, facts)| (*path, facts))
+        .collect();
+    let found = lemma_verify::mounted_routes(&route_files, &known, &imports)
+        .into_iter()
+        .map(|(file, declared)| {
+            let route = Route {
+                file,
+                line: declared.location.line,
+                template: declared.template.clone(),
+            };
+            (declared.method, declared.path, route)
+        })
+        .collect();
     Ok((found, texts))
 }
 
-/// The routes the file `file` of the repository at `root` writes with a
-/// method: those kept for its contents, or read from them now.
-fn written_routes(
+/// What the file `file` of the repository at `root` says about the routes
+/// it writes and the routers it mounts: kept for its contents, or read
+/// from them now.
+fn route_facts(
     file: &lemma_http::SourceFile,
     root: &Path,
     reading: RouteReading<'_>,
-) -> Result<Vec<Written>, GraphError> {
+) -> Result<lemma_http::CodeFacts, GraphError> {
     let Some(kept) = reading.kept else {
-        return parsed_routes(file, reading.extractors);
+        return parsed_route_facts(file, reading.extractors);
     };
     let digest = lemma_model::content_hash(file.contents.as_bytes());
-    if let Some(routes) = kept.routes_of(root, &file.path, &digest) {
-        return Ok(routes);
+    if let Some(facts) = kept.routes_of(root, &file.path, &digest) {
+        return Ok(facts);
     }
-    let routes = parsed_routes(file, reading.extractors)?;
-    kept.keep_routes(root, &file.path, digest, routes.clone());
-    Ok(routes)
+    let facts = parsed_route_facts(file, reading.extractors)?;
+    kept.keep_routes(root, &file.path, digest, facts.clone());
+    Ok(facts)
 }
 
-/// The routes `file`'s code writes with a method.
-fn parsed_routes(
+/// The facts of `file`'s code that place its routes: those it writes with
+/// a method, the routers it mounts and the names it imports them by.
+fn parsed_route_facts(
     file: &lemma_http::SourceFile,
     extractors: &ExtractorPool,
-) -> Result<Vec<Written>, GraphError> {
+) -> Result<lemma_http::CodeFacts, GraphError> {
     let facts = extractors
         .with(|extractor| {
             lemma_http::extract(
@@ -621,20 +642,32 @@ fn parsed_routes(
         .map_err(|source| GraphError::Schema {
             message: format!("could not read routes in {}: {source}", file.path),
         })?;
-    let routes = facts
-        .method_paths
-        .iter()
-        .filter(|item| item.method != "*")
-        .map(|declared| {
-            let route = Route {
-                file: file.path.clone(),
-                line: declared.location.line,
-                template: declared.template.clone(),
-            };
-            (declared.method.clone(), declared.path.clone(), route)
-        })
-        .collect();
-    Ok(routes)
+    Ok(lemma_http::CodeFacts {
+        method_paths: facts
+            .method_paths
+            .into_iter()
+            .filter(|item| item.method != "*")
+            .collect(),
+        mounts: facts.mounts,
+        import_bindings: facts.import_bindings,
+        is_generated: facts.is_generated,
+        ..lemma_http::CodeFacts::default()
+    })
+}
+
+/// Path aliases from every `tsconfig*.json` in the repository, as `lemma
+/// check` resolves imports with them.
+fn import_aliases(root: &Path) -> Result<lemma_http::PathAliases, GraphError> {
+    let is_tsconfig = |path: &str| {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let is_json = Path::new(name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
+        name.starts_with("tsconfig") && is_json
+    };
+    let files = lemma_http::read_files_where(root, None, &is_tsconfig)
+        .map_err(|source| GraphError::Source { source })?;
+    Ok(lemma_http::PathAliases::from_files(&files))
 }
 
 /// What was found for a documented operation: its handler's file and
@@ -822,13 +855,16 @@ mod tests {
         let digest =
             |file: &lemma_http::SourceFile| lemma_model::content_hash(file.contents.as_bytes());
 
-        let read = written_routes(&first, root, reading).unwrap();
+        let read = route_facts(&first, root, reading).unwrap();
         let kept_after_first = kept.routes_of(root, &first.path, &digest(&first));
-        let after_edit = written_routes(&edited, root, reading).unwrap();
+        let after_edit = route_facts(&edited, root, reading).unwrap();
 
-        assert_eq!(read, parsed_routes(&first, &extractors).unwrap());
+        assert_eq!(read, parsed_route_facts(&first, &extractors).unwrap());
         assert_eq!(kept_after_first, Some(read.clone()));
-        assert_eq!(after_edit, parsed_routes(&edited, &extractors).unwrap());
+        assert_eq!(
+            after_edit,
+            parsed_route_facts(&edited, &extractors).unwrap()
+        );
         assert_ne!(after_edit, read);
         assert_eq!(kept.routes_of(root, &first.path, &digest(&first)), None);
     }
@@ -846,7 +882,7 @@ mod tests {
             extractors: &extractors,
             kept: Some(&first),
         };
-        let read = written_routes(&file, root, reading).unwrap();
+        let read = route_facts(&file, root, reading).unwrap();
         first.store_routes(root);
 
         let next = Kept::stored_in(directory.path().to_path_buf());

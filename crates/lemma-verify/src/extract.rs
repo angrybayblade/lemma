@@ -1125,7 +1125,7 @@ fn served_routes(facts: &CodeFacts) -> impl Iterator<Item = &lemma_http::MethodP
 /// The routes route files serve, by file, each under the prefix another
 /// file mounts its router at (`app.use("/v1/charges", charges)` with
 /// `charges` imported from the file).
-fn mounted_routes(
+pub fn mounted_routes(
     route_files: &[(&str, &CodeFacts)],
     known: &BTreeSet<String>,
     imports: &PathAliases,
@@ -1162,6 +1162,10 @@ fn mount_prefixes(
 ) -> BTreeMap<(String, Option<String>), String> {
     let mut prefixes = BTreeMap::new();
     for (file, facts) in route_files {
+        if has_extension(file, "go") {
+            go_mount_prefixes(file, facts, route_files, &mut prefixes);
+            continue;
+        }
         for mount in &facts.mounts {
             let targets = mounted_modules(facts, &mount.target)
                 .into_iter()
@@ -1178,6 +1182,44 @@ fn mount_prefixes(
         }
     }
     prefixes
+}
+
+/// The prefixes a Go file passes routers under to functions registering
+/// routes on them (`users.Register(v1.Group("/users"))`): by each file of
+/// the package the call names, `users` (the directory of that name), or of
+/// the calling file's own package, and the function's name.
+fn go_mount_prefixes(
+    file: &str,
+    facts: &CodeFacts,
+    route_files: &[(&str, &CodeFacts)],
+    prefixes: &mut BTreeMap<(String, Option<String>), String>,
+) {
+    let directory = |path: &str| {
+        path.rsplit_once('/')
+            .map_or("", |(parent, _)| parent)
+            .to_owned()
+    };
+    for mount in &facts.mounts {
+        let (package, function) = match mount.target.rsplit_once('.') {
+            Some((package, function)) => (Some(package), function),
+            None => (None, mount.target.as_str()),
+        };
+        let in_package = |candidate: &str| match package {
+            Some(package) => {
+                let parent = directory(candidate);
+                parent == package || parent.ends_with(&format!("/{package}"))
+            }
+            None => directory(candidate) == directory(file),
+        };
+        for (candidate, _) in route_files
+            .iter()
+            .filter(|(candidate, _)| in_package(candidate))
+        {
+            prefixes
+                .entry(((*candidate).to_owned(), Some(function.to_owned())))
+                .or_insert_with(|| mount.prefix.clone());
+        }
+    }
 }
 
 /// The modules a mounted router may be made in, each with its name there:
