@@ -168,10 +168,14 @@ impl Shop {
         );
     }
 
-    /// An edit `lemma check` reports as a warning: a response field web
-    /// reads is gone.
-    fn drop_a_response_field(&self) {
-        self.edit_billing(r#", "receipt_url": { "type": "string" }"#, "");
+    /// An edit `lemma check` reports as a warning: a request field web
+    /// sends is gone, and billing now ignores it.
+    fn drop_a_request_field(&self) {
+        self.edit_billing(
+            r#""properties": { "customer": { "type": "string" } },
+          "required": ["customer"]"#,
+            r#""properties": { "account": { "type": "string" } }"#,
+        );
     }
 
     /// Commits whatever billing holds, on the branch it is on.
@@ -288,12 +292,12 @@ fn repositories_beside_the_workspace_are_checked() {
 #[test]
 fn an_introduced_warning_sends_the_agent_back_unless_the_gate_is_set_to_errors() {
     let shop = Shop::new(Layout::Inside);
-    shop.drop_a_response_field();
+    shop.drop_a_request_field();
 
     let reason = blocked(&shop.gate(&[]));
     let errors_only = shop.gate(&[("LEMMA_GATE_LEVEL", "error")]);
 
-    assert!(reason.contains("receipt_url"), "{reason}");
+    assert!(reason.contains("customer"), "{reason}");
     assert!(reason.contains("- warning ["), "{reason}");
     assert_eq!(errors_only, "");
 }

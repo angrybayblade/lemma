@@ -141,7 +141,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
         problems,
         [
             (Severity::Error, "consumer_misses_new_required_field"),
-            (Severity::Warning, "consumer_uses_removed_response_field"),
+            (Severity::Error, "consumer_reads_removed_response_field"),
         ]
     );
 }
@@ -185,14 +185,14 @@ fn a_description_without_a_program_selects_one_built_in_requirement_by_name() {
     let workspace = tempfile::tempdir().unwrap();
     system(workspace.path());
 
-    let bare = selected_problems(workspace.path(), "consumer_uses_removed_response_field");
+    let bare = selected_problems(workspace.path(), "consumer_reads_removed_response_field");
     let qualified = selected_problems(
         workspace.path(),
         "lemma.http.consumer_misses_new_required_field",
     );
     let unknown = selected_problems(workspace.path(), "consumer_forgets_everything");
 
-    assert_eq!(bare.unwrap(), ["consumer_uses_removed_response_field"]);
+    assert_eq!(bare.unwrap(), ["consumer_reads_removed_response_field"]);
     assert_eq!(qualified.unwrap(), ["consumer_misses_new_required_field"]);
     assert!(
         unknown
@@ -348,11 +348,11 @@ fn a_parent_module_runs_its_own_requirements_beside_the_http_contracts() {
                 Severity::Error,
                 "consumer_misses_new_required_field".to_owned()
             ),
-            (Severity::Warning, "charges_are_called".to_owned()),
             (
-                Severity::Warning,
-                "consumer_uses_removed_response_field".to_owned()
+                Severity::Error,
+                "consumer_reads_removed_response_field".to_owned()
             ),
+            (Severity::Warning, "charges_are_called".to_owned()),
         ]
     );
 }
@@ -422,7 +422,7 @@ fn select_runs_another_check_and_an_unknown_one_is_refused() {
         checks,
         [
             "consumer_misses_new_required_field",
-            "consumer_uses_removed_response_field"
+            "consumer_reads_removed_response_field"
         ]
     );
     assert!(
