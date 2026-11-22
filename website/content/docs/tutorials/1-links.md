@@ -95,7 +95,7 @@ error   request: the receiver requires `currency` at the root; the sender may le
 error   response: the receiver expects `receipt_url` at the root; the sender does not send it
         [response] #web:services.web.create_charge -> #billing:services.api.createCharge  (introduced)
 ...
-3 errors, 1 warnings, 3 informational (--all lists them)
+4 errors, 0 warnings, 3 informational (--all lists them)
 ```
 
 The two new errors come from the link. Lemma resolved `ChargeRequest` and `ChargeResponse` from web's code and compared them with billing's schemas at the change's head:

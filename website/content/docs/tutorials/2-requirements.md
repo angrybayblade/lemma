@@ -61,7 +61,7 @@ $ lemma check --change billing --base HEAD~1 --head HEAD
 warning #web:web:src/charge.ts::charge calls POST /v1/charges, which is deprecated (#web:web:src/charge.ts:2)
         [no_calls_to_deprecated_operations] #web:web:src/charge.ts::charge -> POST /v1/charges  (introduced)
 ...
-1 errors, 2 warnings, 0 informational
+2 errors, 1 warnings, 0 informational
 ```
 
 Your requirement found web's call, beside the findings from `lemma.http`.
@@ -75,7 +75,7 @@ Without a `check main`, every requirement of every loaded module runs. Use a `ch
 check main {
     run lemma.http.*
     run no_calls_to_deprecated_operations { severity: error }
-    skip lemma.http.consumer_uses_removed_response_field
+    skip lemma.http.consumer_reads_removed_response_field
 }
 ```
 
@@ -92,6 +92,6 @@ error   #web:web:src/charge.ts::charge calls POST /v1/charges, which is deprecat
 2 errors, 0 warnings, 0 informational
 ```
 
-The deprecation is an error now, and the removed-field warning is gone. Keep `run lemma.http.*` in any `check main`: a check that names only your own requirements runs no HTTP contract check. Declare other checks, such as `check nightly { ... }`, and run them with `lemma check --select nightly`.
+The deprecation is an error now, and the removed-field error is gone. Keep `run lemma.http.*` in any `check main`: a check that names only your own requirements runs no HTTP contract check. Declare other checks, such as `check nightly { ... }`, and run them with `lemma check --select nightly`.
 
 Next: [allow a known finding](3-allowances.md).
