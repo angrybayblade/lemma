@@ -33,6 +33,13 @@ export relation calls_function(scope: Text, name: Text)
 // to be a field of the response body: `body.status` after
 // `const body = await res.json()`.
 export relation reads_result(file: Text, line: Int, name: Text)
+// A call that looks like a request and was not read as a call of a path,
+// with why: `joined` (the path may go on past what is written),
+// `computed` (a request function given a path computed elsewhere),
+// `unproven` (a single word, on something not known to make requests) or
+// `wrapped` (a path's first word given to another method of a receiver the
+// file makes requests through), and the first argument as written.
+export relation unread_request(file: Text, line: Int, reason: Text, written: Text)
 // A consumer or function, and its file.
 export relation in_file(function: Text, file: Text)
 // A function and its simple name: `update` for `Accounts.update`.

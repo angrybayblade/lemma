@@ -18,6 +18,7 @@ mod zod;
 
 use std::collections::BTreeMap;
 
+pub use relative::UnreadRequest;
 pub use results::ResultRead;
 pub use zod::{SchemaUnion, SchemaUse};
 
@@ -202,6 +203,10 @@ pub struct CodeFacts {
     /// its body (see [`ResultRead`]). Sorted, unique.
     #[serde(default)]
     pub result_reads: Vec<ResultRead>,
+    /// Calls that look like requests and were not read as calls of a path,
+    /// each with why. Sorted, unique.
+    #[serde(default)]
+    pub unread_requests: Vec<UnreadRequest>,
 }
 
 /// What to look for.
@@ -265,6 +270,8 @@ fn sorted(mut facts: CodeFacts) -> CodeFacts {
     facts.called.dedup();
     facts.result_reads.sort();
     facts.result_reads.dedup();
+    facts.unread_requests.sort();
+    facts.unread_requests.dedup();
     facts.imports.sort();
     facts.imports.dedup();
     facts.imported_names = facts
@@ -771,8 +778,10 @@ impl Walk<'_> {
             .or_else(|| self.nested_path_argument(arguments));
         let Some(path_node) = path_argument.filter(|node| !self.consumed.contains(&node.id()))
         else {
-            if !self.relative_request(&parts, arguments) {
-                self.call_with_bound_path(&parts, arguments, &strings);
+            if !self.relative_request(&parts, arguments)
+                && !self.call_with_bound_path(&parts, arguments, &strings)
+            {
+                self.computed_request(&parts, arguments);
             }
             return;
         };
@@ -841,13 +850,13 @@ impl Walk<'_> {
     /// A request passed a variable holding a path assigned earlier in the
     /// same function (`url = f"{base}/v1/users/{id}"; requests.get(url)`):
     /// the path is reported with the call's method, rather than later as a
-    /// string whose method is unknown.
+    /// string whose method is unknown. Whether a variable held a path.
     fn call_with_bound_path(
         &mut self,
         parts: &[String],
         arguments: Node<'_>,
         strings: &[Node<'_>],
-    ) {
+    ) -> bool {
         let function = self.location(arguments).function;
         let mut cursor = arguments.walk();
         let bound = arguments
@@ -858,7 +867,7 @@ impl Walk<'_> {
                 self.bound_paths.get(&key)
             });
         let Some(bound) = bound else {
-            return;
+            return false;
         };
         let (node, template, location) =
             (bound.node, bound.template.clone(), bound.location.clone());
@@ -866,10 +875,10 @@ impl Walk<'_> {
         // on a cache or map is not. Any other call (`print(url)`) leaves the
         // path to a later request, or to be reported with no method.
         let Some(method) = self.plain_request_method(parts, arguments, strings) else {
-            return;
+            return true;
         };
         let Some(path) = canonical_path(&template, &self.options.path_markers) else {
-            return;
+            return true;
         };
         self.consumed.push(node);
         self.facts.path_references.push(PathReference {
@@ -878,6 +887,7 @@ impl Walk<'_> {
             location,
             is_relative: false,
         });
+        true
     }
 
     /// Remembers a path string assigned to a plain variable, by the function

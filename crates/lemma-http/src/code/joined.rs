@@ -25,12 +25,35 @@ impl Walk<'_> {
         strings: &[Node<'_>],
     ) -> bool {
         let Some((template, written)) = self.joined_path(arguments) else {
+            self.note_glued(arguments);
             return false;
         };
         let method = self.request_method(parts, arguments, strings);
         self.add_reference(&method, &template, written[0]);
         self.consumed.extend(written.iter().map(Node::id));
         true
+    }
+
+    /// Notes a join that starts with a path and was not read whole: what a
+    /// glued piece adds is unknown, so the path may go on.
+    fn note_glued(&mut self, arguments: Node<'_>) {
+        let mut cursor = arguments.walk();
+        let joins: Vec<Node<'_>> = arguments
+            .named_children(&mut cursor)
+            .filter(|argument| matches!(argument.kind(), "binary_expression" | "binary_operator"))
+            .collect();
+        for join in joins {
+            let mut pieces = Vec::new();
+            self.join_pieces(join, &mut pieces);
+            let starts_a_path = matches!(
+                pieces.first(),
+                Some(Piece::Written(first, _)) if has_marker(first, &self.options.path_markers)
+            );
+            if starts_a_path {
+                let unread = self.unread(super::relative::JOINED, join);
+                self.facts.unread_requests.push(unread);
+            }
+        }
     }
 
     /// The first argument joined with `+` from a path's pieces: its
@@ -153,5 +176,25 @@ mod tests {
         let found = calls("src/articles.ts", source);
 
         assert_eq!(found, vec![call("GET", "/articles")]);
+    }
+
+    #[test]
+    fn a_path_with_a_glued_piece_is_also_declined_as_joined() {
+        let source = "export const list = (feed: boolean) => http.get('/articles' + (feed ? '/feed' : ''), {})
+";
+        let options = CodeOptions {
+            path_markers: vec!["/articles/".to_owned()],
+            ..CodeOptions::default()
+        };
+        let mut extractor = Extractor::new().unwrap();
+
+        let facts = extract("src/articles.ts", source, &options, &mut extractor).unwrap();
+
+        let declined: Vec<&str> = facts
+            .unread_requests
+            .iter()
+            .map(|unread| unread.reason.as_str())
+            .collect();
+        assert_eq!(declined, ["joined"]);
     }
 }

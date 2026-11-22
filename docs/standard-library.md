@@ -45,6 +45,7 @@ HTTP contracts between services, their generated clients and consumers.
 - relation `mentions`: `(scope: Text, name: Text)`
 - relation `calls_function`: `(scope: Text, name: Text)`
 - relation `reads_result`: `(file: Text, line: Int, name: Text)`
+- relation `unread_request`: `(file: Text, line: Int, reason: Text, written: Text)`
 - relation `in_file`: `(function: Text, file: Text)`
 - relation `named`: `(function: Text, simple_name: Text)`
 - relation `imports`: `(file: Text, imported: Text)`

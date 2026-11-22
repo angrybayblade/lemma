@@ -1968,6 +1968,18 @@ fn consumer_file(
         );
     }
     write_result_reads(scope, &file_id, facts, writer);
+    for unread in &facts.unread_requests {
+        writer.add(
+            "unread_request",
+            scope.snapshots,
+            &[
+                Arg::Text(&file_id),
+                Arg::Number(i64::from(unread.location.line)),
+                Arg::Text(&unread.reason),
+                Arg::Text(&unread.written),
+            ],
+        );
+    }
     scopes.extend(functions.into_ids());
     for function_scope in &scopes {
         writer.add(
