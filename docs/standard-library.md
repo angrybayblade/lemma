@@ -92,6 +92,8 @@ HTTP contracts between services, their generated clients and consumers.
 - rule `reads_routes`: `(s: Text)`
 - rule `calls_at_head`: `(c: Text, op: Text, f: Text, l: Int)`
 - rule `called_at_head`: `(op: Text)`
+- rule `unread_named_path`: `(s: Text, p: Text)`
+- rule `routed_path`: `(s: Text, p: Text)`
 - rule `unrouted_operation`: `(op: Text)`
 - requirement `consumer_calls_unserved_operation`: `requirement`
 - requirement `consumer_calls_removed_operation`: `requirement`

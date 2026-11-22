@@ -358,12 +358,26 @@ export rule called_at_head(op: Text) {
 // code still names the path, so a route moved to where Lemma cannot read
 // it (under a router's prefix, into a helper) is not taken for removed,
 // and only for services whose routes are still read at all.
+// A path the route code writes that no route read from it explains: it is
+// served some way Lemma cannot read (a helper registering it), so a missing
+// route there is given the benefit of the doubt. A path whose routes for
+// other methods were read is explained by them.
+export rule unread_named_path(s: Text, p: Text) {
+    (s, p) :-
+        code_names_path(s, p),
+        !routed_path(s, p)
+}
+
+export rule routed_path(s: Text, p: Text) {
+    (s, p) :- route(s, _, p, _, _)
+}
+
 export rule unrouted_operation(op: Text) {
     (op) :-
         operation@head(s, op, m, p),
         routed_before(s, m, p),
         !routed(s, m, p),
-        !code_names_path(s, p),
+        !unread_named_path(s, p),
         reads_routes(s)
 }
 
@@ -503,7 +517,7 @@ export require operation_without_route {
         added_operation(s, op, m, p),
         reads_routes(s),
         !routed(s, m, p),
-        !code_names_path(s, p)
+        !unread_named_path(s, p)
     message: "{s} adds {op} to its spec, but no route in its code serves it"
 }
 

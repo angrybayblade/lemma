@@ -241,7 +241,7 @@ A string in code counts as a path only if it contains a leading segment some ser
 | `client_code_sends_removed_parameter` | error | A generated client's code still sends a parameter the service removed, though its copy of the document no longer declares it. |
 | `client_calls_removed_operation` | error | A client function calls an operation the change removed. |
 | `consumer_calls_changed_operation` | info | Code calls an operation whose request changed, but never names the changed field. |
-| `consumer_calls_unrouted_operation` | error | Code calls an operation the spec still declares whose route the change removed: a deleted handler. Only for services whose routes are read. |
+| `consumer_calls_unrouted_operation` | error | Code calls an operation the spec still declares whose route the change removed: a deleted handler. Only for services whose routes are read. A path the code still writes counts as served some way Lemma cannot read, unless a route for another method on that path explains it. |
 | `operation_without_route` | warning | The change adds an operation to a spec, and no route in the service's code serves it. Only for services whose routes are read. |
 | `route_without_operation` | warning | The change adds a route its spec does not declare. |
 | `operation_without_consumer` | warning | The change adds an operation no code calls, directly or through a generated client. An operation stated in `public_operation`, or of a service in `public_service`, is exempt. |
