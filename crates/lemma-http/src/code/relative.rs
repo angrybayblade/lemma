@@ -19,8 +19,8 @@ use std::collections::BTreeSet;
 
 use tree_sitter::Node;
 
-use super::{PathReference, VERBS, Walk};
-use crate::paths::{canonical_method, canonical_path, canonical_route};
+use super::{PathReference, Walk, called_method};
+use crate::paths::{canonical_path, canonical_route};
 
 /// HTTP libraries whose verb functions take a path under a configured base:
 /// a single word given to one of them is a path.
@@ -41,9 +41,9 @@ impl Walk<'_> {
         let Some((called, receiver)) = parts.split_last() else {
             return false;
         };
-        if !VERBS.contains(&called.to_ascii_lowercase().as_str()) {
+        let Some(method) = called_method(called) else {
             return false;
-        }
+        };
         let Some(first) = arguments.named_child(0) else {
             return false;
         };
@@ -69,7 +69,7 @@ impl Walk<'_> {
             return false;
         }
         let reference = PathReference {
-            method: canonical_method(called),
+            method,
             path,
             location: self.location(first),
             is_relative: true,
@@ -177,6 +177,16 @@ mod tests {
     #[test]
     fn a_path_that_may_be_joined_with_the_next_argument_is_not_read() {
         let source = "export const one = (slug: string) => api.get('articles', slug)\nexport const of = (slug: string) => api.get('articles', `${slug}/comments`)\nexport const all = () => api.delete(`articles/${id}`)\n";
+
+        let found = relative_calls(source);
+
+        assert_eq!(found, vec![call("DELETE", "/articles/{}")]);
+    }
+
+    #[test]
+    fn del_is_delete_where_delete_is_a_reserved_word() {
+        let source = "export const remove = (slug: string) => api.del(`articles/${slug}`, token())
+";
 
         let found = relative_calls(source);
 

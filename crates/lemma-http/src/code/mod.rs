@@ -239,6 +239,18 @@ pub enum CodeError {
 
 const VERBS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
 
+/// The HTTP method a called name stands for: a verb, or `del`, as clients
+/// name `delete` where it is a reserved word (`requests.del('/x')`).
+fn called_method(called: &str) -> Option<String> {
+    let called = called.to_ascii_lowercase();
+    if called == "del" {
+        return Some("DELETE".to_owned());
+    }
+    VERBS
+        .contains(&called.as_str())
+        .then(|| canonical_method(&called))
+}
+
 /// `facts` with its lists sorted and, where order carries no meaning,
 /// without repeats, so the same file always gives the same facts. Member
 /// calls keep source order.
@@ -784,8 +796,8 @@ impl Walk<'_> {
             return canonical_method(&verb);
         }
         let called = parts.last().map(String::as_str).unwrap_or_default();
-        if VERBS.contains(&called.to_ascii_lowercase().as_str()) {
-            return canonical_method(called);
+        if let Some(method) = called_method(called) {
+            return method;
         }
         self.method_option(arguments)
             .map_or_else(|| "*".to_owned(), |method| canonical_method(&method))
@@ -805,7 +817,7 @@ impl Walk<'_> {
             return None;
         }
         let called = parts.last().map(String::as_str).unwrap_or_default();
-        if !VERBS.contains(&called.to_ascii_lowercase().as_str()) {
+        if called_method(called).is_none() {
             return Some(method);
         }
         let receiver = parts
