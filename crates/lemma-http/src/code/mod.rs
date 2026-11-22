@@ -7,6 +7,7 @@
 //! consumer. The caller interprets it by the repository's role.
 
 mod go;
+mod joined;
 mod nesting;
 mod registration;
 mod relative;
@@ -757,6 +758,9 @@ impl Walk<'_> {
                 .filter(|argument| self.string_value(*argument).is_some())
                 .collect()
         };
+        if self.joined_request(&parts, arguments, &strings) {
+            return;
+        }
         let path_argument = strings
             .iter()
             .copied()
