@@ -525,7 +525,12 @@ fn route_aliases(
         .iter()
         .map(|(method, path, _)| (method.clone(), path.clone()))
         .collect();
-    lemma_http::implied_aliases(&operations, &routes)
+    let served_under = documents
+        .iter()
+        .flatten()
+        .filter_map(|operation| operation.served_under.clone())
+        .collect();
+    lemma_http::implied_aliases(&operations, &routes, &served_under)
 }
 
 /// Routes by method and path, including the paths aliases also serve them

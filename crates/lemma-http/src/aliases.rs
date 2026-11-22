@@ -4,6 +4,11 @@
 //! routing. Its documents then describe `/v2/x` while its code only writes
 //! `/v1/x`. Seen across a whole document, that is an alias: `/v1/` routes
 //! are also served under `/v2/`.
+//!
+//! The same holds for the path a document puts every operation under with
+//! its `servers` URL (or Swagger's `basePath`): routes written as
+//! `/api/articles` serve the documented `/articles` of a document served at
+//! `https://example.test/api`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,9 +23,14 @@ use std::collections::{BTreeMap, BTreeSet};
 /// lets a document whose new paths have routes of their own keep the alias
 /// its old paths imply. Each document's prefix is the static prefix its
 /// paths share.
+///
+/// `served_under` holds the paths the documents' `servers` put their
+/// operations under (see [`crate::Operation::served_under`]): routes
+/// written under one are served at the documented paths without it.
 pub fn implied_aliases(
     documents: &[Vec<(String, String)>],
     routes: &BTreeSet<(String, String)>,
+    served_under: &BTreeSet<String>,
 ) -> BTreeMap<String, String> {
     let prefixes: Vec<String> = documents
         .iter()
@@ -55,6 +65,11 @@ pub fn implied_aliases(
                 aliases.insert(format!("{written}/"), format!("{served}/"));
             }
         }
+    }
+    for prefix in served_under {
+        aliases
+            .entry(format!("{prefix}/"))
+            .or_insert_with(|| "/".to_owned());
     }
     aliases
 }
@@ -121,7 +136,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let aliases = implied_aliases(&documents, &routes);
+        let aliases = implied_aliases(&documents, &routes, &BTreeSet::new());
 
         assert_eq!(
             aliases,
@@ -152,12 +167,40 @@ mod tests {
         .into_iter()
         .collect();
 
-        let aliases = implied_aliases(&documents, &routes);
+        let aliases = implied_aliases(&documents, &routes, &BTreeSet::new());
 
         assert_eq!(
             aliases,
             BTreeMap::from([("/v1/".to_owned(), "/v2/".to_owned())])
         );
+    }
+
+    #[test]
+    fn the_path_a_documents_servers_put_it_under_is_an_alias_to_the_root() {
+        let documents = [operations(&[("GET", "/articles"), ("GET", "/tags")])];
+        let routes = operations(&[("GET", "/api/articles")])
+            .into_iter()
+            .collect();
+        let served_under = BTreeSet::from(["/api".to_owned()]);
+
+        let aliases = implied_aliases(&documents, &routes, &served_under);
+
+        assert_eq!(
+            aliases,
+            BTreeMap::from([("/api/".to_owned(), "/".to_owned())])
+        );
+    }
+
+    #[test]
+    fn routes_under_a_prefix_no_document_is_served_at_imply_nothing() {
+        let documents = [operations(&[("GET", "/articles"), ("GET", "/tags")])];
+        let routes = operations(&[("GET", "/api/articles"), ("GET", "/api/tags")])
+            .into_iter()
+            .collect();
+
+        let aliases = implied_aliases(&documents, &routes, &BTreeSet::new());
+
+        assert_eq!(aliases, BTreeMap::new());
     }
 
     #[test]
@@ -170,6 +213,9 @@ mod tests {
             .into_iter()
             .collect();
 
-        assert_eq!(implied_aliases(&documents, &routes), BTreeMap::new());
+        assert_eq!(
+            implied_aliases(&documents, &routes, &BTreeSet::new()),
+            BTreeMap::new()
+        );
     }
 }

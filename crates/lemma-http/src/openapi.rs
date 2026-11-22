@@ -33,6 +33,12 @@ pub struct Operation {
     pub rejects_unknown_fields: bool,
     /// Fields of the JSON bodies of 2xx responses.
     pub response_fields: Vec<String>,
+    /// The path the document's `servers` URL (or Swagger's `basePath`)
+    /// puts every operation under, such as `/api` for
+    /// `https://example.test/api`: code may write its route as
+    /// `/api/users` for the documented `/users`. `None` at the root, or
+    /// when the servers name different paths.
+    pub served_under: Option<String>,
 }
 
 impl Operation {
@@ -87,6 +93,7 @@ pub fn operations_where(document: &Json, wanted: impl Fn(&str) -> bool) -> Vec<O
     let Some(paths) = document.get("paths").and_then(Json::as_object) else {
         return found;
     };
+    let served_under = served_under(document);
     for (template, item) in paths {
         let Some(canonical) = canonical_route(template) else {
             continue;
@@ -117,11 +124,37 @@ pub fn operations_where(document: &Json, wanted: impl Fn(&str) -> bool) -> Vec<O
                 request_fields: request_fields(document, operation),
                 rejects_unknown_fields: rejects_unknown_fields(document, operation),
                 response_fields: response_fields(document, operation),
+                served_under: served_under.clone(),
             });
         }
     }
     found.sort_by(|left, right| (&left.method, &left.path).cmp(&(&right.method, &right.path)));
     found
+}
+
+/// The path every server of the document puts its operations under:
+/// Swagger's `basePath`, or the path of each `servers` URL, absolute or
+/// relative, when they all agree. A URL with a variable in its path is not
+/// read, since the path is not known; nor is a root path, which adds
+/// nothing.
+pub fn served_under(document: &Json) -> Option<String> {
+    let written: Vec<&str> = match document.get("basePath").and_then(Json::as_str) {
+        Some(base_path) => vec![base_path],
+        None => document
+            .get("servers")
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|server| server.get("url").and_then(Json::as_str))
+            .collect(),
+    };
+    let mut paths = std::collections::BTreeSet::new();
+    for url in written {
+        let path = canonical_route(url).filter(|path| !path.contains('{'))?;
+        paths.insert(path);
+    }
+    let [path] = Vec::from_iter(paths).try_into().ok()?;
+    (path != "/").then_some(path)
 }
 
 fn parameters(document: &Json, list: Option<&Json>) -> Vec<Parameter> {
@@ -400,6 +433,40 @@ mod tests {
                 ] } }
             }
         })
+    }
+
+    fn served_under_of(servers: Json) -> Option<String> {
+        let mut document = servers;
+        document["paths"] = serde_json::json!({ "/users": { "get": {} } });
+        operations(&document).remove(0).served_under
+    }
+
+    #[test]
+    fn operations_are_served_under_the_path_their_servers_share() {
+        let servers = serde_json::json!({ "servers": [
+            { "url": "https://example.test/api/" },
+            { "url": "/api" }
+        ] });
+
+        assert_eq!(served_under_of(servers), Some("/api".to_owned()));
+    }
+
+    #[test]
+    fn a_swagger_base_path_is_what_operations_are_served_under() {
+        let document = serde_json::json!({ "basePath": "/v2" });
+
+        assert_eq!(served_under_of(document), Some("/v2".to_owned()));
+    }
+
+    #[test]
+    fn servers_at_the_root_on_different_paths_or_with_variables_serve_under_nothing() {
+        let at_root = serde_json::json!({ "servers": [{ "url": "https://example.test" }] });
+        let different = serde_json::json!({ "servers": [{ "url": "/v1" }, { "url": "/v2" }] });
+        let variable = serde_json::json!({ "servers": [{ "url": "https://example.test/{base}" }] });
+
+        let found = [at_root, different, variable].map(served_under_of);
+
+        assert_eq!(found, [None, None, None]);
     }
 
     #[test]

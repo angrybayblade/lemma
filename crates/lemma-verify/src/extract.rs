@@ -1024,7 +1024,7 @@ fn service(
             &[Arg::Text(service_name)],
         );
     }
-    let documents = write_operations(service_name, repository, snapshot, writer)?;
+    let (documents, served_under) = write_operations(service_name, repository, snapshot, writer)?;
     // Without route directories there is no route code to read; an empty
     // list would otherwise mean the whole repository.
     let code_snapshots = service_code_snapshots(snapshots, writer);
@@ -1055,7 +1055,7 @@ fn service(
         .iter()
         .map(|(_, route)| (route.method.clone(), route.path.clone()))
         .collect();
-    let route_aliases = lemma_http::implied_aliases(&documents, &written);
+    let route_aliases = lemma_http::implied_aliases(&documents, &written, &served_under);
     let scope = ServiceScope {
         name,
         service: service_name,
@@ -1075,20 +1075,31 @@ fn service(
     Ok(())
 }
 
+/// Each of a service's documents' operations as method and canonical
+/// path, and the paths their servers put them under.
+type DocumentRoutes = (Vec<Vec<(String, String)>>, BTreeSet<String>);
+
 /// Writes the operations of each of a service's specs, and returns them by
-/// spec as method and canonical path.
+/// spec as method and canonical path, with the paths their servers put
+/// them under.
 fn write_operations(
     service_name: &str,
     repository: &Repository,
     snapshot: &Snapshot<'_>,
     writer: &mut FactWriter<'_>,
-) -> Result<Vec<Vec<(String, String)>>, VerifyError> {
+) -> Result<DocumentRoutes, VerifyError> {
     let mut documents = Vec::new();
+    let mut served_under = BTreeSet::new();
     for spec in &snapshot_documents(repository, snapshot) {
         let operations = spec_operations(repository, snapshot, spec)?;
         for operation in &operations {
             operation_facts(service_name, operation, snapshot.names, writer);
         }
+        served_under.extend(
+            operations
+                .iter()
+                .filter_map(|operation| operation.served_under.clone()),
+        );
         documents.push(
             operations
                 .into_iter()
@@ -1096,7 +1107,7 @@ fn write_operations(
                 .collect(),
         );
     }
-    Ok(documents)
+    Ok((documents, served_under))
 }
 
 /// The routes a route file's code serves. In a generated file only those

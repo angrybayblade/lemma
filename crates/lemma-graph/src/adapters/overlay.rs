@@ -99,7 +99,11 @@ pub fn overlay(
         .iter()
         .map(|(_, document)| operations_by_key(document))
         .collect();
-    let aliases = aliases(&per_document, &code);
+    let served_under: BTreeSet<String> = committed
+        .iter()
+        .filter_map(|(_, document)| lemma_http::served_under(document))
+        .collect();
+    let aliases = aliases(&per_document, &code, &served_under);
     let matches: Vec<BTreeMap<(String, String), (String, String)>> = per_document
         .iter()
         .map(|operations| match_operations(operations, &code, &aliases))
@@ -197,17 +201,19 @@ fn operations_by_key(document: &Value) -> BTreeMap<(String, String), Located<'_>
 }
 
 /// The prefixes the code's routes are also served under, from the
-/// committed documents and the operations the code describes.
+/// committed documents, the paths their servers put them under and the
+/// operations the code describes.
 fn aliases(
     per_document: &[BTreeMap<(String, String), Located<'_>>],
     code: &BTreeMap<(String, String), Located<'_>>,
+    served_under: &BTreeSet<String>,
 ) -> BTreeMap<String, String> {
     let documents: Vec<Vec<(String, String)>> = per_document
         .iter()
         .map(|operations| operations.keys().cloned().collect())
         .collect();
     let routes: BTreeSet<(String, String)> = code.keys().cloned().collect();
-    lemma_http::implied_aliases(&documents, &routes)
+    lemma_http::implied_aliases(&documents, &routes, served_under)
 }
 
 /// Each committed operation the code describes, mapped to the code's key
