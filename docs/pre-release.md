@@ -10,7 +10,7 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | --- | --- | --- |
 | 0.1.0-rc0 | Internal launch: code intelligence in four languages, contract checks across repositories, install script, agent skills | Released |
 | 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up; one store file in place of SQLite; one daemon per workspace, with sentry; evidence kept by the files a checker's run read; source contracts, experimental (see [New in rc1](#new-in-rc1)) | Released |
-| 0.1.0-rc2 and later | Fixes from the first outside trial of rc1 (see [Since rc1](#since-rc1)); generated clients read from a table of operations they commit; behavior simulation scaffolded for Python, TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; fixes from internal use; CI green for two weeks; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
+| 0.1.0-rc2 and later | Fixes from the first outside trial of rc1 (see [Since rc1](#since-rc1)); layouts met in public repositories read; a removed response field read off the body an error; behavior simulation scaffolded for Python, TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; fixes from internal use; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
 
 ## Feature surfaces
 
@@ -50,7 +50,7 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 | Only HTTP with OpenAPI specs | gRPC, GraphQL, queues, events and other RPC (such as serverless function invocations) are not checked | High outside HTTP | Declare those links in a `.lm` description |
 | Only contract breaks, not behaviour | A change that keeps the contract but changes what it does (rate limits, defaults, ordering) is not caught | High for incidents caused by behaviour changes | Test what matters with a [behavior](tutorials/4-behaviors.md) (beta) |
 | Rust consumers (code calling HTTP from Rust) are tested only by unit tests | Real-world gaps in reqwest call detection may exist | Low | Report missed calls |
-| Calls through a generated client are matched by function names derived from `operationId`s (`call_names`) | A generator that names functions some other way (by resource and verb, say) is not matched | Medium for such generators | Report the generator. Planned: read the table of operations such a client commits (`chain`, `method`, `path`) |
+| Calls through a generated client are matched by function names derived from `operationId`s (`call_names`) | A generator that names functions some other way (by resource and verb, say) is not matched | Medium for such generators | Report the generator. Where the client's own code writes each operation's path, include that code in the client's `index`: its methods are read from it |
 | Consumers are matched to the operation they were written for (the base snapshot) | A call that only exists after the change is checked by `consumer_calls_unserved_operation`, not the field rules | Low | None needed |
 | A description is written by hand | Setup takes an afternoon for a few repositories | Medium | [Onboarding](onboarding.md#4-describe-the-system); the `lemma-onboarding` skill helps an agent write it |
 | `lemma verify` compares what a description says with the code; it does not look for what a description leaves out | An OpenAPI document no service exports, or route code no service includes, stays unnoticed | Medium | The `lemma-audit` skill looks by hand |
@@ -104,10 +104,12 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 
 ## Since rc1
 
-On main, not yet in a release. All of it came from the first trial of rc1 outside the project.
+On main, not yet in a release. Most of it came from the first trial of rc1 outside the project; the rest from layouts met in public repositories.
 
 - **The stop gate checks where it used to pass.** It read repositories from the directories beside `mod.lm` that hold a `.git` directory, so a Git worktree, or a repository beside the workspace, was never checked and the agent finished with errors in place. It reads them from the workspace's module now, finds the workspace from inside a repository too (or from `LEMMA_WORKSPACE`), checks commits a task made as well as uncommitted edits, and when `lemma check` fails or does not finish it sends the agent back with the reason.
 - **The stop gate sends an agent back for warnings too.** A response field a change removed that the caller still reads is a warning, and in the trial it was a real failure at run time. `LEMMA_GATE_LEVEL=error` restores errors only ([`lemma-verify`](../skills/lemma-verify/SKILL.md)).
+- **A removed response field the code reads off the body is an error.** `body.status` after `const body = await res.json()`, `res.data.items`, or `resp.json()["items"]` fails at run time once the field is gone, so `consumer_reads_removed_response_field` reports it as an error. A name the code only mentions near the call, or reads off the response object itself (`res.status`, `res.headers`), stays the warning `consumer_uses_removed_response_field` ([check](check.md#lemmahttp-requirements)).
+- **Routes are placed as public services write them.** A route written under the path an OpenAPI document's `servers` URL (or Swagger's `basePath`) puts its operations, as `/api/articles` for a document served at `https://example.test/api`, serves the documented `/articles`. Gin and echo routes registered by a function in another package are placed under the group passed to it. A YAML document is read where a route's operation is placed. Renaming a path parameter, or sending a required query parameter in the path string, is no longer reported, and a route removed beside another method's route on the same path is.
 - **A graph says when it is not whole.** `lemma graph` asked the language server about the first 60 names in a body; a longer body lost the calls after them with no sign. The limit is 200 now, which no sampled symbol reached, and past it a note gives how many names were left unasked.
 - **A type Lemma cannot follow is no longer compared.** A request type from another package, or written `z.infer<typeof X>`, was read as "anything" and failed the check with errors that were not known to be true. It is reported by name and its place left out, as these notes had said.
 - **The stop gate checks committed work, from wherever the agent runs.** A repository with commits not on its default branch is checked as well as one with uncommitted edits, so an orchestrator that commits each task is held to the check. An agent started inside a repository is checked from the workspace above it, or the one `LEMMA_WORKSPACE` names.
@@ -152,7 +154,7 @@ On main, not yet in a release. All of it came from the first trial of rc1 outsid
 
 ## Before 0.1.0
 
-- [ ] CI green on every pull request for two weeks (rc2).
+- [ ] CI green on every pull request for two weeks.
 - [ ] Release builds checked on macOS arm64, macOS x86_64, Linux x86_64 and Linux arm64 (rc2).
 - [ ] Install script run on a clean macOS and Linux machine (rc2).
 - [ ] `lemma check` reporting on real pull requests for two weeks; every error checked by hand; no false error.
