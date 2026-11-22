@@ -44,6 +44,7 @@ HTTP contracts between services, their generated clients and consumers.
 - relation `calls_client`: `(consumer: Text, chain: Text, file: Text, line: Int)`
 - relation `mentions`: `(scope: Text, name: Text)`
 - relation `calls_function`: `(scope: Text, name: Text)`
+- relation `reads_result`: `(file: Text, line: Int, name: Text)`
 - relation `in_file`: `(function: Text, file: Text)`
 - relation `named`: `(function: Text, simple_name: Text)`
 - relation `imports`: `(file: Text, imported: Text)`
@@ -103,6 +104,7 @@ HTTP contracts between services, their generated clients and consumers.
 - requirement `consumer_sends_ignored_parameter`: `requirement`
 - requirement `consumer_sends_rejected_field`: `requirement`
 - requirement `consumer_uses_removed_request_field`: `requirement`
+- requirement `consumer_reads_removed_response_field`: `requirement`
 - requirement `consumer_uses_removed_response_field`: `requirement`
 - requirement `consumer_calls_changed_operation`: `requirement`
 - requirement `client_declares_removed_parameter`: `requirement`

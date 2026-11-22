@@ -156,7 +156,7 @@ On main, not yet in a release. All of it came from the first trial of rc1 outsid
 - [ ] Release builds checked on macOS arm64, macOS x86_64, Linux x86_64 and Linux arm64 (rc2).
 - [ ] Install script run on a clean macOS and Linux machine (rc2).
 - [ ] `lemma check` reporting on real pull requests for two weeks; every error checked by hand; no false error.
-- [ ] A decision on read-versus-write evidence for response-field warnings, from what internal use shows.
+- [ ] Read-versus-write evidence for response fields, from what internal use shows: a field read off a call's body is an error (rc2); whether any other read should be.
 - [ ] Field type and enum value changes compared, or kept out of 0.1 explicitly.
 - [ ] The `.lm` language frozen for 0.1.
 - [ ] Documentation reviewed by someone who did not write it: [Onboarding](onboarding.md), [Requirements and rules](grammar.md), [Verifying descriptions](verify.md).

@@ -182,16 +182,16 @@ $ lemma check --change billing --base HEAD~1 --head HEAD
   self           working directory
 error   #web:web:src/charge.ts::charge calls POST /v1/charges, which now requires `currency`; its code never names `currency` (#web:web:src/charge.ts:2)
         [consumer_misses_new_required_field] #web:web:src/charge.ts::charge -> POST /v1/charges  (introduced)
-warning #web:web:src/charge.ts::charge calls POST /v1/charges and names `receipt_url`; response field `receipt_url` was removed or renamed (#web:web:src/charge.ts:2)
-        [consumer_uses_removed_response_field] #web:web:src/charge.ts::charge -> POST /v1/charges  (introduced)
-1 errors, 1 warnings, 0 informational
+error   #web:web:src/charge.ts::charge calls POST /v1/charges and reads `receipt_url` off its result; response field `receipt_url` was removed or renamed (#web:web:src/charge.ts:2)
+        [consumer_reads_removed_response_field] #web:web:src/charge.ts::charge -> POST /v1/charges  (introduced)
+2 errors, 0 warnings, 0 informational
 ```
 
 Lemma read billing's document at both commits and found what changed: a newly required field and a removed response field. It read web's code and found one call to that operation, the "1 inferred" in the first line, from `charge` in `src/charge.ts`. Each finding names the requirement that found it, in brackets, and says whether the change introduced it.
 
 <!-- diagram: reach -->
 
-The error fails the check: the command exits with 4. Gate merges on that exit code. At level `check` a newly required field is an error and a removed field a warning, because code that reads a field may cope without it.
+The errors fail the check: the command exits with 4. Gate merges on that exit code. At level `check` a newly required field is an error, and so is a removed field the code reads off the response body, as `charge` does with `body.receipt_url`. A removed field the code only names elsewhere is a warning, because the name may be the caller's own.
 
 ## Next steps
 

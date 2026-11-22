@@ -1916,6 +1916,29 @@ fn differing_paths(listing: &[ListedFile], other: &[ListedFile]) -> BTreeSet<Str
         .collect()
 }
 
+/// The names `facts` read off call results, at every line of each call,
+/// so a rule finds them at whichever line the call's own facts name.
+fn write_result_reads(
+    scope: &ConsumerScope<'_>,
+    file_id: &str,
+    facts: &CodeFacts,
+    writer: &mut FactWriter<'_>,
+) {
+    for read in &facts.result_reads {
+        for line in read.first_line..=read.last_line {
+            writer.add(
+                "reads_result",
+                scope.snapshots,
+                &[
+                    Arg::Text(file_id),
+                    Arg::Number(i64::from(line)),
+                    Arg::Text(&read.name),
+                ],
+            );
+        }
+    }
+}
+
 fn consumer_file(
     scope: &ConsumerScope<'_>,
     path: &str,
@@ -1944,6 +1967,7 @@ fn consumer_file(
             &[Arg::Symbol(caller), Arg::Text(&called.name)],
         );
     }
+    write_result_reads(scope, &file_id, facts, writer);
     scopes.extend(functions.into_ids());
     for function_scope in &scopes {
         writer.add(

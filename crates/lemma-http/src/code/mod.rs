@@ -9,12 +9,14 @@
 mod go;
 mod nesting;
 mod registration;
+mod results;
 mod routers;
 mod rust;
 mod zod;
 
 use std::collections::BTreeMap;
 
+pub use results::ResultRead;
 pub use zod::{SchemaUnion, SchemaUse};
 
 use lemma_model::{Language, SymbolKind};
@@ -188,6 +190,10 @@ pub struct CodeFacts {
     /// Routers mounted under a prefix that this file does not make.
     #[serde(default)]
     pub mounts: Vec<Mount>,
+    /// Names read off what a call returned, deep enough to be fields of
+    /// its body (see [`ResultRead`]). Sorted, unique.
+    #[serde(default)]
+    pub result_reads: Vec<ResultRead>,
 }
 
 /// What to look for.
@@ -237,6 +243,8 @@ fn sorted(mut facts: CodeFacts) -> CodeFacts {
     facts.mentions.dedup();
     facts.called.sort();
     facts.called.dedup();
+    facts.result_reads.sort();
+    facts.result_reads.dedup();
     facts.imports.sort();
     facts.imports.dedup();
     facts.imported_names = facts
@@ -316,6 +324,7 @@ pub fn facts_of(
         routers: routers::Routers::new(),
         mounts: Vec::new(),
         registered: Vec::new(),
+        results: BTreeMap::new(),
     };
     walk.visit(tree.root_node());
     walk.finish_routers();
@@ -461,6 +470,9 @@ struct Walk<'a> {
     /// Routes registered on a router, by their place in the facts' method
     /// paths, with the router.
     registered: Vec<(usize, String)>,
+    /// Variables holding a call's result or a value read off one, by
+    /// enclosing function and variable.
+    results: BTreeMap<(Option<String>, String), results::ResultValue>,
 }
 
 /// A path string assigned to a variable: its node, as consumed strings
@@ -569,11 +581,13 @@ impl Walk<'_> {
             "object" => self.object(node),
             "variable_declarator" => {
                 self.bind_path(node);
+                self.bind_result(node);
                 self.router_definition(node);
                 self.zod_definition(node);
             }
             "assignment" => {
                 self.bind_path(node);
+                self.bind_result(node);
                 self.router_definition(node);
             }
             "required_parameter" | "optional_parameter" | "typed_parameter" => {
@@ -591,6 +605,7 @@ impl Walk<'_> {
             _ => {}
         }
         self.mention(node);
+        self.read_result(node);
         let is_example = self.is_example_pair(node);
         self.examples += usize::from(is_example);
         let mut cursor = node.walk();

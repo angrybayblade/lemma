@@ -72,7 +72,7 @@ The selection loads exactly that reach.
 | `consumer_misses_new_required_field` | anchored: `new_required_request_field`, plus `!sends` within context |
 | `consumer_sends_removed_parameter` / `consumer_sends_ignored_parameter` | anchored: `removed_parameter`; `rejects_unknown_parameter` reads route facts, which are always read |
 | `consumer_sends_rejected_field` / `consumer_uses_removed_request_field` | anchored: `removed_request_field` |
-| `consumer_uses_removed_response_field` | anchored: `removed_response_field` |
+| `consumer_reads_removed_response_field` / `consumer_uses_removed_response_field` | anchored: `removed_response_field`; `reads_result` is written for every call of a file read, keyed by the file |
 | `consumer_calls_changed_operation` | anchored: `removed_request_field` |
 | `client_declares_removed_parameter` | always-read: client parameters |
 | `client_code_sends_removed_parameter` | always-read: client parameters and the names client methods use |

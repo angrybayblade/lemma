@@ -60,7 +60,7 @@ The path above is for skills copied into the project. Skills installed with `LEM
 | `warning` (the default) | Introduced errors and introduced warnings | An agent is at work: it can fix a warning or say why it is a false alarm, and that costs one turn |
 | `error` | Introduced errors only | Warnings in this system are mostly noise, and the extra turn is not worth it |
 
-Warnings count by default because one of them is often a real break: `consumer_uses_removed_response_field`, a response field the change removed that the calling code still reads, is a warning, since a common name such as `id` can be the caller's own field. Read off the answer and passed on, it fails at run time. The gate asks the agent to fix each finding or say why it is expected.
+Warnings count by default because one of them is often a real break: `consumer_uses_removed_response_field`, a response field the change removed that the calling code still names, is a warning, since a common name such as `id` can be the caller's own field. When the code reads the field off the call's body (`body.status` after `await res.json()`), it is `consumer_reads_removed_response_field`, an error; read some way Lemma does not follow, such as through a callback, it stays the warning and still fails at run time. The gate asks the agent to fix each finding or say why it is expected.
 
 Set the level in the command, or in the `env` of `settings.json`:
 
