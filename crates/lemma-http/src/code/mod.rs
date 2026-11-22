@@ -1280,6 +1280,7 @@ impl Walk<'_> {
         }
         if is_string_kind(node.kind()) {
             self.keep_written_path(node);
+            self.mention_query_keys(node);
             // A path searched for or compared against (an error message
             // checked for the path it names, a request routed by its
             // path) is looked for, not requested.
@@ -1291,6 +1292,26 @@ impl Walk<'_> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             self.collect_strings(child);
+        }
+    }
+
+    /// Records the keys of a query string written out in a string
+    /// (`/articles/feed?limit=10`, `limit=${count}&offset=0`) as names the
+    /// code uses, as an object's keys are: the request sends them.
+    fn mention_query_keys(&mut self, node: Node<'_>) {
+        let Some(text) = self.string_value(node) else {
+            return;
+        };
+        let keys = query_keys(&text);
+        if keys.is_empty() {
+            return;
+        }
+        let function = self.enclosing_function(node);
+        for name in keys {
+            self.facts.mentions.push(Mention {
+                name,
+                function: function.clone(),
+            });
         }
     }
 
@@ -1519,6 +1540,29 @@ fn example_keys(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The keys of a query string in `text`: what follows its `?`, or the
+/// whole text when it starts as a query does (`limit=10&offset=0`). Text
+/// that is neither yields nothing, so prose with an `=` in it is not read.
+fn query_keys(text: &str) -> Vec<String> {
+    let query = match text.split_once('?') {
+        Some((_, query)) => query,
+        None if text
+            .split_once('=')
+            .is_some_and(|(key, _)| is_identifier(key)) =>
+        {
+            text
+        }
+        None => return Vec::new(),
+    };
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(key, _)| key)
+        .filter(|key| is_identifier(key))
+        .map(str::to_owned)
+        .collect()
+}
+
 fn is_identifier(name: &str) -> bool {
     let mut characters = name.chars();
     characters
@@ -1530,6 +1574,37 @@ fn is_identifier(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_keys_are_read_after_the_question_mark() {
+        assert_eq!(
+            query_keys("/articles/feed?limit=10&offset=0"),
+            ["limit", "offset"]
+        );
+    }
+
+    #[test]
+    fn query_keys_are_read_from_a_bare_query() {
+        assert_eq!(
+            query_keys("limit=${count}&offset=${page}"),
+            ["limit", "offset"]
+        );
+    }
+
+    #[test]
+    fn text_that_is_not_a_query_has_no_query_keys() {
+        assert_eq!(query_keys("a + b = c"), Vec::<String>::new());
+        assert_eq!(query_keys("/articles/{slug}"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn query_keys_in_a_path_string_are_mentioned() {
+        let found = facts(
+            "src/agent.ts",
+            "const feed = () => get('/v1/feed?limit=10&offset=0');",
+        );
+        assert!(names(&found).contains(&"limit"));
+    }
 
     fn names(found: &CodeFacts) -> Vec<&str> {
         found

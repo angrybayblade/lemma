@@ -155,18 +155,23 @@ export rule still_a_parameter(op: Text, n: Text) {
     (op, n) :- parameter@head(op, n, _)
 }
 
+// A path parameter is sent by its place in the path, not its name: a kept
+// operation has the same path, so renaming `{username}` to `{name}` changes
+// nothing a caller sends.
 export rule removed_parameter(op: Text, n: Text, loc: Text) {
     (op, n, loc) :-
         parameter@base(op, n, loc),
         !parameter@head(op, n, loc),
-        kept_operation(op)
+        kept_operation(op),
+        loc != "path"
 }
 
 export rule new_required_parameter(op: Text, n: Text, loc: Text) {
     (op, n, loc) :-
         required_parameter@head(op, n, loc),
         !required_parameter@base(op, n, loc),
-        kept_operation(op)
+        kept_operation(op),
+        loc != "path"
 }
 
 export rule removed_request_field(op: Text, fld: Text, leaf: Text) {
@@ -380,8 +385,9 @@ export require consumer_misses_new_required_parameter {
     severity: error
     when:
         calls(c, op, f, l),
-        new_required_parameter(op, n, loc)
-    message: "{c} calls {op}, which now requires {loc} parameter `{n}` ({f}:{l})"
+        new_required_parameter(op, n, loc),
+        !sends(c, n)
+    message: "{c} calls {op}, which now requires {loc} parameter `{n}`; its code never names `{n}` ({f}:{l})"
 }
 
 export require consumer_misses_new_required_field {

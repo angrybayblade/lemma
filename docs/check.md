@@ -222,7 +222,7 @@ Each problem lists what it affects further up, nearest first: the operations who
 | A generated client's documents | the functions it exposes, named by `call_names`; the parameters it declares |
 | A service's code (TypeScript, JavaScript, Python, Go, Rust) | paths in strings and requests, with the HTTP method where the call shows it; calls through clients (`this.client.invoices.list()`) and functions imported from generated clients; the field names each function and file uses; imports, including `tsconfig.json` path aliases |
 
-A string in code counts as a path only if it contains a leading segment some service in the workspace serves, such as `/v1/`; everything before it (a base URL, `${API}`) is dropped. Paths compare in one form, so `{id}`, `${id}`, `:id`, `[id]` and `%s` are the same parameter. Lemma does not search test files for calls.
+A string in code counts as a path only if it contains a leading segment some service in the workspace serves, such as `/v1/`; everything before it (a base URL, `${API}`) is dropped. Paths compare in one form, so `{id}`, `${id}`, `:id`, `[id]` and `%s` are the same parameter, and renaming a path parameter changes nothing a caller sends. A query written into the path string (`/users?limit=10`) sends its keys. Lemma does not search test files for calls.
 
 ## `lemma.http` requirements
 
@@ -230,7 +230,7 @@ A string in code counts as a path only if it contains a leading segment some ser
 | --- | --- | --- |
 | `consumer_calls_removed_operation` | error | Code calls an operation the change removed. |
 | `consumer_calls_unserved_operation` | error | A change adds a call to a path under a service's prefixes that no service serves, such as an operation not yet deployed. |
-| `consumer_misses_new_required_parameter` | error | An operation the code calls now requires a parameter. |
+| `consumer_misses_new_required_parameter` | error | An operation the code calls now requires a parameter its code never names. |
 | `consumer_misses_new_required_field` | error | An operation now requires a request field the calling code never names. |
 | `consumer_sends_removed_parameter` | error | Code names a parameter the change removed, and the operation rejects parameters it does not know. |
 | `consumer_sends_ignored_parameter` | warning | As above, where the operation ignores unknown parameters. |
