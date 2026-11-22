@@ -9,6 +9,7 @@
 mod go;
 mod nesting;
 mod registration;
+mod relative;
 mod results;
 mod routers;
 mod rust;
@@ -83,6 +84,12 @@ pub struct PathReference {
     pub path: String,
     /// Where.
     pub location: Location,
+    /// Whether the code writes the path without its leading slash, as the
+    /// first argument of a call named for an HTTP verb
+    /// (`api.get('articles/' + slug)`): a call of the operation with that
+    /// path, if there is one, and of nothing otherwise.
+    #[serde(default)]
+    pub is_relative: bool,
 }
 
 /// A call through a client object, such as `this.client.invoices.list()`.
@@ -325,9 +332,11 @@ pub fn facts_of(
         mounts: Vec::new(),
         registered: Vec::new(),
         results: BTreeMap::new(),
+        relative: relative::Relative::default(),
     };
     walk.visit(tree.root_node());
     walk.finish_routers();
+    walk.finish_relative();
     walk.collect_strings(tree.root_node());
     walk.facts.is_generated = says_generated(source);
     sorted(walk.facts)
@@ -473,6 +482,8 @@ struct Walk<'a> {
     /// Variables holding a call's result or a value read off one, by
     /// enclosing function and variable.
     results: BTreeMap<(Option<String>, String), results::ResultValue>,
+    /// Paths read without a leading slash.
+    relative: relative::Relative,
 }
 
 /// A path string assigned to a variable: its node, as consumed strings
@@ -744,7 +755,9 @@ impl Walk<'_> {
             .or_else(|| self.nested_path_argument(arguments));
         let Some(path_node) = path_argument.filter(|node| !self.consumed.contains(&node.id()))
         else {
-            self.call_with_bound_path(&parts, arguments, &strings);
+            if !self.relative_request(&parts, arguments) {
+                self.call_with_bound_path(&parts, arguments, &strings);
+            }
             return;
         };
         let template = self.string_value(path_node).unwrap_or_default();
@@ -847,6 +860,7 @@ impl Walk<'_> {
             method,
             path,
             location,
+            is_relative: false,
         });
     }
 
@@ -1030,6 +1044,7 @@ impl Walk<'_> {
             method: method.to_owned(),
             path,
             location,
+            is_relative: false,
         });
     }
 

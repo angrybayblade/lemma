@@ -2046,17 +2046,17 @@ fn write_calls(
     writer: &mut FactWriter<'_>,
     scopes: &mut BTreeSet<String>,
 ) {
-    let calls = facts
-        .path_references
-        .iter()
-        .map(|reference| (&reference.method, &reference.path, &reference.location));
+    let calls = facts.path_references.iter().map(|reference| {
+        let call = (&reference.method, &reference.path, &reference.location);
+        (call, reference.is_relative)
+    });
     // A route the file registers is served, not called.
     let descriptors = facts
         .method_paths
         .iter()
         .filter(|item| !item.is_registration)
-        .map(|item| (&item.method, &item.path, &item.location));
-    for (method, call_path, location) in calls.chain(descriptors) {
+        .map(|item| ((&item.method, &item.path, &item.location), false));
+    for ((method, call_path, location), is_relative) in calls.chain(descriptors) {
         let consumer = consumer_id(file_id, location.symbol.as_ref());
         let args = [
             Arg::Text(&consumer),
@@ -2066,7 +2066,15 @@ fn write_calls(
             Arg::Number(i64::from(location.line)),
         ];
         writer.add("calls_path", scope.snapshots, &args);
-        for service in scope.system.addressed_to(call_path) {
+        // A path written without its slash is a call only of an operation
+        // that has it: unlike a path under a service's prefix, it is not
+        // known to be addressed to the service when none does.
+        let addressed = if is_relative {
+            Vec::new()
+        } else {
+            scope.system.addressed_to(call_path)
+        };
+        for service in addressed {
             writer.add(
                 "addressed_to",
                 scope.snapshots,
