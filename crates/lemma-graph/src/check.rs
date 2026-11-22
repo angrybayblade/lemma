@@ -2125,11 +2125,7 @@ fn add_routed_operation(repo: &mut Repo, service: &str, route: &str) -> Result<(
             let Some(text) = checkout.read(&document_file)? else {
                 continue;
             };
-            let document: serde_json::Value =
-                serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
-                    command: format!("reading {document_file}"),
-                    source,
-                })?;
+            let document = crate::adapters::parse_document(&document_file, &text)?;
             let found = crate::openapi::operation_at(&document_file, &document, method, path);
             if let Some(operation) = found {
                 declared
@@ -2389,11 +2385,7 @@ fn parse_declarations(
     let Some(text) = checkout.read(document_file)? else {
         return Ok(Vec::new());
     };
-    let document: serde_json::Value =
-        serde_json::from_str(&text).map_err(|source| GraphError::ResolverOutput {
-            command: format!("reading {document_file}"),
-            source,
-        })?;
+    let document = crate::adapters::parse_document(document_file, &text)?;
     Ok(crate::openapi::declarations(&document))
 }
 
