@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(
             found,
             vec![
-                call("*", "/api/tags"),
+                call("GET", "/api/tags"),
                 call("GET", "/api/user"),
                 call("PUT", "/api/user")
             ]

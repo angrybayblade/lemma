@@ -7,6 +7,7 @@
 //! consumer. The caller interprets it by the repository's role.
 
 mod based;
+mod fetch;
 mod go;
 mod joined;
 mod nesting;
@@ -811,7 +812,8 @@ impl Walk<'_> {
 
     /// The method of a request call: a method argument beside the path
     /// (`http.NewRequest("POST", url)`, `request("GET", "/v1/x")`), the
-    /// called name (`requests.get`), or a `method` option; `*` if none.
+    /// called name (`requests.get`), or a `method` option; `GET` for a
+    /// `fetch` that can name none; `*` otherwise.
     fn request_method(
         &self,
         parts: &[String],
@@ -831,8 +833,13 @@ impl Walk<'_> {
         if let Some(method) = called_method(called) {
             return method;
         }
-        self.method_option(arguments)
-            .map_or_else(|| "*".to_owned(), |method| canonical_method(&method))
+        if let Some(method) = self.method_option(arguments) {
+            return canonical_method(&method);
+        }
+        if self.is_get_by_default(parts, arguments) {
+            return "GET".to_owned();
+        }
+        "*".to_owned()
     }
 
     /// The method of a call that is plainly a request: a method argument or
