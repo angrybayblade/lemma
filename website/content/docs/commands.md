@@ -412,7 +412,7 @@ clone = "ask"              # "ask", "always" or "never"
 | --- | --- |
 | `0` | Success. For `refs`, the server answered, including "no references found". |
 | `1` | Error, such as no index, an unknown symbol, or an invalid configuration file. The message is printed to stderr. |
-| `2` | `refs`, `implementations`, `signature` and `graph`: the name matches several symbols. The candidates are printed. Also any command given an option or a value Lemma does not know: the usage message is printed to stderr. |
+| `2` | `refs`, `implementations`, `signature` and `graph`: the name matches several symbols. The matching symbols are printed. Also any command given an option or a value Lemma does not know: the usage message is printed to stderr. |
 | `3` | `refs`, `definition`, `implementations`, `signature` and `graph`: no answer. The file is stale, no server is installed, the server failed, or it does not support the question. |
 | `4` | `verify` and `check` only: a finding is an error. |
 | `5` | `check` only: it finished, but a `git(...)` repository was not cloned, so what reaches it was not checked. A finding that is an error exits `4` instead. |

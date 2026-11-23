@@ -108,7 +108,7 @@ Server choice matters most for Python. Besides ty, pyright (now tried first) and
 | monorepo A | open files only | 4 s | 4.1 GB | 1.1 s / 128 s | 947 ms |
 | monorepo A | whole workspace | 30 min | 4.2 GB | 1.5 s / 183 s | 1.5 s |
 
-- pyright keeps no reference index. Every lookup searches the project's text for the name and then checks each candidate, so analysing the workspace up front helps on a few thousand files and not at all on monorepo A.
+- pyright keeps no reference index. Every lookup searches the project's text for the name and then checks each place it found, so analysing the workspace up front helps on a few thousand files and not at all on monorepo A.
 - jedi resolves one position in 3-8 ms, but its project-wide reference search is capped internally (30 parsed files) and missed references for 2 of 32 django symbols and 4 of 32 monorepo A symbols. Resolving every identifier in monorepo A (40.8 million) one at a time would take about 38 hours on one core.
 - ty answered monorepo A lookups in about 2 s cold and under 20 ms warm, with the most memory (more than 6.6 GB). Lemma now tries pyright first, because it finds more references, and ty next; list ty in `.lemma/providers.toml` to prefer it on a very large repository.
 

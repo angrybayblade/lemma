@@ -134,7 +134,7 @@ via pyright
 
 Commands run in a background daemon that `lemma` starts on first use. The daemon starts a language server after `lemma index` on a repository, or when `lemma symbols` or `lemma outline` first finds code in its language, and caches answers until the code changes. The first lookup may wait for the server to load the project; later lookups, even of other symbols, take milliseconds.
 
-If a name matches more than one symbol, Lemma lists the candidates. Choose one with the qualified name, a filter such as `--language python` or `--path api/`, or the id: `lemma refs '#f256e26e'`.
+If a name matches more than one symbol, Lemma lists them. Choose one with the qualified name, a filter such as `--language python` or `--path api/`, or the id: `lemma refs '#f256e26e'`.
 
 These are the language server's references, not text matches: a search for the name would also find other symbols called `delete`, and mentions in comments and strings.
 
