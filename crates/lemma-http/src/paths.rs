@@ -267,7 +267,8 @@ fn is_parameter(segment: &str) -> bool {
 /// Lemma reads: tests are not part of what a service serves or a consumer
 /// calls.
 pub fn is_test_file(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
+    // From the root, so a `tests` directory there is one too.
+    let lower = format!("/{}", path.to_ascii_lowercase());
     lower.ends_with("_test.go")
         || lower.ends_with("_test.py")
         || lower.contains("/test/")
@@ -284,6 +285,15 @@ mod tests {
 
     fn markers() -> Vec<String> {
         path_markers(["/v1/users/{id}", "/v1/orders", "/health"])
+    }
+
+    #[test]
+    fn a_tests_directory_is_test_code_at_the_root_as_below_it() {
+        assert!(is_test_file("tests/api/utils/orders.ts"));
+        assert!(is_test_file("apps/web/tests/login.ts"));
+        assert!(is_test_file("test_orders.py"));
+        assert!(!is_test_file("contests/api.ts"));
+        assert!(!is_test_file("src/latest/api.ts"));
     }
 
     #[test]
