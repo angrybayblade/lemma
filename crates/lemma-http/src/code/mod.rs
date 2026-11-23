@@ -6,6 +6,7 @@
 //! operation table in a generated client and a request descriptor in a
 //! consumer. The caller interprets it by the repository's role.
 
+mod based;
 mod go;
 mod joined;
 mod nesting;
@@ -27,7 +28,7 @@ use lemma_syntax::Extractor;
 use tree_sitter::Node;
 
 use crate::paths::{
-    canonical_method, canonical_path, canonical_route, has_marker, method_before_path,
+    Base, canonical_method, canonical_path, canonical_route, has_marker, method_before_path,
 };
 
 /// Where in the code a fact was found.
@@ -92,6 +93,12 @@ pub struct PathReference {
     /// path, if there is one, and of nothing otherwise.
     #[serde(default)]
     pub is_relative: bool,
+    /// The base the path is read under, when the code writes only what
+    /// follows it (`get('/articles')` for `/api/articles`): `/api`, which
+    /// `path` then starts with. A call only in a repository that names
+    /// the base. Empty for a path read as written.
+    #[serde(default)]
+    pub base: String,
 }
 
 /// A call through a client object, such as `this.client.invoices.list()`.
@@ -207,6 +214,11 @@ pub struct CodeFacts {
     /// each with why. Sorted, unique.
     #[serde(default)]
     pub unread_requests: Vec<UnreadRequest>,
+    /// The bases among [`CodeOptions::bases`] the file names, as a base
+    /// URL does (`'https://api.example.com/api'`), by prefix. Sorted,
+    /// unique.
+    #[serde(default)]
+    pub named_bases: Vec<String>,
 }
 
 /// What to look for.
@@ -223,6 +235,10 @@ pub struct CodeOptions {
     /// checked serve, such as `/v1/` (see [`crate::path_markers`]). Paths
     /// written beside a method, as in route declarations, need none.
     pub path_markers: Vec<String>,
+    /// Prefixes all of a document's paths share, which a consumer may keep
+    /// in a base URL and leave out of each path it requests (see
+    /// [`crate::document_bases`]). Empty where no such path is looked for.
+    pub bases: Vec<Base>,
     /// Whether to keep every string written as a path from `/`
     /// ([`CodeFacts::written_paths`]), as a service's route code names the
     /// paths and prefixes it serves.
@@ -272,6 +288,8 @@ fn sorted(mut facts: CodeFacts) -> CodeFacts {
     facts.result_reads.dedup();
     facts.unread_requests.sort();
     facts.unread_requests.dedup();
+    facts.named_bases.sort();
+    facts.named_bases.dedup();
     facts.imports.sort();
     facts.imports.dedup();
     facts.imported_names = facts
@@ -706,6 +724,11 @@ impl Walk<'_> {
         let Some(template) = self.string_value(path_node) else {
             return;
         };
+        // With neither a handler nor a request schema, nor another host,
+        // the object may describe a request a client sends under a base.
+        if !names_a_host && !has_handler && request.is_none() {
+            self.add_described_request(method.as_deref(), &template, path_node);
+        }
         // `{ method, url }` is a request, as a generated client sends:
         // `__request(OpenAPI, { method: 'POST', url: '/v1/x' })`. With a
         // handler it is a Fastify route. `{ method, path }` stays a route
@@ -778,11 +801,7 @@ impl Walk<'_> {
             .or_else(|| self.nested_path_argument(arguments));
         let Some(path_node) = path_argument.filter(|node| !self.consumed.contains(&node.id()))
         else {
-            if !self.relative_request(&parts, arguments)
-                && !self.call_with_bound_path(&parts, arguments, &strings)
-            {
-                self.computed_request(&parts, arguments);
-            }
+            self.request_without_a_marker(&parts, arguments, &strings);
             return;
         };
         let template = self.string_value(path_node).unwrap_or_default();
@@ -847,6 +866,24 @@ impl Walk<'_> {
         is_client.then_some(method)
     }
 
+    /// A call no argument of which holds a marker: a request of a path
+    /// under a base, of one written without its slash, or of one a
+    /// variable holds; or else, if it is a request, one whose path is
+    /// computed.
+    fn request_without_a_marker(
+        &mut self,
+        parts: &[String],
+        arguments: Node<'_>,
+        strings: &[Node<'_>],
+    ) {
+        if !self.based_request(parts, arguments, strings)
+            && !self.relative_request(parts, arguments)
+            && !self.call_with_bound_path(parts, arguments, strings)
+        {
+            self.computed_request(parts, arguments);
+        }
+    }
+
     /// A request passed a variable holding a path assigned earlier in the
     /// same function (`url = f"{base}/v1/users/{id}"; requests.get(url)`):
     /// the path is reported with the call's method, rather than later as a
@@ -877,15 +914,18 @@ impl Walk<'_> {
         let Some(method) = self.plain_request_method(parts, arguments, strings) else {
             return true;
         };
+        self.consumed.push(node);
         let Some(path) = canonical_path(&template, &self.options.path_markers) else {
+            let under_bases = self.based_references(&method, &template, &location, false);
+            self.facts.path_references.extend(under_bases);
             return true;
         };
-        self.consumed.push(node);
         self.facts.path_references.push(PathReference {
             method,
             path,
             location,
             is_relative: false,
+            base: String::new(),
         });
         true
     }
@@ -909,10 +949,9 @@ impl Walk<'_> {
         if name.kind() != "identifier" {
             return;
         }
-        let Some(template) = self
-            .string_value(value)
-            .filter(|text| has_marker(text, &self.options.path_markers))
-        else {
+        let Some(template) = self.string_value(value).filter(|text| {
+            has_marker(text, &self.options.path_markers) || self.is_under_a_base(text)
+        }) else {
             return;
         };
         let location = self.location(value);
@@ -1071,6 +1110,7 @@ impl Walk<'_> {
             path,
             location,
             is_relative: false,
+            base: String::new(),
         });
     }
 
@@ -1336,6 +1376,7 @@ impl Walk<'_> {
         }
         if is_string_kind(node.kind()) {
             self.keep_written_path(node);
+            self.note_named_bases(node);
             self.mention_query_keys(node);
             // A path searched for or compared against (an error message
             // checked for the path it names, a request routed by its

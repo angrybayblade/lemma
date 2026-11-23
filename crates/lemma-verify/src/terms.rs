@@ -15,7 +15,10 @@
 //!   more) and generated functions (a call rooted at an import) are matched
 //!   by name, and an imported function may be called by another local name;
 //! - `reexports` when it re-exports a module whole, which every consumer
-//!   file's generated calls may go through.
+//!   file's generated calls may go through;
+//! - `base:` each base it names: a path written under a base carries the
+//!   `path:` term of the whole path, and is a call only if a file of its
+//!   repository names the base.
 
 use lemma_http::CodeFacts;
 
@@ -57,6 +60,13 @@ pub(crate) fn immediate_resource(parts: &[String]) -> Option<&String> {
         .iter()
         .skip(1)
         .rfind(|part| normalized(part).len() > 1)
+}
+
+/// The term of a file naming the base `prefix`: a path written under a
+/// base is a call only where the repository names it, so the files naming
+/// one are read with the files that may call under it.
+pub(crate) fn base_term(prefix: &str) -> String {
+    format!("base:{prefix}")
 }
 
 /// The terms `facts` are indexed by, sorted and without repeats.
@@ -110,6 +120,7 @@ pub(crate) fn code_terms(facts: &CodeFacts) -> Vec<String> {
     if !facts.reexports.is_empty() {
         terms.push(REEXPORTS.to_owned());
     }
+    terms.extend(facts.named_bases.iter().map(|prefix| base_term(prefix)));
     terms.sort();
     terms.dedup();
     terms

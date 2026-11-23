@@ -29,7 +29,18 @@ impl Walk<'_> {
             return false;
         };
         let method = self.request_method(parts, arguments, strings);
-        self.add_reference(&method, &template, written[0]);
+        if has_marker(&template, &self.options.path_markers) {
+            self.add_reference(&method, &template, written[0]);
+        } else {
+            // A path under a base is read only where a request is plain.
+            let called = parts.last().map(String::as_str).unwrap_or_default();
+            if method == "*" && called != "fetch" {
+                return false;
+            }
+            let location = self.location(written[0]);
+            let references = self.based_references(&method, &template, &location, false);
+            self.facts.path_references.extend(references);
+        }
         self.consumed.extend(written.iter().map(Node::id));
         true
     }
@@ -72,7 +83,7 @@ impl Walk<'_> {
         let Some(Piece::Written(first, _)) = pieces.first() else {
             return None;
         };
-        if !has_marker(first, &self.options.path_markers) {
+        if !has_marker(first, &self.options.path_markers) && !self.is_under_a_base(first) {
             return None;
         }
         let mut template = String::new();

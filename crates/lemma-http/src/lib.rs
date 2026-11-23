@@ -21,7 +21,8 @@ pub use openapi::{
     Field, Operation, Parameter, is_yaml_document, operations, operations_where, served_under,
 };
 pub use paths::{
-    canonical_method, canonical_path, canonical_route, has_marker, is_test_file, path_markers,
+    Base, canonical_method, canonical_path, canonical_route, document_bases, has_marker,
+    is_test_file, path_markers,
 };
 pub use source::{
     ListedFile, Listings, SourceError, SourceFile, contents_key, file_exists, is_under_any,

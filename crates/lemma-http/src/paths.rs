@@ -82,6 +82,91 @@ fn starts_url_path(before: &str) -> bool {
     is_scheme && !host.is_empty() && !host.contains('/')
 }
 
+/// A path prefix every path of a document starts with, such as `/api` or
+/// `/api/v1`, and the markers that start a path under it. Consumers often
+/// keep such a prefix in one base URL and write only the rest at each
+/// request (`get('/articles')` for `/api/articles`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Base {
+    /// The prefix, in canonical form: `/api`.
+    pub prefix: String,
+    /// `/<segment>/` of each segment a path has right after the prefix,
+    /// sorted and unique: `/articles/` for `/api/articles/{slug}`.
+    pub markers: Vec<String>,
+}
+
+/// The bases of one document's canonical `paths`: each leading run of the
+/// fixed segments all of them share, with the segments found after it. A
+/// prefix that is itself one of the paths is no base, since naming it is
+/// then also how that path is called; and a path's parameter is no marker.
+pub fn document_bases<'a>(paths: impl IntoIterator<Item = &'a str>) -> Vec<Base> {
+    let paths: Vec<Vec<&str>> = paths
+        .into_iter()
+        .map(|path| path.split('/').filter(|part| !part.is_empty()).collect())
+        .collect();
+    let Some(first) = paths.first() else {
+        return Vec::new();
+    };
+    let shared = first
+        .iter()
+        .enumerate()
+        .take_while(|(at, segment)| {
+            **segment != "{}" && paths.iter().all(|path| path.get(*at) == Some(*segment))
+        })
+        .count();
+    let mut bases = Vec::new();
+    for length in 1..=shared {
+        if paths.iter().any(|path| path.len() == length) {
+            continue;
+        }
+        let mut markers: Vec<String> = paths
+            .iter()
+            .filter_map(|path| path.get(length))
+            .filter(|segment| !segment.starts_with('{'))
+            .map(|segment| format!("/{segment}/"))
+            .collect();
+        markers.sort();
+        markers.dedup();
+        if !markers.is_empty() {
+            bases.push(Base {
+                prefix: format!("/{}", first[..length].join("/")),
+                markers,
+            });
+        }
+    }
+    bases
+}
+
+/// Whether `raw` names the base `prefix`: a URL or a path that ends with
+/// it, as a base URL does (`https://api.example.com/api`, `/api/`), or
+/// goes on only with what is computed (`` `${HOST}/api${path}` ``).
+pub fn names_base(raw: &str, prefix: &str) -> bool {
+    let Some(start) = marker_start(raw, &[format!("{prefix}/")]) else {
+        return false;
+    };
+    let rest = &raw[start + prefix.len()..];
+    let rest = rest.strip_prefix('/').unwrap_or(rest);
+    rest.is_empty() || rest.starts_with(['$', '{', '%'])
+}
+
+/// The canonical path `raw` is under `base`, if it is written from one of
+/// the base's markers: `/api/articles/{}` for `/articles/${slug}` under
+/// `/api`. What comes before the marker is nothing or a substitution
+/// (`${BASE}/articles`); a URL with its own host names its own base.
+pub fn path_under_base(raw: &str, base: &Base) -> Option<String> {
+    if raw.contains("://") {
+        return None;
+    }
+    let start = marker_start(raw, &base.markers)?;
+    let before = &raw[..start];
+    let is_computed = before.ends_with('}') || before.ends_with("%s");
+    if !before.is_empty() && !is_computed {
+        return None;
+    }
+    let rest = normalize(&raw[start..]);
+    Some(format!("{}{rest}", base.prefix))
+}
+
 /// Whether `raw` contains one of the markers.
 pub fn has_marker(raw: &str, markers: &[String]) -> bool {
     marker_start(raw, markers).is_some()
@@ -210,6 +295,70 @@ mod tests {
         );
         assert_eq!(canonical_path("/static/logo.svg", &markers()), None);
         assert_eq!(canonical_path("/v1/users", &[]), None);
+    }
+
+    #[test]
+    fn a_documents_bases_are_the_prefixes_all_its_paths_share() {
+        let bases = document_bases(["/api/v1/users", "/api/v1/users/{}", "/api/v1/orders"]);
+
+        assert_eq!(
+            bases,
+            [
+                Base {
+                    prefix: "/api".to_owned(),
+                    markers: vec!["/v1/".to_owned()],
+                },
+                Base {
+                    prefix: "/api/v1".to_owned(),
+                    markers: vec!["/orders/".to_owned(), "/users/".to_owned()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_prefix_that_is_a_path_or_leads_only_to_parameters_is_no_base() {
+        assert_eq!(document_bases(["/users", "/orders"]), []);
+        assert_eq!(document_bases(["/articles", "/articles/feed"]), []);
+        assert_eq!(document_bases(["/files/{}", "/files/{}/parts"]), []);
+    }
+
+    #[test]
+    fn a_base_is_named_by_a_url_or_path_ending_with_it() {
+        let named = [
+            "https://api.example.com/api",
+            "https://api.example.com/api/",
+            "/api",
+            "${HOST}/api",
+            "https://api.example.com/api${request.url}",
+        ];
+        let other = ["https://api.example.com/api/users", "/apis", "docs/api"];
+
+        assert!(named.iter().all(|raw| names_base(raw, "/api")));
+        assert!(!other.iter().any(|raw| names_base(raw, "/api")));
+    }
+
+    #[test]
+    fn a_path_under_a_base_is_written_from_one_of_its_markers() {
+        let base = Base {
+            prefix: "/api".to_owned(),
+            markers: vec!["/articles/".to_owned()],
+        };
+
+        assert_eq!(
+            path_under_base("/articles/${slug}/comments", &base).as_deref(),
+            Some("/api/articles/{}/comments")
+        );
+        assert_eq!(
+            path_under_base("${BASE}/articles?limit=10", &base).as_deref(),
+            Some("/api/articles")
+        );
+        assert_eq!(
+            path_under_base("https://other.example/articles", &base),
+            None
+        );
+        assert_eq!(path_under_base("/blog/articles", &base), None);
+        assert_eq!(path_under_base("/tags", &base), None);
     }
 
     #[test]

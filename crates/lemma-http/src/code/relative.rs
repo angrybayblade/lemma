@@ -89,9 +89,10 @@ impl Walk<'_> {
         let Some((written, is_whole)) = self.first_written(first) else {
             return false;
         };
-        let Some(path) = self.relative_path(&written) else {
+        let paths = self.relative_paths(&written);
+        if paths.is_empty() {
             return false;
-        };
+        }
         let receiver = receiver.join(".");
         let Some(method) = called_method(called) else {
             let unread = self.unread(WRAPPED, first);
@@ -103,21 +104,28 @@ impl Walk<'_> {
             self.facts.unread_requests.push(unread);
             return false;
         }
-        let reference = PathReference {
-            method,
+        // Every path is the same below its base, so all are long or none.
+        let is_long = paths
+            .first()
+            .is_some_and(|(path, base)| path[base.len()..].matches('/').count() >= 2);
+        let location = self.location(first);
+        let references = paths.into_iter().map(|(path, base)| PathReference {
+            method: method.clone(),
             path,
-            location: self.location(first),
+            location: location.clone(),
             is_relative: true,
-        };
-        if reference.path.matches('/').count() >= 2 {
+            base,
+        });
+        if is_long {
             self.relative.receivers.insert(receiver);
         } else if !is_requester(&receiver) {
             let text = self.shortened(first);
-            self.relative.waiting.push((receiver, reference, text));
+            let waiting = references.map(|reference| (receiver.clone(), reference, text.clone()));
+            self.relative.waiting.extend(waiting);
             return true;
         }
         self.consumed.push(first.id());
-        self.facts.path_references.push(reference);
+        self.facts.path_references.extend(references);
         true
     }
 
@@ -143,7 +151,7 @@ impl Walk<'_> {
 
     /// What `first` writes of a path: a string whole, or the string a join
     /// with `+` starts with, which is then not the whole of it.
-    fn first_written(&self, first: Node<'_>) -> Option<(String, bool)> {
+    pub(super) fn first_written(&self, first: Node<'_>) -> Option<(String, bool)> {
         if let Some(written) = self.string_value(first) {
             return Some((written, true));
         }
@@ -155,25 +163,32 @@ impl Walk<'_> {
         (leftmost.id() != first.id()).then_some((written, false))
     }
 
-    /// The path `written` is with a slash before it, if it then starts
-    /// with a segment a service serves.
-    fn relative_path(&self, written: &str) -> Option<String> {
+    /// The paths `written` is with a slash before it, each with the base
+    /// it is read under (none for a path read as written): one starting
+    /// with a segment a service serves, or else one under each base that
+    /// has its first segment.
+    fn relative_paths(&self, written: &str) -> Vec<(String, String)> {
         let starts_a_path = written
             .chars()
             .next()
             .is_some_and(|first| first.is_ascii_alphanumeric());
         if !starts_a_path || written.contains("://") || written.contains(char::is_whitespace) {
-            return None;
+            return Vec::new();
         }
         let rooted = format!("/{written}");
-        let path = canonical_path(&rooted, &self.options.path_markers)?;
+        let Some(path) = canonical_path(&rooted, &self.options.path_markers) else {
+            return self.under_bases(&rooted);
+        };
         // The marker has to start the path: `docs/v1/users` is not `/v1/users`.
-        (canonical_route(&rooted).as_deref() == Some(path.as_str())).then_some(path)
+        if canonical_route(&rooted).as_deref() == Some(path.as_str()) {
+            return vec![(path, String::new())];
+        }
+        Vec::new()
     }
 
     /// Whether the argument after the first may be more of the path: a
     /// string, or for a method that sends no body, a bare name.
-    fn may_be_joined(&self, called: &str, arguments: Node<'_>) -> bool {
+    pub(super) fn may_be_joined(&self, called: &str, arguments: Node<'_>) -> bool {
         let Some(second) = arguments.named_child(1) else {
             return false;
         };

@@ -19,6 +19,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct System {
     /// Leading segments of every operation path, such as `/v1/`.
     pub markers: Vec<String>,
+    /// The prefixes all of one document's paths share, each with the
+    /// segments found under it in any document: what a consumer may keep
+    /// in a base URL and leave out of the paths it requests.
+    pub bases: Vec<lemma_http::Base>,
     /// Each service's path prefixes, as segments.
     prefixes: BTreeMap<String, Vec<Vec<String>>>,
 }
@@ -38,6 +42,7 @@ impl System {
             .flat_map(BTreeMap::values)
             .flatten();
         let markers = lemma_http::path_markers(every_path.map(String::as_str));
+        let bases = bases(operation_paths.values().flat_map(BTreeMap::values));
         let mut prefixes = BTreeMap::new();
         for (service, documents) in operation_paths {
             let owned = match declared.get(service).filter(|list| !list.is_empty()) {
@@ -46,7 +51,11 @@ impl System {
             };
             prefixes.insert(service.clone(), owned);
         }
-        Self { markers, prefixes }
+        Self {
+            markers,
+            bases,
+            prefixes,
+        }
     }
 
     /// The services whose prefixes a path starts with.
@@ -58,6 +67,23 @@ impl System {
             .map(|(service, _)| service.as_str())
             .collect()
     }
+}
+
+/// The bases of every document, one for each prefix, sorted.
+fn bases<'a>(documents: impl Iterator<Item = &'a BTreeSet<String>>) -> Vec<lemma_http::Base> {
+    let mut markers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for paths in documents {
+        for base in lemma_http::document_bases(paths.iter().map(String::as_str)) {
+            markers.entry(base.prefix).or_default().extend(base.markers);
+        }
+    }
+    markers
+        .into_iter()
+        .map(|(prefix, markers)| lemma_http::Base {
+            prefix,
+            markers: markers.into_iter().collect(),
+        })
+        .collect()
 }
 
 /// The prefixes `service` owns, from its documents (see the module
@@ -157,6 +183,40 @@ mod tests {
         assert_eq!(system.addressed_to("/v1/invoices/{}/lines"), ["billing"]);
         assert_eq!(system.addressed_to("/api/search/new"), ["search"]);
         assert_eq!(system.addressed_to("/api/trpc/x"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn each_documents_shared_prefixes_are_bases() {
+        let operations = BTreeMap::from([
+            document("billing", &[&["/v1/invoices", "/v1/invoices/{}"]]),
+            document(
+                "api",
+                &[
+                    &["/api/v3/tools", "/api/v3/products"],
+                    &["/api/v3.1/tools", "/api/v3.1/files/{}"],
+                ],
+            ),
+        ]);
+
+        let system = System::new(&operations, &BTreeMap::new());
+
+        let bases: Vec<(&str, Vec<&str>)> = system
+            .bases
+            .iter()
+            .map(|base| {
+                let markers = base.markers.iter().map(String::as_str).collect();
+                (base.prefix.as_str(), markers)
+            })
+            .collect();
+        assert_eq!(
+            bases,
+            [
+                ("/api", vec!["/v3.1/", "/v3/"]),
+                ("/api/v3", vec!["/products/", "/tools/"]),
+                ("/api/v3.1", vec!["/files/", "/tools/"]),
+                ("/v1", vec!["/invoices/"]),
+            ]
+        );
     }
 
     #[test]

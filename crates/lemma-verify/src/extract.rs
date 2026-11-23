@@ -1651,6 +1651,9 @@ struct ConsumerScope<'a> {
     reexports: BTreeMap<String, Vec<(String, String)>>,
     /// Path aliases from the repository's `tsconfig` files.
     imports: PathAliases,
+    /// The bases the repository's files name: a path read under another
+    /// base is no call.
+    named_bases: BTreeSet<String>,
 }
 
 const BOTH: [&str; 2] = ["base", "head"];
@@ -1675,6 +1678,7 @@ fn consumer(
             client_receivers: Vec::new(),
             client_modules: Vec::new(),
             path_markers: snapshot.system.markers.clone(),
+            bases: snapshot.system.bases.clone(),
             keeps_written_paths: false,
         },
         system: snapshot.system,
@@ -1687,6 +1691,7 @@ fn consumer(
             .collect(),
         reexports: BTreeMap::new(),
         imports: read_import_aliases(repository, snapshot.commit, snapshot.specs)?,
+        named_bases: BTreeSet::new(),
     };
     let listed = files.len();
     let to_read = if snapshot.selection.is_some() {
@@ -1699,6 +1704,10 @@ fn consumer(
     let read = extractor.read(&repository.path, snapshot.commit, &to_read, &scope.options)?;
     let scope = ConsumerScope {
         reexports: generated_reexports(&scope, &read),
+        named_bases: read
+            .iter()
+            .flat_map(|(_, facts)| facts.named_bases.iter().cloned())
+            .collect(),
         ..scope
     };
     for (path, facts) in &read {
@@ -1779,6 +1788,14 @@ fn selected_files(
     {
         terms.extend(own.iter().cloned());
     }
+    // A path under a base is a call only where the repository names the
+    // base: the files naming one are read whichever operations are asked.
+    let bases = &scope.options.bases;
+    terms.extend(
+        bases
+            .iter()
+            .map(|base| crate::terms::base_term(&base.prefix)),
+    );
     let edited = if selection.reads_changed_files {
         edited_paths(repository, snapshot)?
     } else {
@@ -2058,10 +2075,21 @@ fn write_calls(
     writer: &mut FactWriter<'_>,
     scopes: &mut BTreeSet<String>,
 ) {
-    let calls = facts.path_references.iter().map(|reference| {
-        let call = (&reference.method, &reference.path, &reference.location);
-        (call, reference.is_relative)
-    });
+    let ambiguous = ambiguous_lines(scope, facts);
+    let calls = facts
+        .path_references
+        .iter()
+        .filter(|reference| {
+            reference.base.is_empty()
+                || (scope.named_bases.contains(&reference.base)
+                    && !ambiguous.contains(&reference.location.line))
+        })
+        .map(|reference| {
+            let call = (&reference.method, &reference.path, &reference.location);
+            // A path under a base is, like one written without its slash,
+            // a call only of an operation that has it.
+            (call, reference.is_relative || !reference.base.is_empty())
+        });
     // A route the file registers is served, not called.
     let descriptors = facts
         .method_paths
@@ -2108,6 +2136,24 @@ fn write_calls(
     }
     write_client_method_calls(scope, file_id, facts, writer, scopes);
     write_generated_calls(scope, file_id, facts, writer, scopes);
+}
+
+/// The lines of `facts` where a path is read under more than one of the
+/// bases the repository names: which base the request goes to cannot be
+/// told, so none of the paths is a call.
+fn ambiguous_lines(scope: &ConsumerScope<'_>, facts: &CodeFacts) -> BTreeSet<u32> {
+    let mut bases: BTreeMap<u32, BTreeSet<&str>> = BTreeMap::new();
+    for reference in &facts.path_references {
+        if scope.named_bases.contains(&reference.base) {
+            let at_line = bases.entry(reference.location.line).or_default();
+            at_line.insert(reference.base.as_str());
+        }
+    }
+    bases
+        .into_iter()
+        .filter(|(_, bases)| bases.len() > 1)
+        .map(|(line, _)| line)
+        .collect()
 }
 
 /// Files re-exporting a generated module whole (`export * as api from

@@ -103,6 +103,7 @@ The terms are a superset of everything fact writing can turn into a call. They a
 | `pair:<r>.<n>` | normalized resource and last part of each `member_calls[].parts` with three parts or more | Client method resolution (`Clients::resolve`) requires the call's last name to equal the method's name and the resource before it (the last part between the root and the method longer than one letter) to be one of the method's resource names. An operation is looked up by `pair:` for each resource name of each client method making it. |
 | `name:<n>` | normalized last part of each `member_calls[].parts` with at most two parts rooted at an import, and each imported name | Generated-function resolution (`Clients::named_operation`) requires the call's last name, or the imported name, to equal the function's name. Re-export and alias resolution only change the module, never that name. |
 | `reexports` | `reexports` is non-empty | `generated_reexports` needs every re-exporting file of a consumer, whatever the change. Those files are always loaded. |
+| `base:<prefix>` | `named_bases[]` | A path read under a base (`path_references[].base`) carries the `path:` term of the whole path, and is written as a call only if some file of its repository names the base. The files naming one are always loaded, so a selected file's paths under a base are written exactly as in full mode. |
 
 **Looking up Δ.** For each operation in Δ:
 - its canonical path;
@@ -123,6 +124,7 @@ The lookup returns unit keys. These are intersected with the current snapshot's 
 - their context, following the reach rules from section 1 through the selected files' `imports` facts, resolved as `write_imports` resolves them;
 - every file whose blob differs between base and head in the changed repository, including added and deleted files;
 - the `reexports` files;
+- the files naming a base (`base:` terms);
 - the always-read files (route, schema and client directories).
 
 Spec facts are always written whole. Fact writing for a selected file is unchanged, so its rows are identical to full mode.
