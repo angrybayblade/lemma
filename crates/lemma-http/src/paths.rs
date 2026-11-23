@@ -137,6 +137,29 @@ pub fn document_bases<'a>(paths: impl IntoIterator<Item = &'a str>) -> Vec<Base>
     bases
 }
 
+/// The bases of several documents, each given as its canonical paths: one
+/// for each prefix, with the segments found after it in any of them.
+/// Sorted by prefix.
+pub fn bases_of_documents<'a, D>(documents: impl IntoIterator<Item = D>) -> Vec<Base>
+where
+    D: IntoIterator<Item = &'a str>,
+{
+    let mut markers: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for paths in documents {
+        for base in document_bases(paths) {
+            markers.entry(base.prefix).or_default().extend(base.markers);
+        }
+    }
+    markers
+        .into_iter()
+        .map(|(prefix, markers)| Base {
+            prefix,
+            markers: markers.into_iter().collect(),
+        })
+        .collect()
+}
+
 /// Whether `raw` names the base `prefix`: a URL or a path that ends with
 /// it, as a base URL does (`https://api.example.com/api`, `/api/`), or
 /// goes on only with what is computed (`` `${HOST}/api${path}` ``).

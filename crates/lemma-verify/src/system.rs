@@ -42,7 +42,12 @@ impl System {
             .flat_map(BTreeMap::values)
             .flatten();
         let markers = lemma_http::path_markers(every_path.map(String::as_str));
-        let bases = bases(operation_paths.values().flat_map(BTreeMap::values));
+        let bases = lemma_http::bases_of_documents(
+            operation_paths
+                .values()
+                .flat_map(BTreeMap::values)
+                .map(|paths| paths.iter().map(String::as_str)),
+        );
         let mut prefixes = BTreeMap::new();
         for (service, documents) in operation_paths {
             let owned = match declared.get(service).filter(|list| !list.is_empty()) {
@@ -67,23 +72,6 @@ impl System {
             .map(|(service, _)| service.as_str())
             .collect()
     }
-}
-
-/// The bases of every document, one for each prefix, sorted.
-fn bases<'a>(documents: impl Iterator<Item = &'a BTreeSet<String>>) -> Vec<lemma_http::Base> {
-    let mut markers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for paths in documents {
-        for base in lemma_http::document_bases(paths.iter().map(String::as_str)) {
-            markers.entry(base.prefix).or_default().extend(base.markers);
-        }
-    }
-    markers
-        .into_iter()
-        .map(|(prefix, markers)| lemma_http::Base {
-            prefix,
-            markers: markers.into_iter().collect(),
-        })
-        .collect()
 }
 
 /// The prefixes `service` owns, from its documents (see the module
