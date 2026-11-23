@@ -466,7 +466,7 @@
   },
   {
     "name": "verify",
-    "description": "Checks that a description still matches the code: patterns that match no file, documents that do not exist, operations and anchors that do not resolve, renames that did not happen. Takes as long as a full check; run it when a description changes, not after every edit. Never compares commits: `check` does that.",
+    "description": "Checks that a description still matches the code: patterns that match no file, documents that do not exist, operations and anchors that do not resolve, renames that did not happen. Also lists candidates: directories no service includes whose code writes the paths of described operations. Takes as long as a full check; run it when a description changes, not after every edit. Never compares commits: `check` does that.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -476,7 +476,7 @@
         },
         "all": {
           "type": "boolean",
-          "description": "List every informational finding."
+          "description": "List every informational finding and every candidate."
         },
         "links": {
           "type": "boolean",

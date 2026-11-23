@@ -35,7 +35,7 @@ Meanwhile `lemma verify` duplicates `lemma check` under a different manifest, wh
 | --- | --- |
 | `lemma verify` does not look for breaking changes | *decided* |
 | It checks a description's consistency with the code: missing links, outdated links, wrong configuration | *decided* |
-| Missing links split into certain findings and candidates, and candidates never fail | proposal |
+| Missing links split into certain findings and candidates, and candidates never fail | *decided*; one candidate built (`calls_outside_services`) |
 | One detector serves `lemma verify` and `lemma check` | proposal |
 | Known exceptions use `allow` | proposal |
 | It reports what it looked at | proposal |
@@ -134,6 +134,7 @@ Certain does not mean unwanted. A vendored document is correctly reported and in
 | `undeclared_rpc` | An RPC stub called that no operation describes |
 | `undeclared_webhook` | An outbound request to a URL built from configuration, or a route shaped like a webhook receiver |
 | `unrecognised_client` | Code imports a package built in this workspace, and calls into it resolve to nothing. It may be a client, or just a library |
+| `calls_outside_services` | Code in a directory no service includes, and none excludes, writes the paths of described operations. It may be a consumer nothing checks, or examples and scripts left out on purpose. *Built* |
 | `uncomposed_repository` | A sibling directory is a repository with a `mod.lm`, and this workspace does not list it |
 | `document_outside_services` | A tracked OpenAPI document that no service includes. It may be a served API or a third party's |
 
@@ -141,11 +142,19 @@ Candidates can be wrong. They are never errors and never affect the exit code. E
 
 The patterns need no new extraction. The relations that `lemma.http` reads from code include `imports(file, imported)` and `mentions(scope, name)`, so a pattern is an import plus a mentioned name, written as ordinary `.lm` rules. That also means a team can add its own queue library. `mentions` knows names and not receivers or arguments, so precision may be poor, and [it is measured](#measuring-it) before a pattern ships.
 
+`calls_outside_services` is the exception: the code it is about is the code no service reads, so no relation holds its facts, and it is found in `lemma-graph` (`description/outside.rs`) in two steps. A repository's tracked code files outside every `include` and `exclude` are searched as text, and a file is parsed only if some string in it is the path of a described operation; what a parsed file writes is then read by the reader a service's code is read by, so a place in a candidate is a place that would be a call were the directory included. One candidate is reported for each outermost directory that holds such a place and nothing a service includes, which is what an `include` would have to add. Three rules keep it from guessing:
+
+- A path under a base URL counts only where the left-out code of the same repository names the base, as inside a service.
+- A path of one fixed segment (`/api`, `/health`, `/users/{id}`) counts only in a file that also writes a path of two or more. Alone, such a string is as often the end of another service's base URL or a page route as a request of this one.
+- Test files are not candidates. No service's tests are read as calls, so an `include` would change nothing; the places in them are counted under [what was looked at](#reporting-what-was-looked-at).
+
+A service's `exclude` settles a candidate that is left out on purpose, until `allow` reaches these.
+
 ## Reporting what was looked at
 
 A clean result must not be read as "nothing is missing", and missing links can never be a guarantee. Every run says which repositories, files, operations and links it read, what it skipped and why, and which language servers did not start. A language it could not read is a statement in the output. The JSON form carries the same data, so CI can fail on reduced reach if a team wants that.
 
-*Built so far:* the repositories and operations read, the places in code read as calls of them, and the requests seen and not read as calls of a path, each with its reason (`unread_request` in `lemma.http`), as text and under `looked_at` in JSON. `lemma check` notes the unread requests a change adds (`change_adds_unread_request`, informational), since those are the part of a change no other finding speaks of. Files skipped, languages not read and servers that did not start are not reported yet.
+*Built so far:* the repositories and operations read, the places in code read as calls of them, the places in test files that write a described operation's path (tests are never read as calls), and the requests seen and not read as calls of a path, each with its reason (`unread_request` in `lemma.http`), as text and under `looked_at` in JSON. `lemma check` notes the unread requests a change adds (`change_adds_unread_request`, informational), since those are the part of a change no other finding speaks of. Files skipped, languages not read and servers that did not start are not reported yet.
 
 ## One detector, two questions
 
@@ -232,7 +241,7 @@ Removing a link for a documented HTTP call is not a mutation worth testing, beca
 1. Rename the skill. Land the new command with the wrong-configuration and outdated-link findings, in the change that deletes today's `lemma verify` ([document 15](15-one-description-format.md#rollout), step 5). Move `--anchors` and `--links`. *Acceptance:* fixtures and the clean baseline.
 2. Add the certain missing-link findings. *Acceptance:* description-mutation recall on the private workspace.
 3. Add `lemma.verify`, allowances, reporting on reach, and proposed edits. *Acceptance:* every finding with a mechanical fix proposes an edit that makes it go away when applied.
-4. Add candidates, one family at a time. *Acceptance:* the precision target.
+4. Add candidates, one family at a time. *Acceptance:* the precision target. *Built:* `calls_outside_services`. On eight public frontends whose code was taken out of their descriptions, every one came back as a candidate, with 152 of the 175 places read when the code is included (158 of 158 where the document keeps `/api` in every path); the 23 not found are paths of one fixed segment in files that write no longer one. On the descriptions as written there were no candidates.
 5. Replace the audit skill's table, and end onboarding with `lemma verify`.
 
 ## Prior art

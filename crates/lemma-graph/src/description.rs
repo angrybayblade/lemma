@@ -18,6 +18,10 @@ use crate::check::{
 use crate::config::{Level, Runtime, Service};
 use crate::repos::{Checkout, tracked_files};
 
+mod outside;
+
+pub use outside::{CallsInTests, Candidate, WrittenCall};
+
 /// One way a description does not match the code.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub struct DescriptionFinding {
@@ -36,6 +40,8 @@ pub struct DescriptionFinding {
 pub struct DescriptionReport {
     /// Findings, most severe first.
     pub findings: Vec<DescriptionFinding>,
+    /// Suspected gaps in the description. They never fail the command.
+    pub candidates: Vec<Candidate>,
     /// Every link, declared and inferred.
     pub link_list: Option<LinkList>,
     /// The rows of each derived relation asked for.
@@ -64,6 +70,9 @@ pub struct LookedAt {
     /// The calls that look like requests and were not read as calls of a
     /// path, in the order of their files and lines.
     pub unread_requests: Vec<UnreadRequest>,
+    /// The places in each repository's tests that write the path of a
+    /// described operation: tests are never read as calls.
+    pub calls_in_tests: Vec<CallsInTests>,
 }
 
 /// A call that looks like a request and was not read as a call of a path.
@@ -117,7 +126,14 @@ pub fn verify_description<E: Engine>(
     }
     findings.sort();
     findings.dedup();
-    let looked_at = report.as_ref().map(looked_at);
+    let outside = match &report {
+        Some(report) => outside::written_outside(&repos, report)?,
+        None => outside::Outside::default(),
+    };
+    let looked_at = report.as_ref().map(|report| LookedAt {
+        calls_in_tests: outside.calls_in_tests,
+        ..looked_at(report)
+    });
     let (link_list, mut relations, not_checked) = report.map_or_else(
         || (None, BTreeMap::new(), Vec::new()),
         |report| (report.link_list, report.relations, report.not_checked),
@@ -125,6 +141,7 @@ pub fn verify_description<E: Engine>(
     relations.retain(|name, _| options.relations.contains(name));
     Ok(DescriptionReport {
         findings,
+        candidates: outside.candidates,
         link_list,
         relations,
         not_checked,
@@ -159,6 +176,7 @@ fn looked_at(report: &Report) -> LookedAt {
         operations: rows("operation").len(),
         calls: calls.len(),
         unread_requests,
+        calls_in_tests: Vec::new(),
     }
 }
 

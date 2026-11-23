@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
-use lemma_graph::description::{DescriptionReport, LookedAt, verify_description};
+use lemma_graph::description::{Candidate, DescriptionReport, LookedAt, verify_description};
 use lemma_graph::{CheckOptions, Severity};
 use lemma_logic::ReferenceEngine;
 use lemma_souffle::SouffleEngine;
@@ -132,6 +132,7 @@ fn print_text(
         )?;
         writeln!(out, "        [{}]", finding.name)?;
     }
+    print_candidates(out, &report.candidates, args.all)?;
     if let Some(list) = report.link_list.as_ref().filter(|_| args.links) {
         crate::check::print_link_list(out, list, args.all)?;
     }
@@ -147,13 +148,54 @@ fn print_text(
             writeln!(out, "  {}", row.join("\t"))?;
         }
     }
+    let candidates = match report.candidates.len() {
+        0 => String::new(),
+        found => format!(", {found} candidates"),
+    };
     writeln!(
         out,
-        "{} errors, {} warnings, {} informational",
+        "{} errors, {} warnings, {} informational{candidates}",
         count(Severity::Error),
         count(Severity::Warning),
         count(Severity::Info)
     )
+}
+
+/// The first ten candidates, or with `all` every one: where each is, what
+/// was found there, and the first place that shows it.
+fn print_candidates(
+    out: &mut dyn Write,
+    candidates: &[Candidate],
+    all: bool,
+) -> std::io::Result<()> {
+    let shown = if all {
+        candidates.len()
+    } else {
+        SHOWN_WITHOUT_ALL
+    };
+    for candidate in candidates.iter().take(shown) {
+        writeln!(
+            out,
+            "candidate {}  {} places in {} files write the paths of {} described operations, and no service includes it",
+            candidate.location,
+            candidate.places.len(),
+            candidate.files,
+            candidate.operations
+        )?;
+        if let Some(first) = candidate.places.first() {
+            writeln!(
+                out,
+                "        first: {}:{}  {} {}",
+                first.file, first.line, first.method, first.path
+            )?;
+        }
+        writeln!(out, "        [{}]", candidate.name)?;
+    }
+    if candidates.len() > shown {
+        let more = candidates.len() - shown;
+        writeln!(out, "and {more} more candidates (--all lists them)")?;
+    }
+    Ok(())
 }
 
 /// What the run read, then the requests it did not read: how many for
@@ -165,6 +207,7 @@ fn print_looked_at(out: &mut dyn Write, looked_at: &LookedAt, all: bool) -> std:
         "        {} repositories, {} operations, {} calls of them read from code",
         looked_at.repositories, looked_at.operations, looked_at.calls
     )?;
+    print_calls_in_tests(out, looked_at)?;
     let unread = &looked_at.unread_requests;
     if unread.is_empty() {
         return Ok(());
@@ -196,6 +239,26 @@ fn print_looked_at(out: &mut dyn Write, looked_at: &LookedAt, all: bool) -> std:
         writeln!(out, "          and {more} more (--all lists them)")?;
     }
     Ok(())
+}
+
+/// The places in tests that write a described operation's path, which no
+/// run reads: how many, and in which repositories.
+fn print_calls_in_tests(out: &mut dyn Write, looked_at: &LookedAt) -> std::io::Result<()> {
+    let tests = &looked_at.calls_in_tests;
+    if tests.is_empty() {
+        return Ok(());
+    }
+    let places: usize = tests.iter().map(|repository| repository.places).sum();
+    let files: usize = tests.iter().map(|repository| repository.files).sum();
+    let repositories: Vec<String> = tests
+        .iter()
+        .map(|repository| format!("{} {}", repository.repository, repository.places))
+        .collect();
+    writeln!(
+        out,
+        "        tests are not read: {places} places in {files} test files write a described operation's path ({})",
+        repositories.join(", ")
+    )
 }
 
 /// Lemma's cache of facts read from code, for this build of Lemma: the

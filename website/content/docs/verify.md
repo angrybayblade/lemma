@@ -33,10 +33,10 @@ lemma verify [mod.lm] [--all] [--links] [--relation <name>] [--json]
 
 | Option | Meaning |
 | --- | --- |
-| `--all` | List every informational finding and every request that was not read, not just the first ten of each. |
+| `--all` | List every informational finding, every candidate and every request that was not read, not just the first ten of each. |
 | `--links` | Also list every link, declared and inferred. |
 | `--relation <name>` | Also print every row of a relation `lemma.http` or a module derives, such as `calls`. Repeatable. Relations that compare the code before and after a change are empty, since there is no change. |
-| `--json` | Print findings, every link, the relations asked for, and what was looked at (`looked_at`), as JSON. |
+| `--json` | Print findings, candidates, every link, the relations asked for, and what was looked at (`looked_at`), as JSON. |
 
 The entry module sets the scope. A workspace verifies every repository it composes. A repository's root module verifies that repository alone. There is no `--change`, `--base` or `--head`: it reads the working directory, and CI verifies what it checked out.
 
@@ -77,6 +77,29 @@ The MCP server has a `verify` tool with the arguments `module`, `all` and `links
 
 To find `anchor_uncalled`, Lemma asks language servers who calls each link's caller anchor. Lemma reports a repository whose language has no server installed as not checked. When the Lemma daemon is running, its language servers answer, and stay warm for the next command; without one (or with `--no-daemon`), `lemma verify` starts its own, which takes seconds per repository.
 
+## Candidates
+
+A candidate is a suspected gap in the description: found by a pattern, not shown from the code, so it can be wrong. Candidates are listed after the findings, counted on the last line when there are any, and never change the exit code.
+
+```text
+candidate #web:scripts  2 places in 1 files write the paths of 2 described operations, and no service includes it
+        first: scripts/seed.ts:1  GET /v1/invoices/{}
+        [calls_outside_services]
+```
+
+| Candidate | Meaning |
+| --- | --- |
+| `calls_outside_services` | Code in a directory no service includes writes the paths of described operations. If it is a consumer, nothing checks it: a change that breaks it gives no finding. |
+
+The location is the outermost directory that holds the code and nothing a service includes, which is what an `include` would have to add. Each place is one Lemma would read as a call if a service included the file: a path in a string or a request, with the method where the call shows one. To settle a candidate, add the directory to a service's `include` (or give it a service of its own), or add it to a service's `exclude` to say it is left out on purpose.
+
+What the pattern looks for, and what it leaves out:
+
+- Tracked code files that no service includes and none excludes. Test files are counted apart ([below](#what-was-looked-at)).
+- A path counts with its leading slash or without, and under a base URL only where the code left out of the same repository names the base, as inside a service.
+- A path of one fixed segment (`/health`, `/users/{id}`) counts only in a file that also writes a path of two or more: alone, such a string is written in too much code that asks nothing of the service.
+- A route a file registers is served, not called. A repository the workspace does not compose is not read at all.
+
 ## What was looked at
 
 Every run ends by saying what it read, so a result with no findings is not taken for more than it is:
@@ -84,13 +107,18 @@ Every run ends by saying what it read, so a result with no findings is not taken
 ```text
 looked at
         9 repositories, 19 operations, 175 calls of them read from code
+        tests are not read: 135 places in 5 test files write a described operation's path (#web 96, #api 39)
         16 requests not read: 10 computed, 4 joined, 2 wrapped
           #web:web:src/agent.js:20  computed  `${API_ROOT}${url}`
           #web:web:src/articles.service.ts:22  joined  '/articles' + (config.type === 'feed' ? '/feed' : '')
           and 14 more (--all lists them)
 ```
 
-A call of an operation is a place in code Lemma read as a request of its path. A request not read is a call that looks like a request and that Lemma could not read as a call of any path, with why and the path argument as the code writes it:
+A call of an operation is a place in code Lemma read as a request of its path.
+
+Test files are never read as calls, whatever a service includes: a test is checked by running it, and tests also write paths they mock or expect to fail. A test file is one named `*.test.*`, `*.spec.*`, `*_test.go`, `*_test.py` or `test_*`, or under a `test`, `tests` or `__tests__` directory. The line says how many places in tests write a described operation's path, per repository, found as [candidates](#candidates) are. A change to those operations is not checked against them.
+
+A request not read is a call that looks like a request and that Lemma could not read as a call of any path, with why and the path argument as the code writes it:
 
 | Reason | Meaning |
 | --- | --- |
@@ -99,10 +127,10 @@ A call of an operation is a place in code Lemma read as a request of its path. A
 | `unproven` | A single word that is a path only if what it is given to makes requests, which nothing in the file shows (`store.get('user')`). |
 | `wrapped` | A path's first word given to a method not named for an HTTP verb, on something the file makes requests through (`Api.query('articles')`). |
 
-These requests may call a described operation; no finding says anything about them. With `--json` the same is under `looked_at`: `repositories`, `operations`, `calls`, and `unread_requests` (each with `file`, `line`, `reason` and `written`). `lemma check` notes the ones a change adds ([`change_adds_unread_request`](check.md#lemmahttp-requirements)).
+These requests may call a described operation; no finding says anything about them. With `--json` the same is under `looked_at`: `repositories`, `operations`, `calls`, `calls_in_tests` (each with `repository`, `files` and `places`) and `unread_requests` (each with `file`, `line`, `reason` and `written`). `lemma check` notes the ones a change adds ([`change_adds_unread_request`](check.md#lemmahttp-requirements)).
 
 ## Limits
 
-A clean result does not mean nothing is missing. `lemma verify` compares what a description says with the code; it does not yet look for what a description leaves out, such as an OpenAPI document no service exports, route code no service includes, or a call over a queue no operation describes. The [`lemma-audit` skill](../skills/lemma-audit/SKILL.md) works through those by hand.
+A clean result does not mean nothing is missing. Of what a description can leave out, `lemma verify` looks only for code that writes described paths ([candidates](#candidates)). It does not yet look for an OpenAPI document no service exports, route code no service includes, a call over a queue no operation describes, or a repository the workspace does not compose. The [`lemma-audit` skill](../skills/lemma-audit/SKILL.md) works through those by hand.
 
-There is no way yet to accept a finding with an `allow`.
+There is no way yet to accept a finding or a candidate with an `allow`; a service's `exclude` settles a candidate.
