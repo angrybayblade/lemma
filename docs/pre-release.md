@@ -145,7 +145,7 @@ Most of it came from the first trial of rc1 outside the project; the rest from l
 
 ## Checklist for rc2
 
-- [ ] CI green on Linux and macOS for the tagged commit.
+- [x] CI green on Linux and macOS for the tagged commit; the four release builds (macOS arm64 and x86_64, Linux x86_64 and arm64) passed a dry run on the commit before it, which differs only in this line.
 - [x] The replays above pass on the build that is tagged: findings, recall, change-driven against full, and sentry against a fresh check.
 - [x] Calls read on public code: against eight public frontends of one API, labelled by hand, 143 of 151 repository and operation pairs are read with none wrong, and 142 of 151 where the document keeps `/api` in every path and the frontends keep it in a base URL. All but one of those not read are listed as requests not read.
 - [x] Candidates on public code: with each of those frontends' code taken out of its description, `lemma verify` reports every one, with 152 of the 175 places read when the code is included; on the descriptions as written it reports none.
