@@ -10,13 +10,14 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | --- | --- | --- |
 | 0.1.0-rc0 | Internal launch: code intelligence in four languages, contract checks across repositories, install script, agent skills | Released |
 | 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up; one store file in place of SQLite; one daemon per workspace, with sentry; evidence kept by the files a checker's run read; source contracts, experimental (see [New in rc1](#new-in-rc1)) | Released |
-| 0.1.0-rc2 and later | Fixes from the first outside trial of rc1 (see [Since rc1](#since-rc1)); layouts met in public repositories read; a removed response field read off the body an error; behavior simulation scaffolded for Python, TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; fixes from internal use; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
+| 0.1.0-rc2 | Fixes from the first outside trial of rc1; layouts met in public repositories read; requests under a base URL read; a removed response field read off the body an error; `lemma verify` says what a clean result covers and lists code a description leaves out (see [New in rc2](#new-in-rc2)) | Released |
+| 0.1.0-rc3 and later | Behavior simulation scaffolded for Python, TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; fixes from internal use; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
 
 ## Feature surfaces
 
 What Lemma does falls into four surfaces. Each is at a different level in this candidate.
 
-| Surface | Commands | Level in rc1 | What that means |
+| Surface | Commands | Level in rc2 | What that means |
 | --- | --- | --- | --- |
 | Code discovery | `lemma symbols`, `outline`, `refs`, `definition`, `implementations`, `signature`, the MCP tools | Ready | Daily use. The first lookup in a repository waits for its language server to load the project |
 | Code impact | `lemma check --change`, `lemma graph` | Ready for HTTP contracts | Every finding on the replayed changes below, and every known caller of the synthetic breaks. Links other than HTTP with OpenAPI are declared by hand |
@@ -31,7 +32,7 @@ What Lemma does falls into four surfaces. Each is at a different level in this c
 | Code intelligence: TypeScript, TSX, Python, Go, Rust | Daily use by people and agents | Symbols, outlines, references, definitions, implementations and signatures, each through the language's own server. Across 241 random symbols in five repositories, 96% of reported lines were real references ([comparison](comparison.md)); 1-3 ms once cached ([performance](performance.md)). |
 | MCP server | Agents in Claude Code and other MCP clients | Agent benchmark rounds r0-r6 ([results](agent-benchmark.md)) |
 | `lemma.http` requirements for HTTP contracts | Internal use, errors gating CI after a reporting period | In rc0, 318 historical changes replayed on a production system of ten repositories with no false error; every error matched a real break. |
-| `lemma check` across a system's repositories | Internal use, errors gating CI after a reporting period | On a production system of six repositories, for rc1: 54 past contract changes replayed with every finding, severity and trace as reviewed; synthetic breaks found every known caller (47 of 47 for new required fields, 33 of 33 for removed operations) and no other; change-driven evaluation gave the same findings as reading all code on 54 changes and 30 breaks, in about 60% of the time; sentry gave the same findings as a fresh check in 214 cases, each asked once the files had settled and once while they were still changing. On a generated system of 100,000 files, a warm change-driven check took 2.7 s and 365 MB. |
+| `lemma check` across a system's repositories | Internal use, errors gating CI after a reporting period | On a production system of six repositories, for rc1 and again for rc2: 54 past contract changes replayed with every finding, severity and trace as reviewed; synthetic breaks found every known caller (47 of 47 for new required fields, 33 of 33 for removed operations) and no other; change-driven evaluation gave the same findings as reading all code on 54 changes and 30 breaks, in about 60% of the time; sentry gave the same findings as a fresh check in 214 cases, each asked once the files had settled and once while they were still changing. On a generated system of 100,000 files, a warm change-driven check took 2.7 s and 365 MB. |
 | `.lm` modules and `lm` | Describing systems, requirements and allowances; behaviors are in [beta](#behaviors-beta) | The tutorials run as written in CI; a production system of six repositories is described and checked in `.lm`. Editor support through `lm lsp`. |
 | Requirements and rules in `.lm` | Teams adding, removing and tuning checks | [Requirements and rules](grammar.md) |
 
@@ -45,6 +46,7 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 | --- | --- | --- | --- |
 | "Names a field" is evidence, not proof: a common name (`id`, `slug`) used for a consumer's own objects counts as using the field | False **warnings** when a service drops a common field; in rc0's replays, 8 in 156 changes to one service, all in commits that also updated the caller. No false errors seen | Low: warnings do not fail CI | Keep warnings advisory; review them in the pull request |
 | Field changes compare names, not types or allowed values | A field whose type or allowed values change is not reported | Medium | Review enum and type changes by hand |
+| A path under a base URL is read only where every path of the service's document starts with that base | Where a document mixes prefixes (`/api/v1` beside `/api/v2`, or beside `/health`) and a consumer keeps one of them in a base URL, its requests under it are not read as calls, and are not listed as unread either | Medium for such documents | Compare `lemma verify --relation calls` with the consumer's requests; where they are missing, write the full path at the call |
 | URLs built at run time from values the code does not show are not matched | Those calls are missed, so their breaks are too | Medium for code that builds URLs dynamically | Check coverage with `lemma verify --relation calls` ([Onboarding](onboarding.md#4-describe-the-system)) |
 | Strictness is read from TypeScript zod `.strict()` and specs' `additionalProperties: false` only | In Go and Rust services, sending a removed field is a warning even where the service rejects it | Low | Declare `rejects_unknown_fields: true` on the service |
 | Only HTTP with OpenAPI specs | gRPC, GraphQL, queues, events and other RPC (such as serverless function invocations) are not checked | High outside HTTP | Declare those links in a `.lm` description |
@@ -102,9 +104,9 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 | No Windows build | Does not run natively on Windows | Use WSL |
 | Soufflé is optional and not bundled | `lemma check` is about six times slower without it, same results | `brew install souffle` |
 
-## Since rc1
+## New in rc2
 
-On main, not yet in a release. Most of it came from the first trial of rc1 outside the project; the rest from layouts met in public repositories.
+Most of it came from the first trial of rc1 outside the project; the rest from layouts met in public repositories.
 
 - **The stop gate checks where it used to pass.** It read repositories from the directories beside `mod.lm` that hold a `.git` directory, so a Git worktree, or a repository beside the workspace, was never checked and the agent finished with errors in place. It reads them from the workspace's module now, finds the workspace from inside a repository too (or from `LEMMA_WORKSPACE`), checks commits a task made as well as uncommitted edits, and when `lemma check` fails or does not finish it sends the agent back with the reason.
 - **The stop gate sends an agent back for warnings too.** A response field a change removed that the caller still reads is a warning, and in the trial it was a real failure at run time. `LEMMA_GATE_LEVEL=error` restores errors only ([`lemma-verify`](../skills/lemma-verify/SKILL.md)).
@@ -141,26 +143,21 @@ On main, not yet in a release. Most of it came from the first trial of rc1 outsi
 - **One daemon per workspace, with sentry.** Commands run in a background daemon that `lemma` starts on first use. Its sentry watches the workspace's repositories and keeps a check's inputs prepared, so a check after an edit reads only what changed. Sentry is experimental ([`lemma daemon`](commands.md#lemma-daemon)).
 - **Checkers and warm runtimes.** `concurrent: true` on a checker lets its cases run at once. While the daemon runs, a repository's Python resolvers and type reads run in a process that has already imported its dependencies ([`lemma daemon`](commands.md#lemma-daemon)).
 
-## Checklist for rc1
+## Checklist for rc2
 
-- [x] CI green on Linux and macOS for the tagged commit.
-- [x] The replays above pass on the tagged build: findings, recall, change-driven against full, and sentry against a fresh check.
-- [x] Code discovery from a cold start on Linux, on a fresh clone of one public repository per language (Python, TypeScript, Go, Rust): index, `symbols`, `outline`, `refs`, `signature`, `implementations`, `graph`. A first `refs` took 0.5 to 2 s, and 16 s in the Rust workspace while its server loaded; every other answer came in under 0.3 s.
-- [x] Code impact: the replays above; `lemma graph` on each of those repositories.
-- [x] Behavior simulation: the tutorial's behavior written for a Python, a TypeScript and a Go service; each is violated when the flag is dropped, satisfied when it is passed on, and reused on the next check.
-- [x] Verification loop: an uncommitted change that breaks a caller in another repository is an error from `lemma check --change` through sentry in 0.1 s, `--since` lists it as new, and it is gone once the caller is fixed.
-- [x] Python references in a project that keeps its package under `src/`. The fresh clone showed pyright reporting none from the tests directory: Lemma's settings had switched off its search of `src`. Fixed in this candidate; on flask, references to `url_for` went from 2 to 57.
-- [x] Source contracts: the example's handlers in Python, TypeScript and Go hold against one contract, and a guard switched off in each is reported, with Z3 4.15.4.
-- [x] Upgrading from rc0 on Linux: the old index is left alone and `lemma index` builds the new one; this install script installs rc0's archives and skills with their checksum verified.
-- [x] Behaviors where `strace` is not installed: they run, and evidence falls back to whole repositories.
-- [ ] All of the above from a cold start on macOS.
+- [ ] CI green on Linux and macOS for the tagged commit.
+- [x] The replays above pass on the build that is tagged: findings, recall, change-driven against full, and sentry against a fresh check.
+- [x] Calls read on public code: against eight public frontends of one API, labelled by hand, 143 of 151 repository and operation pairs are read with none wrong, and 142 of 151 where the document keeps `/api` in every path and the frontends keep it in a base URL. All but one of those not read are listed as requests not read.
+- [x] Candidates on public code: with each of those frontends' code taken out of its description, `lemma verify` reports every one, with 152 of the 175 places read when the code is included; on the descriptions as written it reports none.
+- [x] The whole test suite, and the tutorials as written, on Linux.
+- [ ] All of rc1's checklist from a cold start on macOS.
 - [ ] Install script run on a clean macOS and Linux machine, after the tag.
 
 ## Before 0.1.0
 
 - [ ] CI green on every pull request for two weeks.
-- [ ] Release builds checked on macOS arm64, macOS x86_64, Linux x86_64 and Linux arm64 (rc2).
-- [ ] Install script run on a clean macOS and Linux machine (rc2).
+- [ ] Release builds checked on macOS arm64, macOS x86_64, Linux x86_64 and Linux arm64.
+- [ ] Install script run on a clean macOS and Linux machine.
 - [ ] `lemma check` reporting on real pull requests for two weeks; every error checked by hand; no false error.
 - [ ] Read-versus-write evidence for response fields, from what internal use shows: a field read off a call's body is an error (rc2); whether any other read should be.
 - [ ] Field type and enum value changes compared, or kept out of 0.1 explicitly.

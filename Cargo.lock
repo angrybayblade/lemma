@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-cli"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "anyhow",
  "blake3",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-grammar"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "lemma-lang",
  "lemma-logic",
@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-graph"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "globset",
  "json-schema-diff",
@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-http"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "lemma-model",
  "lemma-syntax",
@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-index"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "blake3",
  "globset",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-lang"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "tempfile",
  "thiserror 2.0.21",
@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-lang-server"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "lemma-graph",
  "lemma-lang",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-lm"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "anyhow",
  "clap",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-logic"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "rustc-hash",
  "thiserror 2.0.21",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-lsp"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "lsp-types",
  "serde",
@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-mapped"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "memmap2",
  "tempfile",
@@ -701,7 +701,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-model"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "blake3",
  "serde",
@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-providers"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "blake3",
  "lemma-lsp",
@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-query"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "lemma-lsp",
  "lemma-model",
@@ -741,7 +741,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-souffle"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "lemma-logic",
  "log",
@@ -753,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-store"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "blake3",
  "ignore",
@@ -771,7 +771,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-syntax"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "blake3",
  "lemma-model",
@@ -787,7 +787,7 @@ dependencies = [
 
 [[package]]
 name = "lemma-verify"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "lemma-grammar",
  "lemma-http",
