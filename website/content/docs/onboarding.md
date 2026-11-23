@@ -187,7 +187,7 @@ export service web {
 }
 ```
 
-Do not declare calls through clients: a call through a client library reaches the client method its names spell, where the code imports the client's package. A string in code counts as a path only if it contains a leading segment some service in the workspace serves (`/v1/` here), so add every service a repository calls before you check its coverage. Imports through `tsconfig.json` `paths` aliases are followed.
+Do not declare calls through clients: a call through a client library reaches the client method its names spell, where the code imports the client's package. A string in code counts as a path only if it contains a leading segment some service in the workspace serves (`/v1/` here), so add every service a repository calls before you check its coverage. A request that writes only what follows a base URL (`http.get('/invoices')` in code that keeps `/v1` in a `baseURL`) is read where every path of the service's document starts with that base ([what Lemma reads](check.md#lemmahttp-inputs)). Imports through `tsconfig.json` `paths` aliases are followed.
 
 **Declare what code does not show.** Set `rejects_unknown_fields: true` on a service whose code rejects unknown fields without saying so in its documents or zod schemas (Go's `DisallowUnknownFields`, serde's `deny_unknown_fields`), so sending a removed field is an error rather than a warning. For a call inference cannot see, such as over a queue or a function runtime, declare an operation on each side and a link: see [Check links](check.md#descriptions).
 
@@ -197,13 +197,17 @@ Do not declare calls through clients: a call through a client library reaches th
 lemma verify
 ```
 
-It reports what the description says that the code does not bear out: an `include` matching nothing, a document that does not exist, an `implementation` that does not resolve, and the rest of [its findings](verify.md#findings). Fix each one until none remain. `lemma verify` does not look for what a description leaves out, so check coverage too. Confirm that Lemma sees the calls you know about:
+It reports what the description says that the code does not bear out: an `include` matching nothing, a document that does not exist, an `implementation` that does not resolve, and the rest of [its findings](verify.md#findings). Fix each one until none remain.
+
+Then read the rest of the report, which says what the result covers. A `candidate` line names a directory no service includes whose code writes the paths of described operations: add it to a service's `include` if it is a consumer, or to an `exclude` if it is left out on purpose ([Candidates](verify.md#candidates)). The `looked at` block at the end lists each request Lemma saw and could not read as a call, with why, and says how many places in tests write a described path, since tests are never read as calls ([What was looked at](verify.md#what-was-looked-at)).
+
+`lemma verify` looks for only that one kind of gap, so check coverage too. Confirm that Lemma sees the calls you know about:
 
 ```sh
 lemma verify --relation calls --json | jq -r '.relations.calls[] | "\(.[1])\t\(.[2])"' | sort -u | less
 ```
 
-Each row is an operation and the file calling it. If a call is missing, check for three causes: an `include` directory is missing, a generated client's `call_names` does not match the generator, or URLs are built at run time from values the code does not show (see the [pre-release checklist](pre-release.md)). Run the `lemma-audit` skill to work through what a description may leave out.
+Each row is an operation and the file calling it. If a call is missing, check for three causes: an `include` directory is missing (look for it among the candidates), a generated client's `call_names` does not match the generator, or URLs are built at run time from values the code does not show (look for the request under `looked at`; see the [pre-release checklist](pre-release.md)). Run the `lemma-audit` skill to work through what a description may leave out.
 
 ## 5. Check a change
 
@@ -277,7 +281,7 @@ Start with the job reporting only (`continue-on-error: true`), read its findings
 
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
-| A call you know about is missing | Directory not in `include`, `call_names` does not match the generator, URL built at run time | `lemma verify --relation calls`, widen `include` |
+| A call you know about is missing | Directory not in `include`, `call_names` does not match the generator, URL built at run time | `lemma verify`: a directory left out is a `candidate`, a request that could not be read is listed under `looked at` with why. `lemma verify --relation calls` lists what was read |
 | A finding names the wrong operation | Two operations share a path and the call shows no method | Check the call site; the method is taken from the call when written there |
 | A warning about a common field name (`id`, `slug`) | The code uses the name for its own objects | Ignore it; see the [pre-release checklist](pre-release.md) |
 | Every operation looks removed | A spec moved to a new file | Name the new file in `operations` |

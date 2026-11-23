@@ -81,7 +81,9 @@ Check it against the code, and fix every finding:
 lemma verify
 ```
 
-This is what makes a description done: it finds an `include` matching nothing, a document that does not exist, an `implementation` that does not resolve, and the rest. It compares what the description says with the code; it does not look for what the description leaves out. Run the `lemma-audit` skill for that.
+This is what makes a description done: it finds an `include` matching nothing, a document that does not exist, an `implementation` that does not resolve, and the rest. It compares what the description says with the code.
+
+Read the rest of the report too. A `candidate` line names a directory no service includes whose code writes the paths of described operations: open the first place it gives, then add the directory to a service's `include` if it is a consumer, or to an `exclude` if it is left out on purpose. The `looked at` block at the end lists each request that could not be read as a call, with why, and how many places in tests write a described path (tests are never read as calls). Candidates are the only gap `lemma verify` looks for; run the `lemma-audit` skill for the rest.
 
 Check coverage before trusting findings:
 
@@ -89,7 +91,7 @@ Check coverage before trusting findings:
 lemma verify --relation calls --json | jq -r '.relations.calls[] | "\(.[1])\t\(.[2])"' | sort -u
 ```
 
-Pick three or four calls you can see in the code and confirm they appear. If one is missing: is its directory in `include`? Do `call_names` match the generator? Is the URL built at run time (not supported)?
+Pick three or four calls you can see in the code and confirm they appear. If one is missing: is its directory in `include` (a `candidate` line names it if not)? Do `call_names` match the generator? Is the URL built at run time (not supported; the request is listed under `looked at` as not read)?
 
 ## 5. Calibrate on history
 

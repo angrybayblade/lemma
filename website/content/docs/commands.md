@@ -232,11 +232,13 @@ Like `lemma check`, it is answered by the workspace's daemon, in a short-lived p
 
 | Option | Meaning |
 | --- | --- |
-| `--all` | List every informational finding and every request that was not read, not just the first ten of each. |
+| `--all` | List every informational finding, every candidate and every request that was not read, not just the first ten of each. |
 | `--links` | Also list every link: those declared, then the calls inference found from code to documented operations, by calling repository and the service called, with each group's count and first ten calls (`--all` lists every call). With `--json`, the list is `link_list`: `declared` (`caller -> provider`) and `inferred` (`repository`, `location`, `operation`, `service`). |
 | `--relation <name>` | Also print every row of a derived relation, such as `calls`. Repeatable. |
 
-Every report ends with what was looked at: the repositories and operations read, how many places in code were read as calls of them, and the requests Lemma saw and could not read as calls of a path, each with why ([What was looked at](verify.md#what-was-looked-at)). With `--json` this is `looked_at`.
+After the findings come candidates: suspected gaps in the description, such as a directory no service includes whose code writes the paths of described operations ([Candidates](verify.md#candidates)). A candidate never changes the exit code. With `--json` they are `candidates`.
+
+Every report ends with what was looked at: the repositories and operations read, how many places in code were read as calls of them, how many places in tests write a described path (tests are not read as calls), and the requests Lemma saw and could not read as calls of a path, each with why ([What was looked at](verify.md#what-was-looked-at)). With `--json` this is `looked_at`.
 
 Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 
