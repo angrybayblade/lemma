@@ -33,10 +33,10 @@ lemma verify [mod.lm] [--all] [--links] [--relation <name>] [--json]
 
 | Option | Meaning |
 | --- | --- |
-| `--all` | List every informational finding, not just the first ten. |
+| `--all` | List every informational finding and every request that was not read, not just the first ten of each. |
 | `--links` | Also list every link, declared and inferred. |
 | `--relation <name>` | Also print every row of a relation `lemma.http` or a module derives, such as `calls`. Repeatable. Relations that compare the code before and after a change are empty, since there is no change. |
-| `--json` | Print findings, every link, and the relations asked for, as JSON. |
+| `--json` | Print findings, every link, the relations asked for, and what was looked at (`looked_at`), as JSON. |
 
 The entry module sets the scope. A workspace verifies every repository it composes. A repository's root module verifies that repository alone. There is no `--change`, `--base` or `--head`: it reads the working directory, and CI verifies what it checked out.
 
@@ -76,6 +76,30 @@ The MCP server has a `verify` tool with the arguments `module`, `all` and `links
 `lm check` reports a link naming an operation its service does not have when the service discovers no operations. A service with `operations:` might discover the name, so `lm check` cannot rule it out; this command can.
 
 To find `anchor_uncalled`, Lemma asks language servers who calls each link's caller anchor. Lemma reports a repository whose language has no server installed as not checked. When the Lemma daemon is running, its language servers answer, and stay warm for the next command; without one (or with `--no-daemon`), `lemma verify` starts its own, which takes seconds per repository.
+
+## What was looked at
+
+Every run ends by saying what it read, so a result with no findings is not taken for more than it is:
+
+```text
+looked at
+        9 repositories, 19 operations, 175 calls of them read from code
+        16 requests not read: 10 computed, 4 joined, 2 wrapped
+          #web:web:src/agent.js:20  computed  `${API_ROOT}${url}`
+          #web:web:src/articles.service.ts:22  joined  '/articles' + (config.type === 'feed' ? '/feed' : '')
+          and 14 more (--all lists them)
+```
+
+A call of an operation is a place in code Lemma read as a request of its path. A request not read is a call that looks like a request and that Lemma could not read as a call of any path, with why and the path argument as the code writes it:
+
+| Reason | Meaning |
+| --- | --- |
+| `computed` | A request function is given a path computed elsewhere: `fetch(url)`, `axios.get(endpoint)`. Often a wrapper's own request, whose callers are read where they write the path. |
+| `joined` | The path may go on past what is written: a piece glued to it, or another argument a wrapper joins to it (`api.get('articles', slug)`). |
+| `unproven` | A single word that is a path only if what it is given to makes requests, which nothing in the file shows (`store.get('user')`). |
+| `wrapped` | A path's first word given to a method not named for an HTTP verb, on something the file makes requests through (`Api.query('articles')`). |
+
+These requests may call a described operation; no finding says anything about them. With `--json` the same is under `looked_at`: `repositories`, `operations`, `calls`, and `unread_requests` (each with `file`, `line`, `reason` and `written`). `lemma check` notes the ones a change adds ([`change_adds_unread_request`](check.md#lemmahttp-requirements)).
 
 ## Limits
 

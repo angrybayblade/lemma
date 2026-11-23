@@ -1,11 +1,12 @@
 //! `lemma verify`: whether a description still matches the code. See
 //! `.specs/16-verifying-descriptions.md`.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
-use lemma_graph::description::{DescriptionReport, verify_description};
+use lemma_graph::description::{DescriptionReport, LookedAt, verify_description};
 use lemma_graph::{CheckOptions, Severity};
 use lemma_logic::ReferenceEngine;
 use lemma_souffle::SouffleEngine;
@@ -134,6 +135,9 @@ fn print_text(
     if let Some(list) = report.link_list.as_ref().filter(|_| args.links) {
         crate::check::print_link_list(out, list, args.all)?;
     }
+    if let Some(looked_at) = &report.looked_at {
+        print_looked_at(out, looked_at, args.all)?;
+    }
     for skipped in &report.not_checked {
         writeln!(out, "not looked at: {} (not cloned)", skipped.repository)?;
     }
@@ -150,6 +154,48 @@ fn print_text(
         count(Severity::Warning),
         count(Severity::Info)
     )
+}
+
+/// What the run read, then the requests it did not read: how many for
+/// each reason, and the first ten, or with `all` every one.
+fn print_looked_at(out: &mut dyn Write, looked_at: &LookedAt, all: bool) -> std::io::Result<()> {
+    writeln!(out, "looked at")?;
+    writeln!(
+        out,
+        "        {} repositories, {} operations, {} calls of them read from code",
+        looked_at.repositories, looked_at.operations, looked_at.calls
+    )?;
+    let unread = &looked_at.unread_requests;
+    if unread.is_empty() {
+        return Ok(());
+    }
+    let mut reasons: BTreeMap<&str, usize> = BTreeMap::new();
+    for request in unread {
+        *reasons.entry(request.reason.as_str()).or_default() += 1;
+    }
+    let reasons: Vec<String> = reasons
+        .iter()
+        .map(|(reason, count)| format!("{count} {reason}"))
+        .collect();
+    writeln!(
+        out,
+        "        {} requests not read: {}",
+        unread.len(),
+        reasons.join(", ")
+    )?;
+    let shown = if all { unread.len() } else { SHOWN_WITHOUT_ALL };
+    for request in unread.iter().take(shown) {
+        writeln!(
+            out,
+            "          {}:{}  {}  {}",
+            request.file, request.line, request.reason, request.written
+        )?;
+    }
+    if unread.len() > shown {
+        let more = unread.len() - shown;
+        writeln!(out, "          and {more} more (--all lists them)")?;
+    }
+    Ok(())
 }
 
 /// Lemma's cache of facts read from code, for this build of Lemma: the

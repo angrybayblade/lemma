@@ -44,7 +44,43 @@ pub struct DescriptionReport {
     /// Repositories that are not here, so were not looked at.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub not_checked: Vec<NotChecked>,
+    /// What the run read; `None` when the description is too wrong for the
+    /// code to be read at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub looked_at: Option<LookedAt>,
 }
+
+/// What a run read, and the requests it saw and could not read. No finding
+/// means the code that was read agrees with the description; it says
+/// nothing of a request that was not read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct LookedAt {
+    /// How many repositories were read.
+    pub repositories: usize,
+    /// How many operations their services describe.
+    pub operations: usize,
+    /// How many places in code were read as a call of one of them.
+    pub calls: usize,
+    /// The calls that look like requests and were not read as calls of a
+    /// path, in the order of their files and lines.
+    pub unread_requests: Vec<UnreadRequest>,
+}
+
+/// A call that looks like a request and was not read as a call of a path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub struct UnreadRequest {
+    /// The file, as relations name it: `#web:web:src/api.ts`.
+    pub file: String,
+    /// The line.
+    pub line: u32,
+    /// Why it was not read: `joined`, `computed`, `unproven` or `wrapped`.
+    pub reason: String,
+    /// The path argument as the code writes it, shortened.
+    pub written: String,
+}
+
+/// The relations [`LookedAt`] is counted from, asked of every run.
+const LOOKED_AT_RELATIONS: [&str; 3] = ["operation", "calls", "unread_request"];
 
 /// Compares the description at `entry` with the code it describes.
 /// Language servers, through `references`, say which anchors nothing calls.
@@ -57,9 +93,15 @@ pub fn verify_description<E: Engine>(
     let repos = check::load_manifests(entry, options)?;
     let mut findings = configuration_findings(&repos);
     findings.extend(renames_still_present(&repos));
+    let mut relations = options.relations.clone();
+    let also_asked = LOOKED_AT_RELATIONS
+        .into_iter()
+        .filter(|name| !options.relations.iter().any(|asked| asked == name));
+    relations.extend(also_asked.map(str::to_owned));
     let listed = CheckOptions {
         list_links: true,
         level: Some(Level::Check),
+        relations,
         ..options.clone()
     };
     // A description this wrong can stop inference from reading the code at
@@ -75,16 +117,49 @@ pub fn verify_description<E: Engine>(
     }
     findings.sort();
     findings.dedup();
-    let (link_list, relations, not_checked) = report.map_or_else(
+    let looked_at = report.as_ref().map(looked_at);
+    let (link_list, mut relations, not_checked) = report.map_or_else(
         || (None, BTreeMap::new(), Vec::new()),
         |report| (report.link_list, report.relations, report.not_checked),
     );
+    relations.retain(|name, _| options.relations.contains(name));
     Ok(DescriptionReport {
         findings,
         link_list,
         relations,
         not_checked,
+        looked_at,
     })
+}
+
+/// What `report`'s run read, from the relations asked of it.
+fn looked_at(report: &Report) -> LookedAt {
+    let rows = |name: &str| report.relations.get(name).map_or(&[][..], Vec::as_slice);
+    // One place in code may be a call of several operations, when the code
+    // shows no method: it is still one place.
+    let calls: BTreeSet<(&String, &String)> = rows("calls")
+        .iter()
+        .filter_map(|row| Some((row.get(2)?, row.get(3)?)))
+        .collect();
+    let mut unread_requests: Vec<UnreadRequest> = rows("unread_request")
+        .iter()
+        .filter_map(|row| {
+            Some(UnreadRequest {
+                file: row.first()?.clone(),
+                line: row.get(1)?.parse().ok()?,
+                reason: row.get(2)?.clone(),
+                written: row.get(3)?.clone(),
+            })
+        })
+        .collect();
+    unread_requests.sort();
+    unread_requests.dedup();
+    LookedAt {
+        repositories: report.repositories.len(),
+        operations: rows("operation").len(),
+        calls: calls.len(),
+        unread_requests,
+    }
 }
 
 fn has_error(findings: &[DescriptionFinding]) -> bool {

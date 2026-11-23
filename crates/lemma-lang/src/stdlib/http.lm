@@ -296,6 +296,18 @@ export rule unserved_call(c: Text, m: Text, p: Text, f: Text, l: Int) {
         !part_of_service(f, s)
 }
 
+// A request the reader declined that a change adds: none written the same
+// was declined for the same reason in that file before.
+export rule unread_before(f: Text, r: Text, w: Text) {
+    (f, r, w) :- unread_request@base(f, _, r, w)
+}
+
+export rule new_unread_request(f: Text, l: Int, r: Text, w: Text) {
+    (f, l, r, w) :-
+        unread_request(f, l, r, w),
+        !unread_before(f, r, w)
+}
+
 // Spec against code, in the head snapshot.
 export rule specified(s: Text, m: Text, p: Text) {
     (s, m, p) :- operation(s, _, m, p)
@@ -558,6 +570,15 @@ export require operation_without_consumer {
         !public_operation(op),
         !public_service(s)
     message: "{s} adds {op}, which no code in the workspace calls; if code outside it does, add \"{op}\" to a graph of lemma.http.public_operation"
+}
+
+// Informational: a check with no finding says the calls that were read
+// agree with the change. A request the change adds that was not read is
+// outside what it says, so it is listed for whoever reviews the change.
+export require change_adds_unread_request {
+    severity: info
+    when: new_unread_request(f, l, r, w)
+    message: "this change adds a request that was not read as a call of a path ({r}): {w} ({f}:{l})"
 }
 
 // Informational: public specs leave out internal routes on purpose. It reads

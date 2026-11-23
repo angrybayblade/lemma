@@ -20,6 +20,8 @@ lemma verify --all --links
 
 `lm check` reports what is invalid in a module with its line. `lemma verify` reports what no longer matches the code: fix these first, since they make everything below unreliable. Its findings name a location as `#repo:service`; read the description there.
 
+It ends with what it looked at: the operations and the calls of them it read, and each request it saw and could not read as a call of a path, with why (`computed`, `joined`, `unproven`, `wrapped`). A request not read may call a described operation, and no finding says anything about it. Read those lines before calling a description complete: a wrapper's own `fetch(url)` is expected, while a module whose every request is listed is one Lemma does not see into.
+
 | Finding | Edit |
 | --- | --- |
 | `include_matches_nothing` | Correct the pattern, or remove it |

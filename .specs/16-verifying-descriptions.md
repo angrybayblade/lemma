@@ -145,6 +145,8 @@ The patterns need no new extraction. The relations that `lemma.http` reads from 
 
 A clean result must not be read as "nothing is missing", and missing links can never be a guarantee. Every run says which repositories, files, operations and links it read, what it skipped and why, and which language servers did not start. A language it could not read is a statement in the output. The JSON form carries the same data, so CI can fail on reduced reach if a team wants that.
 
+*Built so far:* the repositories and operations read, the places in code read as calls of them, and the requests seen and not read as calls of a path, each with its reason (`unread_request` in `lemma.http`), as text and under `looked_at` in JSON. `lemma check` notes the unread requests a change adds (`change_adds_unread_request`, informational), since those are the part of a change no other finding speaks of. Files skipped, languages not read and servers that did not start are not reported yet.
+
 ## One detector, two questions
 
 If a change breaks a description, `lemma check` must still fail. So the checks in [Outdated links](#outdated-links) and those in [Wrong configuration](#wrong-configuration) that a change can cause are one detector, in `lemma-graph`, returning findings for a snapshot. `lemma verify` reports everything the detector returns. `lemma check --change` runs it at base and head and reports what the change introduced, as it treats other findings today.

@@ -31,7 +31,7 @@ use lemma_logic::{Atom, Literal, ReferenceEngine, Request, Rule, Term, Value};
 
 /// Input relations written from consumer files: read, in change-driven
 /// evaluation, only for the files a finding can rest on.
-const SELECTED_INPUTS: [&str; 11] = [
+const SELECTED_INPUTS: [&str; 12] = [
     "calls_path",
     "calls_client",
     "client_operation",
@@ -43,6 +43,7 @@ const SELECTED_INPUTS: [&str; 11] = [
     "addressed_to",
     "part_of_service",
     "reads_result",
+    "unread_request",
 ];
 
 /// The consumer facts a call is read from.

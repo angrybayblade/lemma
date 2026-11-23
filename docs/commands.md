@@ -232,9 +232,11 @@ Like `lemma check`, it is answered by the workspace's daemon, in a short-lived p
 
 | Option | Meaning |
 | --- | --- |
-| `--all` | List every informational finding, not just the first ten. |
+| `--all` | List every informational finding and every request that was not read, not just the first ten of each. |
 | `--links` | Also list every link: those declared, then the calls inference found from code to documented operations, by calling repository and the service called, with each group's count and first ten calls (`--all` lists every call). With `--json`, the list is `link_list`: `declared` (`caller -> provider`) and `inferred` (`repository`, `location`, `operation`, `service`). |
 | `--relation <name>` | Also print every row of a derived relation, such as `calls`. Repeatable. |
+
+Every report ends with what was looked at: the repositories and operations read, how many places in code were read as calls of them, and the requests Lemma saw and could not read as calls of a path, each with why ([What was looked at](verify.md#what-was-looked-at)). With `--json` this is `looked_at`.
 
 Exits with 0 when no finding is an error, 4 when one is, and 1 on failure.
 

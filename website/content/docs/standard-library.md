@@ -84,6 +84,8 @@ HTTP contracts between services, their generated clients and consumers.
 - rule `served_path`: `(p: Text)`
 - rule `called_before`: `(c: Text, m: Text, p: Text)`
 - rule `unserved_call`: `(c: Text, m: Text, p: Text, f: Text, l: Int)`
+- rule `unread_before`: `(f: Text, r: Text, w: Text)`
+- rule `new_unread_request`: `(f: Text, l: Int, r: Text, w: Text)`
 - rule `specified`: `(s: Text, m: Text, p: Text)`
 - rule `routed`: `(s: Text, m: Text, p: Text)`
 - rule `specified_route`: `(s: Text, m: Text, f: Text, l: Int)`
@@ -115,6 +117,7 @@ HTTP contracts between services, their generated clients and consumers.
 - requirement `operation_without_route`: `requirement`
 - requirement `route_without_operation`: `requirement`
 - requirement `operation_without_consumer`: `requirement`
+- requirement `change_adds_unread_request`: `requirement`
 - requirement `route_not_in_spec`: `requirement`
 
 ## `lemma.links`

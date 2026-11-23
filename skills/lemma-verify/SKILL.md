@@ -33,7 +33,7 @@ Each answer ends with `sentry token: <token>`. After fixing what a check reporte
 
 ## When a finding looks wrong
 
-Run with `--all` to see informational findings, and `lemma verify --links` to see which caller Lemma matched to which operation. A wrong finding is usually one wrong match: a path built at run time matched to the wrong operation, or a common field name counted as a use. Say so in the report rather than working around it in code.
+Run with `--all` to see informational findings, and `lemma verify --links` to see which caller Lemma matched to which operation. An informational `change_adds_unread_request` names a request your change adds that Lemma could not read as a call of a path (its path is computed or joined from pieces): the check says nothing about that request, so name it in your report, or write the path where the request is made if that is as clear. A wrong finding is usually one wrong match: a path built at run time matched to the wrong operation, or a common field name counted as a use. Say so in the report rather than working around it in code.
 
 ## The stop gate (experimental)
 
