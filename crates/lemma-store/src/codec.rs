@@ -35,9 +35,13 @@ pub(crate) fn kind_of(code: u8) -> Result<SymbolKind, StoreError> {
         })
 }
 
+/// The byte a segment holds for a file's language: the language's place in
+/// [`Language::ALL`]. Segments on disk hold these, so a language keeps its
+/// place; a test pins each one.
+// TODO: when languages move out of Lemma's core the list stops being
+// fixed, and a segment will need to name its languages itself.
 pub(crate) fn language_code(language: Language) -> u8 {
-    let position = Language::ALL.iter().position(|known| *known == language);
-    u8::try_from(position.unwrap_or(usize::MAX)).unwrap_or(u8::MAX)
+    u8::try_from(language.position()).unwrap_or(u8::MAX)
 }
 
 pub(crate) fn language_of(code: u8) -> Result<Language, StoreError> {
@@ -218,3 +222,36 @@ impl<'a> Decoder<'a> {
 const TRUNCATED: StoreError = StoreError::Damaged {
     what: "stored bytes are truncated",
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_language_keeps_the_code_segments_on_disk_hold() {
+        let codes: Vec<(&str, u8)> = Language::ALL
+            .into_iter()
+            .map(|language| (language.as_str(), language_code(language)))
+            .collect();
+
+        assert_eq!(
+            codes,
+            [
+                ("typescript", 0),
+                ("tsx", 1),
+                ("python", 2),
+                ("go", 3),
+                ("rust", 4)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_code_reads_back_as_its_language_and_an_unknown_one_is_damage() {
+        for language in Language::ALL {
+            assert_eq!(language_of(language_code(language)).unwrap(), language);
+        }
+
+        assert!(language_of(200).is_err());
+    }
+}
