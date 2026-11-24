@@ -16,6 +16,8 @@ use lemma_model::Language;
 use regex::Regex;
 use tree_sitter::{Parser, Tree, TreeCursor};
 
+use crate::languages;
+
 // The patterns are constant and the tests below compile each; one that
 // failed to compile would only mean that construct is not blanked.
 
@@ -60,17 +62,19 @@ static MEMBER_NAMED_IN: LazyLock<Option<Regex>> =
 static EXPORT_TYPE_STAR: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r"\bexport\s+(type)\s+\*").ok());
 
-/// Parses `source`, retrying a TypeScript or TSX file that has syntax
-/// errors with the constructs the grammar does not accept blanked, and
-/// keeping whichever tree has fewer errors. `None` only if the parser
-/// gives up, as [`Parser::parse`] does.
+/// Parses `source`, retrying a file that has syntax errors, in a language
+/// whose grammar rejects what its compiler accepts (TypeScript and TSX),
+/// with those constructs blanked, and keeping whichever tree has fewer
+/// errors. `None` only if the parser gives up, as [`Parser::parse`] does.
 pub fn parse(parser: &mut Parser, language: Language, source: &str) -> Option<Tree> {
     let tree = parser.parse(source, None)?;
-    let is_typescript = matches!(language, Language::TypeScript | Language::Tsx);
-    if !is_typescript || !tree.root_node().has_error() {
+    if !tree.root_node().has_error() {
         return Some(tree);
     }
-    let Some(blanked) = blank_unsupported(source, language == Language::Tsx) else {
+    let Some(blank) = languages::blanking(language) else {
+        return Some(tree);
+    };
+    let Some(blanked) = blank(source) else {
         return Some(tree);
     };
     let Some(retried) = parser.parse(&blanked, None) else {
@@ -82,10 +86,20 @@ pub fn parse(parser: &mut Parser, language: Language, source: &str) -> Option<Tr
     Some(tree)
 }
 
+/// [`blank_unsupported`] for a TypeScript file.
+pub(crate) fn blank_typescript(source: &str) -> Option<String> {
+    blank_unsupported(source, false)
+}
+
+/// [`blank_unsupported`] for a TSX file.
+pub(crate) fn blank_tsx(source: &str) -> Option<String> {
+    blank_unsupported(source, true)
+}
+
 /// `source` with the TypeScript the grammar does not accept blanked, the
 /// same length and with the same line breaks; `None` if it has none.
 /// `is_tsx` adds what only JSX needs.
-pub fn blank_unsupported(source: &str, is_tsx: bool) -> Option<String> {
+fn blank_unsupported(source: &str, is_tsx: bool) -> Option<String> {
     let mut ranges: Vec<(usize, usize, &str)> = Vec::new();
     for found in TYPEOF_IMPORT
         .iter()
@@ -161,11 +175,7 @@ mod tests {
     use super::*;
 
     fn parser(language: Language) -> Parser {
-        let mut parser = Parser::new();
-        parser
-            .set_language(&crate::tree_sitter_language(language))
-            .unwrap();
-        parser
+        crate::parser(language).unwrap()
     }
 
     #[test]

@@ -11,8 +11,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lemma_model::Language;
 use serde_json::{Value, json};
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use super::shape::{Fields, any_of, nullable, string_enum};
 
@@ -31,10 +32,7 @@ pub struct PythonSchema {
 /// The schema of `symbol` (dotted for nested classes: `Outer.Inner`),
 /// defined in one of `files`. `None` if no file defines it.
 pub fn type_schema(files: &[(String, String)], symbol: &str) -> Option<PythonSchema> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_python::LANGUAGE.into())
-        .ok()?;
+    let mut parser = lemma_syntax::parser(Language::Python).ok()?;
     let trees: Vec<(tree_sitter::Tree, &str)> = files
         .iter()
         .filter_map(|(_, source)| Some((parser.parse(source, None)?, source.as_str())))

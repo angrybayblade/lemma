@@ -6,6 +6,7 @@
 
 mod classify;
 mod declaration;
+mod languages;
 mod nesting;
 mod outline;
 mod pool;
@@ -160,6 +161,17 @@ impl Extractor {
     }
 }
 
+/// A parser set to `language`'s grammar, for a reader that walks the
+/// syntax tree itself. Parse with [`parse_source`] to get the same tree the
+/// extractor reads.
+pub fn parser(language: Language) -> Result<Parser, SyntaxError> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&languages::grammar(language))
+        .map_err(|source| SyntaxError::Grammar { language, source })?;
+    Ok(parser)
+}
+
 /// A parser and definition query for one language.
 struct Grammar {
     parser: Parser,
@@ -170,14 +182,12 @@ struct Grammar {
 
 impl Grammar {
     fn load(language: Language) -> Result<Self, SyntaxError> {
-        let grammar = tree_sitter_language(language);
-        let mut parser = Parser::new();
-        parser
-            .set_language(&grammar)
-            .map_err(|source| SyntaxError::Grammar { language, source })?;
-
-        let query = Query::new(&grammar, definition_query(language))
-            .map_err(|source| SyntaxError::Query { language, source })?;
+        let parser = parser(language)?;
+        let query = Query::new(
+            &languages::grammar(language),
+            languages::definition_query(language),
+        )
+        .map_err(|source| SyntaxError::Query { language, source })?;
         let capture_index = |capture| {
             query
                 .capture_index_for_name(capture)
@@ -219,25 +229,6 @@ impl Grammar {
             name_span: span_of(name),
             byte_range: definition.byte_range(),
         })
-    }
-}
-
-fn tree_sitter_language(language: Language) -> tree_sitter::Language {
-    match language {
-        Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
-        Language::Python => tree_sitter_python::LANGUAGE.into(),
-        Language::Go => tree_sitter_go::LANGUAGE.into(),
-        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
-    }
-}
-
-fn definition_query(language: Language) -> &'static str {
-    match language {
-        Language::TypeScript | Language::Tsx => include_str!("../queries/typescript.scm"),
-        Language::Python => include_str!("../queries/python.scm"),
-        Language::Go => include_str!("../queries/go.scm"),
-        Language::Rust => include_str!("../queries/rust.scm"),
     }
 }
 

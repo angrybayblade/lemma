@@ -12,8 +12,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lemma_model::Language;
 use serde_json::{Map, Value, json};
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use super::shape::{Fields, View, any_of, nullable, object, string_enum};
 
@@ -32,10 +33,7 @@ pub struct RustSchema {
 /// The schema of `type_name`, defined in one of `files`, as seen from
 /// `view`. `None` if no file defines it.
 pub fn type_schema(files: &[(String, String)], type_name: &str, view: View) -> Option<RustSchema> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_rust::LANGUAGE.into())
-        .ok()?;
+    let mut parser = lemma_syntax::parser(Language::Rust).ok()?;
     let trees: Vec<(tree_sitter::Tree, &str)> = files
         .iter()
         .filter_map(|(_, source)| Some((parser.parse(source, None)?, source.as_str())))

@@ -16,8 +16,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lemma_model::Language;
 use serde_json::{Map, Value, json};
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use super::shape::{View, nullable, object};
 
@@ -44,8 +45,7 @@ impl Package {
     /// The package of `files`, by path and source; `None` if Go cannot be
     /// parsed at all.
     pub fn parse(files: &[(String, String)]) -> Option<Self> {
-        let mut parser = Parser::new();
-        parser.set_language(&tree_sitter_go::LANGUAGE.into()).ok()?;
+        let mut parser = lemma_syntax::parser(Language::Go).ok()?;
         let files = files
             .iter()
             .filter_map(|(path, source)| {

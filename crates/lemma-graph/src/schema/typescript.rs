@@ -10,8 +10,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use lemma_model::Language;
 use serde_json::{Map, Value, json};
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use super::shape::{any_of, nullable, object, string_enum};
 use crate::GraphError;
@@ -105,19 +106,12 @@ fn parse(path: &str, source: &str) -> Option<tree_sitter::Tree> {
     let is_tsx = std::path::Path::new(path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("tsx"));
-    let (grammar, language) = if is_tsx {
-        (
-            tree_sitter_typescript::LANGUAGE_TSX,
-            lemma_model::Language::Tsx,
-        )
+    let language = if is_tsx {
+        Language::Tsx
     } else {
-        (
-            tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-            lemma_model::Language::TypeScript,
-        )
+        Language::TypeScript
     };
-    let mut parser = Parser::new();
-    parser.set_language(&grammar.into()).ok()?;
+    let mut parser = lemma_syntax::parser(language).ok()?;
     lemma_syntax::parse_source(&mut parser, language, source)
 }
 

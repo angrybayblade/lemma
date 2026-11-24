@@ -2,9 +2,9 @@
 //! such as `def delete(self, id: str) -> None:`.
 
 use lemma_model::{Language, Span};
-use tree_sitter::{Node, Parser, Point};
+use tree_sitter::{Node, Point};
 
-use crate::{SyntaxError, tree_sitter_language};
+use crate::SyntaxError;
 
 /// Longer declarations, such as a Go struct with many fields, are cut here.
 const MAX_LINES: usize = 12;
@@ -22,10 +22,7 @@ pub fn declaration_text(
     source: &str,
     span: Span,
 ) -> Result<Option<String>, SyntaxError> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_language(language))
-        .map_err(|source| SyntaxError::Grammar { language, source })?;
+    let mut parser = crate::parser(language)?;
     let tree = parser
         .parse(source, None)
         .ok_or(SyntaxError::ParseAborted { language })?;
