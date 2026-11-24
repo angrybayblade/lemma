@@ -42,6 +42,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 - Dependencies point inward toward the domain model. The model knows nothing about Tree-sitter, LSP, SQLite, or the CLI.
 - External formats stop at the boundary that consumes them. LSP response shapes, Tree-sitter nodes, and SQL rows are converted to Lemma types inside their adapter and never leak further.
 - Adapters do not depend on each other. Shared behavior goes in the common layer they both use.
+- What Lemma knows of a language lives in one place per layer. `lemma_model::Language` holds the table of languages, their file extensions and their families; a layer that needs more (a grammar, the name a language server uses, how comments are written) keeps it in a `languages` module. No other code names a language or lists code file extensions. `crates/lemma-cli/tests/languages.rs` lists the places that may, and fails when another does.
 - Define a trait at a boundary only when there is, or will soon be, more than one implementation, or when it is needed to test the consumer in isolation.
 - Prefer passing data over passing services. A function that needs three fields takes those fields, not the whole context object.
 
