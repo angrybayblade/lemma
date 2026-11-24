@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use lemma_model::Language;
 use serde_json::Value;
 
 use crate::GraphError;
@@ -419,27 +420,32 @@ fn code_schema(anchor: &str, context: &mut Context<'_>) -> Result<Resolved, Grap
         message: format!("no type `{symbol}` in {file} or the files beside it"),
     };
     let checkout = context.checkout;
-    match extension {
-        "go" => {
+    // A file is read for its types only where it is read as code at all:
+    // not a Python stub file, and not JavaScript, which declares no types.
+    let language = Language::is_code_extension(extension)
+        .then(|| Language::from_extension(extension))
+        .flatten();
+    match language {
+        Some(Language::Go) => {
             let package = context.reads.go_package(checkout, file)?;
             let found = package
                 .struct_schema(file, symbol, view(context.role))
                 .ok_or_else(missing)?;
             Ok(syntax(found.schema, found.unresolved))
         }
-        "rs" => {
+        Some(Language::Rust) => {
             let module = directory_files(context.reads, checkout, file, "rs", "")?;
             let found =
                 rust::type_schema(&module, symbol, view(context.role)).ok_or_else(missing)?;
             Ok(syntax(found.schema, found.unresolved))
         }
-        "ts" | "tsx" | "mts" | "cts" => {
+        Some(Language::TypeScript | Language::Tsx) => {
             let mut read = |path: &str| checkout.read(path);
             let found = typescript::type_schema(file, symbol, &mut read)?.ok_or_else(missing)?;
             Ok(syntax(found.schema, found.unresolved))
         }
-        "py" => python_schema(file, symbol, context),
-        _ => Err(GraphError::Schema {
+        Some(Language::Python) => python_schema(file, symbol, context),
+        None => Err(GraphError::Schema {
             message: format!("no schema reader for `.{extension}` files yet ({anchor})"),
         }),
     }
