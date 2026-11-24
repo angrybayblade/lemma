@@ -99,21 +99,7 @@ pub struct Extractor {
     /// Each language's grammar, by [`grammar_slot`], loaded when a file in
     /// that language is first read: compiling a query takes milliseconds,
     /// and most reads see one or two languages.
-    grammars: [Option<Grammar>; GRAMMARS],
-}
-
-/// How many languages an extractor reads.
-const GRAMMARS: usize = 5;
-
-/// Where `language`'s grammar is held in an extractor.
-fn grammar_slot(language: Language) -> usize {
-    match language {
-        Language::TypeScript => 0,
-        Language::Tsx => 1,
-        Language::Python => 2,
-        Language::Go => 3,
-        Language::Rust => 4,
-    }
+    grammars: [Option<Grammar>; Language::ALL.len()],
 }
 
 impl Extractor {
@@ -165,7 +151,7 @@ impl Extractor {
     }
 
     fn grammar_mut(&mut self, language: Language) -> Result<&mut Grammar, SyntaxError> {
-        let slot = &mut self.grammars[grammar_slot(language)];
+        let slot = &mut self.grammars[language.position()];
         let grammar = match slot.take() {
             Some(grammar) => grammar,
             None => Grammar::load(language)?,

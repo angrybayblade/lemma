@@ -14,16 +14,13 @@ use lemma_http::{
     CodeFacts, CodeOptions, ListedFile, Operation, PathAliases, SourceFile, is_under_any,
 };
 use lemma_logic::Value;
+use lemma_model::Language;
 use lemma_syntax::ExtractorPool;
 
 use crate::VerifyError;
 use crate::clients::{ClientMethod, Clients, NamedOperation, starts_locally};
 use crate::manifest::{GeneratedDocument, Manifest, Repository, Role};
 use crate::system::System;
-
-const CODE_EXTENSIONS: [&str; 11] = [
-    "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "go", "rs",
-];
 
 /// A value for a fact, before interning.
 #[derive(Clone, Copy)]
@@ -857,7 +854,7 @@ pub(crate) fn is_at_or_below(path: &str, changed: &str) -> bool {
 /// Whether a path names code Lemma extracts facts from.
 pub fn is_code_path(path: &str) -> bool {
     let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
-    CODE_EXTENSIONS.contains(&extension)
+    Language::is_code_extension(extension)
 }
 
 impl SpecCache {
@@ -956,7 +953,7 @@ impl SpecCache {
     ) -> Result<Vec<ListedFile>, VerifyError> {
         let is_code = |path: &str| {
             let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
-            CODE_EXTENSIONS.contains(&extension) && is_under_any(path, prefixes)
+            Language::is_code_extension(extension) && is_under_any(path, prefixes)
         };
         let listing = self.listing(repository, commit)?;
         Ok(listing

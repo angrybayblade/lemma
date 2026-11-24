@@ -13,6 +13,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
 
+use lemma_model::Language;
+
 use crate::functions::{Functions, NameId};
 
 /// What a change reaches in one repository.
@@ -55,30 +57,40 @@ impl ChangeReach {
     }
 }
 
-const CODE_EXTENSIONS: [&str; 9] = ["ts", "tsx", "mts", "cts", "js", "jsx", "py", "go", "rs"];
+/// JavaScript module files, which the walk does not follow names through
+/// though their requests are read like any other JavaScript file's.
+// TODO: an oversight, kept as it was while what Lemma knows of each
+// language is gathered into one table; settle it with the other open
+// questions about JavaScript when languages move out of Lemma's core.
+const UNWALKED_EXTENSIONS: [&str; 2] = ["mjs", "cjs"];
 
-/// The family of languages whose names can refer to one another: a
-/// TypeScript change reaches Go code only through a contract or a link,
-/// never by a name its code happens to share.
+/// The family of languages whose names can refer to one another, as a
+/// number from 1: a TypeScript change reaches Go code only through a
+/// contract or a link, never by a name its code happens to share. 0 for a
+/// file the walk does not follow names through.
 fn family(path: &str) -> u8 {
-    let extension = Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("");
-    match extension {
-        "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" => 1,
-        "py" => 2,
-        "go" => 3,
-        "rs" => 4,
-        _ => 0,
+    let extension = extension_of(path);
+    if !is_walked(extension) {
+        return 0;
     }
+    Language::parsing(extension)
+        .and_then(|language| u8::try_from(language.family().position() + 1).ok())
+        .unwrap_or(0)
 }
 
 fn is_code(path: &str) -> bool {
+    is_walked(extension_of(path))
+}
+
+fn is_walked(extension: &str) -> bool {
+    Language::is_code_extension(extension) && !UNWALKED_EXTENSIONS.contains(&extension)
+}
+
+fn extension_of(path: &str) -> &str {
     Path::new(path)
         .extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| CODE_EXTENSIONS.contains(&extension))
+        .unwrap_or("")
 }
 
 /// Lines a change touched in each changed file, at the working directory,
@@ -149,11 +161,7 @@ fn changed_lines(root: &Path, base: &str, untracked: Option<&[String]>) -> Optio
 /// the file when a range overlaps none.
 fn symbols_touched(root: &Path, path: &str, ranges: &[(u32, u32)]) -> Vec<(String, u8)> {
     let language = family(path);
-    let extension = Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("");
-    let Some(kind) = lemma_model::Language::from_extension(extension) else {
+    let Some(kind) = Language::from_extension(extension_of(path)) else {
         return Vec::new();
     };
     let Ok(source) = std::fs::read_to_string(root.join(path)) else {

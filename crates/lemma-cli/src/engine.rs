@@ -2113,10 +2113,7 @@ fn unique_definition(
     };
     let family = |path: &str| {
         let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
-        Language::from_extension(extension).map(|language| match language {
-            Language::Tsx => Language::TypeScript,
-            other => other,
-        })
+        Language::from_extension(extension).map(Language::family)
     };
     let wanted = family(from);
     let found = store.find_symbols(snapshot_id, &filter).ok()?;

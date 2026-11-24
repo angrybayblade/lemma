@@ -15,11 +15,6 @@ use crate::check::{Finding, HEAD, Impact, Repo, Severity};
 use crate::functions::{self, FileRecord, Functions};
 use crate::impact::{self, Affected, Call, Function, Route, Seed};
 
-/// Code files the call graph is read from.
-pub(crate) const CODE_EXTENSIONS: [&str; 11] = [
-    "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "go", "rs",
-];
-
 /// A route as inference read it, before its line is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteSite {
@@ -961,7 +956,7 @@ pub(crate) fn keep_functions_too(build: String) -> lemma_verify::AlsoKeep {
     lemma_verify::AlsoKeep(Arc::new(move |file, named, parsed| {
         let path = &file.path;
         let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
-        if !CODE_EXTENSIONS.contains(&extension) || lemma_http::is_test_file(path) {
+        if !Language::is_code_extension(extension) || lemma_http::is_test_file(path) {
             return None;
         }
         let functions = match Language::from_extension(extension) {
@@ -987,7 +982,7 @@ fn functions_key(build: &str, path: &str, contents: &[u8]) -> String {
 /// that is not a test.
 fn is_traced_code(path: &str, prefixes: &[String]) -> bool {
     let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
-    CODE_EXTENSIONS.contains(&extension)
+    Language::is_code_extension(extension)
         && lemma_http::is_under_any(path, prefixes)
         && !lemma_http::is_test_file(path)
 }

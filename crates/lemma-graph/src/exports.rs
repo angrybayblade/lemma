@@ -11,14 +11,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use lemma_model::{Export, ExportKind, ExportLink, FoundBy};
+use lemma_model::{Export, ExportKind, ExportLink, FoundBy, Language};
 use lemma_syntax::ExtractorPool;
 use rayon::prelude::*;
 
 use crate::GraphError;
 use crate::adapters;
 use crate::address::parse_link;
-use crate::affects::CODE_EXTENSIONS;
 use crate::config::{LemmaFile, Service};
 use crate::handlers::{
     Conventions, Lookup, RouteSite, decorated, defined_at, passed_to_helper, registered_call,
@@ -555,8 +554,13 @@ type Written = (String, String, Route);
 type Routes = (Vec<Written>, BTreeMap<String, String>);
 
 fn routes(service: &Service, root: &Path, reading: RouteReading<'_>) -> Result<Routes, GraphError> {
-    let files = lemma_http::read_files(root, None, &service.index.include, &CODE_EXTENSIONS)
-        .map_err(|source| GraphError::Source { source })?;
+    let files = lemma_http::read_files(
+        root,
+        None,
+        &service.index.include,
+        &Language::CODE_EXTENSIONS,
+    )
+    .map_err(|source| GraphError::Source { source })?;
     let code: Vec<&lemma_http::SourceFile> = files
         .iter()
         .filter(|file| !lemma_http::is_test_file(&file.path))

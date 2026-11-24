@@ -499,11 +499,7 @@ fn files_mentioning(
 
 /// TypeScript and TSX share projects.
 pub(crate) fn same_family(left: Language, right: Language) -> bool {
-    let family = |language| match language {
-        Language::Tsx => Language::TypeScript,
-        other => other,
-    };
-    family(left) == family(right)
+    left.family() == right.family()
 }
 
 /// The answer when no live provider is needed: the file is stale, no

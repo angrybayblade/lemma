@@ -9,78 +9,9 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// A source language Lemma can extract symbols from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Language {
-    /// TypeScript (`.ts`, `.mts`, `.cts`).
-    TypeScript,
-    /// TypeScript with JSX (`.tsx`).
-    Tsx,
-    /// Python (`.py`, `.pyi`).
-    Python,
-    /// Go (`.go`).
-    Go,
-    /// Rust (`.rs`).
-    Rust,
-}
+pub use crate::language::Language;
 
-impl Language {
-    /// Every supported language, in a stable order.
-    pub const ALL: [Language; 5] = [
-        Self::TypeScript,
-        Self::Tsx,
-        Self::Python,
-        Self::Go,
-        Self::Rust,
-    ];
-
-    /// Picks the language for a file extension, without the leading dot.
-    pub fn from_extension(extension: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|language| language.extensions().contains(&extension))
-    }
-
-    /// File extensions of this language, without the leading dot.
-    pub fn extensions(self) -> &'static [&'static str] {
-        match self {
-            Self::TypeScript => &["ts", "mts", "cts"],
-            Self::Tsx => &["tsx"],
-            Self::Python => &["py", "pyi"],
-            Self::Go => &["go"],
-            Self::Rust => &["rs"],
-        }
-    }
-
-    /// The lowercase name used in storage, configuration, and output.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::TypeScript => "typescript",
-            Self::Tsx => "tsx",
-            Self::Python => "python",
-            Self::Go => "go",
-            Self::Rust => "rust",
-        }
-    }
-}
-
-impl fmt::Display for Language {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.pad(self.as_str())
-    }
-}
-
-impl FromStr for Language {
-    type Err = UnknownName;
-
-    fn from_str(name: &str) -> Result<Self, Self::Err> {
-        Self::ALL
-            .into_iter()
-            .find(|language| language.as_str() == name)
-            .ok_or_else(|| UnknownName(name.to_owned()))
-    }
-}
+mod language;
 
 /// What kind of definition a symbol is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

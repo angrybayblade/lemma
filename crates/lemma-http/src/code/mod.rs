@@ -340,7 +340,7 @@ pub fn extract(
 /// JavaScript is read as TSX. `None` for a file in no language Lemma reads.
 pub fn facts_language(file: &str) -> Option<Language> {
     let extension = file.rsplit_once('.').map_or("", |(_, extension)| extension);
-    parse_language(extension)
+    Language::parsing(extension)
 }
 
 /// One source file's code facts, read from its parse, so a caller wanting
@@ -451,16 +451,6 @@ fn block_opening(line: &str) -> Option<(&str, &'static str)> {
     [("/*", "*/"), ("\"\"\"", "\"\"\""), ("'''", "'''")]
         .into_iter()
         .find_map(|(open, close)| Some((line.strip_prefix(open)?, close)))
-}
-
-/// The grammar to parse a file with. JavaScript has no language of its own
-/// in Lemma's model; the TSX grammar parses it, JSX included, because
-/// TypeScript's syntax is a superset of it.
-fn parse_language(extension: &str) -> Option<Language> {
-    if matches!(extension, "js" | "jsx" | "mjs" | "cjs") {
-        return Some(Language::Tsx);
-    }
-    Language::from_extension(extension)
 }
 
 /// Which family of syntax a file is in, for the few node kinds and fields

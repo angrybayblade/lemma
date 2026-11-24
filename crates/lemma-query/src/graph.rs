@@ -991,11 +991,7 @@ impl Mentions {
 /// Whether two symbols are in one language, as far as a use by name goes:
 /// TypeScript with and without JSX count as one.
 fn same_language(left: &StoredSymbol, right: &StoredSymbol) -> bool {
-    let family = |language: Language| match language {
-        Language::Tsx => Language::TypeScript,
-        other => other,
-    };
-    family(left.language) == family(right.language)
+    left.language.family() == right.language.family()
 }
 
 /// Whether a symbol is used by calling it, so only a call counts as a use.
