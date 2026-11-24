@@ -5,6 +5,7 @@
 //! code. This crate is also the boundary where LSP shapes become Lemma types;
 //! nothing beyond it sees `lsp_types`.
 
+mod languages;
 mod registry;
 mod semantic;
 mod session;

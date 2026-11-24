@@ -21,6 +21,7 @@ use lemma_lsp::{LaunchConfig, LspClient, LspError, PositionEncoding, Readiness, 
 use lemma_model::{Language, Location, LocationQuery, Position, ProviderAnswer, Span};
 use serde_json::Value;
 
+use crate::languages;
 use crate::semantic::{SemanticProvider, SourcePoint};
 use crate::{ProviderDefinition, ProviderError};
 
@@ -329,7 +330,7 @@ impl ProviderSession {
             .notify::<DidOpenTextDocument>(DidOpenTextDocumentParams {
                 text_document: TextDocumentItem {
                     uri: uri.clone(),
-                    language_id: language_id(language).to_owned(),
+                    language_id: languages::language_id(language).to_owned(),
                     version: 1,
                     text,
                 },
@@ -671,22 +672,11 @@ fn normalize_version(reported: &str) -> String {
         .unwrap_or_else(|| reported.to_owned())
 }
 
-/// The identifier LSP expects for each language.
 fn file_change_type(change: FileChange) -> FileChangeType {
     match change {
         FileChange::Created => FileChangeType::CREATED,
         FileChange::Changed => FileChangeType::CHANGED,
         FileChange::Deleted => FileChangeType::DELETED,
-    }
-}
-
-fn language_id(language: Language) -> &'static str {
-    match language {
-        Language::TypeScript => "typescript",
-        Language::Tsx => "typescriptreact",
-        Language::Python => "python",
-        Language::Go => "go",
-        Language::Rust => "rust",
     }
 }
 
