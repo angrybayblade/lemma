@@ -5,6 +5,7 @@
 //! [`lookup`]: stored answers first, then the language's providers.
 
 mod graph;
+mod languages;
 mod lookup;
 mod navigation;
 mod outside;

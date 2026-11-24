@@ -15,6 +15,7 @@ use lemma_model::{GraphNode, Language, Outcome, Position, SymbolKind, Use, UseGr
 use lemma_store::{FactStore, NameMatch, StoredSymbol, SymbolFilter, SymbolId};
 
 use crate::QueryError;
+use crate::languages::{self, Lexicon};
 use crate::lookup::{Answered, LookupContext, LookupOptions};
 use crate::navigation::find_definitions;
 use crate::outside::OutsideFiles;
@@ -1067,7 +1068,7 @@ fn mask_comments_and_strings(
     language: Language,
     open_block: &mut Option<&'static str>,
 ) -> String {
-    let is_python = language == Language::Python;
+    let lexicon = languages::lexicon(language);
     let mut code = line.as_bytes().to_vec();
     let mut index = 0;
     while index < line.len() {
@@ -1077,12 +1078,12 @@ fn mask_comments_and_strings(
                 *open_block = None;
                 at + end.len()
             })
-        } else if (is_python && rest.starts_with('#')) || (!is_python && rest.starts_with("//")) {
+        } else if rest.starts_with(lexicon.line_comment) {
             rest.len()
-        } else if let Some(opener) = block_opener(rest, is_python) {
-            *open_block = Some(opener);
+        } else if let Some((opener, closer)) = block_opener(rest, lexicon) {
+            *open_block = Some(closer);
             opener.len()
-        } else if let Some(length) = string_length(rest, language) {
+        } else if let Some(length) = string_length(rest, lexicon) {
             length
         } else {
             index += rest.chars().next().map_or(1, char::len_utf8);
@@ -1094,22 +1095,22 @@ fn mask_comments_and_strings(
     String::from_utf8(code).unwrap_or_default()
 }
 
-/// A block comment or triple-quoted string starting here: its closing text.
-fn block_opener(rest: &str, is_python: bool) -> Option<&'static str> {
-    if is_python {
-        return ["\"\"\"", "'''"]
-            .into_iter()
-            .find(|quote| rest.starts_with(quote));
-    }
-    rest.starts_with("/*").then_some("*/")
+/// A block comment or triple-quoted string starting here: what opened it
+/// and what closes it.
+fn block_opener(rest: &str, lexicon: Lexicon) -> Option<(&'static str, &'static str)> {
+    lexicon
+        .blocks
+        .iter()
+        .find(|(opener, _)| rest.starts_with(opener))
+        .copied()
 }
 
 /// The length of a string literal starting here, through its closing quote
-/// or the end of the line. Rust's `'` also starts lifetimes, so it is not
-/// taken as a quote there.
-fn string_length(rest: &str, language: Language) -> Option<usize> {
+/// or the end of the line.
+fn string_length(rest: &str, lexicon: Lexicon) -> Option<usize> {
     let quote = rest.chars().next()?;
-    let is_quote = quote == '"' || quote == '`' || (quote == '\'' && language != Language::Rust);
+    let is_quote =
+        quote == '"' || quote == '`' || (quote == '\'' && lexicon.quotes_with_apostrophe);
     if !is_quote {
         return None;
     }
