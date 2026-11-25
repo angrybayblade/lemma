@@ -715,6 +715,9 @@ impl Walk<'_> {
         let Some(template) = self.string_value(path_node) else {
             return;
         };
+        if names_a_url && method.is_none() {
+            method = self.verb_called_with(node);
+        }
         // With neither a handler nor a request schema, nor another host,
         // the object may describe a request a client sends under a base.
         if !names_a_host && !has_handler && request.is_none() {
@@ -736,6 +739,17 @@ impl Walk<'_> {
             self.zod_route_request(method, &template, request);
         }
         self.add_method_path(method.as_deref(), &template, path_node);
+    }
+
+    /// `client.post({ url: '/v1/x' })`: the verb whose call `object` is an
+    /// argument of. A generated client names the method this way and
+    /// leaves it out of the object.
+    fn verb_called_with(&self, object: Node<'_>) -> Option<String> {
+        let arguments = object
+            .parent()
+            .filter(|parent| parent.kind() == "arguments")?;
+        let function = arguments.parent()?.child_by_field_name("function")?;
+        called_method(self.chain_parts(function).last()?)
     }
 
     /// `client.GET('/v1/x')`, `requests.post(url)`, `fetch(url, { method })`,
@@ -1847,6 +1861,33 @@ mod tests {
 
         assert_eq!(routes(&found), []);
         assert_eq!(found.path_references.len(), 1);
+    }
+
+    #[test]
+    fn a_url_object_passed_to_a_verb_call_takes_the_verb_as_its_method() {
+        let source = "export const createCharge = (options) => (options.client ?? client).post<Created, Failed>({ responseType: 'json', url: '/v1/charges', ...options });\nexport const readCharge = (options) => client.get({ url: '/v1/charges/{id}', ...options });\n";
+
+        let found = facts("sdk.gen.ts", source);
+
+        let mut requests: Vec<(&str, &str)> = found
+            .path_references
+            .iter()
+            .map(|reference| (reference.method.as_str(), reference.path.as_str()))
+            .collect();
+        requests.sort_unstable();
+        assert_eq!(
+            requests,
+            [("GET", "/v1/charges/{}"), ("POST", "/v1/charges")]
+        );
+    }
+
+    #[test]
+    fn a_url_object_passed_to_another_call_has_no_known_method() {
+        let source = "export const send = (options) => client.request({ url: '/v1/charges', ...options });\n";
+
+        let found = facts("sdk.gen.ts", source);
+
+        assert_eq!(found.path_references[0].method, "*");
     }
 
     #[test]
