@@ -127,4 +127,4 @@ A built-in adapter is a script under `crates/lemma-graph/adapters/` and a row in
 - Adapters run the code they read. A Go constructor that connects to a database, or a module that does work when imported, can fail or hang until `timeout_ms`; a constructor written for Lemma (`//go:build lemma`) or `exclude` avoids it.
 - `lemma index` reads no JavaScript files yet, so an adapter's handlers in `.js` files are found but not placed at a definition.
 - The Hono adapter runs with Bun. It cannot import apps built for Cloudflare Workers or Deno, which import `cloudflare:` or `jsr:` modules.
-- Committed documents may be JSON or YAML, OpenAPI 3.0 or 3.1. Lemma does not read Swagger 2.0; `lemma check` warns about such a document.
+- Committed documents may be JSON or YAML: OpenAPI 3.0 or 3.1, or Swagger 2.0. Of a Swagger 2.0 document Lemma reads the operations, their parameters, `basePath`, and the fields of JSON bodies (the `in: body` parameter and each response's `schema`); form fields (`in: formData`) are not read as request fields.

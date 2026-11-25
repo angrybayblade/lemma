@@ -176,32 +176,45 @@ fn parameters(document: &Json, list: Option<&Json>) -> Vec<Parameter> {
 }
 
 fn request_fields(document: &Json, operation: &Json) -> Vec<Field> {
-    let Some(body) = operation
-        .get("requestBody")
-        .map(|body| resolve(document, body))
-    else {
-        return Vec::new();
-    };
     // A field the schema requires must be in any body sent, whether or not
     // the body itself is (`requestBody.required`): generators such as
     // zod-openapi leave that flag out even where the schema requires fields.
     let mut fields = Vec::new();
-    if let Some(schema) = json_schema(body) {
+    if let Some(schema) = request_schema(document, operation) {
         flatten(document, schema, &Place::root(true), &mut fields);
     }
     dedupe(fields)
 }
 
+/// The schema of an operation's JSON request body: under `requestBody`, or
+/// on the parameter `in: body` where Swagger 2.0 keeps it.
+fn request_schema<'a>(document: &'a Json, operation: &'a Json) -> Option<&'a Json> {
+    if let Some(body) = operation.get("requestBody") {
+        return json_schema(resolve(document, body));
+    }
+    operation
+        .get("parameters")?
+        .as_array()?
+        .iter()
+        .map(|parameter| resolve(document, parameter))
+        .find(|parameter| parameter.get("in").and_then(Json::as_str) == Some("body"))?
+        .get("schema")
+}
+
+/// The schema of a response's JSON body: under `content`, or on the
+/// response itself where Swagger 2.0 keeps it.
+fn response_schema(response: &Json) -> Option<&Json> {
+    if response.get("content").is_some() {
+        return json_schema(response);
+    }
+    response.get("schema")
+}
+
 /// Whether the request body's schema, or every branch of a union, sets
 /// `additionalProperties: false`.
 fn rejects_unknown_fields(document: &Json, operation: &Json) -> bool {
-    let Some(body) = operation
-        .get("requestBody")
-        .map(|body| resolve(document, body))
+    let Some(schema) = request_schema(document, operation).map(|schema| resolve(document, schema))
     else {
-        return false;
-    };
-    let Some(schema) = json_schema(body).map(|schema| resolve(document, schema)) else {
         return false;
     };
     let is_closed = |schema: &Json| schema.get("additionalProperties") == Some(&Json::Bool(false));
@@ -224,7 +237,7 @@ fn response_fields(document: &Json, operation: &Json) -> Vec<String> {
         if !status.starts_with('2') {
             continue;
         }
-        if let Some(schema) = json_schema(resolve(document, response)) {
+        if let Some(schema) = response_schema(resolve(document, response)) {
             flatten(document, schema, &Place::root(true), &mut fields);
         }
     }
@@ -536,5 +549,52 @@ mod tests {
             .map(|field| (field.path.as_str(), field.required))
             .collect();
         assert_eq!(required, [("a", false), ("b", false), ("id", true)]);
+    }
+
+    /// A Swagger 2.0 document: the request body is a parameter, a response
+    /// holds its schema itself, and schemas are under `definitions`.
+    fn swagger_document() -> Json {
+        serde_json::json!({
+            "swagger": "2.0",
+            "paths": { "/users": { "post": {
+                "parameters": [
+                    { "name": "trace", "in": "header" },
+                    { "$ref": "#/parameters/NewUser" }
+                ],
+                "responses": {
+                    "201": { "schema": { "$ref": "#/definitions/User" } },
+                    "400": { "schema": { "type": "object",
+                        "properties": { "error": { "type": "string" } } } }
+                }
+            } } },
+            "parameters": { "NewUser": { "name": "body", "in": "body", "schema": {
+                "type": "object", "required": ["name"], "additionalProperties": false,
+                "properties": { "name": { "type": "string" }, "email": { "type": "string" } }
+            } } },
+            "definitions": { "User": { "type": "object", "properties": {
+                "id": { "type": "string" },
+                "team": { "$ref": "#/definitions/Team" }
+            } }, "Team": { "type": "object", "properties": { "slug": { "type": "string" } } } }
+        })
+    }
+
+    #[test]
+    fn a_swagger_body_parameter_gives_the_request_fields() {
+        let operation = operations(&swagger_document()).remove(0);
+
+        let fields: Vec<(&str, bool)> = operation
+            .request_fields
+            .iter()
+            .map(|field| (field.path.as_str(), field.required))
+            .collect();
+        assert_eq!(fields, [("email", false), ("name", true)]);
+        assert!(operation.rejects_unknown_fields);
+    }
+
+    #[test]
+    fn a_swagger_response_schema_gives_the_response_fields() {
+        let operation = operations(&swagger_document()).remove(0);
+
+        assert_eq!(operation.response_fields, ["id", "team", "team.slug"]);
     }
 }
