@@ -5,6 +5,10 @@
 //! Each config's aliases apply to files under its directory; the nearest
 //! config wins. A relative `extends` is followed for configs that declare no
 //! `paths` of their own.
+//!
+//! A config's `baseUrl` also lets a module be named from that directory
+//! (`services/billing` for `src/services/billing` under `"baseUrl":
+//! "./src"`), as the compiler resolves a name no alias matches.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -21,6 +25,9 @@ const MAX_EXTENDS: usize = 8;
 pub struct PathAliases {
     /// Configs with aliases, by the directory they apply to.
     configs: BTreeMap<String, Vec<Alias>>,
+    /// Each config's `baseUrl` directory, by the directory the config
+    /// applies to.
+    bases: BTreeMap<String, String>,
 }
 
 /// One `paths` entry: `"@/*": ["./src/*"]`.
@@ -50,6 +57,7 @@ impl PathAliases {
             .filter_map(|file| Some((file.path.clone(), read_config(&file.contents)?)))
             .collect();
         let mut aliases = BTreeMap::new();
+        let mut bases = BTreeMap::new();
         for path in configs
             .keys()
             .filter(|path| file_name(path) == "tsconfig.json")
@@ -58,8 +66,28 @@ impl PathAliases {
             if !resolved.is_empty() {
                 aliases.insert(parent(path), resolved);
             }
+            if let Some(base) = resolve_base(path, &configs) {
+                bases.insert(parent(path), base);
+            }
         }
-        Self { configs: aliases }
+        Self {
+            configs: aliases,
+            bases,
+        }
+    }
+
+    /// The module path a name that is neither relative nor an alias has
+    /// under the `baseUrl` of the nearest config that sets one, relative to
+    /// the repository root and without an extension.
+    pub fn under_base(&self, importing_file: &str, specifier: &str) -> Option<String> {
+        let mut directory = Path::new(importing_file).parent();
+        while let Some(current) = directory {
+            if let Some(base) = self.bases.get(current.to_string_lossy().as_ref()) {
+                return Some(join(base, specifier));
+            }
+            directory = current.parent();
+        }
+        None
     }
 
     /// The module paths an import may name, relative to the repository root
@@ -126,6 +154,28 @@ fn resolve_aliases(path: &str, configs: &BTreeMap<String, Config>) -> Vec<Alias>
         current = next;
     }
     Vec::new()
+}
+
+/// A config's `baseUrl` directory, from it or the nearest config it
+/// extends that sets one.
+fn resolve_base(path: &str, configs: &BTreeMap<String, Config>) -> Option<String> {
+    let mut current = path.to_owned();
+    for _ in 0..MAX_EXTENDS {
+        let config = configs.get(&current)?;
+        if let Some(base_url) = config.base_url.as_deref() {
+            return Some(base_directory(&current, Some(base_url)));
+        }
+        let extends = config
+            .extends
+            .as_deref()
+            .filter(|target| target.starts_with('.'))?;
+        let mut next = join(&parent(&current), extends);
+        if !is_json(&next) {
+            next.push_str(".json");
+        }
+        current = next;
+    }
+    None
 }
 
 fn aliases(paths: &serde_json::Map<String, Json>, base: &str) -> Vec<Alias> {
@@ -336,5 +386,36 @@ mod tests {
             aliases.candidates("other/x.ts", "~/server"),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn a_module_is_named_from_the_base_url_of_the_nearest_config_setting_one() {
+        let files = [
+            file(
+                "web/tsconfig.json",
+                r#"{ "compilerOptions": { "baseUrl": "./src" } }"#,
+            ),
+            file(
+                "api/tsconfig.json",
+                r#"{ "extends": "../tsconfig.base.json" }"#,
+            ),
+            file(
+                "tsconfig.base.json",
+                r#"{ "compilerOptions": { "baseUrl": "." } }"#,
+            ),
+            file("tools/tsconfig.json", r#"{ "compilerOptions": {} }"#),
+        ];
+
+        let aliases = PathAliases::from_files(&files);
+
+        assert_eq!(
+            aliases.under_base("web/src/pages/a.tsx", "services/billing"),
+            Some("web/src/services/billing".to_owned())
+        );
+        assert_eq!(
+            aliases.under_base("api/routes/x.ts", "lib/schemas"),
+            Some("lib/schemas".to_owned())
+        );
+        assert_eq!(aliases.under_base("tools/x.ts", "lib/schemas"), None);
     }
 }

@@ -63,10 +63,11 @@ pub(crate) fn resolve_import(
         return rust_module(file, specifier, known);
     }
     if !specifier.starts_with('.') {
-        return aliases
+        let by_alias = aliases
             .candidates(file, specifier)
             .iter()
             .find_map(|base| module_file(base, known));
+        return by_alias.or_else(|| under_base(file, specifier, known, aliases));
     }
     let directory = Path::new(file).parent().unwrap_or(Path::new(""));
     let is_python = Path::new(file)
@@ -78,6 +79,18 @@ pub(crate) fn resolve_import(
         join(directory, specifier.trim_end_matches(".js"))?
     };
     module_file(&base, known)
+}
+
+/// The file a module names from the `baseUrl` of the `tsconfig` above the
+/// importing file (`services/billing`), which is where the compiler looks
+/// for a name no alias matches before it looks among packages.
+fn under_base(
+    file: &str,
+    specifier: &str,
+    known: &BTreeSet<String>,
+    aliases: &PathAliases,
+) -> Option<String> {
+    module_file(&aliases.under_base(file, specifier)?, known)
 }
 
 /// The file a module path names, trying source extensions and index files.
@@ -208,6 +221,26 @@ mod tests {
             resolve_import("src/b.ts", "./models", &files, &PathAliases::default()).as_deref(),
             Some("src/models/index.ts")
         );
+    }
+
+    #[test]
+    fn a_module_is_named_from_a_base_url_and_a_package_or_a_dotted_name_is_not() {
+        let files = known(&["web/src/services/billing/index.tsx", "web/src/pages/a.tsx"]);
+        let aliases = PathAliases::from_files(&[SourceFile {
+            path: "web/tsconfig.json".to_owned(),
+            contents: r#"{ "compilerOptions": { "baseUrl": "./src" } }"#.to_owned(),
+        }]);
+
+        let script = resolve_import("web/src/pages/a.tsx", "services/billing", &files, &aliases);
+        let package = resolve_import("web/src/pages/a.tsx", "react", &files, &aliases);
+        let python = resolve_import("web/src/pages/a.py", "services.billing", &files, &aliases);
+
+        assert_eq!(
+            script.as_deref(),
+            Some("web/src/services/billing/index.tsx")
+        );
+        assert_eq!(package, None);
+        assert_eq!(python, None);
     }
 
     #[test]
