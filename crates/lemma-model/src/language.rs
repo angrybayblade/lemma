@@ -76,8 +76,9 @@ const ENTRIES: [Entry; 5] = [
 
 /// JavaScript files. JavaScript has no language of its own in Lemma's
 /// model: its files are not indexed for symbols, and where code is read for
-/// requests, routes and names, the TSX grammar parses them, JSX included,
-/// because TypeScript's syntax is a superset of JavaScript's.
+/// requests, routes, names and the functions a finding is traced through,
+/// the TSX grammar parses them, JSX included, because TypeScript's syntax
+/// is a superset of JavaScript's.
 // TODO: when languages move out of Lemma's core, decide whether JavaScript
 // becomes a language of its own, indexed like the others.
 const JAVASCRIPT_EXTENSIONS: [&str; 4] = ["js", "jsx", "mjs", "cjs"];

@@ -34,6 +34,8 @@ struct Answer {
     functions: usize,
     /// Whether the walk gives up and reaches everything.
     everything: bool,
+    /// How many files are in the language families reached whole.
+    whole_family_files: usize,
     seeds: BTreeSet<String>,
     reached_names: usize,
     /// Each reached file with the fewest names followed to reach it.
@@ -43,15 +45,14 @@ struct Answer {
 }
 
 /// The functions of every code file a tree lists.
-fn read_tree(root: &Path, list: &str) -> Functions {
+pub(super) fn read_tree(root: &Path, list: &str) -> Functions {
     let paths: Vec<&str> = list.lines().filter(|path| is_read_code(path)).collect();
     let functions: Vec<Function> = paths
         .par_iter()
         .map_init(
             || lemma_syntax::Extractor::new().unwrap(),
             |extractor, path| {
-                let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
-                let language = lemma_model::Language::from_extension(extension)?;
+                let language = crate::affects::functions_language(path)?;
                 let contents = std::fs::read_to_string(root.join(path)).ok()?;
                 let extraction = extractor.extract(language, &contents).ok()?;
                 Some(file_functions(path, &contents, extraction.symbols))
@@ -110,19 +111,33 @@ fn depths(seeds: &[(String, u8)], functions: &Functions) -> BTreeMap<String, u32
     files
 }
 
+/// How many of `functions`' files are in a family `reach` reaches whole.
+fn whole_family_files(reach: &ChangeReach, functions: &Functions) -> usize {
+    let files: BTreeSet<&str> = (0..functions.len())
+        .map(|function| functions.file_text(function))
+        .filter(|file| reach.whole_families.contains(&family(file)))
+        .collect();
+    files.len()
+}
+
 fn answer(job: &Job, functions: &Functions, read_ms: u128) -> Answer {
     let root = Path::new(&job.root);
     let started = Instant::now();
     let mut reach = ChangeReach {
         repository: String::new(),
         base: String::new(),
-        everything: !is_read_as_functions(&job.changed),
+        everything: !is_read_as_functions(&job.changed, functions),
         reached: HashSet::new(),
         files: HashSet::new(),
         families: HashSet::new(),
+        whole_families: HashSet::new(),
         route_files: HashMap::new(),
     };
-    let seeds = seed_names(root, &job.changed, functions);
+    let Seeds {
+        names: seeds,
+        whole_families,
+    } = seed_names(root, &job.changed, functions);
+    reach.whole_families.extend(whole_families);
     walk(&mut reach, seeds.clone(), functions);
     let walk_ms = started.elapsed().as_millis();
     let files = depths(&seeds, functions);
@@ -134,6 +149,7 @@ fn answer(job: &Job, functions: &Functions, read_ms: u128) -> Answer {
         id: job.id.clone(),
         functions: functions.len(),
         everything: reach.everything,
+        whole_family_files: whole_family_files(&reach, functions),
         seeds: seeds.into_iter().map(|(name, _)| name).collect(),
         reached_names: reach.len(),
         files,

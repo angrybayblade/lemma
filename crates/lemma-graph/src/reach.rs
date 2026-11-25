@@ -6,14 +6,22 @@
 //! keeps is reused when the change reaches none of the code the checker is
 //! given. Mentions are names, not resolved references, so this
 //! over-approximates, which only costs reuse; a change Lemma cannot read
-//! as functions (a changed `go.mod`, a script, a plain JavaScript file, a
-//! deleted file) reaches everything, and code in a plain JavaScript file
-//! may be reached by any change.
+//! as functions (a changed `go.mod`, a script, a deleted file, a plain
+//! JavaScript file outside the code tracing reads) reaches everything.
+//!
+//! Plain JavaScript has no language of its own in Lemma's model, so nothing
+//! says how its top-level code gives a name to a function
+//! (`exports.check = function () {}`, a property of `module.exports`): that
+//! code may define any name. A change to it, or a name that reaches it,
+//! reaches the file's whole language family.
 
-// TODO: a name is not followed through a plain JavaScript file, whose
-// functions tracing does not read: a change two steps away from a handler,
-// with such a file between them, is not seen to reach it. Closes when
-// JavaScript's functions are read.
+// TODO: a name an import gives another name is not followed under the new
+// one: a default import (`import check from './glue'`), `import { a as b }`,
+// `from x import a as b`. Closes when imports are resolved to what they
+// name.
+
+// TODO: when JavaScript becomes a language of its own, read the names its
+// top-level code exports, and follow those instead of reaching the family.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -40,6 +48,9 @@ pub(crate) struct ChangeReach {
     files: HashSet<String>,
     /// The language families the reached names are in.
     families: HashSet<u8>,
+    /// The language families reached whole: the change, or a name it
+    /// reaches, is in top-level code that may define any name.
+    whole_families: HashSet<u8>,
     /// For operations a document declares (`service.operationId`), the
     /// files their routes are declared in: where their code is found.
     pub(crate) route_files: HashMap<String, Vec<String>>,
@@ -48,7 +59,8 @@ pub(crate) struct ChangeReach {
 impl ChangeReach {
     /// Whether the change may reach `symbol` in `file`.
     pub(crate) fn reaches(&self, file: &str, symbol: &str) -> bool {
-        if self.everything || is_unread_code(file) {
+        let family = family(file);
+        if self.everything || self.whole_families.contains(&family) {
             return true;
         }
         // A file the change touched is reached whole, though the change
@@ -56,7 +68,7 @@ impl ChangeReach {
         if symbol.is_empty() && self.files.contains(file) {
             return true;
         }
-        if !self.families.contains(&family(file)) {
+        if !self.families.contains(&family) {
             return false;
         }
         let name = symbol.rsplit(['.', ':']).next().unwrap_or(symbol);
@@ -72,7 +84,7 @@ impl ChangeReach {
 /// The family of languages whose names can refer to one another, as a
 /// number from 1: a TypeScript change reaches Go code only through a
 /// contract or a link, never by a name its code happens to share. 0 for a
-/// file whose functions are not read.
+/// file that is not code.
 fn family(path: &str) -> u8 {
     affects::functions_language(path)
         .and_then(|language| u8::try_from(language.family().position() + 1).ok())
@@ -85,11 +97,12 @@ fn is_read_code(path: &str) -> bool {
     affects::functions_language(path).is_some()
 }
 
-/// Whether a file is code whose functions are not read, as plain
-/// JavaScript: nothing is known of the names it mentions, so a change to it
-/// may reach anything, and any change may reach it.
-fn is_unread_code(path: &str) -> bool {
-    Language::is_code_extension(extension_of(path)) && !is_read_code(path)
+/// Whether a file's top-level code may define any name: code in no language
+/// of Lemma's model, as plain JavaScript, which another language's grammar
+/// reads.
+fn defines_names_loosely(path: &str) -> bool {
+    let extension = extension_of(path);
+    Language::is_code_extension(extension) && Language::from_extension(extension).is_none()
 }
 
 fn extension_of(path: &str) -> &str {
@@ -161,26 +174,40 @@ fn changed_lines(root: &Path, base: &str, untracked: Option<&[String]>) -> Optio
     Some(files)
 }
 
-/// The names of the symbols in `path`, at the working directory, that a
-/// change on `ranges` (1-based lines) touches, with their language family:
-/// each symbol overlapping a range and its container, or every symbol of
-/// the file when a range overlaps none.
-fn symbols_touched(root: &Path, path: &str, ranges: &[(u32, u32)]) -> Vec<(String, u8)> {
+/// What a change touches in one file.
+#[derive(Default)]
+struct Touched {
+    /// The names of the symbols touched, each with its language family.
+    names: Vec<(String, u8)>,
+    /// Whether the change is on a line of code no symbol holds.
+    is_outside_symbols: bool,
+}
+
+/// What a change on `ranges` (1-based lines) touches in `path`, at the
+/// working directory: each symbol overlapping a range and its container, or
+/// every symbol of the file when a range overlaps none. A file that cannot
+/// be read counts as changed outside its symbols.
+fn symbols_touched(root: &Path, path: &str, ranges: &[(u32, u32)]) -> Touched {
     let language = family(path);
+    let unread = Touched {
+        names: Vec::new(),
+        is_outside_symbols: true,
+    };
     let Some(kind) = affects::functions_language(path) else {
-        return Vec::new();
+        return unread;
     };
     let Ok(source) = std::fs::read_to_string(root.join(path)) else {
-        return Vec::new();
+        return unread;
     };
     let Ok(mut extractor) = lemma_syntax::Extractor::new() else {
-        return Vec::new();
+        return unread;
     };
     let Ok(extraction) = extractor.extract(kind, &source) else {
-        return Vec::new();
+        return unread;
     };
     let lines =
         |symbol: &lemma_model::Symbol| (symbol.span.start.line + 1, symbol.span.end.line + 1);
+    let spans: Vec<(u32, u32)> = extraction.symbols.iter().map(lines).collect();
     let mut names = Vec::new();
     for (start, end) in ranges {
         let touched: Vec<&lemma_model::Symbol> = extraction
@@ -204,7 +231,27 @@ fn symbols_touched(root: &Path, path: &str, ranges: &[(u32, u32)]) -> Vec<(Strin
             }
         }
     }
-    names
+    Touched {
+        names,
+        is_outside_symbols: is_outside(&source, ranges, &spans),
+    }
+}
+
+/// Whether one of `ranges` (1-based lines) holds a line of `source` that is
+/// not blank and that none of `spans` holds.
+fn is_outside(source: &str, ranges: &[(u32, u32)], spans: &[(u32, u32)]) -> bool {
+    let is_held = |line: u32| {
+        spans
+            .iter()
+            .any(|(first, last)| *first <= line && line <= *last)
+    };
+    source.lines().zip(1u32..).any(|(text, line)| {
+        !text.trim().is_empty()
+            && !is_held(line)
+            && ranges
+                .iter()
+                .any(|(start, end)| *start <= line && line <= *end)
+    })
 }
 
 /// What the working directory's change against `base` reaches among
@@ -224,9 +271,12 @@ pub(crate) fn change_reach(
         reached: HashSet::new(),
         files: HashSet::new(),
         families: HashSet::new(),
+        whole_families: HashSet::new(),
         route_files: HashMap::new(),
     };
-    let Some(changed) = changed_lines(root, base, untracked).filter(is_read_as_functions) else {
+    let changed = changed_lines(root, base, untracked)
+        .filter(|changed| is_read_as_functions(changed, functions));
+    let Some(changed) = changed else {
         reach.everything = true;
         return reach;
     };
@@ -236,34 +286,66 @@ pub(crate) fn change_reach(
         .files
         .extend(changed.iter().map(|(path, _)| path.clone()));
     let seeds = seed_names(root, &changed, functions);
-    walk(&mut reach, seeds, functions);
+    reach.whole_families.extend(seeds.whole_families);
+    walk(&mut reach, seeds.names, functions);
     reach
 }
 
 /// Whether every changed file is code whose functions are read, or a
 /// description whose changes the evidence's key holds already: anything
-/// else (a deleted file, a changed `go.mod`, script or plain JavaScript
-/// file) may reach anything.
-fn is_read_as_functions(changed: &ChangedLines) -> bool {
+/// else (a deleted file, a changed `go.mod` or script) may reach anything.
+/// So may a file whose top-level code defines names loosely when
+/// `functions` hold nothing of it, since that code is then not known.
+fn is_read_as_functions(changed: &ChangedLines, functions: &Functions) -> bool {
     let is_description = |path: &str| {
         Path::new(path)
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("lm"))
     };
-    changed
+    let is_followed = changed
         .iter()
-        .all(|(path, _)| !path.is_empty() && (is_read_code(path) || is_description(path)))
+        .all(|(path, _)| !path.is_empty() && (is_read_code(path) || is_description(path)));
+    if !is_followed {
+        return false;
+    }
+    let loose: HashSet<&str> = changed
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .filter(|path| defines_names_loosely(path))
+        .collect();
+    if loose.is_empty() {
+        return true;
+    }
+    let held: HashSet<&str> = (0..functions.len())
+        .map(|function| functions.file_text(function))
+        .filter(|file| loose.contains(file))
+        .collect();
+    held.len() == loose.len()
 }
 
-/// The names a walk starts from, each with its language family: every
-/// symbol Tree-sitter finds where the change is (types, fields and constants
-/// included, which no function record holds) with its container, and the
-/// callable names of each function whose lines the change touched (its own,
-/// a method's type, and the names top-level code binds).
-fn seed_names(root: &Path, changed: &ChangedLines, functions: &Functions) -> Vec<(String, u8)> {
-    let mut seeds = Vec::new();
+/// What a walk starts from.
+#[derive(Default)]
+struct Seeds {
+    /// The names to follow, each with its language family.
+    names: Vec<(String, u8)>,
+    /// The language families the change reaches whole.
+    whole_families: HashSet<u8>,
+}
+
+/// What a walk starts from: every symbol Tree-sitter finds where the change
+/// is (types, fields and constants included, which no function record
+/// holds) with its container, and the callable names of each function whose
+/// lines the change touched (its own, a method's type, and the names
+/// top-level code binds). A change outside the symbols of a file whose
+/// top-level code may define any name reaches the file's family whole.
+fn seed_names(root: &Path, changed: &ChangedLines, functions: &Functions) -> Seeds {
+    let mut seeds = Seeds::default();
     for (path, ranges) in changed {
-        seeds.extend(symbols_touched(root, path, ranges));
+        let touched = symbols_touched(root, path, ranges);
+        seeds.names.extend(touched.names);
+        if touched.is_outside_symbols && defines_names_loosely(path) {
+            seeds.whole_families.insert(family(path));
+        }
     }
     let touched: HashMap<&str, &Vec<(u32, u32)>> = changed
         .iter()
@@ -282,7 +364,9 @@ fn seed_names(root: &Path, changed: &ChangedLines, functions: &Functions) -> Vec
         }
         let language = family(functions.file_text(function));
         for name in functions.callable_names(function) {
-            seeds.push((functions.text(*name).to_owned(), language));
+            seeds
+                .names
+                .push((functions.text(*name).to_owned(), language));
         }
     }
     seeds
@@ -290,7 +374,8 @@ fn seed_names(root: &Path, changed: &ChangedLines, functions: &Functions) -> Vec
 
 /// Follows names outwards from `seeds` into `reach`: every function that
 /// mentions a reached name, in the same language family, is reached by its
-/// callable names in turn.
+/// callable names in turn. Top-level code that may define any name, once
+/// reached, reaches its family whole.
 fn walk(reach: &mut ChangeReach, seeds: Vec<(String, u8)>, functions: &Functions) {
     // Names are followed by their ids in the table; the work is per
     // mention, so strings and hashing stay out of it. A name only travels
@@ -328,6 +413,11 @@ fn walk(reach: &mut ChangeReach, seeds: Vec<(String, u8)>, functions: &Functions
                 continue;
             }
             files.insert(functions.file(function));
+            if functions.is_unnamed(function)
+                && defines_names_loosely(functions.file_text(function))
+            {
+                walked.reach.whole_families.insert(language);
+            }
             for reached in functions.callable_names(function) {
                 walked.reach_name(*reached, language);
             }
@@ -446,6 +536,7 @@ mod tests {
             reached: HashSet::new(),
             files: HashSet::new(),
             families: HashSet::new(),
+            whole_families: HashSet::new(),
             route_files: HashMap::new(),
         };
         let seeds = vec![("Request".to_owned(), 1), ("NotInTable".to_owned(), 1)];
@@ -601,80 +692,144 @@ mod tests {
     ];
     const PARSE: &str = "export function parse(input) {\n  return input\n}\n";
 
-    /// `repository()` with one more file committed.
-    fn repository_with(path: &str, text: &str) -> tempfile::TempDir {
+    /// `repository()` with more files committed.
+    fn repository_with(files: &[(&str, &str)]) -> tempfile::TempDir {
         let root = repository();
-        write(root.path(), path, text);
+        for (path, text) in files {
+            write(root.path(), path, text);
+        }
         git(root.path(), &["add", "."]);
         git(root.path(), &["commit", "-q", "-m", "more"]);
         root
     }
 
+    /// The functions tracing reads from `paths` in `root`'s working
+    /// directory.
+    fn functions_read(root: &Path, paths: &[&str]) -> Functions {
+        measure::read_tree(root, &paths.join("\n"))
+    }
+
+    fn reach_of(root: &Path, functions: &Functions) -> ChangeReach {
+        change_reach("#r", (root, "HEAD"), Some(&untracked(root)), functions)
+    }
+
     #[test]
-    fn a_changed_plain_javascript_file_reaches_everything() {
+    fn a_changed_function_in_plain_javascript_reaches_what_mentions_it() {
         for path in PLAIN_JAVASCRIPT {
-            let root = repository_with(path, PARSE);
+            let root = repository_with(&[(path, PARSE)]);
             write(
                 root.path(),
                 path,
                 &PARSE.replace("input\n}", "input.trim()\n}"),
             );
+            let functions =
+                functions_read(root.path(), &[path, "src/route.ts", "handlers/setup.go"]);
 
-            let reach = change_reach(
-                "#r",
-                (root.path(), "HEAD"),
-                Some(&untracked(root.path())),
-                &functions(),
-            );
+            let reach = reach_of(root.path(), &functions);
 
-            assert!(reach.everything, "{path}");
+            assert!(!reach.everything, "{path}");
+            assert!(reach.reaches("src/route.ts", "handle"), "{path}");
+            assert!(!reach.reaches("handlers/setup.go", "Setup"), "{path}");
         }
     }
 
     #[test]
-    fn a_new_plain_javascript_file_reaches_everything() {
+    fn a_new_plain_javascript_file_reaches_what_mentions_its_names() {
         for path in PLAIN_JAVASCRIPT {
             let root = repository();
             write(root.path(), path, PARSE);
+            let functions =
+                functions_read(root.path(), &[path, "src/route.ts", "handlers/setup.go"]);
 
-            let reach = change_reach(
-                "#r",
-                (root.path(), "HEAD"),
-                Some(&untracked(root.path())),
-                &functions(),
-            );
+            let reach = reach_of(root.path(), &functions);
 
-            assert!(reach.everything, "{path}");
+            assert!(!reach.everything, "{path}");
+            assert!(reach.reaches("src/route.ts", "handle"), "{path}");
+            assert!(!reach.reaches("handlers/setup.go", "Setup"), "{path}");
         }
     }
 
     #[test]
-    fn code_in_a_plain_javascript_file_may_be_reached_by_any_change() {
-        let root = repository();
+    fn a_changed_plain_javascript_file_tracing_does_not_read_reaches_everything() {
+        let root = repository_with(&[("scripts/build.js", "module.exports = { minify: true }\n")]);
+        write(
+            root.path(),
+            "scripts/build.js",
+            "module.exports = { minify: false }\n",
+        );
+
+        let reach = reach_of(root.path(), &functions());
+
+        assert!(reach.everything);
+    }
+
+    #[test]
+    fn code_in_a_plain_javascript_file_is_reached_only_by_a_change_that_names_it() {
+        let root = repository_with(&[("src/parse.js", PARSE)]);
         write(
             root.path(),
             "handlers/setup.go",
             &GO.replace("\tID string\n", "\tID string\n\tURL string\n"),
         );
-
-        let reach = change_reach(
-            "#r",
-            (root.path(), "HEAD"),
-            Some(&untracked(root.path())),
-            &functions(),
+        let functions = functions_read(
+            root.path(),
+            &["src/parse.js", "src/route.ts", "handlers/setup.go"],
         );
 
+        let reach = reach_of(root.path(), &functions);
+
+        assert!(reach.reaches("handlers/setup.go", "Setup"));
+        assert!(!reach.reaches("src/parse.js", "parse"));
+    }
+
+    const GLUE: &str = "const { Request } = require('./schema')\n\nexports.check = function (body) {\n  return Request.parse(body)\n}\n";
+    const HANDLER: &str =
+        "import { check } from './glue'\nexport function accept(body) {\n  return check(body)\n}\n";
+    const GLUED: [&str; 3] = ["src/schema.ts", "src/glue.js", "src/handler.ts"];
+
+    #[test]
+    fn a_name_is_followed_through_a_plain_javascript_file() {
+        let root = repository_with(&[("src/glue.js", GLUE), ("src/handler.ts", HANDLER)]);
+        write(
+            root.path(),
+            "src/schema.ts",
+            &SCHEMA.replace(
+                "  id: z.string(),\n",
+                "  id: z.string(),\n  uuid: z.string(),\n",
+            ),
+        );
+        let functions = functions_read(root.path(), &GLUED);
+
+        let reach = reach_of(root.path(), &functions);
+
         assert!(!reach.everything);
-        for path in PLAIN_JAVASCRIPT {
-            assert!(reach.reaches(path, "parse"), "{path}");
-        }
-        assert!(!reach.reaches("src/route.ts", "handle"));
+        assert!(reach.reaches("src/glue.js", "check"));
+        assert!(reach.reaches("src/handler.ts", "accept"));
+        assert!(!reach.reaches("handlers/setup.go", "Setup"));
+    }
+
+    #[test]
+    fn a_change_outside_a_plain_javascript_file_s_symbols_reaches_its_whole_family() {
+        let root = repository_with(&[("src/glue.js", GLUE), ("src/handler.ts", HANDLER)]);
+        write(
+            root.path(),
+            "src/glue.js",
+            &GLUE.replace("parse(body)", "parse(body ?? {})"),
+        );
+        let functions = functions_read(root.path(), &GLUED);
+
+        let reach = reach_of(root.path(), &functions);
+
+        assert!(!reach.everything);
+        assert!(reach.reaches("src/handler.ts", "accept"));
+        assert!(reach.reaches("src/route.ts", "handle"));
+        assert!(!reach.reaches("handlers/setup.go", "Setup"));
     }
 
     #[test]
     fn a_changed_file_holding_no_symbol_is_itself_reached() {
         const ROUTES: &str = "import { router } from './router'\nrouter.get('/items', (request, response) => {\n  response.json([])\n})\n";
-        let root = repository_with("src/routes.ts", ROUTES);
+        let root = repository_with(&[("src/routes.ts", ROUTES)]);
         write(root.path(), "src/routes.ts", &ROUTES.replace("[]", "[1]"));
 
         let reach = change_reach(

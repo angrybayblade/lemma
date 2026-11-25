@@ -944,36 +944,30 @@ fn parse_functions(
     Ok(parsed)
 }
 
-/// The key a file's functions are kept under: the build of Lemma, the
-/// record's layout, the path and what names the contents
-/// ([`lemma_http::contents_key`]).
 /// Keeps tracing's record of each file the facts pass parses, under the key
 /// tracing looks it up by, so tracing reads neither the file nor a parse of
-/// it again. The record is the one tracing would make: none for a test, and
-/// one with no functions for a file in a language tracing does not read,
-/// such as plain JavaScript, which the facts pass reads as TSX.
+/// it again. The record is the one tracing would make: none for a test.
 pub(crate) fn keep_functions_too(build: String) -> lemma_verify::AlsoKeep {
     lemma_verify::AlsoKeep(Arc::new(move |file, named, parsed| {
         let path = &file.path;
-        let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
-        if !Language::is_code_extension(extension) || lemma_http::is_test_file(path) {
+        if lemma_http::is_test_file(path) {
             return None;
         }
-        let functions = match Language::from_extension(extension) {
-            Some(language) if language == parsed.language => {
-                file_functions(path, &file.contents, parsed.extraction.symbols.clone())
-            }
-            // Parsed otherwise than tracing would parse it: tracing reads it.
-            Some(_) => return None,
-            None => Vec::new(),
-        };
+        // Parsed otherwise than tracing would parse it: tracing reads it.
+        if functions_language(path)? != parsed.language {
+            return None;
+        }
+        let functions = file_functions(path, &file.contents, parsed.extraction.symbols.clone());
         let record = functions::encode_record(&functions);
         Some((functions_key(&build, path, named), record))
     }))
 }
 
+/// The key a file's functions are kept under: the build of Lemma, the
+/// record's layout, the path and what names the contents
+/// ([`lemma_http::contents_key`]).
 fn functions_key(build: &str, path: &str, contents: &[u8]) -> String {
-    let mut described = format!("{build}\0functions record 1\0{path}\0").into_bytes();
+    let mut described = format!("{build}\0functions record 2\0{path}\0").into_bytes();
     described.extend_from_slice(contents);
     lemma_model::content_hash(&described)
 }
@@ -1001,18 +995,18 @@ fn read_by_path(
         .collect())
 }
 
-/// The language tracing reads a file's functions in: none for a file that
-/// is not code, and none for plain JavaScript, whose requests are read and
-/// whose functions are not.
+/// The language whose grammar tracing reads a file's functions with: none
+/// for a file that is not code. A plain JavaScript file's are read with the
+/// grammar its requests are read with.
 pub(crate) fn functions_language(path: &str) -> Option<Language> {
     let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
     Language::is_code_extension(extension)
-        .then(|| Language::from_extension(extension))
+        .then(|| Language::parsing(extension))
         .flatten()
 }
 
 /// A file's functions, read with this thread's extractor from
-/// `extractors`; none for a file in no language Lemma reads.
+/// `extractors`; none for a file that is not code.
 fn read_functions(
     file: &lemma_http::SourceFile,
     extractors: &ExtractorPool,
@@ -1358,13 +1352,16 @@ mod tests {
     }
 
     #[test]
-    fn plain_javascript_is_kept_without_functions_and_tests_not_at_all() {
+    fn plain_javascript_is_kept_with_its_functions_and_tests_not_at_all() {
         let script = source("src/pay.js", "function pay() { return 1 }\n");
         let test = source("src/pay.test.ts", "function pay() { return 1 }\n");
+        let extractors = ExtractorPool::new();
 
         let kept = kept_by_facts_pass(&script).unwrap();
 
-        assert_eq!(kept.1, functions::encode_record(&[]));
+        let traced = read_functions(&script, &extractors).unwrap();
+        assert_eq!(traced[0].name, "pay");
+        assert_eq!(kept.1, functions::encode_record(&traced));
         assert_eq!(kept_by_facts_pass(&test), None);
     }
 
