@@ -44,7 +44,7 @@ struct Answer {
 
 /// The functions of every code file a tree lists.
 fn read_tree(root: &Path, list: &str) -> Functions {
-    let paths: Vec<&str> = list.lines().filter(|path| is_code(path)).collect();
+    let paths: Vec<&str> = list.lines().filter(|path| is_read_code(path)).collect();
     let functions: Vec<Function> = paths
         .par_iter()
         .map_init(

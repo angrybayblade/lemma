@@ -1001,17 +1001,23 @@ fn read_by_path(
         .collect())
 }
 
+/// The language tracing reads a file's functions in: none for a file that
+/// is not code, and none for plain JavaScript, whose requests are read and
+/// whose functions are not.
+pub(crate) fn functions_language(path: &str) -> Option<Language> {
+    let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
+    Language::is_code_extension(extension)
+        .then(|| Language::from_extension(extension))
+        .flatten()
+}
+
 /// A file's functions, read with this thread's extractor from
 /// `extractors`; none for a file in no language Lemma reads.
 fn read_functions(
     file: &lemma_http::SourceFile,
     extractors: &ExtractorPool,
 ) -> Result<Vec<Function>, GraphError> {
-    let extension = file
-        .path
-        .rsplit_once('.')
-        .map_or("", |(_, extension)| extension);
-    let Some(language) = Language::from_extension(extension) else {
+    let Some(language) = functions_language(&file.path) else {
         return Ok(Vec::new());
     };
     let extraction = extractors

@@ -70,14 +70,10 @@ const NAMES_A_LANGUAGE: [(&str, &str); 11] = [
 
 /// Where production code may list code file extensions beyond the places
 /// that may name a language.
-const LISTS_EXTENSIONS: [(&str, &str); 3] = [
+const LISTS_EXTENSIONS: [(&str, &str); 2] = [
     (
         "lemma-graph/src/adapters/registry.rs",
         "the interpreter each adapter script runs with",
-    ),
-    (
-        "lemma-graph/src/reach.rs",
-        "module files the name walk leaves out",
     ),
     (
         "lemma-lang/src/stdlib/mod.rs",
