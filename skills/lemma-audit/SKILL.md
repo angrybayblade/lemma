@@ -26,6 +26,7 @@ It ends with what it looked at: the operations and the calls of them it read, an
 | --- | --- |
 | `include_matches_nothing` | Correct the pattern, or remove it |
 | `document_missing`, `document_unreadable` | Correct the path, or remove the document from `operations` |
+| `document_references_not_followed` | Bundle the document into one file (the paths and schemas it keeps in other files are not read) and export the bundle |
 | `schema_unresolved` | Point `request`/`response` at a type or JSON path that exists |
 | `schema_open` | Informational: point the schema at the type's definition if it matters |
 | `runtime_missing` | Correct the `runtime`, or install what it names |

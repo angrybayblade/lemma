@@ -57,6 +57,7 @@ The MCP server has a `verify` tool with the arguments `module`, `all` and `links
 | `include_matches_nothing` | error | An `include` or `exclude` pattern matches no tracked file. |
 | `document_missing` | error | A document a service exports does not exist. |
 | `document_unreadable` | error | A document does not parse, or describes no operations. |
+| `document_references_not_followed` | warning | A document refers to other files or URLs (`$ref: ./paths/users.yaml`). Only references within the document (`#/...`) are followed, so the paths and schemas kept elsewhere are not read. Export the document bundled into one file. |
 | `schema_unresolved` | error | A type or document location does not resolve. A schema command, resolver or adapter that fails to run is not reported here: `lemma check` warns about it (`resolver`, `adapter`) and fails on it at `--level strict`. |
 | `schema_open` | informational | A schema uses types Lemma could not follow, so the fields under them go uncompared. |
 | `runtime_missing` | error | An interpreter or toolchain the service's `runtime` names does not exist. |

@@ -316,16 +316,65 @@ fn document_findings(
             findings.push(missing_document(location, document));
             continue;
         };
-        if !describes_operations(document, &text) {
+        let parsed = crate::adapters::parse_document(document, &text).ok();
+        let Some(parsed) = parsed.filter(describes_operations) else {
             findings.push(finding(
                 Severity::Error,
                 location,
                 "document_unreadable",
                 format!("{document} does not parse, or describes no operations"),
             ));
-        }
+            continue;
+        };
+        findings.extend(references_not_followed(location, document, &parsed));
     }
     findings
+}
+
+/// A warning for a document that refers to other files or URLs: only
+/// references within the document (`#/...`) are followed, so what the
+/// others hold, whole paths among them, is not read.
+fn references_not_followed(
+    location: &str,
+    name: &str,
+    document: &serde_json::Value,
+) -> Option<DescriptionFinding> {
+    let outside = references_outside(document);
+    if outside == 0 {
+        return None;
+    }
+    let paths = document
+        .get("paths")
+        .and_then(serde_json::Value::as_object)
+        .map_or(0, |paths| {
+            paths.values().filter(|item| refers_outside(item)).count()
+        });
+    Some(finding(
+        Severity::Warning,
+        location,
+        "document_references_not_followed",
+        format!(
+            "{name} has {outside} references to other files, {paths} of them for a whole path; they are not followed, so what they hold is not read: export the document bundled into one file"
+        ),
+    ))
+}
+
+/// Whether `value` is a reference to something outside its document.
+fn refers_outside(value: &serde_json::Value) -> bool {
+    value
+        .get("$ref")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|reference| !reference.starts_with('#'))
+}
+
+/// How many references under `value` point outside its document.
+fn references_outside(value: &serde_json::Value) -> usize {
+    let nested: usize = match value {
+        serde_json::Value::Object(map) => map.values().map(references_outside).sum(),
+        serde_json::Value::Array(items) => items.iter().map(references_outside).sum(),
+        _ => 0,
+    };
+    nested + usize::from(refers_outside(value))
 }
 
 fn missing_document(location: &str, document: &str) -> DescriptionFinding {
@@ -337,13 +386,11 @@ fn missing_document(location: &str, document: &str) -> DescriptionFinding {
     )
 }
 
-fn describes_operations(name: &str, text: &str) -> bool {
-    crate::adapters::parse_document(name, text).is_ok_and(|document| {
-        document
-            .get("paths")
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|paths| !paths.is_empty())
-    })
+fn describes_operations(document: &serde_json::Value) -> bool {
+    document
+        .get("paths")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|paths| !paths.is_empty())
 }
 
 fn missing_runtimes(
@@ -562,4 +609,47 @@ fn listed_tracked(checkout: &Checkout, listings: &lemma_http::Listings) -> Optio
         None => listings.untracked(&checkout.root).ok()?,
     };
     Some(ListedTracked { files, untracked })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn references_to_other_files_are_counted_and_said_not_to_be_followed() {
+        let document = serde_json::json!({
+            "paths": {
+                "/users": { "$ref": "./paths/users.yaml" },
+                "/teams": { "get": { "responses": { "200": { "content": { "application/json": {
+                    "schema": { "$ref": "schemas.yaml#/Team" } } } } } } },
+                "/health": { "get": { "responses": { "200": {
+                    "$ref": "#/components/responses/Ok" } } } }
+            }
+        });
+
+        let found = references_not_followed("#api:api", "openapi.yaml", &document).unwrap();
+
+        assert_eq!(found.severity, Severity::Warning);
+        assert_eq!(found.name, "document_references_not_followed");
+        assert!(
+            found.message.starts_with(
+                "openapi.yaml has 2 references to other files, 1 of them for a whole path"
+            ),
+            "{}",
+            found.message
+        );
+    }
+
+    #[test]
+    fn a_document_referring_only_to_itself_has_nothing_unfollowed() {
+        let document = serde_json::json!({
+            "paths": { "/health": { "get": { "responses": { "200": {
+                "$ref": "#/components/responses/Ok" } } } } }
+        });
+
+        assert_eq!(
+            references_not_followed("#api:api", "openapi.yaml", &document),
+            None
+        );
+    }
 }
