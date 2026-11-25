@@ -161,6 +161,10 @@ fn print_text(
     )
 }
 
+/// The candidate for a client none of whose functions has a call read,
+/// which is about the client and has no places to show.
+const CLIENT_WITHOUT_CALLERS: &str = "client_without_callers";
+
 /// The first ten candidates, or with `all` every one: where each is, what
 /// was found there, and the first place that shows it.
 fn print_candidates(
@@ -174,14 +178,22 @@ fn print_candidates(
         SHOWN_WITHOUT_ALL
     };
     for candidate in candidates.iter().take(shown) {
-        writeln!(
-            out,
-            "candidate {}  {} places in {} files write the paths of {} described operations, and no service includes it",
-            candidate.location,
-            candidate.places.len(),
-            candidate.files,
-            candidate.operations
-        )?;
+        if candidate.name == CLIENT_WITHOUT_CALLERS {
+            writeln!(
+                out,
+                "candidate {}  its functions request {} operations, and no call of one was read",
+                candidate.location, candidate.operations
+            )?;
+        } else {
+            writeln!(
+                out,
+                "candidate {}  {} places in {} files write the paths of {} described operations, and no service includes it",
+                candidate.location,
+                candidate.places.len(),
+                candidate.files,
+                candidate.operations
+            )?;
+        }
         if let Some(first) = candidate.places.first() {
             writeln!(
                 out,

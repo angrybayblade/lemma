@@ -43,14 +43,17 @@ const FILES_AT_A_TIME: usize = 512;
 pub struct Candidate {
     /// The kind of candidate, such as `calls_outside_services`.
     pub name: String,
-    /// The directory or file the description leaves out, after its
-    /// repository: `#web:scripts`.
+    /// What it is about: the directory or file the description leaves out,
+    /// after its repository (`#web:scripts`), or a client.
     pub location: String,
-    /// How many files there write the path of a described operation.
+    /// How many files there write the path of a described operation, or
+    /// hold the client's functions.
     pub files: usize,
-    /// How many described operations including it would add calls of.
+    /// How many described operations including it would add calls of, or
+    /// the client's functions request.
     pub operations: usize,
-    /// The places that write one, in the order of their files and lines.
+    /// The places that write one, in the order of their files and lines;
+    /// none for a client.
     pub places: Vec<WrittenCall>,
 }
 

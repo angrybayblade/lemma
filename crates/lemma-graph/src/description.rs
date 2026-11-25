@@ -19,6 +19,7 @@ use crate::config::{Level, Runtime, Service};
 use crate::repos::{Checkout, tracked_files};
 
 mod outside;
+mod uncalled;
 
 pub use outside::{CallsInTests, Candidate, UnreadFiles, WrittenCall};
 
@@ -91,8 +92,15 @@ pub struct UnreadRequest {
     pub written: String,
 }
 
-/// The relations [`LookedAt`] is counted from, asked of every run.
-const LOOKED_AT_RELATIONS: [&str; 3] = ["operation", "calls", "unread_request"];
+/// The relations [`LookedAt`] and the candidates are counted from, asked
+/// of every run.
+const LOOKED_AT_RELATIONS: [&str; 5] = [
+    "operation",
+    "calls",
+    "unread_request",
+    "client_operation",
+    "calls_client",
+];
 
 /// Compares the description at `entry` with the code it describes.
 /// Language servers, through `references`, say which anchors nothing calls.
@@ -129,10 +137,16 @@ pub fn verify_description<E: Engine>(
     }
     findings.sort();
     findings.dedup();
-    let outside = match &report {
+    let mut outside = match &report {
         Some(report) => outside::written_outside(&repos, report)?,
         None => outside::Outside::default(),
     };
+    if let Some(report) = &report {
+        outside
+            .candidates
+            .extend(uncalled::clients_without_callers(&report.relations));
+        outside.candidates.sort();
+    }
     let looked_at = report.as_ref().map(|report| LookedAt {
         calls_in_tests: outside.calls_in_tests,
         unread_files: outside::unread_files(&repos),

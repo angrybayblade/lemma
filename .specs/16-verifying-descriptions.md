@@ -136,6 +136,7 @@ Certain does not mean unwanted. A vendored document is correctly reported and in
 | `undeclared_webhook` | An outbound request to a URL built from configuration, or a route shaped like a webhook receiver |
 | `unrecognised_client` | Code imports a package built in this workspace, and calls into it resolve to nothing. It may be a client, or just a library |
 | `calls_outside_services` | Code in a directory no service includes, and none excludes, writes the paths of described operations. It may be a consumer nothing checks, or examples and scripts left out on purpose. *Built* |
+| `client_without_callers` | A described client has functions and no call of any of them is among the rows. Its callers may be outside every service, in a file type with no reader, or written in a way calls are not followed through. *Built* |
 | `uncomposed_repository` | A sibling directory is a repository with a `mod.lm`, and this workspace does not list it |
 | `document_outside_services` | A tracked OpenAPI document that no service includes. It may be a served API or a third party's |
 
@@ -242,7 +243,7 @@ Removing a link for a documented HTTP call is not a mutation worth testing, beca
 1. Rename the skill. Land the new command with the wrong-configuration and outdated-link findings, in the change that deletes today's `lemma verify` ([document 15](15-one-description-format.md#rollout), step 5). Move `--anchors` and `--links`. *Acceptance:* fixtures and the clean baseline.
 2. Add the certain missing-link findings. *Acceptance:* description-mutation recall on the private workspace.
 3. Add `lemma.verify`, allowances, reporting on reach, and proposed edits. *Acceptance:* every finding with a mechanical fix proposes an edit that makes it go away when applied.
-4. Add candidates, one family at a time. *Acceptance:* the precision target. *Built:* `calls_outside_services`. On eight public frontends whose code was taken out of their descriptions, every one came back as a candidate, with 152 of the 175 places read when the code is included (158 of 158 where the document keeps `/api` in every path); the 23 not found are paths of one fixed segment in files that write no longer one. On the descriptions as written there were no candidates.
+4. Add candidates, one family at a time. *Acceptance:* the precision target. *Built:* `calls_outside_services`. On eight public frontends whose code was taken out of their descriptions, every one came back as a candidate, with 152 of the 175 places read when the code is included (158 of 158 where the document keeps `/api` in every path); the 23 not found are paths of one fixed segment in files that write no longer one. On the descriptions as written there were no candidates. *Built:* `client_without_callers`, counted from the `client_operation` and `calls_client` rows of the run (`description/uncalled.rs`), so it needs no reading of its own.
 5. Replace the audit skill's table, and end onboarding with `lemma verify`.
 
 ## Prior art

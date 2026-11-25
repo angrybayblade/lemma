@@ -91,8 +91,18 @@ candidate #web:scripts  2 places in 1 files write the paths of 2 described opera
 | Candidate | Meaning |
 | --- | --- |
 | `calls_outside_services` | Code in a directory no service includes writes the paths of described operations. If it is a consumer, nothing checks it: a change that breaks it gives no finding. |
+| `client_without_callers` | A client the description names has functions, and no call of any of them was read. Its callers are probably in code no service includes, in a file type Lemma does not read, or written in a way it does not follow, so a change that breaks them gives no finding. |
 
 The location is the outermost directory that holds the code and nothing a service includes, which is what an `include` would have to add. Each place is one Lemma would read as a call if a service included the file: a path in a string or a request, with the method where the call shows one. To settle a candidate, add the directory to a service's `include` (or give it a service of its own), or add it to a service's `exclude` to say it is left out on purpose.
+
+A client without callers is printed with the operations its functions request and has no places:
+
+```text
+candidate sdk  its functions request 2 operations, and no call of one was read
+        [client_without_callers]
+```
+
+Look for where the client is imported. If that code is in no service, include it. If it is included, see how it calls the client: a call is followed where it names the client's resource in a chain or starts at a name imported from the client ([Limits](check.md#limits)). A client with no caller in the workspace, such as one published for other teams, keeps the candidate; it never fails the command.
 
 What the pattern looks for, and what it leaves out:
 
@@ -135,6 +145,6 @@ These requests may call a described operation; no finding says anything about th
 
 ## Limits
 
-A clean result does not mean nothing is missing. Of what a description can leave out, `lemma verify` looks only for code that writes described paths ([candidates](#candidates)). It does not yet look for an OpenAPI document no service exports, route code no service includes, a call over a queue no operation describes, or a repository the workspace does not compose. The [`lemma-audit` skill](../skills/lemma-audit/SKILL.md) works through those by hand.
+A clean result does not mean nothing is missing. Of what a description can leave out, `lemma verify` looks only for code that writes described paths and for clients no read call reaches ([candidates](#candidates)). It does not yet look for an OpenAPI document no service exports, route code no service includes, a call over a queue no operation describes, or a repository the workspace does not compose. The [`lemma-audit` skill](../skills/lemma-audit/SKILL.md) works through those by hand.
 
 There is no way yet to accept a finding or a candidate with an `allow`; a service's `exclude` settles a candidate.

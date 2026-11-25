@@ -40,6 +40,8 @@ It ends with what it looked at: the operations and the calls of them it read, an
 
 A `candidate` line names a directory no service includes whose code writes the paths of described operations (`calls_outside_services`), with how many places and the first one. Open that place. If the code is a consumer (an app, a docs site, a proxy, a script that runs in production), add the directory to a service's `include` or give it a service of its own; if it is left out on purpose (examples, one-off scripts), add it to a service's `exclude`. The `tests are not read` line counts test code that writes such paths: tests are never read, so there is nothing to edit for it.
 
+A `candidate` line marked `client_without_callers` names a client whose functions no read call reaches. Search for where the client is imported. If that code is in no service, add it to one. If it is included, look at how it calls the client: a call is followed where it names the client's resource in a chain (`client.invoices.list()`) or starts at a name imported from the client (`listInvoices()`, `InvoicesService.list()`), and not where the client is reached through a value made in another file. Say so in your report: a change that breaks those callers gives no finding.
+
 Then note the links, declared and inferred, and any `not looked at` repositories.
 
 ## 2. Look for what `lemma verify` cannot find yet

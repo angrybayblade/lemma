@@ -274,6 +274,7 @@ Every option and exit code is in [Commands](commands.md#lemma-check-modlm).
 - The working directory is read as Git sees it: files it ignores (a `.venv`, build output) are not code. Links to directories are followed.
 - Field changes compare names, not types or enum values: a field whose allowed values change is not reported.
 - Calls whose URL is built at run time from values the code does not show are not matched to an operation.
+- A call through a client is followed where it names the client's resource in a chain (`client.invoices.list()`) or starts at a name imported from the client (`listInvoices()`, `InvoicesService.list()`). A client reached through a value made in another file (`api.listInvoices()` where `api` is created elsewhere) is not followed, and `lemma verify` lists a client none of whose calls was read as a candidate. Calls from Vue and Svelte files are not read.
 - "Names a field" cannot tell a field read from a response apart from the calling code's own object that reuses the name, so warnings about common names (`id`, `slug`) can be wrong.
 - Only HTTP contracts described by OpenAPI are inferred; declare other links in a `graph`.
 

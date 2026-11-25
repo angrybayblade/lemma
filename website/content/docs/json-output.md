@@ -256,7 +256,7 @@ The same shape as `refs`, with `outcome.implementations` holding entries like `d
 | `findings[].severity` | `error`, `warning` or `info`. |
 | `findings[].location` | What is described wrongly: a repository and service, or a link. |
 | `findings[].name` | The kind of finding; [Verifying descriptions](verify.md) lists them. |
-| `candidates[]` | Suspected gaps in the description ([Candidates](verify.md#candidates)): the kind, the directory left out as `#repo:directory`, how many `files` there write described paths, how many `operations` including it would add calls of, and each place with its `file`, `line`, `method` (`*` when the code shows none) and `path`. Always present; empty when there are none. |
+| `candidates[]` | Suspected gaps in the description ([Candidates](verify.md#candidates)): the kind, the directory left out as `#repo:directory`, how many `files` there write described paths, how many `operations` including it would add calls of, and each place with its `file`, `line`, `method` (`*` when the code shows none) and `path`. Always present; empty when there are none. A `client_without_callers` candidate is about a client instead: `location` names it, `files` counts the files holding its functions, `operations` the operations they request, and `places` is empty. |
 | `looked_at` | What the run read ([What was looked at](verify.md#what-was-looked-at)). Absent when the description is too wrong for the code to be read. |
 | `link_list` | Every link, declared and inferred; `null` when a description too broken to read stopped inference. |
 | `relations` | With `--relation`: the rows of each relation. Absent otherwise. |

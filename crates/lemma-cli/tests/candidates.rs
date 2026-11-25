@@ -213,3 +213,63 @@ fn verify_counts_the_included_files_in_languages_it_does_not_read() {
     assert_eq!(unread[0]["language"], "Vue", "{report:#}");
     assert_eq!(unread[0]["files"], 2, "{report:#}");
 }
+
+/// What a generator writes for billing's two operations.
+const CLIENT: &str = "import { client } from './client.gen';\nexport const listInvoices = (options) => client.get({ url: '/v1/invoices', ...options });\nexport const getInvoice = (options) => client.get({ url: '/v1/invoices/{id}', ...options });\n";
+
+/// Billing, and an app whose committed client is described beside the page
+/// that is its one caller, which is `page`.
+fn system_with_a_client(root: &Path, page: &str) {
+    let billing = root.join("billing");
+    write(&billing.join("openapi.json"), OPENAPI);
+    write(
+        &billing.join("mod.lm"),
+        "module billing\n\nimport * as http from lemma.http\n\nexport service api {\n    operations: http.openapi(\"openapi.json\")\n}\n",
+    );
+    commit_all(&billing);
+    let app = root.join("app");
+    write(&app.join("spec/openapi.json"), OPENAPI);
+    write(&app.join("src/client/sdk.gen.ts"), CLIENT);
+    write(&app.join("src/pages/invoices.ts"), page);
+    write(
+        &app.join("mod.lm"),
+        "module app\n\nimport * as http from lemma.http\n\nexport service client {\n    index: { include: [\"src/client\"] }\n    client: http.generated_client(generated_from: [], specs: [\"spec/openapi.json\"])\n}\n\nexport service web {\n    index: { include: [\"src/pages\"] }\n}\n",
+    );
+    commit_all(&app);
+    write(
+        &root.join("mod.lm"),
+        "module shop\n\nworkspace {\n    repo billing = local(\"billing\")\n    repo app = local(\"app\")\n    config: { level: check }\n}\n",
+    );
+}
+
+#[test]
+fn verify_reports_a_client_no_call_of_which_was_read() {
+    let scratch = tempfile::tempdir().unwrap();
+    // The page reaches the client through a value made elsewhere, which is
+    // not followed.
+    let page = "export const invoices = (api) => api.listInvoices({});\n";
+    system_with_a_client(scratch.path(), page);
+
+    let output = lemma(scratch.path(), &["verify", "--no-daemon"]);
+
+    let printed = text(&output);
+    assert_eq!(output.status.code(), Some(0), "{printed}");
+    assert!(
+        printed.contains("its functions request 2 operations, and no call of one was read"),
+        "{printed}"
+    );
+    assert!(printed.contains("[client_without_callers]"), "{printed}");
+}
+
+#[test]
+fn verify_reports_no_such_candidate_for_a_client_with_a_caller_read() {
+    let scratch = tempfile::tempdir().unwrap();
+    let page = "import { listInvoices } from '../client/sdk.gen';\n\nexport const invoices = () => listInvoices({});\n";
+    system_with_a_client(scratch.path(), page);
+
+    let output = lemma(scratch.path(), &["verify", "--no-daemon"]);
+
+    let printed = text(&output);
+    assert_eq!(output.status.code(), Some(0), "{printed}");
+    assert!(!printed.contains("client_without_callers"), "{printed}");
+}
