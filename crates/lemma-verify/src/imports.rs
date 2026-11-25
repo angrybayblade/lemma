@@ -81,7 +81,15 @@ pub(crate) fn resolve_import(
 }
 
 /// The file a module path names, trying source extensions and index files.
+/// A TypeScript source is imported under the name it compiles to, so
+/// `commands/auth.js` also names `commands/auth.ts`.
 pub(crate) fn module_file(base: &str, known: &BTreeSet<String>) -> Option<String> {
+    named_file(base, known).or_else(|| named_file(base.strip_suffix(".js")?, known))
+}
+
+/// The file `base` names as written, or with a source extension or an index
+/// file added.
+fn named_file(base: &str, known: &BTreeSet<String>) -> Option<String> {
     let candidates = [
         base.to_owned(),
         format!("{base}.ts"),
@@ -200,6 +208,21 @@ mod tests {
             resolve_import("src/b.ts", "./models", &files, &PathAliases::default()).as_deref(),
             Some("src/models/index.ts")
         );
+    }
+
+    #[test]
+    fn a_module_named_as_it_compiles_is_its_typescript_source() {
+        let files = known(&["cli/src/commands/auth.ts", "cli/src/view.tsx"]);
+
+        assert_eq!(
+            module_file("cli/src/commands/auth.js", &files).as_deref(),
+            Some("cli/src/commands/auth.ts")
+        );
+        assert_eq!(
+            module_file("cli/src/view.js", &files).as_deref(),
+            Some("cli/src/view.tsx")
+        );
+        assert_eq!(module_file("cli/src/missing.js", &files), None);
     }
 
     #[test]
