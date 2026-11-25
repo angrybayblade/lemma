@@ -20,7 +20,7 @@ use crate::repos::{Checkout, tracked_files};
 
 mod outside;
 
-pub use outside::{CallsInTests, Candidate, WrittenCall};
+pub use outside::{CallsInTests, Candidate, UnreadFiles, WrittenCall};
 
 /// One way a description does not match the code.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
@@ -73,6 +73,9 @@ pub struct LookedAt {
     /// The places in each repository's tests that write the path of a
     /// described operation: tests are never read as calls.
     pub calls_in_tests: Vec<CallsInTests>,
+    /// The files each repository's services include in a language Lemma
+    /// has no reader for: no request, route or name in them is read.
+    pub unread_files: Vec<UnreadFiles>,
 }
 
 /// A call that looks like a request and was not read as a call of a path.
@@ -132,6 +135,7 @@ pub fn verify_description<E: Engine>(
     };
     let looked_at = report.as_ref().map(|report| LookedAt {
         calls_in_tests: outside.calls_in_tests,
+        unread_files: outside::unread_files(&repos),
         ..looked_at(report)
     });
     let (link_list, mut relations, not_checked) = report.map_or_else(
@@ -177,6 +181,7 @@ fn looked_at(report: &Report) -> LookedAt {
         calls: calls.len(),
         unread_requests,
         calls_in_tests: Vec::new(),
+        unread_files: Vec::new(),
     }
 }
 

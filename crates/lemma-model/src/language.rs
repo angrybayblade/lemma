@@ -82,6 +82,36 @@ const ENTRIES: [Entry; 5] = [
 // becomes a language of its own, indexed like the others.
 const JAVASCRIPT_EXTENSIONS: [&str; 4] = ["js", "jsx", "mjs", "cjs"];
 
+/// Languages Lemma knows of and has no reader for, each with the extensions
+/// its files carry. Nothing in such a file is read, so `lemma verify` says
+/// how many of them a description includes.
+// TODO: when languages move out of Lemma's core, this becomes what
+// detection proposes a language pack from.
+const UNREAD_LANGUAGES: [(&str, &[&str]); 13] = [
+    ("Astro", &["astro"]),
+    ("C#", &["cs"]),
+    ("Dart", &["dart"]),
+    ("Elixir", &["ex", "exs"]),
+    ("Handlebars", &["hbs", "handlebars"]),
+    ("Java", &["java"]),
+    ("Kotlin", &["kt", "kts"]),
+    ("PHP", &["php"]),
+    ("Ruby", &["rb", "erb"]),
+    ("Scala", &["scala"]),
+    ("Svelte", &["svelte"]),
+    ("Swift", &["swift"]),
+    ("Vue", &["vue"]),
+];
+
+/// The name of the language a file with `extension` is written in, when
+/// Lemma knows the language and reads nothing from its files.
+pub fn unread_language(extension: &str) -> Option<&'static str> {
+    UNREAD_LANGUAGES
+        .iter()
+        .find(|(_, extensions)| extensions.contains(&extension))
+        .map(|(name, _)| *name)
+}
+
 impl Language {
     /// Every supported language, in a stable order.
     pub const ALL: [Language; 5] = [
@@ -242,5 +272,24 @@ mod tests {
     fn python_stub_files_are_indexed_and_not_read_as_code() {
         assert_eq!(Language::from_extension("pyi"), Some(Language::Python));
         assert!(!Language::is_code_extension("pyi"));
+    }
+
+    #[test]
+    fn a_language_lemma_does_not_read_is_named_by_its_file_extensions() {
+        assert_eq!(unread_language("vue"), Some("Vue"));
+        assert_eq!(unread_language("erb"), Some("Ruby"));
+        assert_eq!(unread_language("md"), None);
+    }
+
+    #[test]
+    fn no_file_type_is_both_read_and_listed_as_not_read() {
+        let unread = UNREAD_LANGUAGES
+            .iter()
+            .flat_map(|(_, extensions)| extensions.iter());
+
+        for extension in unread {
+            assert!(!Language::is_code_extension(extension), "{extension}");
+            assert_eq!(Language::from_extension(extension), None, "{extension}");
+        }
     }
 }

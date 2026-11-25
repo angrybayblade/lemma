@@ -1,7 +1,8 @@
 //! Code a description leaves out that writes the path of a described
 //! operation, through the real binary: `lemma verify` reports the
 //! directory as a candidate, never fails for it, and says how much test
-//! code writes such paths, since tests are never read.
+//! code writes such paths, since tests are never read, and how many included
+//! files are in a language it has no reader for.
 
 #![allow(clippy::unwrap_used, reason = "test setup should fail loudly")]
 
@@ -183,4 +184,32 @@ fn verify_counts_the_tests_that_write_described_paths() {
     assert_eq!(tests[0]["repository"], "#web", "{report:#}");
     assert_eq!(tests[0]["files"], 1, "{report:#}");
     assert_eq!(tests[0]["places"], 1, "{report:#}");
+}
+
+#[test]
+fn verify_counts_the_included_files_in_languages_it_does_not_read() {
+    let scratch = tempfile::tempdir().unwrap();
+    system(scratch.path(), "index: { include: [\"src\"] }");
+    let web = scratch.path().join("web");
+    let component = "<script>\nfetch('/v1/invoices')\n</script>\n";
+    write(&web.join("src/Invoices.vue"), component);
+    write(&web.join("src/pages/Invoice.vue"), component);
+    write(&web.join("src/Invoices.test.vue"), component);
+    write(&web.join("scripts/Seed.vue"), component);
+    git(&web, &["add", "."]);
+    git(&web, &["commit", "-q", "-m", "components"]);
+
+    let output = lemma(scratch.path(), &["verify", "--no-daemon", "--json"]);
+
+    let printed = text(&lemma(scratch.path(), &["verify", "--no-daemon"]));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        printed.contains("2 included files are in languages Lemma does not read (#web Vue 2)"),
+        "{printed}"
+    );
+    let unread = report["looked_at"]["unread_files"].as_array().unwrap();
+    assert_eq!(unread.len(), 1, "{report:#}");
+    assert_eq!(unread[0]["repository"], "#web", "{report:#}");
+    assert_eq!(unread[0]["language"], "Vue", "{report:#}");
+    assert_eq!(unread[0]["files"], 2, "{report:#}");
 }

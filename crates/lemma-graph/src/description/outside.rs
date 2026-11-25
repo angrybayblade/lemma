@@ -79,6 +79,46 @@ pub struct CallsInTests {
     pub places: usize,
 }
 
+/// The files a repository's services include that are in one language
+/// Lemma has no reader for. Nothing in them is read.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub struct UnreadFiles {
+    /// The repository, as the workspace names it.
+    pub repository: String,
+    /// The language, such as `Vue`.
+    pub language: String,
+    /// How many files, tests left out.
+    pub files: usize,
+}
+
+/// For each repository, the files its services include in each language
+/// Lemma has no reader for, in the order of repositories and languages.
+pub(super) fn unread_files(repos: &BTreeMap<String, Repo>) -> Vec<UnreadFiles> {
+    let mut found = Vec::new();
+    for (name, repo) in repos {
+        let Some(tracked) = tracked_files(&repo.checkouts[HEAD]) else {
+            continue;
+        };
+        let selection = Selection::of(&repo.files[HEAD]);
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for path in &tracked {
+            let extension = path.rsplit_once('.').map_or("", |(_, extension)| extension);
+            let Some(language) = lemma_model::unread_language(extension) else {
+                continue;
+            };
+            if selection.includes(path) && !is_test_file(path) {
+                *counts.entry(language).or_default() += 1;
+            }
+        }
+        found.extend(counts.into_iter().map(|(language, files)| UnreadFiles {
+            repository: name.clone(),
+            language: language.to_owned(),
+            files,
+        }));
+    }
+    found
+}
+
 /// What was found outside what the services read.
 #[derive(Debug, Default)]
 pub(super) struct Outside {
@@ -325,6 +365,15 @@ impl Selection {
         };
         includes.iter().any(|include| is_at_or_under(path, include))
             || self.excludes.iter().any(|exclude| exclude.is_match(path))
+    }
+
+    /// Whether a service includes `path` and none says never to read it.
+    fn includes(&self, path: &str) -> bool {
+        let included = self
+            .includes
+            .as_ref()
+            .is_none_or(|includes| includes.iter().any(|include| is_at_or_under(path, include)));
+        included && !self.excludes.iter().any(|exclude| exclude.is_match(path))
     }
 
     /// The outermost directory holding `path` and nothing a service

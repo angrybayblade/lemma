@@ -208,6 +208,7 @@ fn print_looked_at(out: &mut dyn Write, looked_at: &LookedAt, all: bool) -> std:
         looked_at.repositories, looked_at.operations, looked_at.calls
     )?;
     print_calls_in_tests(out, looked_at)?;
+    print_unread_files(out, looked_at)?;
     let unread = &looked_at.unread_requests;
     if unread.is_empty() {
         return Ok(());
@@ -258,6 +259,25 @@ fn print_calls_in_tests(out: &mut dyn Write, looked_at: &LookedAt) -> std::io::R
         out,
         "        tests are not read: {places} places in {files} test files write a described operation's path ({})",
         repositories.join(", ")
+    )
+}
+
+/// The files the services include in languages Lemma has no reader for:
+/// how many, and of which language in which repository.
+fn print_unread_files(out: &mut dyn Write, looked_at: &LookedAt) -> std::io::Result<()> {
+    let unread = &looked_at.unread_files;
+    if unread.is_empty() {
+        return Ok(());
+    }
+    let files: usize = unread.iter().map(|found| found.files).sum();
+    let each: Vec<String> = unread
+        .iter()
+        .map(|found| format!("{} {} {}", found.repository, found.language, found.files))
+        .collect();
+    writeln!(
+        out,
+        "        {files} included files are in languages Lemma does not read ({})",
+        each.join(", ")
     )
 }
 
