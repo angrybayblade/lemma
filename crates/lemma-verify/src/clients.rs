@@ -24,6 +24,16 @@
 //! may: a function it names after an operation is reached the same way
 //! (see `Clients::declared`).
 //!
+//! In Go a client's method is called on a value, which names neither a
+//! resource nor an import (`api.GetTaskWithResponse(...)`). There a call
+//! reaches the one method of that name among the clients whose package
+//! the file imports (see `Clients::exported`). The name is all that ties
+//! them, so a method of the same name on another type would be taken for
+//! the client's.
+//!
+//! TODO: tie a Go call to the client by what the receiver is, once
+//! references are resolved, rather than by its name.
+//!
 //! A client generated at build time has no code to read: its module is
 //! imported but no file holds it. Its functions are named after the
 //! operations' `operationId`s (`listTools`, `list_tools`), so a call of a
@@ -54,13 +64,20 @@ pub(crate) struct ClientMethod {
     /// The names its body uses as fields: what it still sends, whatever the
     /// client's copy of the spec says.
     pub names: BTreeSet<String>,
+    /// The method of its file that issues the request for it, where it only
+    /// calls that one (`Client.GetTask` calling `NewGetTaskRequest`);
+    /// `None` where it issues the request itself.
+    pub holder: Option<String>,
 }
 
 impl ClientMethod {
     /// How facts name it: `file:Symbol`, since one symbol (`ToolsResource.list`)
-    /// can be defined in several files.
+    /// can be defined in several files. A method that only calls the one
+    /// issuing its request is named as that one, so the request is a fact
+    /// once however many methods lead to it.
     pub fn key(&self) -> String {
-        format!("{}:{}", self.file, self.symbol)
+        let symbol = self.holder.as_ref().unwrap_or(&self.symbol);
+        format!("{}:{symbol}", self.file)
     }
 
     /// Its name, normalized: `updatestatus` for `update_status`.
@@ -305,6 +322,35 @@ impl Clients {
         terms
     }
 
+    /// The method of `client` called `name` that a package exports, if
+    /// exactly one request fits: what a Go call on some value reaches in a
+    /// file importing the client's package.
+    ///
+    /// Change-driven evaluation finds the files that may make such a call
+    /// by the called name (`terms.rs`), which a call of two names or a
+    /// capitalised last name carries.
+    pub fn exported(&self, client: &str, name: &str) -> Option<&ClientMethod> {
+        if !name.starts_with(char::is_uppercase) {
+            return None;
+        }
+        let name = normalized(name);
+        let fitting: Vec<&ClientMethod> = self
+            .methods
+            .iter()
+            .filter(|method| method.client == client && method.name() == name)
+            .collect();
+        let requests: BTreeSet<(&str, &str)> = fitting
+            .iter()
+            .map(|method| (method.method.as_str(), method.path.as_str()))
+            .collect();
+        if requests.len() != 1 {
+            return None;
+        }
+        fitting
+            .into_iter()
+            .min_by_key(|method| (method.symbol.len(), method.symbol.clone()))
+    }
+
     /// The function of `client` a short call names, among those its
     /// description names after operations: a named import called itself
     /// (`addPet()`), or a name called on the module (`pets.addPet()`).
@@ -492,6 +538,7 @@ mod tests {
             file: file.to_owned(),
             line: 1,
             names: BTreeSet::new(),
+            holder: None,
         }
     }
 
@@ -828,6 +875,28 @@ mod tests {
             described.contains(&crate::terms::name_term("useListRepos")),
             "{described:?}"
         );
+    }
+
+    #[test]
+    fn an_exported_method_is_reached_by_its_name_when_one_request_fits() {
+        let clients = only_methods(vec![
+            method(
+                "ClientWithResponses.GetTaskWithResponse",
+                "GET",
+                "/v1/tasks/{}",
+                "pkg/rest/gen.go",
+            ),
+            method("Client.List", "GET", "/v1/tasks", "pkg/rest/gen.go"),
+            method("Admin.List", "GET", "/v1/users", "pkg/rest/gen.go"),
+            method("Client.send", "POST", "/v1/tasks", "pkg/rest/gen.go"),
+        ]);
+
+        let found = clients.exported("sdk", "GetTaskWithResponse");
+
+        assert_eq!(found.map(|found| found.path.as_str()), Some("/v1/tasks/{}"));
+        assert_eq!(clients.exported("sdk", "List"), None);
+        assert_eq!(clients.exported("sdk", "send"), None);
+        assert_eq!(clients.exported("other", "GetTaskWithResponse"), None);
     }
 
     #[test]

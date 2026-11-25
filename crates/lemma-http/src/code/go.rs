@@ -3,7 +3,7 @@
 
 use tree_sitter::Node;
 
-use super::{BoundPath, Dialect, VERBS, Walk, has_marker};
+use super::{BoundPath, Dialect, ImportBinding, VERBS, Walk, has_marker};
 use crate::paths::canonical_method;
 
 /// Calls that register a handler for a path.
@@ -182,6 +182,84 @@ impl Walk<'_> {
         true
     }
 
+    /// `import rest "example.com/acme/pkg/client/rest"`: the package a name
+    /// stands for in this file. An import path is never a request's path.
+    /// The standard library, whose paths start with no domain, is not
+    /// recorded: nothing Lemma checks is reached through it by name.
+    pub(super) fn go_import(&mut self, node: Node<'_>) {
+        if self.dialect != Dialect::Go {
+            return;
+        }
+        let Some(written) = node.child_by_field_name("path") else {
+            return;
+        };
+        self.consumed.push(written.id());
+        let Some(path) = self.string_value(written) else {
+            return;
+        };
+        let mut segments = path.rsplit('/');
+        // `example.com/acme/client/v2` is package `client`.
+        let last = segments.next().unwrap_or_default();
+        let is_version = last.strip_prefix('v').is_some_and(|digits| {
+            !digits.is_empty() && digits.chars().all(|digit| digit.is_ascii_digit())
+        });
+        let package = if is_version {
+            segments.next().unwrap_or(last)
+        } else {
+            last
+        };
+        let local = node
+            .child_by_field_name("name")
+            .map_or(package, |name| self.text(name))
+            .to_owned();
+        let is_standard = !path.split('/').next().unwrap_or_default().contains('.');
+        if is_standard {
+            self.standard_packages.push(local);
+            return;
+        }
+        if local == "_" || local == "." {
+            return;
+        }
+        self.facts.imported_modules.push(path.clone());
+        self.facts.import_bindings.push(ImportBinding {
+            local,
+            imported: None,
+            module: path,
+        });
+    }
+
+    /// Whether a call of two names is of a method a Go package exports
+    /// (`api.GetTaskWithResponse(...)`): a generated client's methods are
+    /// called on a value, which names neither a resource nor an import.
+    pub(super) fn is_go_exported_method(&self, chain: &[String]) -> bool {
+        self.dialect == Dialect::Go
+            && chain.len() == 2
+            && !self.standard_packages.contains(&chain[0])
+            && chain[1].starts_with(char::is_uppercase)
+    }
+
+    /// The method `c.GetTask` names where `c` is the receiver of the method
+    /// the call is in: a call of the type's own method, as `this.getTask()`
+    /// is elsewhere.
+    pub(super) fn go_own_method<'t>(&self, function: Node<'t>) -> Option<Node<'t>> {
+        let operand = function
+            .child_by_field_name("operand")
+            .filter(|operand| operand.kind() == "identifier")?;
+        let mut enclosing = function.parent();
+        while let Some(current) = enclosing {
+            if current.kind() == "method_declaration" {
+                break;
+            }
+            enclosing = current.parent();
+        }
+        let receiver = enclosing?.child_by_field_name("receiver")?;
+        let declared = Self::children(receiver).into_iter().next()?;
+        let name = declared.child_by_field_name("name")?;
+        (self.text(name) == self.text(operand))
+            .then(|| function.child_by_field_name("field"))
+            .flatten()
+    }
+
     /// `path := fmt.Sprintf("/v1/users/%s", id)` or `path := "/v1/users"`:
     /// remembers the path a variable holds, by the function it is assigned
     /// in. A variable made from one by a call (`target, err :=
@@ -214,7 +292,7 @@ impl Walk<'_> {
             // `path += "/archive"` makes it another path, which is not
             // followed; a query string added to it leaves it the same.
             let adds_a_query = self
-                .string_value(value)
+                .go_leading_string(value)
                 .is_some_and(|added| added.starts_with('?'));
             if !adds_a_query {
                 self.bound_paths
@@ -230,6 +308,16 @@ impl Walk<'_> {
         };
         self.bound_paths
             .insert((function, self.text(name).to_owned()), bound);
+    }
+
+    /// The string an expression starts with: itself, or the leftmost one
+    /// of a concatenation (`"?" + query.Encode()`).
+    fn go_leading_string(&self, value: Node<'_>) -> Option<String> {
+        let mut leading = value;
+        while leading.kind() == "binary_expression" {
+            leading = leading.child_by_field_name("left")?;
+        }
+        self.string_value(leading)
     }
 
     /// The path `value` writes: a string, or the format of a `Sprintf`.

@@ -13,7 +13,9 @@
 //! - `name:` the last name of each member call that could resolve, and each
 //!   name it imports, normalized: client methods (a chain of three names or
 //!   more) and generated functions (a call rooted at an import) are matched
-//!   by name, and an imported function may be called by another local name;
+//!   by name, an imported function may be called by another local name, and
+//!   a method a package exports (a capitalised last name) is matched by its
+//!   name whatever it is called on;
 //! - `reexports` when it re-exports a module whole, which every consumer
 //!   file's generated calls may go through;
 //! - `base:` each base it names: a path written under a base carries the
@@ -101,14 +103,20 @@ pub(crate) fn code_terms(facts: &CodeFacts) -> Vec<String> {
             if let Some(resource) = immediate_resource(&call.parts) {
                 terms.push(pair_term(resource, last));
             }
+            // A method a package exports is also found by its name alone
+            // (see `Clients::exported`).
+            if last.starts_with(char::is_uppercase) {
+                terms.push(name_term(last));
+            }
             continue;
         }
         let is_imported = call
             .parts
             .first()
             .is_some_and(|root| imported_roots.contains(&root.as_str()));
-        if is_imported {
-            // A generated function: found by its name.
+        if is_imported || last.starts_with(char::is_uppercase) {
+            // A generated function, or a method a package exports: found
+            // by its name.
             terms.push(name_term(last));
         }
     }
@@ -165,6 +173,29 @@ mod tests {
             !terms.iter().any(|term| term == "name:updatestatus"),
             "{terms:?}"
         );
+    }
+
+    #[test]
+    fn a_go_file_is_indexed_by_the_exported_methods_it_calls() {
+        let source = "package cli\n\nimport \"example.com/acme/client/rest\"\n\nfunc show(c *cli) {\n\tc.api.GetTaskWithResponse(ctx, id)\n\tc.API().ListTasksWithResponse(ctx)\n\tc.api.close()\n}\n";
+        let options = lemma_http::CodeOptions::default();
+        let facts = extract(
+            "cmd/show.go",
+            source,
+            &options,
+            &mut Extractor::new().unwrap(),
+        )
+        .unwrap();
+
+        let terms = code_terms(&facts);
+
+        for expected in ["name:gettaskwithresponse", "name:listtaskswithresponse"] {
+            assert!(
+                terms.iter().any(|term| term == expected),
+                "{expected} in {terms:?}"
+            );
+        }
+        assert!(!terms.iter().any(|term| term == "name:close"), "{terms:?}");
     }
 
     fn parts(text: &str) -> Vec<String> {

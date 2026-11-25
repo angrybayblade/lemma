@@ -389,16 +389,20 @@ fn read_clients(
         let files = specs.code_files(&repository.path, commit, &repository.include)?;
         let mut found = Vec::new();
         for (_, facts) in extractor.read(&repository.path, commit, &files, &options)? {
-            found.extend(client_methods(name, &facts));
+            let issuing = client_methods(name, &facts);
+            found.extend(methods_calling(&issuing, &facts));
+            found.extend(issuing);
         }
         let method_files: BTreeSet<String> =
             found.iter().map(|method| method.file.clone()).collect();
         packages.extend(package_names(repository, commit, &method_files, specs)?);
         let code_files: BTreeSet<String> = files.into_iter().map(|file| file.path).collect();
+        let mut published = package_names(repository, commit, &code_files, specs)?;
+        published.extend(go_packages(repository, commit, &code_files, specs)?);
         code.push(ClientCode {
             client: name.clone(),
             repository: repository.path.clone(),
-            packages: package_names(repository, commit, &code_files, specs)?,
+            packages: published,
             files: code_files,
             functions: described_functions(manifest, repository, specs)?,
         });
@@ -538,9 +542,132 @@ fn client_methods(client: &str, facts: &CodeFacts) -> Vec<ClientMethod> {
                 file: reference.location.file.clone(),
                 line: reference.location.line,
                 names,
+                holder: None,
             })
         })
         .collect()
+}
+
+/// How many calls deep a method may be from the one issuing its request:
+/// a generated client's method, the plain method it wraps, and the
+/// function building the request.
+const HOLDER_DEPTH: usize = 3;
+
+/// The functions of a client's file that issue no request themselves and
+/// call, by name, functions of the file that between them issue exactly
+/// one: each is a method making that request, named as the function
+/// `issuing` it (see `ClientMethod::holder`).
+fn methods_calling(issuing: &[ClientMethod], facts: &CodeFacts) -> Vec<ClientMethod> {
+    let mut called_by: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for called in &facts.called {
+        if let Some(function) = &called.function {
+            called_by
+                .entry(function)
+                .or_default()
+                .insert(called.name.as_str());
+        }
+    }
+    // Each function reaching a request, with the methods issuing it.
+    let mut reaching: BTreeMap<String, Vec<&ClientMethod>> = BTreeMap::new();
+    for method in issuing {
+        reaching
+            .entry(method.symbol.clone())
+            .or_default()
+            .push(method);
+    }
+    let mut found = Vec::new();
+    for _ in 0..HOLDER_DEPTH {
+        let mut next = Vec::new();
+        for (function, names) in &called_by {
+            if reaching.contains_key(*function) {
+                continue;
+            }
+            let reached: Vec<&ClientMethod> = reaching
+                .iter()
+                .filter(|(symbol, _)| names.contains(simple_name(symbol)))
+                .flat_map(|(_, methods)| methods.iter().copied())
+                .collect();
+            let requests: BTreeSet<(&str, &str)> = reached
+                .iter()
+                .map(|method| (method.method.as_str(), method.path.as_str()))
+                .collect();
+            let (1, Some(issuer)) = (requests.len(), reached.first()) else {
+                continue;
+            };
+            next.push(((*function).to_owned(), *issuer));
+        }
+        if next.is_empty() {
+            break;
+        }
+        for (function, issuer) in next {
+            found.push(ClientMethod {
+                symbol: function.clone(),
+                names: BTreeSet::new(),
+                holder: Some(
+                    issuer
+                        .holder
+                        .clone()
+                        .unwrap_or_else(|| issuer.symbol.clone()),
+                ),
+                ..issuer.clone()
+            });
+            reaching.insert(function, vec![issuer]);
+        }
+    }
+    found
+}
+
+/// A symbol's own name, without the names enclosing it.
+fn simple_name(symbol: &str) -> &str {
+    symbol.rsplit('.').next().unwrap_or(symbol)
+}
+
+/// The import paths of the Go packages among the files `held`: the module
+/// each `go.mod` declares, followed by the directory of each Go file below
+/// it.
+fn go_packages(
+    repository: &Repository,
+    commit: Option<&str>,
+    held: &BTreeSet<String>,
+    specs: &SpecCache,
+) -> Result<BTreeSet<String>, VerifyError> {
+    let is_module_file = |path: &str| path.rsplit('/').next().unwrap_or(path) == "go.mod";
+    let mut packages = BTreeSet::new();
+    for file in specs.read_files_where(&repository.path, commit, &is_module_file)? {
+        let Some(module) = file
+            .contents
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("module "))
+            .map(str::trim)
+        else {
+            continue;
+        };
+        let root = file.path.rsplit_once('/').map_or("", |(root, _)| root);
+        let below = held
+            .iter()
+            .filter(|path| has_extension(path, "go"))
+            .filter_map(|path| {
+                path.rsplit_once('/')
+                    .map_or(Some(""), |(directory, _)| Some(directory))
+            })
+            .filter_map(|directory| {
+                if root.is_empty() {
+                    return Some(directory);
+                }
+                if directory == root {
+                    return Some("");
+                }
+                directory.strip_prefix(root)?.strip_prefix('/')
+            });
+        for directory in below {
+            if directory.is_empty() {
+                packages.insert(module.to_owned());
+            } else {
+                packages.insert(format!("{module}/{directory}"));
+            }
+        }
+    }
+    Ok(packages)
 }
 
 /// The package names a client is published as: the `name` of each
@@ -2419,9 +2546,46 @@ fn short_call_target(
         })
 }
 
+/// What a Go call reaches by its name: the one method a client exports
+/// under the call's last name, among the clients whose package the file
+/// imports (see `Clients::exported`). A file that defines a function of
+/// that name calls its own.
+fn exported_method_target(
+    scope: &ConsumerScope<'_>,
+    path: &str,
+    facts: &CodeFacts,
+    call: &lemma_http::MemberCall,
+    imports: &[ClientImport<'_>],
+) -> Option<String> {
+    if !has_extension(path, "go") {
+        return None;
+    }
+    let name = call.parts.last()?;
+    let is_defined_here = facts
+        .called
+        .iter()
+        .chain(&facts.mentions)
+        .filter_map(|inside| inside.function.as_deref())
+        .any(|function| simple_name(function) == name);
+    if is_defined_here {
+        return None;
+    }
+    let imported: BTreeSet<&str> = imports.iter().map(|import| import.client).collect();
+    let reached: BTreeSet<String> = imported
+        .into_iter()
+        .filter_map(|client| scope.clients.exported(client, name))
+        .map(ClientMethod::key)
+        .collect();
+    match reached.len() {
+        1 => reached.into_iter().next(),
+        _ => None,
+    }
+}
+
 /// Calls that reach a client's method (see `clients`), as calls of that
-/// method: through a chain naming its resource, or a short call rooted at
-/// a name imported from the client.
+/// method: through a chain naming its resource, a short call rooted at a
+/// name imported from the client, or in Go a call of a method the client's
+/// package exports.
 fn write_client_method_calls(
     scope: &ConsumerScope<'_>,
     file_id: &str,
@@ -2449,7 +2613,10 @@ fn write_client_method_calls(
                 .flatten()
                 .map(ClientMethod::key)
         };
-        let Some(key) = target else {
+        let path = consumer_path(scope, file_id);
+        let Some(key) =
+            target.or_else(|| exported_method_target(scope, path, facts, call, &imports))
+        else {
             continue;
         };
         let consumer = consumer_id(file_id, call.location.symbol.as_ref());
@@ -3472,6 +3639,45 @@ mod tests {
     }
 
     #[test]
+    fn a_method_that_only_calls_the_one_issuing_its_request_is_named_as_it() {
+        let source = "package rest\n\nfunc NewGetTaskRequest(server string, task string) (*http.Request, error) {\n\toperationPath := fmt.Sprintf(\"/v1/tasks/%s\", task)\n\tqueryURL, err := serverURL.Parse(operationPath)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn http.NewRequest(\"GET\", queryURL.String(), nil)\n}\n\nfunc (c *Client) GetTask(ctx context.Context, task string) (*http.Response, error) {\n\treq, err := NewGetTaskRequest(c.Server, task)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.Client.Do(req)\n}\n\nfunc (c *ClientWithResponses) GetTaskWithResponse(ctx context.Context, task string) (*GetTaskResponse, error) {\n\trsp, err := c.GetTask(ctx, task)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn ParseGetTaskResponse(rsp)\n}\n";
+        let options = CodeOptions {
+            path_markers: vec!["/v1/".to_owned()],
+            ..CodeOptions::default()
+        };
+        let facts = lemma_http::extract(
+            "pkg/rest/gen.go",
+            source,
+            &options,
+            &mut lemma_syntax::Extractor::new().unwrap(),
+        )
+        .unwrap();
+        let issuing = client_methods("sdk", &facts);
+
+        let calling = methods_calling(&issuing, &facts);
+
+        let issued: Vec<&str> = issuing
+            .iter()
+            .map(|method| method.symbol.as_str())
+            .collect();
+        assert_eq!(issued, ["NewGetTaskRequest"]);
+        let mut named: Vec<(&str, String)> = calling
+            .iter()
+            .map(|method| (method.symbol.as_str(), method.key()))
+            .collect();
+        named.sort();
+        assert_eq!(named.len(), 2, "{named:?}");
+        assert!(
+            named
+                .iter()
+                .all(|(_, key)| key == "pkg/rest/gen.go:NewGetTaskRequest"),
+            "{named:?}"
+        );
+        assert!(named[0].0.ends_with("GetTask"), "{named:?}");
+        assert!(named[1].0.ends_with("GetTaskWithResponse"), "{named:?}");
+    }
+
+    #[test]
     fn a_parameter_is_placed_at_the_client_method_sending_its_operation() {
         let method = |http: &str, path: &str, line: u32| ClientMethod {
             client: "client".to_owned(),
@@ -3481,6 +3687,7 @@ mod tests {
             file: "resources/session_options.py".to_owned(),
             line,
             names: BTreeSet::new(),
+            holder: None,
         };
         let get = method("GET", "/v3/session_options", 96);
         let post = method("POST", "/v3/session_options", 140);

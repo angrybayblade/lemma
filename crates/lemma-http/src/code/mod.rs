@@ -367,6 +367,7 @@ pub fn facts_of(
         client_functions: BTreeMap::new(),
         examples: 0,
         bound_paths: BTreeMap::new(),
+        standard_packages: Vec::new(),
         routers: routers::Routers::new(),
         mounts: Vec::new(),
         registered: Vec::new(),
@@ -500,6 +501,9 @@ struct Walk<'a> {
     /// by enclosing function and variable, so a request passed the
     /// variable (`requests.get(url)`) gets its method.
     bound_paths: BTreeMap<(Option<String>, String), BoundPath>,
+    /// The names a Go file gives the standard-library packages it imports:
+    /// a call on one (`fmt.Println`) is of nothing Lemma checks.
+    standard_packages: Vec<String>,
     /// Routers made or typed in this file, with the prefix each was made
     /// with.
     routers: routers::Routers,
@@ -639,6 +643,7 @@ impl Walk<'_> {
                 self.call(node);
             }
             "import_statement" | "import_from_statement" => self.import(node),
+            "import_spec" => self.go_import(node),
             "export_statement" => self.export(node),
             "short_var_declaration" | "assignment_statement" => {
                 self.go_router_prefix(node);
@@ -1004,7 +1009,9 @@ impl Walk<'_> {
         );
     }
 
-    /// Records a call through a chain of at least three names.
+    /// Records a call through a chain of at least three names, a shorter
+    /// one rooted at an import, or in Go a method another package may
+    /// export, called on any value.
     fn member_call(&mut self, function: Node<'_>, parts: &[String], node: Node<'_>) {
         let mut chain = Vec::with_capacity(parts.len() + 1);
         if Self::starts_from_call(function) {
@@ -1017,7 +1024,7 @@ impl Walk<'_> {
                 .iter()
                 .any(|binding| &binding.local == root)
         });
-        if chain.len() < 3 && !starts_from_import {
+        if chain.len() < 3 && !starts_from_import && !self.is_go_exported_method(&chain) {
             return;
         }
         let location = self.location(node);
@@ -1223,6 +1230,7 @@ impl Walk<'_> {
                 };
                 function.child_by_field_name(property).filter(|_| is_own)
             }
+            "selector_expression" => self.go_own_method(function),
             _ => None,
         };
         let Some(name) = name.map(|name| self.text(name).to_owned()) else {
@@ -1937,7 +1945,7 @@ mod tests {
 
     #[test]
     fn a_go_path_extended_after_it_is_bound_is_not_the_requests_path() {
-        let source = "package sdk\n\nfunc archive(c *Client, id string, on bool) error {\n\tu := fmt.Sprintf(\"/v1/versions/%s\", id)\n\tif on {\n\t\tu += \"/archive\"\n\t}\n\t_, err := c.Request(ctx, http.MethodPost, u, nil)\n\treturn err\n}\n\nfunc list(c *Client, id string) error {\n\tu := fmt.Sprintf(\"/v1/templates/%s/versions\", id)\n\tu += \"?archived=true\"\n\t_, err := c.Request(ctx, http.MethodGet, u, nil)\n\treturn err\n}\n";
+        let source = "package sdk\n\nfunc archive(c *Client, id string, on bool) error {\n\tu := fmt.Sprintf(\"/v1/versions/%s\", id)\n\tif on {\n\t\tu += \"/archive\"\n\t}\n\t_, err := c.Request(ctx, http.MethodPost, u, nil)\n\treturn err\n}\n\nfunc list(c *Client, id string) error {\n\tu := fmt.Sprintf(\"/v1/templates/%s/versions\", id)\n\tu += \"?\" + query.Encode()\n\t_, err := c.Request(ctx, http.MethodGet, u, nil)\n\treturn err\n}\n";
 
         let found = facts("sdk/versions.go", source);
 
@@ -1954,6 +1962,33 @@ mod tests {
                 ("GET", "/v1/templates/{}/versions")
             ]
         );
+    }
+
+    #[test]
+    fn a_go_file_names_the_packages_it_imports_but_not_the_standard_library() {
+        let source = "package cli\n\nimport (\n\t\"fmt\"\n\t\"net/http\"\n\n\t\"example.com/acme/api/v1/client/rest\"\n\tcloud \"example.com/acme/cloud/v2\"\n)\n\nfunc show(api *rest.ClientWithResponses) {\n\tfmt.Println(api.GetTaskWithResponse(ctx, id))\n\tapi.close()\n}\n";
+
+        let found = facts("cmd/show.go", source);
+
+        let bound: Vec<(&str, &str)> = found
+            .import_bindings
+            .iter()
+            .map(|binding| (binding.local.as_str(), binding.module.as_str()))
+            .collect();
+        assert_eq!(
+            bound,
+            [
+                ("cloud", "example.com/acme/cloud/v2"),
+                ("rest", "example.com/acme/api/v1/client/rest")
+            ]
+        );
+        assert_eq!(found.path_references, []);
+        let called: Vec<String> = found
+            .member_calls
+            .iter()
+            .map(|call| call.parts.join("."))
+            .collect();
+        assert_eq!(called, ["api.GetTaskWithResponse"]);
     }
 
     #[test]
