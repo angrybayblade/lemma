@@ -51,11 +51,16 @@ impl ChangeReach {
         if self.everything || is_unread_code(file) {
             return true;
         }
+        // A file the change touched is reached whole, though the change
+        // seeded no name: a route file holding only anonymous handlers.
+        if symbol.is_empty() && self.files.contains(file) {
+            return true;
+        }
         if !self.families.contains(&family(file)) {
             return false;
         }
         let name = symbol.rsplit(['.', ':']).next().unwrap_or(symbol);
-        self.reached.contains(name) || (symbol.is_empty() && self.files.contains(file))
+        self.reached.contains(name)
     }
 
     /// How many functions' names the change reaches, for the log.
@@ -664,5 +669,23 @@ mod tests {
             assert!(reach.reaches(path, "parse"), "{path}");
         }
         assert!(!reach.reaches("src/route.ts", "handle"));
+    }
+
+    #[test]
+    fn a_changed_file_holding_no_symbol_is_itself_reached() {
+        const ROUTES: &str = "import { router } from './router'\nrouter.get('/items', (request, response) => {\n  response.json([])\n})\n";
+        let root = repository_with("src/routes.ts", ROUTES);
+        write(root.path(), "src/routes.ts", &ROUTES.replace("[]", "[1]"));
+
+        let reach = change_reach(
+            "#r",
+            (root.path(), "HEAD"),
+            Some(&untracked(root.path())),
+            &functions(),
+        );
+
+        assert!(!reach.everything);
+        assert!(reach.reaches("src/routes.ts", ""));
+        assert!(!reach.reaches("src/route.ts", ""));
     }
 }
