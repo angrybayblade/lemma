@@ -3,15 +3,16 @@
 
 use tree_sitter::Node;
 
-use super::{Dialect, VERBS, Walk};
+use super::{BoundPath, Dialect, VERBS, Walk, has_marker};
 use crate::paths::canonical_method;
 
 /// Calls that register a handler for a path.
 const HANDLERS: [&str; 3] = ["Handle", "HandleFunc", "Path"];
 
 impl Walk<'_> {
-    /// Route registrations. Returns whether the call was one, so the
-    /// general rules do not read it again as a request.
+    /// Route registrations, and calls that only format a string. Returns
+    /// whether the call was one, so the general rules do not read it as a
+    /// request.
     pub(super) fn go_call(
         &mut self,
         parts: &[String],
@@ -27,6 +28,9 @@ impl Walk<'_> {
                 self.consume_strings(arguments);
                 true
             }
+            // A formatted path requests nothing itself: it is read with the
+            // request it is given to, or as a string of unknown method.
+            "Sprintf" => true,
             name if HANDLERS.contains(&name) => {
                 self.go_handler(parts, arguments, None);
                 true
@@ -176,6 +180,98 @@ impl Walk<'_> {
         self.add_method_path(Some(verb), &template, *path_node);
         self.go_tag_router(parts, added_from, *path_node);
         true
+    }
+
+    /// `path := fmt.Sprintf("/v1/users/%s", id)` or `path := "/v1/users"`:
+    /// remembers the path a variable holds, by the function it is assigned
+    /// in. A variable made from one by a call (`target, err :=
+    /// base.Parse(path)`) holds the same path, so a request given either is
+    /// read with its method.
+    pub(super) fn go_bind_path(&mut self, node: Node<'_>) {
+        if self.dialect != Dialect::Go {
+            return;
+        }
+        let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) else {
+            return;
+        };
+        let (Some(name), Some(value)) = (
+            Self::children(left).into_iter().next(),
+            Self::children(right).into_iter().next(),
+        ) else {
+            return;
+        };
+        if name.kind() != "identifier" {
+            return;
+        }
+        let function = self.location(value).function;
+        let is_extended = node
+            .child_by_field_name("operator")
+            .is_some_and(|operator| self.text(operator) == "+=");
+        if is_extended {
+            // `path += "/archive"` makes it another path, which is not
+            // followed; a query string added to it leaves it the same.
+            let adds_a_query = self
+                .string_value(value)
+                .is_some_and(|added| added.starts_with('?'));
+            if !adds_a_query {
+                self.bound_paths
+                    .remove(&(function, self.text(name).to_owned()));
+            }
+            return;
+        }
+        let Some(bound) = self
+            .go_written_path(value)
+            .or_else(|| self.go_path_handed_on(value, function.as_ref()))
+        else {
+            return;
+        };
+        self.bound_paths
+            .insert((function, self.text(name).to_owned()), bound);
+    }
+
+    /// The path `value` writes: a string, or the format of a `Sprintf`.
+    fn go_written_path(&self, value: Node<'_>) -> Option<BoundPath> {
+        let written = if value.kind() == "call_expression" {
+            let function = value.child_by_field_name("function")?;
+            let is_format = self
+                .chain_parts(function)
+                .last()
+                .is_some_and(|name| name == "Sprintf");
+            let arguments = value.child_by_field_name("arguments")?;
+            Self::children(arguments)
+                .into_iter()
+                .next()
+                .filter(|_| is_format)?
+        } else {
+            value
+        };
+        let template = self.string_value(written).filter(|text| {
+            has_marker(text, &self.options.path_markers) || self.is_under_a_base(text)
+        })?;
+        Some(BoundPath {
+            node: written.id(),
+            template,
+            location: self.location(written),
+        })
+    }
+
+    /// The path a call's result holds because the call was given a
+    /// variable holding one, in the same function.
+    fn go_path_handed_on(&self, value: Node<'_>, function: Option<&String>) -> Option<BoundPath> {
+        if value.kind() != "call_expression" {
+            return None;
+        }
+        let arguments = value.child_by_field_name("arguments")?;
+        Self::children(arguments)
+            .into_iter()
+            .filter(|argument| argument.kind() == "identifier")
+            .find_map(|argument| {
+                let key = (function.cloned(), self.text(argument).to_owned());
+                self.bound_paths.get(&key).cloned()
+            })
     }
 
     /// `api := r.PathPrefix("/api").Subrouter()` (gorilla/mux) or

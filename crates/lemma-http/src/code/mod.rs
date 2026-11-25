@@ -517,6 +517,7 @@ struct Walk<'a> {
 
 /// A path string assigned to a variable: its node, as consumed strings
 /// are tracked, its text, and where it is.
+#[derive(Clone)]
 struct BoundPath {
     node: usize,
     template: String,
@@ -639,7 +640,10 @@ impl Walk<'_> {
             }
             "import_statement" | "import_from_statement" => self.import(node),
             "export_statement" => self.export(node),
-            "short_var_declaration" | "assignment_statement" => self.go_router_prefix(node),
+            "short_var_declaration" | "assignment_statement" => {
+                self.go_router_prefix(node);
+                self.go_bind_path(node);
+            }
             "attribute_item" if self.dialect == Dialect::Rust => self.rust_route_attribute(node),
             "use_declaration" => self.rust_use(node),
             _ => {}
@@ -896,7 +900,8 @@ impl Walk<'_> {
     }
 
     /// A request passed a variable holding a path assigned earlier in the
-    /// same function (`url = f"{base}/v1/users/{id}"; requests.get(url)`):
+    /// same function (`url = f"{base}/v1/users/{id}"; requests.get(url)`),
+    /// or what a call on such a variable gives (`target.String()`):
     /// the path is reported with the call's method, rather than later as a
     /// string whose method is unknown. Whether a variable held a path.
     fn call_with_bound_path(
@@ -909,9 +914,9 @@ impl Walk<'_> {
         let mut cursor = arguments.walk();
         let bound = arguments
             .named_children(&mut cursor)
-            .filter(|argument| argument.kind() == "identifier")
-            .find_map(|argument| {
-                let key = (function.clone(), self.text(argument).to_owned());
+            .filter_map(Self::handed_variable)
+            .find_map(|variable| {
+                let key = (function.clone(), self.text(variable).to_owned());
                 self.bound_paths.get(&key)
             });
         let Some(bound) = bound else {
@@ -939,6 +944,28 @@ impl Walk<'_> {
             base: String::new(),
         });
         true
+    }
+
+    /// The variable an argument hands over: the argument itself, or the
+    /// variable a call with no arguments is made on (`target.String()`).
+    fn handed_variable(argument: Node<'_>) -> Option<Node<'_>> {
+        if argument.kind() == "identifier" {
+            return Some(argument);
+        }
+        if !matches!(argument.kind(), "call_expression" | "call") {
+            return None;
+        }
+        let is_given_something = argument
+            .child_by_field_name("arguments")
+            .is_some_and(|arguments| arguments.named_child_count() > 0);
+        if is_given_something {
+            return None;
+        }
+        let function = argument.child_by_field_name("function")?;
+        ["object", "operand", "value"]
+            .iter()
+            .find_map(|field| function.child_by_field_name(field))
+            .filter(|receiver| receiver.kind() == "identifier")
     }
 
     /// Remembers a path string assigned to a plain variable, by the function
@@ -1887,6 +1914,55 @@ mod tests {
 
         let found = facts("sdk.gen.ts", source);
 
+        assert_eq!(found.path_references[0].method, "*");
+    }
+
+    #[test]
+    fn a_go_request_given_a_path_bound_earlier_takes_its_method() {
+        let source = "package rest\n\nfunc NewTaskGetRequest(server string, task string) (*http.Request, error) {\n\toperationPath := fmt.Sprintf(\"/v1/tasks/%s\", task)\n\tqueryURL, err := serverURL.Parse(operationPath)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn http.NewRequest(\"GET\", queryURL.String(), nil)\n}\n\nfunc send(base string, id string) (*http.Request, error) {\n\turl := fmt.Sprintf(\"%s/v1/users/%s\", base, id)\n\treturn http.NewRequest(http.MethodPost, url, nil)\n}\n";
+
+        let found = facts("client/gen.go", source);
+
+        let mut requests: Vec<(&str, &str)> = found
+            .path_references
+            .iter()
+            .map(|reference| (reference.method.as_str(), reference.path.as_str()))
+            .collect();
+        requests.sort_unstable();
+        assert_eq!(
+            requests,
+            [("GET", "/v1/tasks/{}"), ("POST", "/v1/users/{}")]
+        );
+    }
+
+    #[test]
+    fn a_go_path_extended_after_it_is_bound_is_not_the_requests_path() {
+        let source = "package sdk\n\nfunc archive(c *Client, id string, on bool) error {\n\tu := fmt.Sprintf(\"/v1/versions/%s\", id)\n\tif on {\n\t\tu += \"/archive\"\n\t}\n\t_, err := c.Request(ctx, http.MethodPost, u, nil)\n\treturn err\n}\n\nfunc list(c *Client, id string) error {\n\tu := fmt.Sprintf(\"/v1/templates/%s/versions\", id)\n\tu += \"?archived=true\"\n\t_, err := c.Request(ctx, http.MethodGet, u, nil)\n\treturn err\n}\n";
+
+        let found = facts("sdk/versions.go", source);
+
+        let mut requests: Vec<(&str, &str)> = found
+            .path_references
+            .iter()
+            .map(|reference| (reference.method.as_str(), reference.path.as_str()))
+            .collect();
+        requests.sort_unstable();
+        assert_eq!(
+            requests,
+            [
+                ("*", "/v1/versions/{}"),
+                ("GET", "/v1/templates/{}/versions")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_go_path_no_request_is_given_keeps_no_method() {
+        let source = "package rest\n\nfunc link(id string) string {\n\tpath := fmt.Sprintf(\"/v1/tasks/%s\", id)\n\tlog.Println(path)\n\treturn path\n}\n";
+
+        let found = facts("client/links.go", source);
+
+        assert_eq!(found.path_references.len(), 1);
         assert_eq!(found.path_references[0].method, "*");
     }
 
