@@ -15,6 +15,15 @@
 //! local (`this`, `self`, a parameter) rather than another import, such as
 //! a database client's `prisma.apiKey.delete()`.
 //!
+//! A short call names no resource to match by: `addPet()`,
+//! `PetService.add()`, `pets.add()` where `pets` is the module. It reaches
+//! a client's method where its root is a name imported from that client,
+//! from its package or from one of its files in the same repository, and
+//! exactly one request fits the names (see `Clients::imported`). Where the
+//! client's code does not say what a function requests, its description
+//! may: a function it names after an operation is reached the same way
+//! (see `Clients::declared`).
+//!
 //! A client generated at build time has no code to read: its module is
 //! imported but no file holds it. Its functions are named after the
 //! operations' `operationId`s (`listTools`, `list_tools`), so a call of a
@@ -22,6 +31,7 @@
 //! re-exports it whole, is a call of the operation it is named after.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use lemma_http::MemberCall;
 
@@ -87,13 +97,51 @@ pub(crate) struct NamedOperation {
     pub document: String,
 }
 
+/// Where one client's code is: what a consumer's import must name for a
+/// short call to be a call through this client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClientCode {
+    /// The client.
+    pub client: String,
+    /// The repository holding its code.
+    pub repository: PathBuf,
+    /// Its code files, by their paths in that repository.
+    pub files: BTreeSet<String>,
+    /// The package names it is published as.
+    pub packages: BTreeSet<String>,
+    /// The functions its description names after operations, each with the
+    /// requests (method, path) it may make.
+    pub functions: BTreeMap<String, BTreeSet<(String, String)>>,
+}
+
+/// What an imported name is of a client: the module itself, or a name the
+/// module exports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Imported<'a> {
+    /// A namespace or default import: `import * as pets from './pets'`.
+    Module,
+    /// A named import: `PetService` in `import { PetService } from './sdk'`.
+    Name(&'a str),
+}
+
+/// Which of a client's methods an import can reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach<'a> {
+    /// Every method: the import names the client's package.
+    Package,
+    /// The methods in the imported file or beside and below it: an index
+    /// file hands on what the files of its directory export.
+    File(&'a str),
+}
+
 /// What the system's clients offer: their methods, the package names a
-/// consumer imports or depends on them by, and the names a generated client
-/// may give each operation.
+/// consumer imports or depends on them by, where their code is, and the
+/// names a generated client may give each operation.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Clients {
     methods: Vec<ClientMethod>,
     packages: BTreeSet<String>,
+    code: Vec<ClientCode>,
     generated: BTreeMap<String, BTreeSet<NamedOperation>>,
 }
 
@@ -108,8 +156,93 @@ impl Clients {
         Self {
             methods: one_per_request(methods),
             packages,
+            code: Vec::new(),
             generated,
         }
+    }
+
+    /// With where each client's code is, so that short calls rooted at an
+    /// import of it can be told from calls of anything else.
+    pub fn with_code(mut self, code: Vec<ClientCode>) -> Self {
+        self.code = code;
+        self
+    }
+
+    /// Whether any client's code is known, so that an import may name one.
+    pub fn has_code(&self) -> bool {
+        !self.code.is_empty()
+    }
+
+    /// The client whose package an import specifier names, or one of its
+    /// modules.
+    pub fn client_of_module(&self, specifier: &str) -> Option<&str> {
+        self.code
+            .iter()
+            .find(|code| {
+                code.packages
+                    .iter()
+                    .any(|package| names_package(specifier, package))
+            })
+            .map(|code| code.client.as_str())
+    }
+
+    /// The client one of whose code files is `file` of `repository`.
+    pub fn client_of_file(&self, repository: &Path, file: &str) -> Option<&str> {
+        self.code
+            .iter()
+            .find(|code| code.repository == repository && code.files.contains(file))
+            .map(|code| code.client.as_str())
+    }
+
+    /// The method of `client` a short call reaches: `name` called on what
+    /// was `imported`, among the methods the import can `reach`, if exactly
+    /// one request fits.
+    ///
+    /// A named import called itself (`addPet()`) is a function the module
+    /// exports, so a method nested in a class does not fit. A name called on
+    /// a named import (`PetService.add()`, `get_pet.sync()`) is a method of
+    /// the resource so named. A name called on the module is any method of
+    /// that name.
+    ///
+    /// Change-driven evaluation finds the files that may make such a call
+    /// by the called name (`terms.rs`): a call this resolves must be of at
+    /// most two names, rooted at an import, with the method's name last.
+    pub fn imported(
+        &self,
+        client: &str,
+        reach: Reach<'_>,
+        imported: Imported<'_>,
+        parts: &[String],
+    ) -> Option<&ClientMethod> {
+        let (resource, name) = match (imported, parts) {
+            (Imported::Name(exported), [_]) => (None, normalized(exported)),
+            (Imported::Name(exported), [_, name]) => (Some(normalized(exported)), normalized(name)),
+            (Imported::Module, [_, name]) => (None, normalized(name)),
+            _ => return None,
+        };
+        let is_called_itself = parts.len() == 1;
+        let fitting: Vec<&ClientMethod> = self
+            .methods
+            .iter()
+            .filter(|method| method.client == client)
+            .filter(|method| method.name() == name && reach.holds(&method.file))
+            .filter(|method| !is_called_itself || !method.symbol.contains('.'))
+            .filter(|method| {
+                resource
+                    .as_ref()
+                    .is_none_or(|resource| method.resource_names().contains(resource))
+            })
+            .collect();
+        let requests: BTreeSet<(&str, &str)> = fitting
+            .iter()
+            .map(|method| (method.method.as_str(), method.path.as_str()))
+            .collect();
+        if requests.len() != 1 {
+            return None;
+        }
+        fitting
+            .into_iter()
+            .min_by_key(|method| (method.symbol.len(), method.symbol.clone()))
     }
 
     /// The operation a generated client's function is named after, if only
@@ -136,7 +269,8 @@ impl Clients {
     /// named after it.
     /// The terms a call of the request `method` `path` is indexed by: for
     /// each client method making it, its name under each of its resources
-    /// (`pair:`), and for each generated function, its name (`name:`).
+    /// (`pair:`) and alone (`name:`), and for each generated function and
+    /// each function a client's description names, its name (`name:`).
     pub(crate) fn terms_calling(&self, method: &str, path: &str) -> Vec<String> {
         let mut terms = Vec::new();
         for client in self
@@ -148,6 +282,8 @@ impl Clients {
             for resource in client.resource_names() {
                 terms.push(crate::terms::pair_term(&resource, name));
             }
+            // A short call rooted at an import names no resource.
+            terms.push(crate::terms::name_term(name));
         }
         for (function, operations) in &self.generated {
             let calls = operations
@@ -157,7 +293,39 @@ impl Clients {
                 terms.push(crate::terms::name_term(function));
             }
         }
+        let declared = self.code.iter().flat_map(|code| &code.functions);
+        for (function, requests) in declared {
+            let calls = requests
+                .iter()
+                .any(|(made, at)| made == method && at == path);
+            if calls {
+                terms.push(crate::terms::name_term(function));
+            }
+        }
         terms
+    }
+
+    /// The function of `client` a short call names, among those its
+    /// description names after operations: a named import called itself
+    /// (`addPet()`), or a name called on the module (`pets.addPet()`).
+    ///
+    /// Change-driven evaluation finds the files that may make such a call
+    /// by the called name (`terms.rs`), as for `imported`.
+    pub fn declared<'p>(
+        &self,
+        client: &str,
+        imported: Imported<'p>,
+        parts: &'p [String],
+    ) -> Option<&'p str> {
+        let function = match (imported, parts) {
+            (Imported::Name(exported), [_]) => exported,
+            (Imported::Module, [_, name]) => name.as_str(),
+            _ => return None,
+        };
+        self.code
+            .iter()
+            .any(|code| code.client == client && code.functions.contains_key(function))
+            .then_some(function)
     }
 
     /// One client's methods.
@@ -175,11 +343,9 @@ impl Clients {
     /// Whether an import specifier names a client package or one of its
     /// modules: `@acme/client`, `@acme/client/resources`, `acme_client.types`.
     pub fn is_client_module(&self, specifier: &str) -> bool {
-        self.packages.iter().any(|package| {
-            specifier == package
-                || specifier.starts_with(&format!("{package}/"))
-                || specifier.starts_with(&format!("{package}."))
-        })
+        self.packages
+            .iter()
+            .any(|package| names_package(specifier, package))
     }
 
     /// Whether a dependency manifest's text names a client package.
@@ -241,6 +407,30 @@ impl Clients {
         best.into_iter()
             .min_by_key(|method| (method.symbol.len(), method.symbol.clone()))
     }
+}
+
+impl Reach<'_> {
+    /// Whether a method in `file` is within reach.
+    fn holds(self, file: &str) -> bool {
+        let Reach::File(imported) = self else {
+            return true;
+        };
+        if file == imported {
+            return true;
+        }
+        match imported.rsplit_once('/') {
+            Some((directory, _)) => file.starts_with(&format!("{directory}/")),
+            None => true,
+        }
+    }
+}
+
+/// Whether an import specifier names `package` or one of its modules:
+/// `@acme/client`, `@acme/client/resources`, `acme_client.types`.
+fn names_package(specifier: &str, package: &str) -> bool {
+    specifier == package
+        || specifier.starts_with(&format!("{package}/"))
+        || specifier.starts_with(&format!("{package}."))
 }
 
 /// The methods with one kept for each file, name and request: a client
@@ -511,5 +701,150 @@ mod tests {
             .collect();
 
         assert_eq!(kept, ["ToolsResource.list"]);
+    }
+
+    fn names(chain: &str) -> Vec<String> {
+        chain.split('.').map(str::to_owned).collect()
+    }
+
+    fn only_methods(methods: Vec<ClientMethod>) -> Clients {
+        Clients::new(methods, BTreeSet::new(), BTreeMap::new())
+    }
+
+    fn code() -> ClientCode {
+        ClientCode {
+            client: "sdk".to_owned(),
+            repository: PathBuf::from("/work/client"),
+            files: BTreeSet::from(["src/sdk.gen.ts".to_owned()]),
+            packages: BTreeSet::from(["@acme/client".to_owned()]),
+            functions: BTreeMap::from([(
+                "useListRepos".to_owned(),
+                BTreeSet::from([("GET".to_owned(), "/v1/repos".to_owned())]),
+            )]),
+        }
+    }
+
+    #[test]
+    fn a_function_imported_by_name_reaches_the_function_not_a_method_of_its_name() {
+        let clients = only_methods(vec![
+            method("addPet", "POST", "/v1/pets", "src/sdk.gen.ts"),
+            method("PetService.addPet", "PUT", "/v1/pets", "src/sdk.gen.ts"),
+        ]);
+
+        let found = clients.imported(
+            "sdk",
+            Reach::Package,
+            Imported::Name("addPet"),
+            &names("addPet"),
+        );
+
+        assert_eq!(found.map(|found| found.method.as_str()), Some("POST"));
+    }
+
+    #[test]
+    fn a_name_called_on_an_imported_class_reaches_that_classes_method() {
+        let clients = only_methods(vec![
+            method("ItemsService.list", "GET", "/v1/items", "src/sdk.gen.ts"),
+            method("UsersService.list", "GET", "/v1/users", "src/sdk.gen.ts"),
+        ]);
+
+        let found = clients.imported(
+            "sdk",
+            Reach::Package,
+            Imported::Name("UsersService"),
+            &names("UsersService.list"),
+        );
+
+        assert_eq!(found.map(|found| found.path.as_str()), Some("/v1/users"));
+    }
+
+    #[test]
+    fn a_short_call_two_requests_fit_reaches_none() {
+        let clients = only_methods(vec![
+            method("ItemsService.list", "GET", "/v1/items", "src/sdk.gen.ts"),
+            method("UsersService.list", "GET", "/v1/users", "src/sdk.gen.ts"),
+        ]);
+
+        let found = clients.imported("sdk", Reach::Package, Imported::Module, &names("api.list"));
+
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn an_imported_file_reaches_the_methods_beside_and_below_it() {
+        let clients = only_methods(vec![
+            method("listRepos", "GET", "/v1/repos", "src/services/code/gen.ts"),
+            method("listRepos", "GET", "/v1/spaces", "src/services/cde/gen.ts"),
+        ]);
+        let called = names("listRepos");
+        let imported = Imported::Name("listRepos");
+
+        let beside = clients.imported(
+            "sdk",
+            Reach::File("src/services/code/index.ts"),
+            imported,
+            &called,
+        );
+        let anywhere = clients.imported("sdk", Reach::Package, imported, &called);
+
+        assert_eq!(beside.map(|found| found.path.as_str()), Some("/v1/repos"));
+        assert_eq!(anywhere, None);
+    }
+
+    #[test]
+    fn a_function_the_description_names_is_reached_by_its_name_as_written() {
+        let clients = only_methods(Vec::new()).with_code(vec![code()]);
+        let called_itself = names("useListRepos");
+        let called_on_module = names("api.useListRepos");
+        let not_described = names("listRepos");
+
+        let hook = clients.declared("sdk", Imported::Name("useListRepos"), &called_itself);
+        let on_module = clients.declared("sdk", Imported::Module, &called_on_module);
+        let other = clients.declared("sdk", Imported::Name("listRepos"), &not_described);
+
+        assert_eq!(hook, Some("useListRepos"));
+        assert_eq!(on_module, Some("useListRepos"));
+        assert_eq!(other, None);
+    }
+
+    #[test]
+    fn a_short_call_that_resolves_carries_a_term_its_operation_is_looked_up_by() {
+        let clients = only_methods(vec![method(
+            "PetService.addPet",
+            "POST",
+            "/v1/pets",
+            "src/sdk.gen.ts",
+        )])
+        .with_code(vec![code()]);
+
+        let read = clients.terms_calling("POST", "/v1/pets");
+        let described = clients.terms_calling("GET", "/v1/repos");
+
+        assert!(
+            read.contains(&crate::terms::name_term("addPet")),
+            "{read:?}"
+        );
+        assert!(
+            described.contains(&crate::terms::name_term("useListRepos")),
+            "{described:?}"
+        );
+    }
+
+    #[test]
+    fn a_client_is_told_by_its_package_or_by_a_file_of_its_repository() {
+        let clients = only_methods(Vec::new()).with_code(vec![code()]);
+        let repository = Path::new("/work/client");
+
+        assert_eq!(clients.client_of_module("@acme/client/sdk"), Some("sdk"));
+        assert_eq!(clients.client_of_module("@acme/clientele"), None);
+        assert_eq!(
+            clients.client_of_file(repository, "src/sdk.gen.ts"),
+            Some("sdk")
+        );
+        assert_eq!(clients.client_of_file(repository, "src/app.ts"), None);
+        assert_eq!(
+            clients.client_of_file(Path::new("/work/web"), "src/sdk.gen.ts"),
+            None
+        );
     }
 }

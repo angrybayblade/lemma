@@ -18,7 +18,9 @@ use lemma_model::Language;
 use lemma_syntax::ExtractorPool;
 
 use crate::VerifyError;
-use crate::clients::{ClientMethod, Clients, NamedOperation, starts_locally};
+use crate::clients::{
+    ClientCode, ClientMethod, Clients, Imported, NamedOperation, Reach, starts_locally,
+};
 use crate::imports::{
     has_extension, imported_files, join, module_file, python_module, resolve_import,
 };
@@ -374,6 +376,7 @@ fn read_clients(
     };
     let mut methods = Vec::new();
     let mut packages = BTreeSet::new();
+    let mut code = Vec::new();
     let with_code = manifest.repositories.iter().filter(|(_, repository)| {
         repository.role == Role::Client && !repository.include.is_empty()
     });
@@ -388,14 +391,65 @@ fn read_clients(
         for (_, facts) in extractor.read(&repository.path, commit, &files, &options)? {
             found.extend(client_methods(name, &facts));
         }
-        packages.extend(package_names(repository, commit, &found, specs)?);
+        let method_files: BTreeSet<String> =
+            found.iter().map(|method| method.file.clone()).collect();
+        packages.extend(package_names(repository, commit, &method_files, specs)?);
+        let code_files: BTreeSet<String> = files.into_iter().map(|file| file.path).collect();
+        code.push(ClientCode {
+            client: name.clone(),
+            repository: repository.path.clone(),
+            packages: package_names(repository, commit, &code_files, specs)?,
+            files: code_files,
+            functions: described_functions(manifest, repository, specs)?,
+        });
         methods.extend(found);
     }
-    Ok(Clients::new(
-        methods,
-        packages,
-        generated_names(manifest, specs)?,
-    ))
+    Ok(Clients::new(methods, packages, generated_names(manifest, specs)?).with_code(code))
+}
+
+/// The functions a client's description names after operations (see
+/// `call_names`), each with the requests it may make at any commit the
+/// client is read at.
+fn described_functions(
+    manifest: &Manifest,
+    repository: &Repository,
+    specs: &SpecCache,
+) -> Result<BTreeMap<String, BTreeSet<(String, String)>>, VerifyError> {
+    let unknown = System::default();
+    let no_clients = Clients::default();
+    let templates = call_name_templates(repository);
+    let mut functions: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
+    for snapshot in snapshots(manifest, repository, &unknown, &no_clients, specs) {
+        let mut operations = Vec::new();
+        for document in &repository.generated_from {
+            operations.extend(spec_operations(repository, &snapshot, document)?);
+        }
+        for operation in &operations {
+            let Some(operation_id) = operation.operation_id.as_deref() else {
+                continue;
+            };
+            let request = (operation.method.clone(), operation.path.clone());
+            let named = templates
+                .iter()
+                .map(|template| call_name(template, operation_id));
+            for function in named {
+                functions
+                    .entry(function)
+                    .or_default()
+                    .insert(request.clone());
+            }
+        }
+    }
+    Ok(functions)
+}
+
+/// How a client's description says its functions are named after
+/// operations; the `operationId` itself where it says nothing.
+fn call_name_templates(repository: &Repository) -> Vec<&str> {
+    if repository.call_names.is_empty() {
+        return vec![DEFAULT_CALL_NAME];
+    }
+    repository.call_names.iter().map(String::as_str).collect()
 }
 
 /// Adds a document's operations under each name a generated client may
@@ -490,13 +544,13 @@ fn client_methods(client: &str, facts: &CodeFacts) -> Vec<ClientMethod> {
 }
 
 /// The package names a client is published as: the `name` of each
-/// `package.json` and `pyproject.toml` whose directory holds some of its
-/// methods, and a Python distribution's import name (`acme-client` is
+/// `package.json` and `pyproject.toml` whose directory holds some of the
+/// files `held`, and a Python distribution's import name (`acme-client` is
 /// imported as `acme_client`).
 fn package_names(
     repository: &Repository,
     commit: Option<&str>,
-    methods: &[ClientMethod],
+    held: &BTreeSet<String>,
     specs: &SpecCache,
 ) -> Result<BTreeSet<String>, VerifyError> {
     let is_package_file = |path: &str| {
@@ -509,10 +563,10 @@ fn package_names(
             .path
             .rsplit_once('/')
             .map_or("", |(directory, _)| directory);
-        let holds_methods = methods.iter().any(|method| {
-            directory.is_empty() || method.file.starts_with(&format!("{directory}/"))
-        });
-        if !holds_methods {
+        let holds_some = held
+            .iter()
+            .any(|file| directory.is_empty() || file.starts_with(&format!("{directory}/")));
+        if !holds_some {
             continue;
         }
         let Some(name) = declared_package_name(&file.path, &file.contents) else {
@@ -1516,18 +1570,13 @@ fn client(
         writer.add("client_operation", both, &args);
         client_method_names(name, method, writer, both);
     }
-    let default_names = [DEFAULT_CALL_NAME.to_owned()];
-    let templates = if repository.call_names.is_empty() {
-        &default_names[..]
-    } else {
-        &repository.call_names[..]
-    };
+    let templates = call_name_templates(repository);
     for spec in &repository.generated_from {
         for operation in spec_operations(repository, snapshot, spec)? {
             let Some(operation_id) = operation.operation_id.as_deref() else {
                 continue;
             };
-            for template in templates {
+            for template in &templates {
                 let function = call_name(template, operation_id);
                 let args = [
                     Arg::Text(name),
@@ -1630,6 +1679,8 @@ fn declaring_methods<'m, 'a>(
 /// What every file of one consumer shares.
 struct ConsumerScope<'a> {
     name: &'a str,
+    /// The repository its files are in.
+    repository: &'a Path,
     /// The service this consumer's code belongs to, whose own operations
     /// it does not consume.
     service: Option<&'a str>,
@@ -1671,6 +1722,7 @@ fn consumer(
             .code_files(&repository.path, snapshot.commit, &repository.include)?;
     let scope = ConsumerScope {
         name,
+        repository: &repository.path,
         service: repository.service.as_deref(),
         snapshots: snapshot.names,
         known: files.iter().map(|file| file.path.clone()).collect(),
@@ -2211,11 +2263,7 @@ fn write_generated_calls(
     writer: &mut FactWriter<'_>,
     scopes: &mut BTreeSet<String>,
 ) {
-    // The consumer's name may hold a colon itself (`#platform:api (code)`).
-    let path = file_id
-        .strip_prefix(scope.name)
-        .and_then(|rest| rest.strip_prefix(':'))
-        .unwrap_or(file_id);
+    let path = consumer_path(scope, file_id);
     for call in &facts.member_calls {
         let Some((function, module)) = generated_function(scope, path, facts, &call.parts) else {
             continue;
@@ -2280,8 +2328,100 @@ fn generated_function<'f>(
     }
 }
 
-/// Calls through chains that reach a client's method (see `clients`), as
-/// calls of that method.
+/// A name a file imports from one of the system's clients.
+struct ClientImport<'f> {
+    /// The name the file uses.
+    local: &'f str,
+    /// The name the client exports it as; `None` for the module itself.
+    exported: Option<&'f str>,
+    /// The client.
+    client: &'f str,
+    /// The client's file the import names, in the file's own repository;
+    /// `None` where it names the client's package.
+    file: Option<String>,
+}
+
+/// A consumer file's path in its repository, from its id.
+fn consumer_path<'f>(scope: &ConsumerScope<'_>, file_id: &'f str) -> &'f str {
+    // The consumer's name may hold a colon itself (`#platform:api (code)`).
+    file_id
+        .strip_prefix(scope.name)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or(file_id)
+}
+
+/// The names a file imports from the system's clients: from a client's
+/// package, or from one of its code files in the file's own repository. A
+/// client's own files import one another; that is its code, not a use of
+/// it.
+fn client_imports<'f>(
+    scope: &'f ConsumerScope<'_>,
+    file_id: &str,
+    facts: &'f CodeFacts,
+) -> Vec<ClientImport<'f>> {
+    if !scope.clients.has_code() {
+        return Vec::new();
+    }
+    let path = consumer_path(scope, file_id);
+    let own = scope.clients.client_of_file(scope.repository, path);
+    facts
+        .import_bindings
+        .iter()
+        .filter_map(|binding| {
+            let (client, file) = imported_client(scope, path, &binding.module)?;
+            (Some(client) != own).then_some(ClientImport {
+                local: &binding.local,
+                exported: binding.imported.as_deref(),
+                client,
+                file,
+            })
+        })
+        .collect()
+}
+
+/// The client a module specifier names, and the client's file it names
+/// where that is a file of the importing file's own repository rather than
+/// the client's package.
+fn imported_client<'f>(
+    scope: &'f ConsumerScope<'_>,
+    path: &str,
+    module: &str,
+) -> Option<(&'f str, Option<String>)> {
+    if let Some(client) = scope.clients.client_of_module(module) {
+        return Some((client, None));
+    }
+    let target = resolve_import(path, module, &scope.every_file, &scope.imports)?;
+    let client = scope.clients.client_of_file(scope.repository, &target)?;
+    Some((client, Some(target)))
+}
+
+/// What a short call rooted at a name imported from a client reaches
+/// (`addPet()`, `PetService.add()`), as `client_operation` names it: the
+/// method the client's code holds (see `Clients::imported`), or else the
+/// function its description names (see `Clients::declared`).
+fn short_call_target(
+    scope: &ConsumerScope<'_>,
+    call: &lemma_http::MemberCall,
+    imports: &[ClientImport<'_>],
+) -> Option<String> {
+    let root = call.parts.first()?;
+    let import = imports.iter().find(|import| import.local == root)?;
+    let imported = import.exported.map_or(Imported::Module, Imported::Name);
+    let reach = import.file.as_deref().map_or(Reach::Package, Reach::File);
+    let clients = scope.clients;
+    clients
+        .imported(import.client, reach, imported, &call.parts)
+        .map(ClientMethod::key)
+        .or_else(|| {
+            clients
+                .declared(import.client, imported, &call.parts)
+                .map(str::to_owned)
+        })
+}
+
+/// Calls that reach a client's method (see `clients`), as calls of that
+/// method: through a chain naming its resource, or a short call rooted at
+/// a name imported from the client.
 fn write_client_method_calls(
     scope: &ConsumerScope<'_>,
     file_id: &str,
@@ -2289,24 +2429,30 @@ fn write_client_method_calls(
     writer: &mut FactWriter<'_>,
     scopes: &mut BTreeSet<String>,
 ) {
-    if scope.clients.is_empty() {
+    let imports = client_imports(scope, file_id, facts);
+    if scope.clients.is_empty() && imports.is_empty() {
         return;
     }
-    let imports_a_client = facts
-        .imported_modules
-        .iter()
-        .any(|module| scope.clients.is_client_module(module));
+    let imports_a_client = !imports.is_empty()
+        || facts
+            .imported_modules
+            .iter()
+            .any(|module| scope.clients.is_client_module(module));
     for call in &facts.member_calls {
-        let uses_a_client = imports_a_client
-            || (scope.depends_on_a_client && starts_locally(call, &facts.imported_names));
-        if !uses_a_client {
-            continue;
-        }
-        let Some(method) = scope.clients.resolve(call) else {
+        let target = if call.parts.len() < 3 {
+            short_call_target(scope, call, &imports)
+        } else {
+            let uses_a_client = imports_a_client
+                || (scope.depends_on_a_client && starts_locally(call, &facts.imported_names));
+            uses_a_client
+                .then(|| scope.clients.resolve(call))
+                .flatten()
+                .map(ClientMethod::key)
+        };
+        let Some(key) = target else {
             continue;
         };
         let consumer = consumer_id(file_id, call.location.symbol.as_ref());
-        let key = method.key();
         let args = [
             Arg::Text(&consumer),
             Arg::Text(&key),
