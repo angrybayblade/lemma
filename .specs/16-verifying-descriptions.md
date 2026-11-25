@@ -94,6 +94,7 @@ A finding has a location in the description or the code, a name an `allow` can s
 | `include_matches_nothing` | An `include` or `exclude` pattern matches no tracked file | Silent (*observed*) |
 | `document_missing` | An exported document does not exist | Silent (*observed*) |
 | `document_unreadable` | A document does not parse or describes no operations | Not run |
+| `document_references_not_followed` | A document refers to other files, which are not followed. An error where a whole path is kept in another file, since its operations are then not read; a warning where only parts of an operation are | Silent (*observed*) |
 | `schema_unresolved` | A type or document location does not resolve, or a schema command fails | Not run |
 | `schema_open` | A schema uses types Lemma could not follow, so fields go uncompared. Warning | Informational, per `docs/check.md` |
 | `runtime_missing` | A named interpreter or runtime does not exist | Not run |

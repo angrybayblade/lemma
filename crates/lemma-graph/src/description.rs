@@ -331,9 +331,11 @@ fn document_findings(
     findings
 }
 
-/// A warning for a document that refers to other files or URLs: only
+/// A finding for a document that refers to other files or URLs: only
 /// references within the document (`#/...`) are followed, so what the
-/// others hold, whole paths among them, is not read.
+/// others hold is not read. It is an error where a whole path is kept
+/// elsewhere, since that path's operations are then missing from every
+/// check, and a warning where only parts of an operation are.
 fn references_not_followed(
     location: &str,
     name: &str,
@@ -349,12 +351,20 @@ fn references_not_followed(
         .map_or(0, |paths| {
             paths.values().filter(|item| refers_outside(item)).count()
         });
+    let (severity, lost) = if paths == 0 {
+        (Severity::Warning, "what they hold is not read")
+    } else {
+        (
+            Severity::Error,
+            "the operations of those paths are not read",
+        )
+    };
     Some(finding(
-        Severity::Warning,
+        severity,
         location,
         "document_references_not_followed",
         format!(
-            "{name} has {outside} references to other files, {paths} of them for a whole path; they are not followed, so what they hold is not read: export the document bundled into one file"
+            "{name} has {outside} references to other files, {paths} of them for a whole path; they are not followed, so {lost}: export the document bundled into one file"
         ),
     ))
 }
@@ -616,7 +626,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn references_to_other_files_are_counted_and_said_not_to_be_followed() {
+    fn a_path_kept_in_another_file_is_an_error() {
         let document = serde_json::json!({
             "paths": {
                 "/users": { "$ref": "./paths/users.yaml" },
@@ -629,11 +639,32 @@ mod tests {
 
         let found = references_not_followed("#api:api", "openapi.yaml", &document).unwrap();
 
-        assert_eq!(found.severity, Severity::Warning);
+        assert_eq!(found.severity, Severity::Error);
         assert_eq!(found.name, "document_references_not_followed");
         assert!(
             found.message.starts_with(
                 "openapi.yaml has 2 references to other files, 1 of them for a whole path"
+            ),
+            "{}",
+            found.message
+        );
+    }
+
+    #[test]
+    fn a_schema_kept_in_another_file_is_a_warning() {
+        let document = serde_json::json!({
+            "paths": {
+                "/teams": { "get": { "responses": { "200": { "content": { "application/json": {
+                    "schema": { "$ref": "schemas.yaml#/Team" } } } } } } }
+            }
+        });
+
+        let found = references_not_followed("#api:api", "openapi.yaml", &document).unwrap();
+
+        assert_eq!(found.severity, Severity::Warning);
+        assert!(
+            found.message.starts_with(
+                "openapi.yaml has 1 references to other files, 0 of them for a whole path"
             ),
             "{}",
             found.message

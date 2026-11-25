@@ -55,7 +55,7 @@ Every command takes `--json`. Positions in JSON are zero-based.
 | `--relation <name>` | Prints every row of a derived relation (repeatable) |
 | `--json` | Findings, links and relations as JSON |
 
-Findings name a location as `#repo:service`: `include_matches_nothing`, `document_missing`, `document_unreadable`, `schema_unresolved`, `schema_open`, `runtime_missing`, `external_unpinned`, `service_empty`, `operation_not_documented`, `anchor_unresolved`, `anchor_uncalled`, `previously_still_present`, `link_redundant`.
+Findings name a location as `#repo:service`: `include_matches_nothing`, `document_missing`, `document_unreadable`, `document_references_not_followed`, `schema_unresolved`, `schema_open`, `runtime_missing`, `external_unpinned`, `service_empty`, `operation_not_documented`, `anchor_unresolved`, `anchor_uncalled`, `previously_still_present`, `link_redundant`.
 
 ## Built-in requirements
 
