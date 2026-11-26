@@ -415,7 +415,8 @@ fn service_documents(
     let Some(kept) = kept else {
         return laid_documents(input, &texts).map(Arc::new);
     };
-    let made_from = documents_digest(&texts, input.from_code);
+    let named = &input.service.exports.documents_from_code;
+    let made_from = documents_digest(&texts, input.from_code, named);
     if let Some(documents) = kept.documents_of(root, input.name, &made_from) {
         return Ok(documents);
     }
@@ -429,9 +430,19 @@ fn service_documents(
 }
 
 /// A digest of what a service's documents are made from: each committed
-/// document's name and text, and the document generated from the code.
-fn documents_digest(texts: &[(String, String)], from_code: Option<&adapters::Generated>) -> String {
+/// document's name and text, the document generated from the code, and
+/// the documents `named` to take it.
+fn documents_digest(
+    texts: &[(String, String)],
+    from_code: Option<&adapters::Generated>,
+    named: &[String],
+) -> String {
     let mut made_from = String::new();
+    for name in named {
+        made_from.push_str("laid over ");
+        made_from.push_str(name);
+        made_from.push('\n');
+    }
     for (name, text) in texts {
         made_from.push_str(name);
         made_from.push('\0');
@@ -459,8 +470,9 @@ fn laid_documents(
             .collect());
     };
     let from_code_name = format!("{} (from code)", input.name);
-    let laid = adapters::overlay::overlay(
+    let laid = adapters::overlay::overlay_named(
         &committed,
+        &input.service.exports.documents_from_code,
         generated.document()?,
         &generated.reading,
         &from_code_name,

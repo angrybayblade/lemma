@@ -109,6 +109,7 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 
 ## New since rc3, not yet released
 
+- **A command given to one of a service's documents is compared with that document.** A service with three committed documents and a generator for one of them was told on every check that its code matched only some of its committed operations, since the generator's document was compared with all three; an operation the code added went unseen for the same reason. The code's operations are now laid over the documents that name the command, and the others stay as committed ([Adapters](adapters.md)).
 - **A severity given after `run lemma.http.*` applies.** A `check main` that ran the whole module and then one requirement with a severity, the order [Requirements and rules](grammar.md#recipes) shows, ran that requirement with its own severity. The last run that gives a severity now decides, wherever it stands. In rc3, write the requirement's run before the module's.
 
 ## New in rc3

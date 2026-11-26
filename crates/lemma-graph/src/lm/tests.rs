@@ -218,6 +218,26 @@ export service api {
 }
 
 #[test]
+fn a_command_is_laid_over_the_documents_that_name_it() {
+    let text = r#"module api
+
+import * as http from lemma.http
+
+let spec = command("make spec", inputs: ["src"])
+
+export service api {
+    operations: [http.openapi("internal.json", command: spec), http.openapi("public.json")]
+}
+"#;
+
+    let file = lowered(text, "api", &[]);
+
+    let exports = &file.services["api"].exports;
+    assert_eq!(exports.openapi, ["internal.json", "public.json"]);
+    assert_eq!(exports.documents_from_code, ["internal.json"]);
+}
+
+#[test]
 fn an_openapi_with_only_a_command_has_no_committed_document() {
     let text = r#"module api
 

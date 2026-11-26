@@ -169,6 +169,44 @@ fn an_uncommitted_code_change_is_checked_before_the_document_is_regenerated() {
     );
 }
 
+/// A second committed document of the provider that no command writes,
+/// larger than the generated one.
+const OTHER_DOCUMENT: &str = r#"{ "openapi": "3.0.0", "paths": {
+  "/admin/a": { "get": { "operationId": "a", "responses": { "200": { "description": "OK" } } } },
+  "/admin/b": { "get": { "operationId": "b", "responses": { "200": { "description": "OK" } } } },
+  "/admin/c": { "get": { "operationId": "c", "responses": { "200": { "description": "OK" } } } } } }
+"#;
+
+#[test]
+fn a_command_given_to_one_document_is_compared_with_that_document_alone() {
+    let workspace = tempfile::tempdir().unwrap();
+    system(workspace.path());
+    let provider = workspace.path().join("billing");
+    let description = std::fs::read_to_string(provider.join("mod.lm")).unwrap().replace(
+        "operations: http.openapi(\"openapi.json\", command: spec)",
+        "operations: [http.openapi(\"openapi.json\", command: spec), http.openapi(\"admin.json\")]",
+    );
+    write(&provider.join("mod.lm"), &description);
+    write(&provider.join("admin.json"), OTHER_DOCUMENT);
+    git(&provider, &["add", "."]);
+    git(&provider, &["commit", "-q", "-m", "a second document"]);
+    require_currency(workspace.path());
+
+    let report = run_check(workspace.path(), "HEAD", None);
+
+    assert_eq!(
+        errors_on_the_call(&report),
+        ["consumer_misses_new_required_field"]
+    );
+    let doubts: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.message.contains("matching only"))
+        .map(|finding| finding.message.as_str())
+        .collect();
+    assert_eq!(doubts, Vec::<&str>::new());
+}
+
 #[test]
 fn a_committed_code_change_with_a_stale_document_is_checked() {
     let workspace = tempfile::tempdir().unwrap();

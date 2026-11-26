@@ -642,16 +642,20 @@ fn patch_path(document: &Path) -> PathBuf {
 pub fn patched_contract(
     service: &str,
     generated: &Generated,
-    committed: &[(String, String)],
+    laid_over: LaidOver<'_>,
     cache: &Path,
     operations: Option<&Path>,
 ) -> Option<Contract> {
     let patch = generated.patch.as_ref()?;
-    let base = kept_contract(cache, &contract_key(service, &patch.base_digest, committed))?;
+    let base = kept_contract(cache, &contract_key(service, &patch.base_digest, laid_over))?;
     let store = cache.join("contracts");
     let mut documents = Vec::new();
     let mut patched = BTreeSet::new();
     for document in &base.documents {
+        if laid_over.leaves_alone(&document.name) {
+            documents.push(document.clone());
+            continue;
+        }
         let base_text = std::fs::read_to_string(&document.path).ok()?;
         let mut value: Value = serde_json::from_str(&base_text).ok()?;
         let changed = lazy::apply_changes(&mut value, &patch.changes);
@@ -661,16 +665,7 @@ pub fn patched_contract(
             continue;
         }
         let text = serde_json::to_string(&value).ok()?;
-        let written = store.join(format!(
-            "{}.json",
-            lemma_model::content_hash(text.as_bytes())
-        ));
-        if !written.exists() {
-            let partial = written.with_extension(format!("{}.partial", std::process::id()));
-            std::fs::write(&partial, &text)
-                .and_then(|()| std::fs::rename(&partial, &written))
-                .ok()?;
-        }
+        let written = write_contract_document(&store, &text).ok()?;
         let changed: BTreeSet<String> = changed.into_iter().collect();
         if let Some(operations) = operations {
             lemma_verify::keep_patched_operations(
@@ -888,19 +883,20 @@ pub fn parse_committed(texts: &[(String, String)]) -> Result<Vec<(String, Value)
 /// adapter's document and each committed document's contents (their
 /// digests, from [`committed_digests`]), and the Lemma build that laid
 /// them, whose overlay may change.
-pub fn contract_key(
-    service: &str,
-    generated_digest: &str,
-    committed: &[(String, String)],
-) -> String {
+pub fn contract_key(service: &str, generated_digest: &str, laid_over: LaidOver<'_>) -> String {
     let mut input = format!(
         "{}\n{service}\n{generated_digest}\n",
         env!("CARGO_PKG_VERSION")
     );
-    for (name, digest) in committed {
+    for (name, digest) in laid_over.committed {
         input.push_str(name);
         input.push('\n');
         input.push_str(digest);
+        input.push('\n');
+    }
+    for name in laid_over.named {
+        input.push_str("laid over ");
+        input.push_str(name);
         input.push('\n');
     }
     lemma_model::content_hash(input.as_bytes())
@@ -1014,6 +1010,41 @@ pub struct Contract {
     pub coverage: Coverage,
 }
 
+/// Writes a contract's document under a name its content decides, unless
+/// it is there already, and says where it is.
+fn write_contract_document(store: &Path, text: &str) -> std::io::Result<PathBuf> {
+    let path = store.join(format!(
+        "{}.json",
+        lemma_model::content_hash(text.as_bytes())
+    ));
+    if !path.exists() {
+        let partial = path.with_extension(format!("{}.partial", std::process::id()));
+        std::fs::write(&partial, text).and_then(|()| std::fs::rename(&partial, &path))?;
+    }
+    Ok(path)
+}
+
+/// A service's committed documents, by name and digest of their contents,
+/// and those its adapter is given to as their command: none when it is
+/// laid over them all.
+#[derive(Debug, Clone, Copy)]
+pub struct LaidOver<'a> {
+    /// Each committed document's name and digest.
+    pub committed: &'a [(String, String)],
+    /// The documents that take the code's operations.
+    pub named: &'a [String],
+}
+
+impl LaidOver<'_> {
+    /// Whether `document` is a committed one the adapter is not given to,
+    /// which stays as committed.
+    fn leaves_alone(&self, document: &str) -> bool {
+        !self.named.is_empty()
+            && !self.named.iter().any(|named| named == document)
+            && self.committed.iter().any(|(name, _)| name == document)
+    }
+}
+
 /// The contract of `service` that `generated` gives, laid over its
 /// `committed` documents, each written to `cache` under a name its content
 /// decides, so services and runs never write over each other's.
@@ -1021,13 +1052,15 @@ pub fn contract(
     service: &str,
     generated: &Generated,
     committed: &[(String, Value)],
+    named: &[String],
     cache: &Path,
 ) -> Result<Contract, GraphError> {
     let store = cache.join("contracts");
     create_directory(&store)?;
     let from_code_name = format!("{service} (from code)");
-    let laid = overlay::overlay(
+    let laid = overlay::overlay_named(
         committed,
+        named,
         generated.document()?,
         &generated.reading,
         &from_code_name,
@@ -1039,19 +1072,10 @@ pub fn contract(
                 command: format!("writing the contract for {name}"),
                 source,
             })?;
-        let path = store.join(format!(
-            "{}.json",
-            lemma_model::content_hash(text.as_bytes())
-        ));
-        if !path.exists() {
-            let partial = path.with_extension(format!("{}.partial", std::process::id()));
-            std::fs::write(&partial, &text)
-                .and_then(|()| std::fs::rename(&partial, &path))
-                .map_err(|source| GraphError::Io {
-                    path: path.clone(),
-                    source,
-                })?;
-        }
+        let path = write_contract_document(&store, &text).map_err(|source| GraphError::Io {
+            path: store.clone(),
+            source,
+        })?;
         documents.push(GeneratedDocument {
             name: name.clone(),
             path,

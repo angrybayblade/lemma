@@ -73,6 +73,11 @@ pub struct Exports {
     /// its contract wherever Lemma reads it: `openapi` documents are only
     /// compared against it.
     pub operations_from: Option<OperationsFrom>,
+    /// The `openapi` documents that name the adapter as their `command`:
+    /// its operations are laid over these alone, and the service's other
+    /// documents stay as committed. Empty when the adapter is written by
+    /// itself or given to no document, and is laid over every document.
+    pub documents_from_code: Vec<String>,
 }
 
 /// How a service's operations are read from its code: an adapter imports

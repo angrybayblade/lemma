@@ -1537,6 +1537,9 @@ struct AdapterJob<'r> {
     /// its own variables when a check is answered on its behalf.
     runtime: std::borrow::Cow<'r, crate::config::Runtime>,
     documents: Vec<String>,
+    /// The documents the adapter is given to as their command; empty when
+    /// it is laid over them all.
+    documents_from_code: &'r [String],
 }
 
 fn adapter_jobs<'r>(
@@ -1574,6 +1577,7 @@ fn adapter_jobs<'r>(
                 from,
                 runtime: runtime_for(&service.runtime, run.environment.as_deref()),
                 documents: repository.specs.clone(),
+                documents_from_code: &service.exports.documents_from_code,
             });
         }
     }
@@ -1645,6 +1649,7 @@ fn prefetch_jobs<'r>(
                     from,
                     runtime: runtime_for(&service.runtime, options.environment.as_deref()),
                     documents: service.exports.openapi.clone(),
+                    documents_from_code: &service.exports.documents_from_code,
                 });
             }
         }
@@ -1740,7 +1745,12 @@ fn adapter_contract(
     // ones, so the same inputs give the contract already kept; a document
     // patched for a change gives the base's contract patched the same way.
     let digests = adapters::committed_digests(job.checkout, &job.documents, cache)?;
-    let key = adapters::contract_key(&job.service, &generated.digest, &digests);
+    let named = job.documents_from_code;
+    let laid_over = adapters::LaidOver {
+        committed: &digests,
+        named,
+    };
+    let key = adapters::contract_key(&job.service, &generated.digest, laid_over);
     if let Some(kept) = adapters::kept_contract(cache, &key) {
         log::info!(
             "adapter: {} ({}): contract kept for these documents",
@@ -1749,7 +1759,8 @@ fn adapter_contract(
         );
         return Ok(Some(kept));
     }
-    let patched = adapters::patched_contract(&job.service, &generated, &digests, cache, operations);
+    let patched =
+        adapters::patched_contract(&job.service, &generated, laid_over, cache, operations);
     if let Some(patched) = patched {
         adapters::keep_contract(cache, &key, &patched);
         log::info!(
@@ -1761,7 +1772,7 @@ fn adapter_contract(
     }
     let texts = adapters::committed_texts(job.checkout, &job.documents)?;
     let committed = adapters::parse_committed(&texts)?;
-    let contract = adapters::contract(&job.service, &generated, &committed, cache)?;
+    let contract = adapters::contract(&job.service, &generated, &committed, named, cache)?;
     adapters::keep_contract(cache, &key, &contract);
     Ok(Some(contract))
 }

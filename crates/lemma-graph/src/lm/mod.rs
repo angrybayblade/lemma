@@ -238,12 +238,20 @@ fn providers(exports: &mut Exports, value: &Value, what: &str) -> Result<(), Low
 /// An `http.openapi` provider: its committed document, if it names one,
 /// and the command generating one, if it has one.
 fn openapi(exports: &mut Exports, provider: &Value, what: &str) -> Result<(), LowerError> {
-    if let Some(document) = provider.argument("document") {
-        let document = document.as_text().ok_or_else(|| shape(what, "text"))?;
+    let document = match provider.argument("document") {
+        Some(document) => Some(document.as_text().ok_or_else(|| shape(what, "text"))?),
+        None => None,
+    };
+    if let Some(document) = document {
         exports.openapi.push(document.to_owned());
     }
     if let Some(generator) = provider.argument("command") {
         set_generator(exports, generator, what)?;
+        // The command writes this document: the service's other documents
+        // are not what it generates.
+        if let Some(document) = document {
+            exports.documents_from_code.push(document.to_owned());
+        }
     }
     Ok(())
 }

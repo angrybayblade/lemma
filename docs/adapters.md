@@ -17,7 +17,7 @@ export service api {
 }
 ```
 
-The committed document is optional: `http.openapi(command: ...)` reads operations from code alone, and so does an adapter written straight into `operations`. A service with several committed documents names the same command in each; it runs once, and each document takes the operations under its paths (see [Output document](#output-document)).
+The committed document is optional: `http.openapi(command: ...)` reads operations from code alone, and so does an adapter written straight into `operations`. A service with several committed documents names the same command in each; it runs once, and each document takes the operations under its paths (see [Output document](#output-document)). A document that does not name the command stays as committed: the code's operations are compared with the documents that name it, and an operation another document describes is left to that document. An adapter written by itself in `operations`, or a command given to no document, is laid over every document.
 
 ## Built-in adapters
 
@@ -74,7 +74,7 @@ export service api {
 - **What it imports.** `setup` installs the dependencies and builds the packages the app imports, in Lemma's worktree of a commit. The working directory is taken as ready, as it is for the generator run by hand.
 - **Where it writes.** A generator that writes to a fixed path is followed by a copy to `$LEMMA_OUTPUT`. Run in the working directory it rewrites the committed document there too, as running it by hand does.
 - **When it runs.** Once for each state of its `inputs`: a second check of the same edit reuses the document, and an edit outside `inputs` runs nothing.
-- **Other documents.** A document with no command is read as committed, so a service can name a generator for one document and leave the others.
+- **Other documents.** A document with no command is read as committed, and the generator's document is compared with the documents that name the command, so a service can name a generator for one document and leave the others.
 
 Without a command, a committed document is the contract until someone regenerates it: a schema edit gives no finding until then.
 

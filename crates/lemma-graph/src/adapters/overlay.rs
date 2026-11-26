@@ -149,6 +149,68 @@ pub fn overlay(
     }
 }
 
+/// [`overlay`] where only the documents `named` take the code's operations:
+/// a service whose command is given to some of its documents keeps the
+/// others as committed, each in its place, and an operation one of those
+/// describes is left to it even when the code describes it too. With no
+/// document named, every one takes them.
+pub fn overlay_named(
+    committed: &[(String, Value)],
+    named: &[String],
+    generated: &Value,
+    reading: &Reading,
+    from_code_name: &str,
+) -> Overlay {
+    let takes = |name: &String| named.is_empty() || named.contains(name);
+    if committed.iter().all(|(name, _)| takes(name)) {
+        return overlay(committed, generated, reading, from_code_name);
+    }
+    let taking: Vec<(String, Value)> = committed
+        .iter()
+        .filter(|(name, _)| takes(name))
+        .cloned()
+        .collect();
+    let described_elsewhere: BTreeSet<(String, String)> = committed
+        .iter()
+        .filter(|(name, _)| !takes(name))
+        .flat_map(|(_, document)| operations_by_key(document).into_keys())
+        .collect();
+    let own = without_operations(generated, &described_elsewhere);
+    let mut laid = overlay(&taking, &own, reading, from_code_name);
+    let mut documents = Vec::new();
+    for (name, document) in committed {
+        let position = laid.documents.iter().position(|(laid, _)| laid == name);
+        let document = position.map_or_else(|| document.clone(), |at| laid.documents.remove(at).1);
+        documents.push((name.clone(), document));
+    }
+    // What is left is the document of operations only the code describes.
+    documents.append(&mut laid.documents);
+    Overlay {
+        documents,
+        coverage: laid.coverage,
+    }
+}
+
+/// `document` without the operations `keys` name, by method and canonical
+/// path, and without a path left holding none.
+fn without_operations(document: &Value, keys: &BTreeSet<(String, String)>) -> Value {
+    let mut document = document.clone();
+    let Some(paths) = document.get_mut("paths").and_then(Value::as_object_mut) else {
+        return document;
+    };
+    paths.retain(|template, item| {
+        let Some(canonical) = lemma_http::canonical_route(template) else {
+            return true;
+        };
+        let Some(item) = item.as_object_mut() else {
+            return true;
+        };
+        item.retain(|method, _| !keys.contains(&(method.to_uppercase(), canonical.clone())));
+        METHODS.iter().any(|method| item.contains_key(*method))
+    });
+    document
+}
+
 /// Without committed documents, the generated one is the contract.
 fn code_alone(generated: &Value, described: usize, from_code_name: &str) -> Overlay {
     let coverage = Coverage {
@@ -758,6 +820,55 @@ mod tests {
         let laid = overlay(&named(vec![committed]), &generated, &complete(), "code");
 
         assert_eq!(laid.coverage.changed, ["POST /b"]);
+    }
+
+    #[test]
+    fn a_document_the_command_is_not_given_to_stays_as_committed() {
+        let internal = json!({"paths": {
+            "/internal/keys": {"get": {"summary": "old"}},
+            "/internal/users": {"get": {}}
+        }});
+        let public = json!({"paths": {
+            "/v1/a": {"get": {"summary": "committed a"}},
+            "/v1/b": {"get": {}},
+            "/v1/c": {"get": {}}
+        }});
+        let generated = json!({"paths": {
+            "/internal/keys": {"get": {"summary": "new"}},
+            "/internal/users": {"get": {}},
+            "/internal/added": {"get": {}},
+            "/v1/a": {"get": {"summary": "from code"}}
+        }});
+        let committed = named(vec![internal, public.clone()]);
+        let only_internal = ["doc0.json".to_owned()];
+
+        let laid = overlay_named(&committed, &only_internal, &generated, &complete(), "code");
+
+        let names: Vec<&str> = laid
+            .documents
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(names, ["doc0.json", "doc1.json"]);
+        assert_eq!(
+            laid.documents[0].1["paths"]["/internal/keys"]["get"]["summary"],
+            "new"
+        );
+        assert!(laid.documents[0].1["paths"]["/internal/added"]["get"].is_object());
+        assert_eq!(laid.documents[1].1, public);
+        assert_eq!((laid.coverage.matched, laid.coverage.committed), (2, 2));
+        assert!(laid.coverage.is_trusted);
+    }
+
+    #[test]
+    fn with_no_document_named_every_document_takes_the_code() {
+        let v1 = json!({"paths": {"/v1/a": {"get": {"summary": "old"}}}});
+        let generated = json!({"paths": {"/v1/a": {"get": {"summary": "new"}}}});
+        let committed = named(vec![v1]);
+
+        let laid = overlay_named(&committed, &[], &generated, &complete(), "code");
+
+        assert_eq!(laid, overlay(&committed, &generated, &complete(), "code"));
     }
 
     #[test]
