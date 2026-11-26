@@ -1667,12 +1667,26 @@ fn operation_facts(
         if field.required {
             writer.add("required_request_field", snapshots, &args);
         }
+        write_fields_above(&field.path, snapshots, writer);
     }
     for field in &operation.response_fields {
         writer.add(
             "response_field",
             snapshots,
             &[Arg::Text(op), Arg::Text(field), Arg::Text(leaf(field))],
+        );
+        write_fields_above(field, snapshots, writer);
+    }
+}
+
+/// Says which field paths `field` is under, so a rule can tell a field
+/// that was removed from one that went with a field above it.
+fn write_fields_above(field: &str, snapshots: &[&str], writer: &mut FactWriter<'_>) {
+    for above in fields_above(field) {
+        writer.add(
+            "field_under",
+            snapshots,
+            &[Arg::Text(field), Arg::Text(above)],
         );
     }
 }
@@ -3480,6 +3494,17 @@ fn leaf(field: &str) -> &str {
         .trim_end_matches("[]")
 }
 
+/// The field paths above a field path, nearest last: `hooks[].handler.action`
+/// → `hooks`, `hooks[].handler`. An array's elements are not a field of
+/// their own, so `hooks[]` is `hooks`.
+fn fields_above(field: &str) -> Vec<&str> {
+    field
+        .match_indices('.')
+        .map(|(dot, _)| field[..dot].trim_end_matches("[]"))
+        .filter(|above| !above.is_empty())
+        .collect()
+}
+
 /// The call name a client is assumed to use when the manifest gives none:
 /// the `operationId` as written.
 const DEFAULT_CALL_NAME: &str = "{operationId}";
@@ -4029,5 +4054,15 @@ mod tests {
     fn field_leaves_drop_containers_and_array_marks() {
         assert_eq!(leaf("hooks[].handler.action"), "action");
         assert_eq!(leaf("items[]"), "items");
+    }
+
+    #[test]
+    fn the_fields_above_a_path_skip_array_elements() {
+        assert_eq!(
+            fields_above("hooks[].handler.action"),
+            ["hooks", "hooks[].handler"]
+        );
+        assert_eq!(fields_above("team"), Vec::<&str>::new());
+        assert_eq!(fields_above("[].id"), Vec::<&str>::new());
     }
 }

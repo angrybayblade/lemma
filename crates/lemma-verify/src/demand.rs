@@ -1024,8 +1024,8 @@ mod tests {
         for anchor in [
             "removed_operation",
             "new_required_parameter",
-            "removed_request_field",
-            "removed_response_field",
+            "outermost_removed_request_field",
+            "outermost_removed_response_field",
             "added_operation",
         ] {
             assert!(
@@ -1044,7 +1044,7 @@ mod tests {
 
         let plan = change_driven_plan(&grammar).unwrap();
 
-        let rejected: BTreeSet<String> = ["rejects_unknown", "removed_request_field"]
+        let rejected: BTreeSet<String> = ["outermost_removed_request_field", "rejects_unknown"]
             .into_iter()
             .map(str::to_owned)
             .collect();

@@ -12,6 +12,7 @@
 | `request_field` | operation, field path (`hooks[].handler.action`), last name | service specs |
 | `required_request_field` | operation, field path, last name | service specs: required in every enclosing object and every union branch |
 | `response_field` | operation, field path, last name | service specs, 2xx responses |
+| `field_under` | field path, a field path above it | service specs |
 | `strict_request` | operation | service specs: `additionalProperties: false` |
 | `route` | service, method, path, file, line | service route code (head only) |
 | `route_schema` | service, method, path, part (`body`/`query`), file, schema | service route code (head only) |
@@ -46,6 +47,8 @@ These come from the rules in the standard library's `lemma.http`; any can be pri
 | `removed_request_field` | operation, field, leaf | A kept operation's request lost a field |
 | `new_required_request_field` | operation, field, leaf | A kept operation's request now requires a field |
 | `removed_response_field` | operation, field, leaf | A kept operation's response lost a field |
+| `outermost_removed_request_field`, `outermost_removed_response_field` | operation, field, leaf | A removed field with no removed field above it: what findings rest on, so a field removed with those under it is reported once |
+| `reads_removed_response_field` | file, line, operation, field | The call at the line reads an outermost removed field, or one that went with it, off its body |
 | `strict_route` | service, method, path, part | A route's body or query schema rejects unknown keys (zod `.strict()`) |
 | `rejects_unknown` | operation | Requests sending an unknown field fail, after the change |
 | `rejects_unknown_parameter` | operation | Requests sending an unknown query parameter fail, after the change |

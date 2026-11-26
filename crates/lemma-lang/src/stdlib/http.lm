@@ -15,6 +15,9 @@ export relation required_parameter(operation: Text, name: Text, location: Text)
 export relation request_field(operation: Text, field: Text, leaf: Text)
 export relation required_request_field(operation: Text, field: Text, leaf: Text)
 export relation response_field(operation: Text, field: Text, leaf: Text)
+// A field path and each field path above it: `team.owner.id` is under
+// `team` and `team.owner`, and `items[].id` under `items`.
+export relation field_under(field: Text, above: Text)
 export relation route(service: Text, method: Text, path: Text, file: Text, line: Int)
 // A path of a service's spec its route code names, whole or as a router's
 // prefix and a path under it, whether or not a route is read from it.
@@ -204,6 +207,56 @@ export rule removed_response_field(op: Text, fld: Text, leaf: Text) {
         response_field@base(op, fld, leaf),
         !response_field@head(op, fld, leaf),
         kept_operation(op)
+}
+
+// A field removed with one above it went with that field: removing or
+// renaming `team` takes `team.slug` too. Findings rest on the outermost
+// removed field, so the change is reported once at each call and not
+// again for every field under it.
+export rule removed_under_request_field(op: Text, fld: Text) {
+    (op, fld) :-
+        removed_request_field(op, fld, leaf),
+        field_under@base(fld, above),
+        removed_request_field(op, above, n)
+}
+
+export rule outermost_removed_request_field(op: Text, fld: Text, leaf: Text) {
+    (op, fld, leaf) :-
+        removed_request_field(op, fld, leaf),
+        !removed_under_request_field(op, fld)
+}
+
+export rule removed_under_response_field(op: Text, fld: Text) {
+    (op, fld) :-
+        removed_response_field(op, fld, leaf),
+        field_under@base(fld, above),
+        removed_response_field(op, above, n)
+}
+
+export rule outermost_removed_response_field(op: Text, fld: Text, leaf: Text) {
+    (op, fld, leaf) :-
+        removed_response_field(op, fld, leaf),
+        !removed_under_response_field(op, fld)
+}
+
+// The names a removal takes from a response: the outermost removed
+// field's own, and those of the fields that went with it.
+export rule removed_response_name(op: Text, fld: Text, n: Text) {
+    (op, fld, n) :- outermost_removed_response_field(op, fld, n)
+    (op, fld, n) :-
+        outermost_removed_response_field(op, fld, leaf),
+        field_under@base(below, fld),
+        removed_response_field(op, below, n)
+}
+
+// The call at a file's line reads, off what it returned, a removed
+// response field or a field that went with it: `invoice.customer.email`
+// reads `email` deep enough to be a field of the body, and so reads the
+// removed `customer`.
+export rule reads_removed_response_field(f: Text, l: Int, op: Text, fld: Text) {
+    (f, l, op, fld) :-
+        removed_response_name(op, fld, n),
+        reads_result(f, l, n)
 }
 
 // Route parts whose schema rejects unknown keys (zod's `.strict()`): a
@@ -460,7 +513,7 @@ export require consumer_sends_rejected_field {
     severity: error
     when:
         calls(c, op, f, l),
-        removed_request_field(op, fld, leaf),
+        outermost_removed_request_field(op, fld, leaf),
         uses(c, leaf),
         rejects_unknown(op)
     message: "{c} calls {op} and names `{leaf}`; request field `{fld}` was removed and {op} now rejects requests that send it ({f}:{l})"
@@ -470,7 +523,7 @@ export require consumer_uses_removed_request_field {
     severity: warning
     when:
         calls(c, op, f, l),
-        removed_request_field(op, fld, leaf),
+        outermost_removed_request_field(op, fld, leaf),
         uses(c, leaf),
         !rejects_unknown(op)
     message: "{c} calls {op} and names `{leaf}`; request field `{fld}` was removed or renamed, so {op} now ignores it if sent ({f}:{l})"
@@ -480,8 +533,8 @@ export require consumer_reads_removed_response_field {
     severity: error
     when:
         calls(c, op, f, l),
-        removed_response_field(op, fld, leaf),
-        reads_result(f, l, leaf)
+        outermost_removed_response_field(op, fld, leaf),
+        reads_removed_response_field(f, l, op, fld)
     message: "{c} calls {op} and reads `{leaf}` off its result; response field `{fld}` was removed or renamed ({f}:{l})"
 }
 
@@ -489,9 +542,9 @@ export require consumer_uses_removed_response_field {
     severity: warning
     when:
         calls(c, op, f, l),
-        removed_response_field(op, fld, leaf),
+        outermost_removed_response_field(op, fld, leaf),
         uses(c, leaf),
-        !reads_result(f, l, leaf)
+        !reads_removed_response_field(f, l, op, fld)
     message: "{c} calls {op} and names `{leaf}`; response field `{fld}` was removed or renamed ({f}:{l})"
 }
 
@@ -499,7 +552,7 @@ export require consumer_calls_changed_operation {
     severity: info
     when:
         calls(c, op, f, l),
-        removed_request_field(op, fld, leaf),
+        outermost_removed_request_field(op, fld, leaf),
         !sends(c, leaf)
     message: "{c} calls {op}, whose request field `{fld}` changed; its code never names `{leaf}` ({f}:{l})"
 }

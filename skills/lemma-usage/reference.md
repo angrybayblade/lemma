@@ -81,6 +81,8 @@ Findings name a location as `#repo:service`: `include_matches_nothing`, `documen
 | `operation_without_consumer` | warning | The change adds an operation nothing in the workspace calls (exempt if in `public_operation`) |
 | `route_not_in_spec` | info | A service serves a route its spec does not declare (introduced when the change adds it, which `route_without_operation` also warns about) |
 
+A field removed with the fields under it is reported once at each call, about the outermost removed field.
+
 ## Known limits that affect answers
 
 - Field changes compare names, not types or allowed values.

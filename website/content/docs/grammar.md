@@ -98,11 +98,11 @@ Lemma checks every rule before running it and says which rule is wrong and why. 
 ## Requirements
 
 ```lm
-import { calls, removed_request_field, uses, rejects_unknown } from lemma.http
+import { calls, outermost_removed_request_field, uses, rejects_unknown } from lemma.http
 
 export require consumer_sends_rejected_field {
     severity: error
-    when: calls(c, op, f, l), removed_request_field(op, fld, leaf), uses(c, leaf), rejects_unknown(op)
+    when: calls(c, op, f, l), outermost_removed_request_field(op, fld, leaf), uses(c, leaf), rejects_unknown(op)
     message: "{c} calls {op} and names `{leaf}`; request field `{fld}` was removed and {op} now rejects requests that send it ({f}:{l})"
 }
 ```
@@ -145,6 +145,7 @@ When any requirement is none of these, Lemma reads every consumer file. `lemma c
 | `request_field` | operation, field path (`hooks[].handler.action`), last name | service documents |
 | `required_request_field` | operation, field path, last name | service documents: required in every enclosing object and every union branch |
 | `response_field` | operation, field path, last name | service documents, 2xx responses |
+| `field_under` | field path, a field path above it (`hooks[].handler.action` is under `hooks` and `hooks[].handler`) | service documents |
 | `strict_request` | operation | service documents: `additionalProperties: false` |
 | `route` | service, method, path, file, line | service route code |
 | `code_names_path` | service, path | service route code: a spec path the code writes, whole or as a router's prefix and a path under it, whether or not a route is read from it |

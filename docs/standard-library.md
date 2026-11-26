@@ -35,6 +35,7 @@ HTTP contracts between services, their generated clients and consumers.
 - relation `request_field`: `(operation: Text, field: Text, leaf: Text)`
 - relation `required_request_field`: `(operation: Text, field: Text, leaf: Text)`
 - relation `response_field`: `(operation: Text, field: Text, leaf: Text)`
+- relation `field_under`: `(field: Text, above: Text)`
 - relation `route`: `(service: Text, method: Text, path: Text, file: Text, line: Int)`
 - relation `code_names_path`: `(service: Text, path: Text)`
 - relation `client_operation`: `(client: Text, chain: Text, method: Text, path: Text, file: Text, line: Int)`
@@ -74,6 +75,12 @@ HTTP contracts between services, their generated clients and consumers.
 - rule `removed_request_field`: `(op: Text, fld: Text, leaf: Text)`
 - rule `new_required_request_field`: `(op: Text, fld: Text, leaf: Text)`
 - rule `removed_response_field`: `(op: Text, fld: Text, leaf: Text)`
+- rule `removed_under_request_field`: `(op: Text, fld: Text)`
+- rule `outermost_removed_request_field`: `(op: Text, fld: Text, leaf: Text)`
+- rule `removed_under_response_field`: `(op: Text, fld: Text)`
+- rule `outermost_removed_response_field`: `(op: Text, fld: Text, leaf: Text)`
+- rule `removed_response_name`: `(op: Text, fld: Text, n: Text)`
+- rule `reads_removed_response_field`: `(f: Text, l: Int, op: Text, fld: Text)`
 - rule `strict_in_scope`: `(f: Text, n: Text)`
 - rule `loose_union`: `(f: Text, u: Text)`
 - rule `strict_definition`: `(f: Text, n: Text)`
