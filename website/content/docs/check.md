@@ -164,7 +164,8 @@ Calls through clients need no declaration. A call through a client library (`cli
 | `index: { include: [...] }` | Directories or files the service is made of, relative to the repository root. |
 | `index: { exclude: [...] }` | Glob patterns never read, such as `**/generated/**`. |
 | `index: { languages: [...] }` | Only files in these languages (`typescript`, `tsx`, `python`, `go`, `rust`). |
-| `operations: http.openapi("openapi.json")` | OpenAPI documents the service serves. Each operation with an `operationId` also becomes one of its operations, so a link can name it. A list holds several. |
+| `operations: http.openapi("openapi.json")` | OpenAPI documents the service serves. Each operation with an `operationId` also becomes one of its operations, so a link can name it. |
+| `operations: [http.openapi("openapi.json"), http.openapi("openapi-internal.json")]` | A service that serves several documents lists them. The list takes any of the sources in this table, mixed: documents, and the adapters and commands below. |
 | `operation` declarations | Operations declared where documents do not describe them (above). |
 | `symbols: [...]` | Files whose definitions are the service's public interface, as a library's entry modules. |
 | `operations: http.openapi("openapi.json", command: ...)`, or `hono.app(...)`, `fastapi.app(...)`, `http.adapter(...)` or `command(...)` alone | Reads the service's operations from its code instead of trusting committed documents: an adapter imports the code and writes the OpenAPI document the framework describes for it. The code's operations are laid over any committed documents in the same list (or stand alone without them), so consumers are checked against what the code serves, and each indexed operation sits at the code registering it (`found_by: adapter`). An adapter that cannot read the code, or reads only part of it, is reported as a warning, never passed silently. See [Reading operations from code](adapters.md). |

@@ -75,6 +75,14 @@ workspace {
 
 Repositories are `local("../billing")`, a working directory; `local("../billing", rev: "3f2a1c9e04")`, a clone read at a commit; or `git(url: "...", rev: "...")`, cloned into Lemma's cache. A link's ends name operations, by `operationId` (`api.createCharge`) or by method and path (`api["POST /v1/charges"]`). A renamed operation says what it used to be: `previously: ["billing::api.cancel"]`.
 
+`operations` takes one source or a list of them. A service that serves several documents lists them:
+
+```lm
+export service api {
+    operations: [http.openapi("openapi.json"), http.openapi("openapi-internal.json")]
+}
+```
+
 [Check links](check.md#descriptions) lists a service's fields, the operations it declares and where schemas come from.
 
 Names are bound, not matched as text. An import names a module (`import { api } from billing`), a file's place in its repository fixes its module's name (`checks/replay.lm` in `billing` is `billing.checks.replay`), a directory's module is its `mod.lm` (`checks/mod.lm` is `billing.checks`), and a repository's name is its root module's, the `mod.lm` at its root, so it is an identifier: a directory `web-app` holds `module web_app`, and findings print `#web_app`. A service that only groups other services passes its fields down to them.

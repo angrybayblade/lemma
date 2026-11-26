@@ -168,7 +168,7 @@ What rc3 changes comes from the first team's use of rc2. Each item was reported 
 - [ ] A removed response field read off a callback's parameter (`map: (response) => response.items`, `.then`, `onSuccess`) is an error as a read off the body is, where public code shows the shape.
 - [ ] A handler or schema edit in a service whose document is committed is seen before the document is regenerated, or reported as the code and the document having drifted. A trial decides which.
 - [ ] `lemma graph` takes the number of names it asks about as a flag.
-- [ ] A service's `operations` given as a list of documents is shown in [check](check.md) and the [language reference](language.md), as it is in [Onboarding](onboarding.md).
+- [x] A service's `operations` given as a list of documents is shown in [check](check.md) and the [language reference](language.md), as it is in [Onboarding](onboarding.md).
 - [ ] `lemma verify` lists code that invokes a declared operation no link names, as a candidate.
 
 Before the tag:
