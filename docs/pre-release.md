@@ -11,7 +11,7 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | 0.1.0-rc0 | Internal launch: code intelligence in four languages, contract checks across repositories, install script, agent skills | Released |
 | 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up; one store file in place of SQLite; one daemon per workspace, with sentry; evidence kept by the files a checker's run read; source contracts, experimental (see [New in rc1](#new-in-rc1)) | Released |
 | 0.1.0-rc2 | Fixes from the first outside trial of rc1; layouts met in public repositories read; requests under a base URL read; a removed response field read off the body an error; `lemma verify` says what a clean result covers and lists code a description leaves out (see [New in rc2](#new-in-rc2)) | Released |
-| 0.1.0-rc3 and later | Behavior simulation scaffolded for Python, TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; fixes from internal use; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
+| 0.1.0-rc3 and later | Callers of generated clients read in TypeScript and Go, and a clean result that says how many operations it speaks for (see [New since rc2](#new-since-rc2-not-yet-released)); behavior simulation scaffolded for Python, TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; fixes from internal use; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
 
 ## Feature surfaces
 
@@ -52,10 +52,11 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 | Only HTTP with OpenAPI specs | gRPC, GraphQL, queues, events and other RPC (such as serverless function invocations) are not checked | High outside HTTP | Declare those links in a `.lm` description |
 | Only contract breaks, not behaviour | A change that keeps the contract but changes what it does (rate limits, defaults, ordering) is not caught | High for incidents caused by behaviour changes | Test what matters with a [behavior](tutorials/4-behaviors.md) (beta) |
 | Rust consumers (code calling HTTP from Rust) are tested only by unit tests | Real-world gaps in reqwest call detection may exist | Low | Report missed calls |
-| Calls through a generated client are matched by function names derived from `operationId`s (`call_names`) | A generator that names functions some other way (by resource and verb, say) is not matched | Medium for such generators | Report the generator. Where the client's own code writes each operation's path, include that code in the client's `index`: its methods are read from it |
+| A call through a client is followed where it names the client's resource in a chain (`client.invoices.list()`) or starts at a name imported from the client (`listInvoices()`, `InvoicesService.list()`); in Go, where the file imports the client's package and calls a method of its name | A client reached through a value made in another file (`api.listInvoices()` where `api` is created elsewhere) is not followed. In Go a caller that does not import the client's package is missed, and a method of the same name on another type is taken for the client's. Callers of a generated Python client are not followed | Medium for such callers | `lemma verify` lists a client none of whose calls was read as a candidate (`client_without_callers`) and says how many operations have a call read |
 | Consumers are matched to the operation they were written for (the base snapshot) | A call that only exists after the change is checked by `consumer_calls_unserved_operation`, not the field rules | Low | None needed |
 | A description is written by hand | Setup takes an afternoon for a few repositories | Medium | [Onboarding](onboarding.md#4-describe-the-system); the `lemma-onboarding` skill helps an agent write it |
-| `lemma verify` looks for one kind of thing a description leaves out: code that writes described paths, reported as a candidate | An OpenAPI document no service exports, route code no service includes, or a repository the workspace does not compose stays unnoticed | Medium | The `lemma-audit` skill looks by hand |
+| `lemma verify` looks for two kinds of thing a description leaves out: code that writes described paths, and a client no read call reaches, each reported as a candidate | An OpenAPI document no service exports, route code no service includes, or a repository the workspace does not compose stays unnoticed | Medium | The `lemma-audit` skill looks by hand |
+| Vue and Svelte files are not read | No request, route or name in them is seen; a frontend that keeps its calls there has few operations with a call read | High for such frontends | `lemma verify` counts the files and says how many operations have a call read |
 
 ### Checking links (`lemma check`)
 
@@ -103,6 +104,21 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 | Binaries are unstripped | Larger downloads | Fine for now |
 | No Windows build | Does not run natively on Windows | Use WSL |
 | Soufflé is optional and not bundled | `lemma check` is about six times slower without it, same results | `brew install souffle` |
+
+## New since rc2, not yet released
+
+Most of it is about what a result with no findings can be taken to mean: more callers are read, and the output says how far it reaches.
+
+- **Callers of a committed generated client are read.** A function imported from a client and called itself (`createCharge()`), or a method called on an imported class (`ChargesService.create()`), reaches the client's method where the import names the client's package or one of its files in the same repository. The client's own code says what each method requests, so no generator needs naming; where the code does not say, the functions the client's `call_names` name are reached the same way. On a public project with a committed client, 17 of 17 callers are tied to their operation; on another, 113 where none was. A module named from a `tsconfig`'s `baseUrl` resolves, which on a third ties 30.
+- **Callers of a generated Go client are read.** A Go request given a path bound to a variable earlier (`path := fmt.Sprintf(...)`) is read with its method. A client's method that only calls the function issuing its request stands for that request. A call is tied to the client by the package its file imports and the method's name ([Known limitations](#contract-checks)). On a public project, 156 calls of its generated Go client are tied to it where none was, each checked against the source.
+- **A call given a `url` object takes the verb of the call.** `client.post({ url: '/v1/x' })` was read with no method, so the function holding it stood for every operation of the path.
+- **A clean result says how many operations it speaks for.** `lemma verify` prints, before its closing counts, how many operations have a call read, how many requests were not read and how many candidates there are (`called_operations` under `looked_at` in JSON). On nine public systems with no findings it reads from 2 of 157 to 157 of 157.
+- **A client no read call reaches is reported.** `lemma verify` lists it as a candidate (`client_without_callers`): its callers are outside every service, in a file type with no reader, or written in a way calls are not followed through.
+- **Swagger 2.0 fields are read.** Request and response fields of a Swagger 2.0 document were not read, so a change to one gave no finding.
+- **A document split across files says so.** Where a document keeps whole paths in other files, their operations are not read: `lemma verify` reports it as an error, and as a warning where only parts below a path are elsewhere. Export the document bundled into one file.
+- **Files in languages Lemma does not read are counted.** `lemma verify` says how many included files are in a language it has no reader for, per repository and language.
+- **Imports resolve as the compiler resolves them.** An aliased import of a compiled name (`@/commands/auth.js`) names its TypeScript source.
+- **Plain JavaScript functions are read for tracing.**
 
 ## New in rc2
 
