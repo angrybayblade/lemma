@@ -68,6 +68,10 @@ pub struct LookedAt {
     pub operations: usize,
     /// How many places in code were read as a call of one of them.
     pub calls: usize,
+    /// How many of the operations have at least one such place. The rest
+    /// have no caller in what was read: a change to one gives no finding,
+    /// whether nothing calls it or its callers were not read.
+    pub called_operations: usize,
     /// The calls that look like requests and were not read as calls of a
     /// path, in the order of their files and lines.
     pub unread_requests: Vec<UnreadRequest>,
@@ -189,10 +193,20 @@ fn looked_at(report: &Report) -> LookedAt {
         .collect();
     unread_requests.sort();
     unread_requests.dedup();
+    let described: BTreeSet<&String> = rows("operation")
+        .iter()
+        .filter_map(|row| row.get(1))
+        .collect();
+    let called: BTreeSet<&String> = rows("calls")
+        .iter()
+        .filter_map(|row| row.get(1))
+        .filter(|operation| described.contains(operation))
+        .collect();
     LookedAt {
         repositories: report.repositories.len(),
         operations: rows("operation").len(),
         calls: calls.len(),
+        called_operations: called.len(),
         unread_requests,
         calls_in_tests: Vec::new(),
         unread_files: Vec::new(),

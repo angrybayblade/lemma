@@ -108,13 +108,6 @@ fn print_text(
         Severity::Warning => "warning",
         Severity::Info => "info",
     };
-    let count = |severity: Severity| {
-        report
-            .findings
-            .iter()
-            .filter(|finding| finding.severity == severity)
-            .count()
-    };
     let mut infos_shown = 0;
     for finding in &report.findings {
         if finding.severity == Severity::Info {
@@ -148,10 +141,32 @@ fn print_text(
             writeln!(out, "  {}", row.join("\t"))?;
         }
     }
+    print_totals(out, report)
+}
+
+/// The closing lines: how far a result with no findings reaches, then how
+/// many findings of each severity there are.
+fn print_totals(out: &mut dyn Write, report: &DescriptionReport) -> std::io::Result<()> {
+    let count = |severity: Severity| {
+        report
+            .findings
+            .iter()
+            .filter(|finding| finding.severity == severity)
+            .count()
+    };
     let candidates = match report.candidates.len() {
         0 => String::new(),
         found => format!(", {found} candidates"),
     };
+    if let Some(looked_at) = &report.looked_at {
+        writeln!(
+            out,
+            "{} of {} operations have a call read, {} requests not read{candidates}",
+            looked_at.called_operations,
+            looked_at.operations,
+            looked_at.unread_requests.len()
+        )?;
+    }
     writeln!(
         out,
         "{} errors, {} warnings, {} informational{candidates}",

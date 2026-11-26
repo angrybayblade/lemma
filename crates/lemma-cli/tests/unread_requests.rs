@@ -98,6 +98,10 @@ fn verify_says_what_it_read_and_lists_the_requests_it_did_not() {
         "{printed}"
     );
     assert!(printed.contains("src/api.ts:2  computed  url"), "{printed}");
+    assert!(
+        printed.contains("1 of 1 operations have a call read, 1 requests not read"),
+        "{printed}"
+    );
 }
 
 #[test]
@@ -111,6 +115,7 @@ fn verify_gives_the_same_in_json() {
     let looked_at = &report["looked_at"];
     assert_eq!(looked_at["operations"], 1, "{report:#}");
     assert_eq!(looked_at["calls"], 1, "{report:#}");
+    assert_eq!(looked_at["called_operations"], 1, "{report:#}");
     let unread = looked_at["unread_requests"].as_array().unwrap();
     assert_eq!(unread.len(), 1, "{report:#}");
     assert_eq!(unread[0]["reason"], "computed", "{report:#}");

@@ -128,6 +128,14 @@ looked at
 
 A call of an operation is a place in code Lemma read as a request of its path.
 
+The line before the closing counts sums it up:
+
+```text
+17 of 19 operations have a call read, 16 requests not read, 1 candidates
+```
+
+Candidates are counted there when there are any. An operation with no call read has no caller in what was read: a change to it gives no finding, whether nothing in the system calls it or its callers were not read. A result with no findings speaks for the operations with a call read; the requests not read and the candidates are where a caller of the others may be.
+
 Test files are never read as calls, whatever a service includes: a test is checked by running it, and tests also write paths they mock or expect to fail. A test file is one named `*.test.*`, `*.spec.*`, `*_test.go`, `*_test.py` or `test_*`, or under a `test`, `tests` or `__tests__` directory. The line says how many places in tests write a described operation's path, per repository, found as [candidates](#candidates) are. A change to those operations is not checked against them.
 
 Files in a language Lemma has no reader for are not read at all: no request, route or name in them is seen, and nothing in `lemma check` rests on them. The line counts the ones the services include, tests left out, per repository and language. The languages counted are Astro, C#, Dart, Elixir, Handlebars, Java, Kotlin, PHP, Ruby (with ERB), Scala, Svelte, Swift and Vue; a file of a type Lemma does not know is not counted.
@@ -141,7 +149,7 @@ A request not read is a call that looks like a request and that Lemma could not 
 | `unproven` | A single word that is a path only if what it is given to makes requests, which nothing in the file shows (`store.get('user')`). |
 | `wrapped` | A path's first word given to a method not named for an HTTP verb, on something the file makes requests through (`Api.query('articles')`). |
 
-These requests may call a described operation; no finding says anything about them. With `--json` the same is under `looked_at`: `repositories`, `operations`, `calls`, `calls_in_tests` (each with `repository`, `files` and `places`), `unread_files` (each with `repository`, `language` and `files`) and `unread_requests` (each with `file`, `line`, `reason` and `written`). `lemma check` notes the ones a change adds ([`change_adds_unread_request`](check.md#lemmahttp-requirements)).
+These requests may call a described operation; no finding says anything about them. With `--json` the same is under `looked_at`: `repositories`, `operations`, `calls`, `called_operations` (how many operations have a call read), `calls_in_tests` (each with `repository`, `files` and `places`), `unread_files` (each with `repository`, `language` and `files`) and `unread_requests` (each with `file`, `line`, `reason` and `written`). `lemma check` notes the ones a change adds ([`change_adds_unread_request`](check.md#lemmahttp-requirements)).
 
 ## Limits
 
