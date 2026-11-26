@@ -11,14 +11,14 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | 0.1.0-rc0 | Internal launch: code intelligence in four languages, contract checks across repositories, install script, agent skills | Released |
 | 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up; one store file in place of SQLite; one daemon per workspace, with sentry; evidence kept by the files a checker's run read; source contracts, experimental (see [New in rc1](#new-in-rc1)) | Released |
 | 0.1.0-rc2 | Fixes from the first outside trial of rc1; layouts met in public repositories read; requests under a base URL read; a removed response field read off the body an error; `lemma verify` says what a clean result covers and lists code a description leaves out (see [New in rc2](#new-in-rc2)) | Released |
-| 0.1.0-rc3 | Fixes from the first team's use of rc2 ([Checklist for rc3](#checklist-for-rc3)); callers of generated clients read in TypeScript and Go, and a clean result that says how many operations it speaks for (see [New since rc2](#new-since-rc2-not-yet-released)) | In progress |
+| 0.1.0-rc3 | Fixes from the first team's use of rc2 ([Checklist for rc3](#checklist-for-rc3)); callers of generated clients read in TypeScript and Go, and a clean result that says how many operations it speaks for (see [New in rc3](#new-in-rc3)) | Released |
 | Later candidates | A response body read through a callback's parameter; a family of operations declared from one document; calibration on past changes in one command; Vue and Svelte files read; links other than HTTP; behavior simulation scaffolded for TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; items below as they are resolved | Planned |
 
 ## Feature surfaces
 
 What Lemma does falls into four surfaces. Each is at a different level in this candidate.
 
-| Surface | Commands | Level in rc2 | What that means |
+| Surface | Commands | Level in rc3 | What that means |
 | --- | --- | --- | --- |
 | Code discovery | `lemma symbols`, `outline`, `refs`, `definition`, `implementations`, `signature`, the MCP tools | Ready | Daily use. The first lookup in a repository waits for its language server to load the project |
 | Code impact | `lemma check --change`, `lemma graph` | Ready for HTTP contracts | Every finding on the replayed changes below, and every known caller of the synthetic breaks. Links other than HTTP with OpenAPI are declared by hand |
@@ -33,7 +33,7 @@ What Lemma does falls into four surfaces. Each is at a different level in this c
 | Code intelligence: TypeScript, TSX, Python, Go, Rust | Daily use by people and agents | Symbols, outlines, references, definitions, implementations and signatures, each through the language's own server. Across 241 random symbols in five repositories, 96% of reported lines were real references ([comparison](comparison.md)); 1-3 ms once cached ([performance](performance.md)). |
 | MCP server | Agents in Claude Code and other MCP clients | Agent benchmark rounds r0-r6 ([results](agent-benchmark.md)) |
 | `lemma.http` requirements for HTTP contracts | Internal use, errors gating CI after a reporting period | In rc0, 318 historical changes replayed on a production system of ten repositories with no false error; every error matched a real break. |
-| `lemma check` across a system's repositories | Internal use, errors gating CI after a reporting period | On a production system of six repositories, for rc1 and again for rc2: 54 past contract changes replayed with every finding, severity and trace as reviewed; synthetic breaks found every known caller (47 of 47 for new required fields, 33 of 33 for removed operations) and no other; change-driven evaluation gave the same findings as reading all code on 54 changes and 30 breaks, in about 60% of the time; sentry gave the same findings as a fresh check in 214 cases, each asked once the files had settled and once while they were still changing. On a generated system of 100,000 files, a warm change-driven check took 2.7 s and 365 MB. |
+| `lemma check` across a system's repositories | Internal use, errors gating CI after a reporting period | On a production system of six repositories, for rc1, rc2 and again for rc3: 54 past contract changes replayed with every finding, severity and trace as reviewed; synthetic breaks found every known caller (47 of 47 for new required fields, 33 of 33 for removed operations) and no other; change-driven evaluation gave the same findings as reading all code on 54 changes and 30 breaks, in about 60% of the time; sentry gave the same findings as a fresh check in 214 cases, each asked once the files had settled and once while they were still changing. On a generated system of 100,000 files, a warm change-driven check took 2.7 s and 365 MB. The times are rc2's; rc3 was checked for the same findings, not timed again. |
 | `.lm` modules and `lm` | Describing systems, requirements and allowances; behaviors are in [beta](#behaviors-beta) | The tutorials run as written in CI; a production system of six repositories is described and checked in `.lm`. Editor support through `lm lsp`. |
 | Requirements and rules in `.lm` | Teams adding, removing and tuning checks | [Requirements and rules](grammar.md) |
 
@@ -107,7 +107,7 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 | No Windows build | Does not run natively on Windows | Use WSL |
 | Soufflé is optional and not bundled | `lemma check` is about six times slower without it, same results | `brew install souffle` |
 
-## New since rc2, not yet released
+## New in rc3
 
 Most of it is about what a result with no findings can be taken to mean: more callers are read, and the output says how far it reaches.
 
@@ -169,7 +169,7 @@ Most of it came from the first trial of rc1 outside the project; the rest from l
 
 What rc3 changes comes from the first team's use of rc2. Each item was reported from a real system, and is done when the report is reproduced there and then shown fixed.
 
-- [x] A removed field is reported once, and not again for each field below it. Measured on public code (see [New since rc2](#new-since-rc2-not-yet-released)) and shown on the reporting system: the reported rename gives one finding, where rc2 gave one for the field and one more for each field under it whose name the code used.
+- [x] A removed field is reported once, and not again for each field below it. Measured on public code (see [New in rc3](#new-in-rc3)) and shown on the reporting system: the reported rename gives one finding, where rc2 gave one for the field and one more for each field under it whose name the code used.
 - [x] A handler or schema edit in a service whose document is committed is seen before the document is regenerated. The trial found that nothing new is needed: the service's own generator, named as the document's command with the placeholder values its CI job gives it, does it ([A service's own generator](adapters.md#a-services-own-generator)). Shown on the reporting system: the reported rename, made in the route's code alone, gave no finding against the committed documents and gives the consumer's finding with the command named. Reading route schemas by syntax, with nothing run, was tried as well: on two public projects it gave the fields of all 68 responses as their committed documents have them. It stays a later candidate, for a service whose generator cannot run.
 - [x] `lemma graph` takes the number of names it asks about as a flag (`--max-names`). Shown on the reporting system: the note on the reported function gives the number to pass, and with it every name is asked about.
 - [x] A service's `operations` given as a list of documents is shown in [check](check.md) and the [language reference](language.md), as it is in [Onboarding](onboarding.md).
@@ -180,9 +180,10 @@ Moved to a later candidate: a removed response field read off a callback's param
 Before the tag:
 
 - [ ] CI green on Linux and macOS for the tagged commit; the four release builds pass a dry run.
-- [ ] The replays above pass on the build that is tagged: findings, recall, and change-driven against full.
-- [ ] The whole test suite, and the tutorials as written, on Linux.
-- [ ] This page lists everything since rc2, and the documentation site serves it on the day of the release.
+- [x] The replays above pass on this candidate's code: findings, recall, change-driven against full, and sentry against a fresh check. They ran on the last commit that changed code; the commits after it change the version and the documentation.
+- [x] The whole test suite, and the tutorials as written, on Linux.
+- [x] This page lists everything since rc2.
+- [ ] The documentation site serves this page on the day of the release.
 - [ ] All of rc1's checklist from a cold start on macOS.
 - [ ] Install script run on a clean macOS and Linux machine, after the tag.
 

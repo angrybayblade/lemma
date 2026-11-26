@@ -22,7 +22,7 @@ Install `lemma`, and `lm` for `.lm` modules. Releases support macOS and Linux on
 curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
 ```
 
-The script installs the newest release, pre-releases included, into `~/.local/bin`. Set `LEMMA_VERSION=v0.1.0-rc2` to pin a version, `LEMMA_INSTALL_DIR` to change where it goes, and `LEMMA_SKILLS=1` to also install the agent skills into `~/.claude/skills` (see [Agent skills](#agent-skills)). If GitHub's API rate limit stops the script finding the newest release, set `LEMMA_VERSION` or `GITHUB_TOKEN`.
+The script installs the newest release, pre-releases included, into `~/.local/bin`. Set `LEMMA_VERSION=v0.1.0-rc3` to pin a version, `LEMMA_INSTALL_DIR` to change where it goes, and `LEMMA_SKILLS=1` to also install the agent skills into `~/.claude/skills` (see [Agent skills](#agent-skills)). If GitHub's API rate limit stops the script finding the newest release, set `LEMMA_VERSION` or `GITHUB_TOKEN`.
 
 To build from source, run `cargo install --path crates/lemma-cli --locked`, which installs `lemma` and `lm` (Rust 1.85 or later).
 
@@ -260,7 +260,7 @@ jobs:
       - uses: actions/checkout@v4
         with: { repository: your-org/web, path: web, token: ${{ secrets.READ_TOKEN }} }
       - name: Install lemma
-        env: { LEMMA_VERSION: v0.1.0-rc2 }
+        env: { LEMMA_VERSION: v0.1.0-rc3 }
         run: |
           curl -fsSL https://raw.githubusercontent.com/angrybayblade/lemma/main/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
