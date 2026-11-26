@@ -179,7 +179,7 @@ Moved to a later candidate: a removed response field read off a callback's param
 
 Before the tag:
 
-- [ ] CI green on Linux and macOS for the tagged commit; the four release builds pass a dry run.
+- [x] CI green on Linux and macOS for the tagged commit; the four release builds (macOS arm64 and x86_64, Linux x86_64 and arm64) passed a dry run on the commit before it, which differs only in this line.
 - [x] The replays above pass on this candidate's code: findings, recall, change-driven against full, and sentry against a fresh check. They ran on the last commit that changed code; the commits after it change the version and the documentation.
 - [x] The whole test suite, and the tutorials as written, on Linux.
 - [x] This page lists everything since rc2.
