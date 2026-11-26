@@ -107,6 +107,10 @@ Behaviors run your code through checkers. They work end to end, and the tutorial
 | No Windows build | Does not run natively on Windows | Use WSL |
 | Soufflé is optional and not bundled | `lemma check` is about six times slower without it, same results | `brew install souffle` |
 
+## New since rc3, not yet released
+
+- **A severity given after `run lemma.http.*` applies.** A `check main` that ran the whole module and then one requirement with a severity, the order [Requirements and rules](grammar.md#recipes) shows, ran that requirement with its own severity. The last run that gives a severity now decides, wherever it stands. In rc3, write the requirement's run before the module's.
+
 ## New in rc3
 
 Most of it is about what a result with no findings can be taken to mean: more callers are read, and the output says how far it reaches.

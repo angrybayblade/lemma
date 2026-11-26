@@ -80,13 +80,20 @@ pub fn grammar_file(
 }
 
 /// The severity a requirement runs with under `check`, or `None` when the
-/// check does not select it.
+/// check does not select it. A check may name a requirement more than
+/// once, as `run lemma.http.*` beside a run of one of its requirements
+/// does: the last run that gives a severity decides, wherever it stands.
 fn selected(check: Option<&[Run]>, address: &Address, own: LmSeverity) -> Option<Severity> {
     let Some(runs) = check else {
         return Some(severity(own));
     };
-    let run = runs.iter().find(|run| &run.requirement == address)?;
-    Some(severity(run.severity.unwrap_or(own)))
+    let mut naming = runs
+        .iter()
+        .filter(|run| &run.requirement == address)
+        .peekable();
+    naming.peek()?;
+    let overriding = naming.filter_map(|run| run.severity).next_back();
+    Some(severity(overriding.unwrap_or(own)))
 }
 
 fn severity(severity: LmSeverity) -> Severity {
@@ -397,6 +404,25 @@ mod tests {
 
         assert_eq!(lowered.requirements.keys().collect::<Vec<_>>(), ["kept"]);
         assert_eq!(lowered.requirements["kept"].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn a_severity_given_after_a_run_of_the_whole_module_still_applies() {
+        let model =
+            model("module example\nrelation R(a: Text)\nrequire kept {\n    when: R(a)\n}\n");
+        let run = |severity| Run {
+            requirement: Address::top("example", "kept"),
+            severity,
+            arguments: Vec::new(),
+        };
+        let module_then_override = [run(None), run(Some(LmSeverity::Warning))];
+        let override_then_module = [run(Some(LmSeverity::Warning)), run(None)];
+
+        let after = grammar_file(&model, "example", Some(&module_then_override)).unwrap();
+        let before = grammar_file(&model, "example", Some(&override_then_module)).unwrap();
+
+        assert_eq!(after.requirements["kept"].severity, Severity::Warning);
+        assert_eq!(before.requirements["kept"].severity, Severity::Warning);
     }
 
     #[test]
