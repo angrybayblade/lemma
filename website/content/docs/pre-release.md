@@ -11,7 +11,8 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | 0.1.0-rc0 | Internal launch: code intelligence in four languages, contract checks across repositories, install script, agent skills | Released |
 | 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up; one store file in place of SQLite; one daemon per workspace, with sentry; evidence kept by the files a checker's run read; source contracts, experimental (see [New in rc1](#new-in-rc1)) | Released |
 | 0.1.0-rc2 | Fixes from the first outside trial of rc1; layouts met in public repositories read; requests under a base URL read; a removed response field read off the body an error; `lemma verify` says what a clean result covers and lists code a description leaves out (see [New in rc2](#new-in-rc2)) | Released |
-| 0.1.0-rc3 and later | Callers of generated clients read in TypeScript and Go, and a clean result that says how many operations it speaks for (see [New since rc2](#new-since-rc2-not-yet-released)); behavior simulation scaffolded for Python, TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; fixes from internal use; install script run on a clean macOS and Linux machine; items below as they are resolved | Planned |
+| 0.1.0-rc3 | Fixes from the first team's use of rc2 ([Checklist for rc3](#checklist-for-rc3)); callers of generated clients read in TypeScript and Go, and a clean result that says how many operations it speaks for (see [New since rc2](#new-since-rc2-not-yet-released)) | In progress |
+| Later candidates | A family of operations declared from one document; calibration on past changes in one command; Vue and Svelte files read; links other than HTTP; behavior simulation scaffolded for TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; items below as they are resolved | Planned |
 
 ## Feature surfaces
 
@@ -158,6 +159,26 @@ Most of it came from the first trial of rc1 outside the project; the rest from l
 - **Source contracts (experimental).** A checker with `engine: "proof"` reads a TypeScript, Python or Go function and checks it against a contract with an SMT solver ([source contracts](source-contracts.md)). It needs Z3 installed and reads a subset of each language: what it cannot read, and a call the contract gives no model for, make the case `unknown`.
 - **One daemon per workspace, with sentry.** Commands run in a background daemon that `lemma` starts on first use. Its sentry watches the workspace's repositories and keeps a check's inputs prepared, so a check after an edit reads only what changed. Sentry is experimental ([`lemma daemon`](commands.md#lemma-daemon)).
 - **Checkers and warm runtimes.** `concurrent: true` on a checker lets its cases run at once. While the daemon runs, a repository's Python resolvers and type reads run in a process that has already imported its dependencies ([`lemma daemon`](commands.md#lemma-daemon)).
+
+## Checklist for rc3
+
+What rc3 changes comes from the first team's use of rc2. Each item was reported from a real system, and is done when the report is reproduced there and then shown fixed.
+
+- [ ] A removed field is reported once, and not again for each field below it.
+- [ ] A removed response field read off a callback's parameter (`map: (response) => response.items`, `.then`, `onSuccess`) is an error as a read off the body is, where public code shows the shape.
+- [ ] A handler or schema edit in a service whose document is committed is seen before the document is regenerated, or reported as the code and the document having drifted. A trial decides which.
+- [ ] `lemma graph` takes the number of names it asks about as a flag.
+- [ ] A service's `operations` given as a list of documents is shown in [check](check.md) and the [language reference](language.md), as it is in [Onboarding](onboarding.md).
+- [ ] `lemma verify` lists code that invokes a declared operation no link names, as a candidate.
+
+Before the tag:
+
+- [ ] CI green on Linux and macOS for the tagged commit; the four release builds pass a dry run.
+- [ ] The replays above pass on the build that is tagged: findings, recall, and change-driven against full.
+- [ ] The whole test suite, and the tutorials as written, on Linux.
+- [ ] This page lists everything since rc2, and the documentation site serves it on the day of the release.
+- [ ] All of rc1's checklist from a cold start on macOS.
+- [ ] Install script run on a clean macOS and Linux machine, after the tag.
 
 ## Checklist for rc2
 
