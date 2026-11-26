@@ -63,6 +63,9 @@ pub struct GraphOptions {
     pub source: GraphSource,
     /// The most nodes to include.
     pub max_nodes: usize,
+    /// The most names in one body to ask the language server about; the
+    /// calls through the names after them are left out, with a note.
+    pub max_names: usize,
     /// The only kinds of symbol to include besides the root, such as
     /// functions and methods for the calls alone; empty for every kind.
     pub only: Vec<SymbolKind>,
@@ -74,10 +77,12 @@ pub struct GraphOptions {
 
 /// Symbols defined by more than this many symbols are not matched by name.
 const MAX_DEFINITIONS: usize = 3;
-/// The most names in one body asked about with the language server. At 60,
-/// 5 of 109 sampled symbols in a six-repository workspace had names left
-/// unasked; at 200 none had, at no cost that could be measured.
-const MAX_ASKED: usize = 200;
+/// The most names in one body asked about with the language server unless
+/// the caller says otherwise. At 60, 5 of 109 sampled symbols in a
+/// six-repository workspace had names left unasked; at 200 none had, at no
+/// cost that could be measured. A longer body is met now and then, so the
+/// limit is the caller's to raise.
+pub const DEFAULT_MAX_NAMES: usize = 200;
 
 /// The use graph around `root`, built from the snapshot in `context`.
 pub fn symbol_graph(
@@ -106,6 +111,7 @@ pub fn symbol_graph(
                 context,
                 pool,
                 catalog,
+                max_names: options.max_names.max(1),
                 gave_way: BTreeSet::new(),
             };
             let mut graph = walk(root, options, &mut neighbours)?;
@@ -160,10 +166,10 @@ struct Candidates {
 }
 
 impl Candidates {
-    /// The first [`MAX_ASKED`] of `names`, and how many that leaves out.
-    fn within_the_limit(mut names: Vec<Position>) -> Self {
-        let left_unasked = names.len().saturating_sub(MAX_ASKED);
-        names.truncate(MAX_ASKED);
+    /// The first `limit` of `names`, and how many that leaves out.
+    fn within(limit: usize, mut names: Vec<Position>) -> Self {
+        let left_unasked = names.len().saturating_sub(limit);
+        names.truncate(limit);
         Self {
             asked: names,
             left_unasked,
@@ -173,10 +179,12 @@ impl Candidates {
 
 /// Says that a body named more symbols than were asked about, so a reader
 /// does not take the callees listed for all of them.
-fn unasked_note(left_unasked: usize) -> String {
+fn unasked_note(asked: usize, left_unasked: usize) -> String {
+    let all = asked + left_unasked;
     format!(
-        "only the first {MAX_ASKED} names in its body were asked about, so calls through the \
-         {left_unasked} after them are missing (`--source names` lists every call, less exactly)"
+        "only the first {asked} of {all} names in its body were asked about, so calls through the \
+         {left_unasked} after them are missing (`--max-names {all}` asks about them all; \
+         `--source names` lists every call, less exactly)"
     )
 }
 
@@ -681,6 +689,8 @@ struct ServerNeighbours<'a, 'b> {
     context: &'a LookupContext<'b>,
     pool: &'a mut SessionPool,
     catalog: Catalog,
+    /// The most names in one body to ask about.
+    max_names: usize,
     /// Which server answered in place of one that was too slow, for the
     /// graph's notes: once each, however many symbols it was asked about.
     gave_way: BTreeSet<String>,
@@ -746,6 +756,7 @@ impl Neighbours for ServerNeighbours<'_, '_> {
             return Ok(unreadable(of));
         };
         let candidates = self.candidates(of, &body, first_line)?;
+        let asked = candidates.asked.len();
         let mut neighbours = Vec::new();
         let mut unanswered = BTreeSet::new();
         for position in candidates.asked {
@@ -758,7 +769,7 @@ impl Neighbours for ServerNeighbours<'_, '_> {
         }
         let mut notes: Vec<String> = unanswered.into_iter().collect();
         if candidates.left_unasked > 0 {
-            notes.push(unasked_note(candidates.left_unasked));
+            notes.push(unasked_note(asked, candidates.left_unasked));
         }
         let note = (!notes.is_empty()).then(|| notes.join(", "));
         Ok(Found { neighbours, note })
@@ -786,7 +797,7 @@ impl ServerNeighbours<'_, '_> {
                 names.push(word.position);
             }
         }
-        Ok(Candidates::within_the_limit(names))
+        Ok(Candidates::within(self.max_names, names))
     }
 
     /// The indexed symbols the name at `position` is defined as, or why the
@@ -1253,6 +1264,7 @@ mod tests {
             depth,
             source: GraphSource::Names,
             max_nodes: 100,
+            max_names: DEFAULT_MAX_NAMES,
             only: Vec::new(),
             outside: 0,
         }
@@ -1375,18 +1387,32 @@ mod tests {
 
     #[test]
     fn a_body_naming_more_symbols_than_are_asked_about_says_how_many_are_left() {
-        let count = u32::try_from(MAX_ASKED).unwrap() + 40;
+        let count = u32::try_from(DEFAULT_MAX_NAMES).unwrap() + 40;
         let names: Vec<Position> = (0..count)
             .map(|line| Position { line, column: 0 })
             .collect();
 
-        let candidates = Candidates::within_the_limit(names);
+        let candidates = Candidates::within(DEFAULT_MAX_NAMES, names);
 
-        assert_eq!(candidates.asked.len(), MAX_ASKED);
+        assert_eq!(candidates.asked.len(), DEFAULT_MAX_NAMES);
         assert_eq!(candidates.asked[0], Position { line: 0, column: 0 });
         assert_eq!(candidates.left_unasked, 40);
-        let note = unasked_note(candidates.left_unasked);
+        let note = unasked_note(candidates.asked.len(), candidates.left_unasked);
         assert!(note.contains("40 after them are missing"), "{note}");
+        assert!(
+            note.contains("`--max-names 240` asks about them all"),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn a_raised_limit_asks_about_every_name_of_a_long_body() {
+        let names: Vec<Position> = (0..207).map(|line| Position { line, column: 0 }).collect();
+
+        let candidates = Candidates::within(207, names);
+
+        assert_eq!(candidates.asked.len(), 207);
+        assert_eq!(candidates.left_unasked, 0);
     }
 
     #[test]
@@ -1396,7 +1422,7 @@ mod tests {
             Position { line: 5, column: 2 },
         ];
 
-        let candidates = Candidates::within_the_limit(names.clone());
+        let candidates = Candidates::within(DEFAULT_MAX_NAMES, names.clone());
 
         assert_eq!(
             candidates,

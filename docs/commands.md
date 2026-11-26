@@ -144,6 +144,7 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | `--source <source>` | Where relationships come from. `lsp` (the default) asks the language server: callers are its references, callees are where its definitions of the names in the body point. Lemma caches answers in the index, so a second run is fast. `names` matches names in the indexed code: instant and needs no server, but a name several symbols share can join unrelated ones, and files outside the snapshot, such as tests left out of `include`, are not read; an empty graph says so. |
 | `--format <format>` | `tree` (the default), `dot`, or `mermaid`. With `--json`, the graph is printed as data: `nodes`, `relationships` (`from` uses `to`, and the `source` it was found by), `notes` and `truncated`. |
 | `--max-nodes <n>` | The most nodes to include. Default: 200. |
+| `--max-names <n>` | The most names in one body to ask the language server about. A longer body gets a note with how many were left out and the number that asks about them all. Default: 200. |
 | `--outside <n>` | How many callers in files outside the snapshot to follow. Default: 0. See below. |
 | `--only <kinds>` | Only symbols of these kinds besides the symbol itself, comma-separated: `--only function,method` shows the calls without the fields, types and constants a body uses. The top level of a file always counts as a caller. |
 | `--workspace <mod.lm>` | Follow callers out of the repository: through the operations whose handlers they reach, to the code in other repositories that calls those operations. See below. |
@@ -151,7 +152,7 @@ find_definitions  (function, lemma-query/src/navigation.rs:38)
 | `--kind`, `--language`, `--path` | Narrow an ambiguous `<symbol>`, as for `lemma refs`. |
 | `--refresh`, `--timeout-secs <n>` | As for `lemma refs`. |
 
-References from a file's top-level code appear as the file; imports are left out. For what a symbol uses, the language server is asked about at most 200 names in its body; when the body names more, a note says how many were left unasked, and `--source names` lists every call, less exactly. A function defined inside another is a caller under its own name, and what it is defined inside comes next without counting as a use further away. A symbol implementing an export that a graph of `Link` links to another operation uses that operation, which appears by address (`linked operation`). The graph lists questions the server could not answer, such as a stale file or a missing server, as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
+References from a file's top-level code appear as the file; imports are left out. For what a symbol uses, the language server is asked about at most 200 names in its body; when the body names more, a note says how many were left unasked, `--max-names` asks about more, and `--source names` lists every call, less exactly. A function defined inside another is a caller under its own name, and what it is defined inside comes next without counting as a use further away. A symbol implementing an export that a graph of `Link` links to another operation uses that operation, which appears by address (`linked operation`). The graph lists questions the server could not answer, such as a stale file or a missing server, as notes. Exits with 2 when the name matches several symbols, and 3 when nothing could be answered.
 
 The language server reads files the snapshot leaves out, such as tests and scripts outside `include`, so a caller can be in one. Lemma reads that file and names the definition the use sits in, marked `(outside the snapshot)`; a use at the file's top level appears as the file. The graph stops there unless `--outside <n>` says how many such callers to follow: each one followed is a lookup in a file the index does not hold, which takes seconds the first time, and most turn out to be tests and entry points that nothing calls. A note counts the callers left unfollowed.
 
@@ -210,7 +211,7 @@ Serves Lemma to agents as an [MCP](https://modelcontextprotocol.io) server over 
 | `definition` | `lemma definition` | `file`, `line`, `column` (from 1), `refresh` |
 | `implementations` | `lemma implementations` | `symbol`, `kind`, `language`, `path`, `refresh` |
 | `signature` | `lemma signature` | `symbol`, `kind`, `language`, `path`, `refresh` |
-| `graph` | `lemma graph` | `symbol`, `kind`, `language`, `path`, `refresh`, `direction`, `depth`, `source`, `max_nodes`, `only`, `workspace`, `across`, `outside` |
+| `graph` | `lemma graph` | `symbol`, `kind`, `language`, `path`, `refresh`, `direction`, `depth`, `source`, `max_nodes`, `max_names`, `only`, `workspace`, `across`, `outside` |
 | `check` | `lemma check` | `manifest` (the entry module), `change`, `base`, `head`, `level`, `no_run`, `select`, `all`, `since` |
 | `verify` | `lemma verify` | `module`, `all`, `links` |
 

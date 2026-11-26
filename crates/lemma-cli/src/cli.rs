@@ -411,6 +411,11 @@ pub(crate) struct GraphArgs {
     /// The most nodes to include.
     #[arg(long, default_value_t = 200)]
     pub max_nodes: usize,
+    /// The most names in one body to ask the language server about. A
+    /// longer body gets a note saying how many were left out; raise this
+    /// to ask about them, a lookup each.
+    #[arg(long, default_value_t = lemma_query::DEFAULT_MAX_NAMES, value_name = "NAMES")]
+    pub max_names: usize,
     /// How many callers in files outside the snapshot to ask about in
     /// turn. Each is named either way; asking one finds its own callers,
     /// and is a lookup in a file the index does not hold, slow the first

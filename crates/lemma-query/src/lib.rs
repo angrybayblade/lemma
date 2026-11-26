@@ -17,7 +17,7 @@ mod signature;
 mod unseen;
 mod uses;
 
-pub use graph::{Direction, GraphOptions, GraphSource, symbol_graph};
+pub use graph::{DEFAULT_MAX_NAMES, Direction, GraphOptions, GraphSource, symbol_graph};
 pub use lookup::{Answered, LookupContext, LookupOptions};
 pub use navigation::{
     DefinitionReport, ImplementationReport, Target, find_definitions, find_implementations,

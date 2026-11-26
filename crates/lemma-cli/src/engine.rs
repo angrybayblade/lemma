@@ -2724,6 +2724,7 @@ fn graph_options(args: &GraphArgs) -> lemma_query::GraphOptions {
             GraphSourceArg::Names => lemma_query::GraphSource::Names,
         },
         max_nodes: args.max_nodes,
+        max_names: args.max_names,
         only: args.only.clone(),
         outside: args.outside,
     }

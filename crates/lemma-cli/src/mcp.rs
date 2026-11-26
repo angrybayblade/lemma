@@ -424,6 +424,7 @@ fn push_graph_command(
     for (field, flag) in [
         ("depth", "--depth"),
         ("max_nodes", "--max-nodes"),
+        ("max_names", "--max-names"),
         ("outside", "--outside"),
         ("across", "--across"),
     ] {

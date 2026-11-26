@@ -378,6 +378,11 @@
           "minimum": 1,
           "description": "The most nodes to include. Default: 200."
         },
+        "max_names": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The most names in one body to ask the language server about. A note says when a body had more; raise this to the number the note gives. Default: 200."
+        },
         "outside": {
           "type": "integer",
           "minimum": 1,
