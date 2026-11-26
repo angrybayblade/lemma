@@ -71,12 +71,30 @@ export service api {
 ```
 
 - **Its environment.** A generator imports the app, and the app reads its configuration as it is imported. That often needs no real secret: the CI job that checks the documents are current runs the generator with placeholder values, and `env` takes the same ones.
-- **What it imports.** `setup` installs the dependencies and builds the packages the app imports, in Lemma's worktree of a commit. The working directory is taken as ready, as it is for the generator run by hand.
-- **Where it writes.** A generator that writes to a fixed path is followed by a copy to `$LEMMA_OUTPUT`. Run in the working directory it rewrites the committed document there too, as running it by hand does.
-- **When it runs.** Once for each state of its `inputs`: a second check of the same edit reuses the document, and an edit outside `inputs` runs nothing.
+- **What it imports.** `setup` installs the dependencies and builds the packages the app imports, in Lemma's worktree of a commit. The working directory is taken as ready, as it is for the generator run by hand. Copy the CI job's install command whole, with its flags and variables, not only the generator's environment: a plain install runs every package's install scripts, and one that needs a toolchain the job switches off fails there. When `setup` fails, the commit's committed documents are checked and a warning says so.
+- **Where it writes.** A generator that writes to a fixed path is followed by a copy to `$LEMMA_OUTPUT`. Run in the working directory it rewrites the committed document there too, as running it by hand does. To leave the committed document as it was, have a script put it back ([below](#leaving-the-committed-document-alone)).
+- **When it runs.** Once for each state of its `inputs`: a second check of the same edit reuses the document, and an edit outside `inputs` runs nothing. Files Git ignores count, since a generator may import what a build wrote: where a build writes into a directory named in `inputs` (`packages/auth/dist` under `packages`), the first check after the build runs the generator once more. Name the source directories to avoid it, when the generator reads sources alone.
 - **Other documents.** A document with no command is read as committed, and the generator's document is compared with the documents that name the command, so a service can name a generator for one document and leave the others.
 
 Without a command, a committed document is the contract until someone regenerates it: a schema edit gives no finding until then.
+
+### Leaving the committed document alone
+
+A check that rewrites a committed file leaves a difference nobody made, and an agent's stop gate sees an edited repository. A script keeps the file and puts it back once the generated one is copied:
+
+```sh
+#!/bin/sh
+# tools/lemma-openapi.sh, run in apps/api: writes the document the code describes
+# where Lemma asks for it, and leaves openapi.json as it was.
+kept=$(mktemp) && cp openapi.json "$kept" || exit 1
+bun run scripts/generate-openapi.ts
+status=$?
+[ "$status" -eq 0 ] && cp openapi.json "$LEMMA_OUTPUT"
+cp "$kept" openapi.json && rm "$kept"
+exit "$status"
+```
+
+Name it as the command (`command("sh tools/lemma-openapi.sh", directory: "apps/api", ...)`) and add the script to `inputs`, so a change to it runs it again. A generator that takes the path to write to needs no script: give it `$LEMMA_OUTPUT`.
 
 ## Fields
 

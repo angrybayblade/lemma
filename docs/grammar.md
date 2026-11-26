@@ -182,6 +182,8 @@ check main {
 }
 ```
 
+A severity is raised the same way: `run lemma.http.consumer_uses_removed_response_field { severity: error }` fails a check wherever a caller's code names a response field that was removed, which is a warning otherwise.
+
 **Allow a known finding.** An `allow` keeps it visible, with a reason and an expiry date. See [Allowances](language.md#allowances).
 
 **Add a check.** Say a team never removes a response field without a deprecation period. The example at the top of this page makes every removed response field an error, whoever reads it.
