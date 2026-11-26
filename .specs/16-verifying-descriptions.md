@@ -114,6 +114,7 @@ In `.lm`, a link to a declared operation is a name. If the declaration goes, `lm
 | `anchor_uncalled` | Nothing calls an anchored method, while a sibling is called. Warning | `lemma check --anchors` |
 | `previously_still_present` | A rename's old name still exists, so the claim of a rename is false. Warning | Absent |
 | `link_redundant` | A declared link is one inference finds too, and says nothing more. Informational | Absent |
+| `client_operation_without_link` | A `client operation` no declared link starts from, in its own module or any other of the workspace. The declaration exists only to be one end of a link, so without one the call it describes is unchecked, and nothing else says so. Warning | Absent |
 
 ### Missing, certain
 

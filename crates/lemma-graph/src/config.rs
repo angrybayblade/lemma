@@ -182,6 +182,9 @@ pub struct Operation {
     /// same repository, so a change that renames it compares it with its
     /// old self instead of finding it new.
     pub previously: Vec<String>,
+    /// Whether the service calls it (a `client operation`) rather than
+    /// provides it.
+    pub is_client: bool,
 }
 
 /// An operation's schemas.

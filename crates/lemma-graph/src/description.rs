@@ -117,6 +117,7 @@ pub fn verify_description<E: Engine>(
     let repos = check::load_manifests(entry, options)?;
     let mut findings = configuration_findings(&repos);
     findings.extend(renames_still_present(&repos));
+    findings.extend(client_operations_without_links(&repos));
     let mut relations = options.relations.clone();
     let also_asked = LOOKED_AT_RELATIONS
         .into_iter()
@@ -489,6 +490,53 @@ fn renames_still_present(repos: &BTreeMap<String, Repo>) -> Vec<DescriptionFindi
                     &format!("{name}:services.{service_name}.{operation_name}"),
                     "previously_still_present",
                     format!("says it was `{old}`, which still exists"),
+                )
+            }));
+        }
+    }
+    findings
+}
+
+/// Client operations no link starts from. A `client operation` says what a
+/// service sends and accepts so that a link can compare it with a
+/// provider's operation; with no link, nothing reads it, and the call it
+/// describes goes unchecked without a sign.
+fn client_operations_without_links(repos: &BTreeMap<String, Repo>) -> Vec<DescriptionFinding> {
+    let mut linked: BTreeSet<(String, String, String)> = BTreeSet::new();
+    for (name, repo) in repos {
+        let callers = repo.files[HEAD]
+            .graph
+            .links
+            .iter()
+            .filter_map(|link| crate::address::parse_link(link).ok())
+            .map(|link| link.caller);
+        for caller in callers {
+            let repository = caller.repository.unwrap_or_else(|| name.clone());
+            linked.insert((repository, caller.service, caller.operation));
+        }
+    }
+    let mut findings = Vec::new();
+    for (name, repo) in repos {
+        for (service_name, service) in &repo.files[HEAD].services {
+            let unlinked = service
+                .exports
+                .operations
+                .iter()
+                .filter(|(_, operation)| operation.is_client)
+                .filter(|(operation_name, _)| {
+                    let key = (
+                        name.clone(),
+                        service_name.clone(),
+                        (*operation_name).clone(),
+                    );
+                    !linked.contains(&key)
+                });
+            findings.extend(unlinked.map(|(operation_name, _)| {
+                finding(
+                    Severity::Warning,
+                    &format!("{name}:services.{service_name}.{operation_name}"),
+                    "client_operation_without_link",
+                    "no link starts from it, so nothing compares what it sends and accepts with a provider".to_owned(),
                 )
             }));
         }

@@ -73,6 +73,7 @@ The MCP server has a `verify` tool with the arguments `module`, `all` and `links
 | `anchor_uncalled` | warning | Nothing outside its type calls an anchored method, while a sibling method of the same type in the same file is called. The anchor probably names the wrong method (a generated client's `Invoke` where the code calls `InvokeWithRuntimeEnv`), and every trace from it is empty. |
 | `previously_still_present` | warning | An operation says what it used to be named (`previously`), and that name is still declared, so the claim of a rename is false. |
 | `link_redundant` | informational | A declared link is one inference finds too, and says nothing more. |
+| `client_operation_without_link` | warning | A `client operation` is declared and no link starts from it, in its own module or the workspace's. Nothing compares what it sends and accepts with a provider, so the call it describes is unchecked. |
 
 `lm check` reports a link naming an operation its service does not have when the service discovers no operations. A service with `operations:` might discover the name, so `lm check` cannot rule it out; this command can.
 

@@ -99,6 +99,7 @@ fn declared(file: &str, declaration: &Declaration) -> Operation {
         .map(|status| format!("{at}.responses[\"{status}\"].content[\"application/json\"].schema"));
     Operation {
         previously: Vec::new(),
+        is_client: false,
         path: file.to_owned(),
         schema: Some(Schemas {
             resolver: None,

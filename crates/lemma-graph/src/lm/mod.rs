@@ -336,6 +336,7 @@ fn lower_operation(operation: &model::Operation) -> Result<Operation, LowerError
         path,
         schema,
         previously,
+        is_client: operation.is_client,
     })
 }
 

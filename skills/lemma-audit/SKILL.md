@@ -37,6 +37,7 @@ It ends with what it looked at: the operations and the calls of them it read, an
 | `anchor_uncalled` | Move the caller's `implementation` to the method the code calls |
 | `previously_still_present` | Remove the `previously` claim, or finish the rename |
 | `link_redundant` | Informational: the link can go; inference finds this call |
+| `client_operation_without_link` | Add the link from the client operation to the provider's operation, or remove the declaration |
 
 A `candidate` line names a directory no service includes whose code writes the paths of described operations (`calls_outside_services`), with how many places and the first one. Open that place. If the code is a consumer (an app, a docs site, a proxy, a script that runs in production), add the directory to a service's `include` or give it a service of its own; if it is left out on purpose (examples, one-off scripts), add it to a service's `exclude`. The `tests are not read` line counts test code that writes such paths: tests are never read, so there is nothing to edit for it.
 
