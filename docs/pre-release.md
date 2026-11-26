@@ -12,7 +12,7 @@ Install: see [Onboarding](onboarding.md#1-install). Report problems with the des
 | 0.1.0-rc1 | Internal release: a general framework with no assumptions about any one API's layout; `lemma check` with inferred links, tracing and change-driven evaluation; `.lm` modules with behaviors and allowances, and the `lm` command; checks that a feature is wired up; one store file in place of SQLite; one daemon per workspace, with sentry; evidence kept by the files a checker's run read; source contracts, experimental (see [New in rc1](#new-in-rc1)) | Released |
 | 0.1.0-rc2 | Fixes from the first outside trial of rc1; layouts met in public repositories read; requests under a base URL read; a removed response field read off the body an error; `lemma verify` says what a clean result covers and lists code a description leaves out (see [New in rc2](#new-in-rc2)) | Released |
 | 0.1.0-rc3 | Fixes from the first team's use of rc2 ([Checklist for rc3](#checklist-for-rc3)); callers of generated clients read in TypeScript and Go, and a clean result that says how many operations it speaks for (see [New since rc2](#new-since-rc2-not-yet-released)) | In progress |
-| Later candidates | A family of operations declared from one document; calibration on past changes in one command; Vue and Svelte files read; links other than HTTP; behavior simulation scaffolded for TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; items below as they are resolved | Planned |
+| Later candidates | A response body read through a callback's parameter; a family of operations declared from one document; calibration on past changes in one command; Vue and Svelte files read; links other than HTTP; behavior simulation scaffolded for TypeScript and Go; a recorder for macOS, so evidence is kept by the files a run read there too; items below as they are resolved | Planned |
 
 ## Feature surfaces
 
@@ -46,6 +46,7 @@ Each item says what goes wrong, how much it matters, and what to do until it is 
 | Limitation | Effect | Severity for rc0 | Until fixed |
 | --- | --- | --- | --- |
 | "Names a field" is evidence, not proof: a common name (`id`, `slug`) used for a consumer's own objects counts as using the field | False **warnings** when a service drops a common field; in rc0's replays, 8 in 156 changes to one service, all in commits that also updated the caller. No false errors seen | Low: warnings do not fail CI | Keep warnings advisory; review them in the pull request |
+| A response body received as a callback's parameter (`.then((body) => ...)`, an option such as `map:` or `onSuccess:`) is not followed as the body | A removed field read there is a **warning** (`consumer_uses_removed_response_field`), where the same read off an awaited result is an error | Medium where CI fails on errors only | Have the gate send warnings back too, as the stop gate does by default, or read the result with `await` |
 | Field changes compare names, not types or allowed values | A field whose type or allowed values change is not reported | Medium | Review enum and type changes by hand |
 | A path under a base URL is read only where every path of the service's document starts with that base | Where a document mixes prefixes (`/api/v1` beside `/api/v2`, or beside `/health`) and a consumer keeps one of them in a base URL, its requests under it are not read as calls, and are not listed as unread either | Medium for such documents | Compare `lemma verify --relation calls` with the consumer's requests; where they are missing, write the full path at the call |
 | URLs built at run time from values the code does not show are not matched | Those calls are missed, so their breaks are too | Medium for code that builds URLs dynamically | Check coverage with `lemma verify --relation calls` ([Onboarding](onboarding.md#4-describe-the-system)) |
@@ -167,12 +168,13 @@ Most of it came from the first trial of rc1 outside the project; the rest from l
 
 What rc3 changes comes from the first team's use of rc2. Each item was reported from a real system, and is done when the report is reproduced there and then shown fixed.
 
-- [ ] A removed field is reported once, and not again for each field below it. Done on public code (see [New since rc2](#new-since-rc2-not-yet-released)); to be shown on the reporting system.
-- [ ] A removed response field read off a callback's parameter (`map: (response) => response.items`, `.then`, `onSuccess`) is an error as a read off the body is, where public code shows the shape.
+- [x] A removed field is reported once, and not again for each field below it. Measured on public code (see [New since rc2](#new-since-rc2-not-yet-released)) and shown on the reporting system: the reported rename gives one finding, where rc2 gave one for the field and one more for each field under it whose name the code used.
 - [ ] A handler or schema edit in a service whose document is committed is seen before the document is regenerated, or reported as the code and the document having drifted. A trial decides which.
-- [ ] `lemma graph` takes the number of names it asks about as a flag. Built (`--max-names`); to be shown on the reporting system.
+- [x] `lemma graph` takes the number of names it asks about as a flag (`--max-names`). Shown on the reporting system: the note on the reported function gives the number to pass, and with it every name is asked about.
 - [x] A service's `operations` given as a list of documents is shown in [check](check.md) and the [language reference](language.md), as it is in [Onboarding](onboarding.md).
-- [ ] `lemma verify` reports a declared client operation that no link starts from. Built (`client_operation_without_link`); to be shown on the reporting system.
+- [x] `lemma verify` reports a declared client operation that no link starts from (`client_operation_without_link`). Shown on the reporting system: with one link taken out of its description, rc2 said nothing and this build warns at the operation.
+
+Moved to a later candidate: a removed response field read off a callback's parameter (`map: (response) => response.items`, `.then`, `onSuccess`) as an error, the way a read off the body is. Counted on 30 public systems first: a `.then` callback reading a field follows a request in 363 places in 10 of them, most in Vue files, which are not read yet, and no request there takes its callback as an option such as `map:`. Until then it is a warning ([Known limitations](#contract-checks)).
 
 Before the tag:
 
