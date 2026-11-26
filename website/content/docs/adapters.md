@@ -49,6 +49,35 @@ export service api {
 
 Lemma still reads a framework that knows its routes but not their schemas (Express, Flask, `gorilla/mux`): its adapter says so with `x-lemma-schemas: false`, the committed documents keep the schemas, and the code says which routes exist and where each is handled.
 
+## A service's own generator
+
+A service that generates its committed documents, and fails CI when they are stale, already has the command that builds them and the environment it runs in. Name that command for the document, with that environment, and an edit to a route's schema or handler is checked against consumers before the document is regenerated:
+
+```lm
+let spec = command(
+    "bun run scripts/generate-openapi.ts && cp openapi.json \"$LEMMA_OUTPUT\"",
+    directory: "apps/api",
+    inputs: ["apps/api/src", "packages"],
+    setup: "cd \"$LEMMA_ROOT\" && pnpm install --frozen-lockfile && pnpm --filter @acme/auth build",
+    env: { DATABASE_URL: "postgres://user:password@localhost:5432/none", SKIP_VALIDATION: "true" },
+)
+
+export service api {
+    operations: [
+        http.openapi("apps/api/openapi.json", command: spec),
+        http.openapi("apps/api/openapi-internal.json"),
+    ]
+}
+```
+
+- **Its environment.** A generator imports the app, and the app reads its configuration as it is imported. That often needs no real secret: the CI job that checks the documents are current runs the generator with placeholder values, and `env` takes the same ones.
+- **What it imports.** `setup` installs the dependencies and builds the packages the app imports, in Lemma's worktree of a commit. The working directory is taken as ready, as it is for the generator run by hand.
+- **Where it writes.** A generator that writes to a fixed path is followed by a copy to `$LEMMA_OUTPUT`. Run in the working directory it rewrites the committed document there too, as running it by hand does.
+- **When it runs.** Once for each state of its `inputs`: a second check of the same edit reuses the document, and an edit outside `inputs` runs nothing.
+- **Other documents.** A document with no command is read as committed, so a service can name a generator for one document and leave the others.
+
+Without a command, a committed document is the contract until someone regenerates it: a schema edit gives no finding until then.
+
 ## Fields
 
 | Field | Meaning |
