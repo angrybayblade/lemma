@@ -709,7 +709,19 @@ impl Behaviors<'_> {
         head: Option<crate::behaviors::HeadProgram>,
         reach: Option<&crate::reach::ChangeReach>,
     ) -> Result<Option<crate::behaviors::Evaluated>, GraphError> {
-        crate::behaviors::run(&self.manifest, self.repos, self.options, head, reach)
+        let started = std::time::Instant::now();
+        let evaluated =
+            crate::behaviors::run(&self.manifest, self.repos, self.options, head, reach)?;
+        // The step after tracing: without a line here, a slow one shows in
+        // a log only as time nothing accounts for.
+        log::info!(
+            "behaviors: {} evaluated in {:.1}s",
+            evaluated
+                .as_ref()
+                .map_or(0, |evaluated| evaluated.results.len()),
+            started.elapsed().as_secs_f64()
+        );
+        Ok(evaluated)
     }
 }
 
