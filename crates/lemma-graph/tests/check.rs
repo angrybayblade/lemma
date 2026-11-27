@@ -137,6 +137,7 @@ fn system(caller_go: &str) -> tempfile::TempDir {
 fn a_provider_change_that_breaks_a_go_caller_is_reported() {
     let workspace = system(CALLER_GO);
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#provider".to_owned(),
             base: Some("HEAD~1".to_owned()),
@@ -210,6 +211,7 @@ fn a_caller_anchored_at_a_method_nothing_calls_is_warned_about() {
     let caller_go = format!("{CALLER_GO}func (c *Charges) CreateWithRetry() {{}}\n");
     let workspace = system(&caller_go);
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: None,
         level: Some(Level::Check),
         cache: workspace.path().join("cache"),
@@ -305,6 +307,7 @@ export graph links : Link {{
 
 fn link_problems(workspace: &Path) -> Vec<String> {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: None,
         level: Some(Level::Check),
         cache: workspace.join("cache"),
@@ -390,6 +393,7 @@ fn renamed_system(says_previously: bool) -> tempfile::TempDir {
 fn errors_after_rename(says_previously: bool) -> usize {
     let workspace = renamed_system(says_previously);
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#provider".to_owned(),
             base: Some("HEAD~1".to_owned()),
@@ -446,6 +450,7 @@ fn checked_without_resolver(level: Level) -> Vec<(Severity, String)> {
     let missing = PROVIDER_MODULE.replace("cat spec.json", "./.venv/bin/python -m spec");
     write(&provider, &missing);
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: None,
         level: Some(level),
         cache: workspace.path().join("cache"),

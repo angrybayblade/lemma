@@ -102,6 +102,7 @@ fn findings(provider: &Provider<'_>, consumer: &str) -> Vec<String> {
         "module system\n\nworkspace {\n    repo billing = local(\"billing\")\n    repo web = local(\"web\")\n}\n",
     );
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#billing".to_owned(),
             base: Some("HEAD~1".to_owned()),

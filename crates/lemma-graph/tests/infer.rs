@@ -101,6 +101,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
     let workspace = tempfile::tempdir().unwrap();
     system(workspace.path());
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#billing".to_owned(),
             base: Some("HEAD~1".to_owned()),
@@ -150,6 +151,7 @@ fn changes_are_checked_against_code_that_calls_without_declaring() {
 /// link, with `select`.
 fn selected_problems(workspace: &Path, select: &str) -> Result<Vec<String>, String> {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#billing".to_owned(),
             base: Some("HEAD~1".to_owned()),
@@ -208,6 +210,7 @@ fn link_findings(
     warm: Option<&std::sync::Arc<lemma_graph::Warm>>,
 ) -> Vec<String> {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#billing".to_owned(),
             base: Some("HEAD~1".to_owned()),
@@ -305,6 +308,7 @@ require charges_are_called {{
 
 fn checks_of(workspace: &Path) -> Vec<(Severity, String)> {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#billing".to_owned(),
             base: Some("HEAD~1".to_owned()),
@@ -387,6 +391,7 @@ fn select_runs_another_check_and_an_unknown_one_is_refused() {
         "\ncheck main {\n    run charges_are_called\n}\n\ncheck strict_http {\n    run lemma.http.*\n}\n",
     );
     let options = |select: &str| CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#billing".to_owned(),
             base: Some("HEAD~1".to_owned()),
@@ -438,6 +443,7 @@ fn a_change_may_name_its_repository_as_a_module_does() {
     let workspace = tempfile::tempdir().unwrap();
     system_of_modules(workspace.path(), "");
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "billing".to_owned(),
             base: Some("HEAD~1".to_owned()),

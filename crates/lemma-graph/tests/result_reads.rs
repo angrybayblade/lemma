@@ -89,6 +89,7 @@ fn workspace() -> tempfile::TempDir {
 
 fn run(workspace: &Path, evaluation: Evaluation) -> Report {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#billing".to_owned(),
             base: Some("HEAD~1".to_owned()),

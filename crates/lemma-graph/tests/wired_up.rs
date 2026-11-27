@@ -88,6 +88,7 @@ fn shop() -> tempfile::TempDir {
 fn warnings(workspace: &Path) -> Vec<String> {
     let run = |evaluation| {
         let options = CheckOptions {
+            pins: std::collections::BTreeMap::new(),
             change: Some(Change {
                 repository: "billing".to_owned(),
                 base: Some("HEAD~1".to_owned()),
@@ -229,6 +230,7 @@ fn a_route_out_of_the_spec_is_introduced_only_by_the_change_adding_it() {
 /// whether the commit introduced it.
 fn not_in_spec(workspace: &Path) -> Vec<(String, bool)> {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "billing".to_owned(),
             base: Some("HEAD~1".to_owned()),

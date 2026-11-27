@@ -23,6 +23,7 @@ pub mod description;
 pub mod exports;
 mod functions;
 pub mod handlers;
+pub mod history;
 mod impact;
 mod infer;
 pub mod lm;

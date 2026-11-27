@@ -40,6 +40,7 @@ pub fn composition(
     cloning: Cloning,
 ) -> Result<Composition, GraphError> {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: None,
         level: None,
         cache: cache.to_path_buf(),

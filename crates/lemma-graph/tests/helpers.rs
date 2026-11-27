@@ -83,6 +83,7 @@ fn shop(page: &str) -> tempfile::TempDir {
 fn found(workspace: &Path) -> Vec<String> {
     let run = |evaluation| {
         let options = CheckOptions {
+            pins: std::collections::BTreeMap::new(),
             change: Some(Change {
                 repository: "billing".to_owned(),
                 base: Some("HEAD~1".to_owned()),

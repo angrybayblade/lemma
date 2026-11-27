@@ -133,6 +133,7 @@ pub struct TraceCaches<'a> {
 /// How a trace reads the system: at the head, all consumer code, no change.
 fn trace_options(caches: &TraceCaches<'_>) -> CheckOptions {
     CheckOptions {
+        pins: BTreeMap::new(),
         change: None,
         level: None,
         cache: caches.clones.to_path_buf(),

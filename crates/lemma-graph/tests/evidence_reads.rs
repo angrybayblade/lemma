@@ -95,6 +95,7 @@ fn shelf() -> tempfile::TempDir {
 
 fn run(workspace: &Path, run_checkers: bool) -> Report {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: None,
         level: Some(Level::Check),
         cache: workspace.join("cache"),

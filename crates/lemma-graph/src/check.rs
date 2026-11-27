@@ -62,6 +62,10 @@ pub struct CheckOptions {
     /// The change; without one, every repository is read once and links are
     /// checked as they stand.
     pub change: Option<Change>,
+    /// Repositories read at a commit other than the one their description
+    /// gives, by name as loading names them (`#billing`): how a past change
+    /// is checked against the other repositories as they stood then.
+    pub pins: BTreeMap<String, String>,
     /// Overrides the `graph`'s level.
     pub level: Option<Level>,
     /// Whether each inferred finding says why it holds.
@@ -529,6 +533,17 @@ fn load_with_change_named(
         return Ok((repos, options));
     };
     Ok((load(root_file, &found)?, found))
+}
+
+/// [`load_with_change_named`], failing when the change names no repository
+/// loaded: for a caller that reads the changed repository before any check.
+pub(crate) fn load_naming_change(
+    root_file: &Path,
+    options: &CheckOptions,
+) -> Result<(BTreeMap<String, Repo>, CheckOptions), GraphError> {
+    let (repos, options) = load_with_change_named(root_file, options)?;
+    check_change_names_a_repository(&repos, &options)?;
+    Ok((repos, options))
 }
 
 /// What tracing what problems affect reads.
@@ -2077,7 +2092,10 @@ pub(crate) fn load_manifests(
                 unavailable.insert(missing);
                 continue;
             }
-            let source = external_root(service, &base_directory, &options.cache)?;
+            let mut source = external_root(service, &base_directory, &options.cache)?;
+            if let Some(commit) = options.pins.get(external) {
+                source.reference = Some(commit.clone());
+            }
             let pinned = crate::lm::repository_name(external.trim_start_matches('#'));
             pins.entry(pinned).or_insert_with(|| Checkout {
                 root: source.root.clone(),

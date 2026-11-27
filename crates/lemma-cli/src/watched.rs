@@ -335,6 +335,7 @@ fn description_files(directory: &Path, inner: &[PathBuf]) -> Vec<(PathBuf, (u64,
 /// is `manifest`, as checks name them, the workspace's own among them.
 pub(crate) fn repository_directories(manifest: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let options = lemma_graph::CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: None,
         level: None,
         cache: lemma_graph::repos::cache_directory(),

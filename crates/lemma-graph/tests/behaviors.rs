@@ -199,6 +199,7 @@ fn run_with(workspace: &Path, environment: &[(&str, &str)]) -> Report {
 
 fn options(workspace: &Path, level: Level, run_checkers: bool) -> CheckOptions {
     CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: None,
         level: Some(level),
         cache: workspace.join("cache"),
@@ -219,6 +220,7 @@ fn options(workspace: &Path, level: Level, run_checkers: bool) -> CheckOptions {
 
 fn run(workspace: &Path, level: Level, run_checkers: bool) -> Report {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: None,
         level: Some(level),
         cache: workspace.join("cache"),
@@ -531,6 +533,7 @@ fn a_change_that_breaks_the_worker_introduces_its_violations_and_lists_new_behav
     write(&platform.join("mod.lm"), &module);
     git(&platform, &["commit", "-q", "-am", "drop the flag"]);
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(lemma_graph::Change {
             repository: "self".to_owned(),
             base: Some("HEAD~1".to_owned()),
@@ -583,6 +586,7 @@ fn a_new_behavior_selected_alone_runs_no_checker_at_the_base() {
     write(&platform.join("mod.lm"), &module);
     git(&platform, &["commit", "-q", "-am", "add a behavior"]);
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(lemma_graph::Change {
             repository: "self".to_owned(),
             base: Some("HEAD~1".to_owned()),
@@ -617,6 +621,7 @@ fn fixing_change(runs_base_checkers: bool) -> Report {
     write(&platform.join("worker/handlers.py"), FORWARDING_HANDLER);
     git(&platform, &["commit", "-q", "-am", "forward the flag"]);
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(lemma_graph::Change {
             repository: "self".to_owned(),
             base: Some("HEAD~1".to_owned()),
@@ -694,6 +699,7 @@ fn a_checker_reads_other_repositories_at_the_commit_checked() {
     git(&platform, &["add", "."]);
     git(&platform, &["commit", "-q", "-m", "marker"]);
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(lemma_graph::Change {
             repository: "functions".to_owned(),
             base: Some("HEAD~1".to_owned()),

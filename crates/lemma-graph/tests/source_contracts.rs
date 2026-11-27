@@ -55,6 +55,7 @@ fn run(workspace: &Path, solver: &str, may_run: bool) -> Report {
         ("LEMMA_SMT_SOLVER".to_owned(), solver.to_owned()),
     ]);
     let options = CheckOptions {
+        pins: BTreeMap::new(),
         change: None,
         level: Some(Level::Strict),
         cache: workspace.join("cache"),

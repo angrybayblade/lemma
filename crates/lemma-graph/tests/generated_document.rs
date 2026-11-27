@@ -114,6 +114,7 @@ fn require_currency(workspace: &Path) {
 
 fn run_check(workspace: &Path, base: &str, head: Option<&str>) -> Report {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#billing".to_owned(),
             base: Some(base.to_owned()),

@@ -145,6 +145,7 @@ fn with_a_client_beside_its_callers(consumer: &str) -> tempfile::TempDir {
 
 fn errors(workspace: &Path, evaluation: Evaluation) -> Vec<String> {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#billing".to_owned(),
             base: Some("HEAD~1".to_owned()),

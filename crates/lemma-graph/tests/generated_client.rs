@@ -85,6 +85,7 @@ fn workspace(client_document: &str, client_code: &str) -> tempfile::TempDir {
 
 fn errors(workspace: &Path, evaluation: Evaluation) -> Vec<String> {
     let options = CheckOptions {
+        pins: std::collections::BTreeMap::new(),
         change: Some(Change {
             repository: "#billing".to_owned(),
             base: Some("HEAD~1".to_owned()),

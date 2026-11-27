@@ -64,6 +64,7 @@ pub(crate) fn run(
 fn verify(args: &VerifyArgs, lsp: &LanguageServers) -> anyhow::Result<DescriptionReport> {
     let directory = entry_directory(&args.module);
     let options = CheckOptions {
+        pins: BTreeMap::new(),
         change: None,
         level: None,
         cache: lemma_graph::repos::cache_directory(),

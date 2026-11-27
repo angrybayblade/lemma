@@ -339,6 +339,7 @@ fn check_options(
         head: args.head.clone(),
     });
     CheckOptions {
+        pins: BTreeMap::new(),
         change,
         level: args.level.as_deref().map(|level| match level {
             "check" => Level::Check,
