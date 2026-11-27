@@ -231,8 +231,11 @@ A string in code counts as a path only if it contains a leading segment some ser
 | --- | --- | --- |
 | `consumer_calls_removed_operation` | error | Code calls an operation the change removed. |
 | `consumer_calls_unserved_operation` | error | A change adds a call to a path under a service's prefixes that no service serves, such as an operation not yet deployed. |
-| `consumer_misses_new_required_parameter` | error | An operation the code calls now requires a parameter its code never names. |
-| `consumer_misses_new_required_field` | error | An operation now requires a request field the calling code never names. |
+| `consumer_misses_new_required_parameter` | error | An operation the code calls now requires a query parameter its code never names. Where the request is passed in from elsewhere (`{ params: options }`, a query put into the path, a path no call of a known method is given), only if no other file of the consumer's repository writes the name either: then no caller can be setting it. |
+| `consumer_may_miss_new_required_parameter` | warning | As above, where the request is passed in from elsewhere and some other file of the consumer's repository writes the name: a caller may set it there, which Lemma does not follow. |
+| `consumer_may_miss_new_required_header` | warning | An operation now requires a header the calling code never names. Never an error: a client sets headers where it is made, and a gateway may add one, which no call shows. |
+| `consumer_misses_new_required_field` | error | An operation now requires a request field the calling code never names. Where the request is passed in from elsewhere (`axios.post('/v1/users', data)`, `{ body: data }`, `{ name, ...rest }`, or `profile: data` with `profile.email` now required), only if no other file of the consumer's repository writes the name either. |
+| `consumer_may_miss_new_required_field` | warning | As above, where the request is passed in from elsewhere and some other file of the consumer's repository writes the name: a caller may set it there. |
 | `consumer_sends_removed_parameter` | error | Code names a parameter the change removed, and the operation rejects parameters it does not know. |
 | `consumer_sends_ignored_parameter` | warning | As above, where the operation ignores unknown parameters. |
 | `consumer_sends_rejected_field` | error | Code names a request field the change removed, and the operation rejects fields it does not know: its spec says `additionalProperties: false`, its route's zod schema is `.strict()`, or its service sets `rejects_unknown_fields`. |

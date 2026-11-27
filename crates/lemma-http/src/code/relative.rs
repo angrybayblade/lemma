@@ -76,6 +76,20 @@ pub(super) struct Relative {
     wrapped: Vec<(String, UnreadRequest)>,
 }
 
+impl Relative {
+    /// How many single words wait on their receiver.
+    pub(super) fn waiting_count(&self) -> usize {
+        self.waiting.len()
+    }
+
+    /// The lines of the words that began to wait after the first `count`.
+    pub(super) fn waiting_lines(&self, count: usize) -> impl Iterator<Item = u32> + '_ {
+        self.waiting[count..]
+            .iter()
+            .map(|(_, reference, _)| reference.location.line)
+    }
+}
+
 impl Walk<'_> {
     /// Reads `receiver.verb('path/without/slash', ...)`; whether the call
     /// was one.

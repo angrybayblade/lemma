@@ -1,5 +1,7 @@
-//! A removed response field read one step off a call's result is read
-//! off the body.
+//! A name a request lacks is an error unless the request is passed in from
+//! elsewhere and other code of the repository writes the name, and a
+//! removed response field read one step off a call's result is read off
+//! the body.
 
 #![allow(clippy::unwrap_used, reason = "test setup should fail loudly")]
 
@@ -62,9 +64,20 @@ fn document(required: &str, required_in_profile: &str, parameters: &str, returne
 
 const AMOUNT_AND_STATUS: &str =
     r#", "amount": { "type": "number" }, "status": { "type": "string" }"#;
+const TEAM_IN_QUERY: &str =
+    r#", { "name": "team", "in": "query", "required": true, "schema": { "type": "string" } }"#;
+const TRACE_IN_HEADER: &str =
+    r#", { "name": "X-Trace", "in": "header", "required": true, "schema": { "type": "string" } }"#;
+
 /// A workspace of billing, whose last commit changes its document from
 /// `before` to `after`, and web, whose `src/calls.ts` is `calls`.
 fn workspace(before: &str, after: &str, calls: &str) -> tempfile::TempDir {
+    workspace_with(before, after, calls, "export const title = 'Shop'\n")
+}
+
+/// [`workspace`] with web's `src/form.ts`, a file nothing imports, being
+/// `form`.
+fn workspace_with(before: &str, after: &str, calls: &str, form: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
     let billing = directory.path().join("billing");
     let web = directory.path().join("web");
@@ -81,6 +94,7 @@ fn workspace(before: &str, after: &str, calls: &str) -> tempfile::TempDir {
         "module web\n\nexport service web {\n    index: { include: [\"src\"] }\n}\n",
     );
     write(&web.join("src/calls.ts"), calls);
+    write(&web.join("src/form.ts"), form);
     commit(&web, "start web");
     write(
         &directory.path().join("mod.lm"),
@@ -146,6 +160,226 @@ fn found(workspace: &Path) -> Vec<(Severity, String, String)> {
 
 fn finding(severity: Severity, check: &str, function: &str) -> (Severity, String, String) {
     (severity, check.to_owned(), function.to_owned())
+}
+
+const PASSED: &str = "export async function passed(data: CreateUser) {\n  return axios.post('/v1/users', data)\n}\n\nexport async function enveloped(data: CreateUser) {\n  return request({ method: 'POST', url: '/v1/users', body: data })\n}\n\nexport async function spread(name: string, rest: Rest) {\n  return axios.post('/v1/users', { name, ...rest })\n}\n";
+
+#[test]
+fn a_new_required_field_is_an_error_where_the_request_is_written_at_the_call() {
+    let calls = "export async function written(name: string, bio: string) {\n  return axios.post('/v1/users', { name, profile: { bio } })\n}\n";
+    let shop = workspace_with(
+        &document("", "", "", ""),
+        &document(r#", "email""#, "", "", ""),
+        calls,
+        "export const draft = { email: '' }\n",
+    );
+
+    let findings = found(shop.path());
+
+    assert_eq!(
+        findings,
+        [finding(
+            Severity::Error,
+            "consumer_misses_new_required_field",
+            "written"
+        )]
+    );
+}
+
+#[test]
+fn a_new_required_field_is_a_warning_where_the_request_is_passed_in_and_other_code_names_it() {
+    let shop = workspace_with(
+        &document("", "", "", ""),
+        &document(r#", "email""#, "", "", ""),
+        PASSED,
+        "export const draft = { email: '' }\n",
+    );
+
+    let findings = found(shop.path());
+
+    assert_eq!(
+        findings,
+        [
+            finding(
+                Severity::Warning,
+                "consumer_may_miss_new_required_field",
+                "enveloped"
+            ),
+            finding(
+                Severity::Warning,
+                "consumer_may_miss_new_required_field",
+                "passed"
+            ),
+            finding(
+                Severity::Warning,
+                "consumer_may_miss_new_required_field",
+                "spread"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_new_required_field_no_file_of_the_repository_names_is_an_error_however_it_is_passed() {
+    let shop = workspace(
+        &document("", "", "", ""),
+        &document(r#", "email""#, "", "", ""),
+        PASSED,
+    );
+
+    let findings = found(shop.path());
+
+    assert_eq!(
+        findings,
+        [
+            finding(
+                Severity::Error,
+                "consumer_misses_new_required_field",
+                "enveloped"
+            ),
+            finding(
+                Severity::Error,
+                "consumer_misses_new_required_field",
+                "passed"
+            ),
+            finding(
+                Severity::Error,
+                "consumer_misses_new_required_field",
+                "spread"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_field_required_under_one_given_a_value_from_elsewhere_is_a_warning() {
+    let calls = "export async function passedProfile(name: string, profile: Profile) {\n  return axios.post('/v1/users', { name, profile })\n}\n\nexport async function writtenProfile(name: string, bio: string) {\n  return axios.post('/v1/users', { name, profile: { bio } })\n}\n";
+    let shop = workspace_with(
+        &document("", "", "", ""),
+        &document("", r#""city""#, "", ""),
+        calls,
+        "export const draft = { city: '' }\n",
+    );
+
+    let findings = found(shop.path());
+
+    assert_eq!(
+        findings,
+        [
+            finding(
+                Severity::Error,
+                "consumer_misses_new_required_field",
+                "writtenProfile"
+            ),
+            finding(
+                Severity::Warning,
+                "consumer_may_miss_new_required_field",
+                "passedProfile"
+            ),
+        ]
+    );
+}
+
+const QUERIES: &str = "export async function written(limit: number) {\n  return axios.get('/v1/users', { params: { limit } })\n}\n\nexport async function passed(params: Query) {\n  return axios.get('/v1/users', { params })\n}\n\nexport async function built(filter: Filter) {\n  const query = new URLSearchParams(filter)\n  return axios.get(`/v1/users?${query}`)\n}\n";
+
+#[test]
+fn a_new_required_parameter_is_a_warning_where_the_query_is_passed_in_and_other_code_names_it() {
+    let shop = workspace_with(
+        &document("", "", "", ""),
+        &document("", "", TEAM_IN_QUERY, ""),
+        QUERIES,
+        "export const filter = { team: 'core' }\n",
+    );
+
+    let findings = found(shop.path());
+
+    assert_eq!(
+        findings,
+        [
+            finding(
+                Severity::Error,
+                "consumer_misses_new_required_parameter",
+                "written"
+            ),
+            finding(
+                Severity::Warning,
+                "consumer_may_miss_new_required_parameter",
+                "built"
+            ),
+            finding(
+                Severity::Warning,
+                "consumer_may_miss_new_required_parameter",
+                "passed"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_new_required_parameter_no_file_of_the_repository_names_is_an_error_however_it_is_passed() {
+    let shop = workspace(
+        &document("", "", "", ""),
+        &document("", "", TEAM_IN_QUERY, ""),
+        QUERIES,
+    );
+
+    let findings = found(shop.path());
+
+    assert_eq!(
+        findings,
+        [
+            finding(
+                Severity::Error,
+                "consumer_misses_new_required_parameter",
+                "built"
+            ),
+            finding(
+                Severity::Error,
+                "consumer_misses_new_required_parameter",
+                "passed"
+            ),
+            finding(
+                Severity::Error,
+                "consumer_misses_new_required_parameter",
+                "written"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_parameter_set_by_a_call_on_the_query_is_sent() {
+    let calls = "export async function set(team: string) {\n  const query = new URLSearchParams()\n  query.set('team', team)\n  return axios.get(`/v1/users?${query}`)\n}\n";
+    let shop = workspace(
+        &document("", "", "", ""),
+        &document("", "", TEAM_IN_QUERY, ""),
+        calls,
+    );
+
+    let findings = found(shop.path());
+
+    assert_eq!(findings, []);
+}
+
+#[test]
+fn a_new_required_header_is_a_warning_even_where_the_request_is_written_out() {
+    let calls = "export async function written(limit: number) {\n  return axios.get('/v1/users', { params: { limit } })\n}\n";
+    let shop = workspace(
+        &document("", "", "", ""),
+        &document("", "", TRACE_IN_HEADER, ""),
+        calls,
+    );
+
+    let findings = found(shop.path());
+
+    assert_eq!(
+        findings,
+        [finding(
+            Severity::Warning,
+            "consumer_may_miss_new_required_header",
+            "written"
+        )]
+    );
 }
 
 #[test]

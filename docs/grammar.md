@@ -116,10 +116,10 @@ Severity decides what a finding does: at level `check`, `lemma check` exits with
 | Severity | Use when a match means | Built-in examples |
 | --- | --- | --- |
 | `error` | A request will fail | calling a removed operation; omitting a newly required field |
-| `warning` | Behaviour changes, but nothing fails | reading a removed response field; sending a field now ignored |
+| `warning` | Behaviour changes but nothing fails, or a failure cannot be told from where Lemma looks | sending a field now ignored; a newly required field missing from a request that is passed in, which other code may set |
 | `info` | Worth a look | a changed operation the code never names the field of; a route missing from the spec |
 
-A requirement that rests on a name being present (`uses(c, leaf)`) should look near the call. One that rests on a name being absent (`!sends(c, leaf)`) should look as far as the request can be built, and no further: the caller's function, declarations its file sees, and the functions of its file it calls. Searching the whole file lets an unrelated function naming the field hide a real break. `lemma.http`'s comments say what each relation covers.
+A requirement that rests on a name being present (`uses(c, leaf)`) should look near the call. One that rests on a name being absent (`!sends(c, leaf)`) should look as far as the request can be built, and no further: the caller's function, declarations its file sees, and the functions of its file it calls. Searching the whole file lets an unrelated function naming the field hide a real break. An absent name proves something only where the whole request is in sight. A call passed a value built elsewhere (`post(url, data)`) hides part of it, and a caller may have set the name there: `field_may_be_set_elsewhere(f, l, op, fld)` holds for such a call when some other file of its repository writes the name, and `lemma.http` then reports a warning where it would report an error. Where no file writes the name, no caller can set it, and the error stands. `lemma.http`'s comments say what each relation covers.
 
 `lemma check --explain` attaches each inferred finding's derivation: the requirement's fact, then the facts and rules supporting it, indented, down to input facts and `not` lines for negations.
 

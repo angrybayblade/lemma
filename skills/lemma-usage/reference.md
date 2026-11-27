@@ -64,8 +64,11 @@ Findings name a location as `#repo:service`: `include_matches_nothing`, `documen
 | --- | --- | --- |
 | `consumer_calls_removed_operation` | error | A consumer calls an operation the change removed |
 | `consumer_calls_unserved_operation` | error | A changed consumer adds a call to a path no service serves |
-| `consumer_misses_new_required_parameter` | error | An operation a consumer calls now requires a parameter |
-| `consumer_misses_new_required_field` | error | An operation now requires a request field the consumer's code never names |
+| `consumer_misses_new_required_parameter` | error | An operation a consumer calls now requires a query parameter its code never names; where the request is passed in from elsewhere, only if no other file of its repository writes the name |
+| `consumer_may_miss_new_required_parameter` | warning | As above, where the request is passed in from elsewhere and other code of the repository writes the name, so a caller may set it |
+| `consumer_may_miss_new_required_header` | warning | An operation now requires a header the consumer's code never names; headers are often set where a client is made |
+| `consumer_misses_new_required_field` | error | An operation now requires a request field the consumer's code never names; where the request is passed in from elsewhere (`post(url, data)`, `{ body: data }`, a spread), only if no other file of its repository writes the name |
+| `consumer_may_miss_new_required_field` | warning | As above, where the request is passed in from elsewhere and other code of the repository writes the name, so a caller may set it |
 | `consumer_sends_removed_parameter` | error | A consumer sends a removed parameter to an operation that rejects unknown ones |
 | `consumer_sends_ignored_parameter` | warning | As above, where the operation ignores unknown parameters |
 | `consumer_sends_rejected_field` | error | A consumer sends a removed request field to an operation that rejects unknown fields |

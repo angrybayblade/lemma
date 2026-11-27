@@ -25,6 +25,8 @@
 | `calls_client` | consumer, chain, file, line | service code: calls through client receivers and imported client functions |
 | `mentions` | scope, name | names used as fields: object keys, members, keyword arguments, dictionary keys, struct fields, JSON tags, and keys set by a call (`params.set("limit", n)`) |
 | `reads_result`, `reads_result_directly` | file, line, name | a name read off what the call at the line returned: two or more steps off it, or one step off it (names a response object has too, such as `status`, left out) |
+| `passes_value` | file, line, key | the request at the line is passed a value built elsewhere under the key; the empty key for a whole argument or a spread, and for a request no call was read for |
+| `named_around` | file, service, name | some file of the file's repository, outside the service's own, writes a name the service newly requires |
 | `in_file` | scope, file | which file a consumer or function is in |
 | `imports` | file, imported file | relative and alias imports; for Go, files of one package |
 | `addressed_to` | path, service | a path called in code that is under a prefix the service owns, derived from its documents |
@@ -50,6 +52,7 @@ These come from the rules in the standard library's `lemma.http`; any can be pri
 | `removed_response_field` | operation, field, leaf | A kept operation's response lost a field |
 | `outermost_removed_request_field`, `outermost_removed_response_field` | operation, field, leaf | A removed field with no removed field above it: what findings rest on, so a field removed with those under it is reported once |
 | `reads_removed_response_field` | file, line, operation, field | The call at the line reads an outermost removed field, or one that went with it, off its body; one step off its result, only a removed field at the top of the response |
+| `field_may_be_set_elsewhere`, `parameter_may_be_set_elsewhere` | file, line, operation, field or parameter | The request at the line is passed a value that may hold the newly required name, and other code of the repository writes the name: a name the calling code never writes is then no proof the request lacks it |
 | `strict_route` | service, method, path, part | A route's body or query schema rejects unknown keys (zod `.strict()`) |
 | `rejects_unknown` | operation | Requests sending an unknown field fail, after the change |
 | `rejects_unknown_parameter` | operation | Requests sending an unknown query parameter fail, after the change |

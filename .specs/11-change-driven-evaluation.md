@@ -68,8 +68,8 @@ The selection loads exactly that reach.
 | Requirement | Class |
 |---|---|
 | `consumer_calls_removed_operation` | anchored: `removed_operation` |
-| `consumer_misses_new_required_parameter` | anchored: `new_required_parameter` |
-| `consumer_misses_new_required_field` | anchored: `new_required_request_field`, plus `!sends` within context |
+| `consumer_misses_new_required_parameter` / `consumer_may_miss_new_required_parameter` / `consumer_may_miss_new_required_header` | anchored: `new_required_parameter`; `parameter_may_be_set_elsewhere` joins `passes_value` and `named_around`, written for every file read and keyed by the file, with the newly required names and the request's own, which come from documents. `named_around` rests on a word search of the consumer's repository, made for the newly required names alone, so it is complete whatever files are read |
+| `consumer_misses_new_required_field` / `consumer_may_miss_new_required_field` | anchored: `new_required_request_field`, plus `!sends` within context and `field_may_be_set_elsewhere`, as above |
 | `consumer_sends_removed_parameter` / `consumer_sends_ignored_parameter` | anchored: `removed_parameter`; `rejects_unknown_parameter` reads route facts, which are always read |
 | `consumer_sends_rejected_field` / `consumer_uses_removed_request_field` | anchored: `outermost_removed_request_field` |
 | `consumer_reads_removed_response_field` / `consumer_uses_removed_response_field` | anchored: `outermost_removed_response_field`; `reads_result` and `reads_result_directly` are written for every call of a file read, keyed by the file, and `reads_removed_response_field` joins them with the names the removal took, a relation about that file |

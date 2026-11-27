@@ -31,7 +31,7 @@ use lemma_logic::{Atom, Literal, ReferenceEngine, Request, Rule, Term, Value};
 
 /// Input relations written from consumer files: read, in change-driven
 /// evaluation, only for the files a finding can rest on.
-const SELECTED_INPUTS: [&str; 13] = [
+const SELECTED_INPUTS: [&str; 15] = [
     "calls_path",
     "calls_client",
     "client_operation",
@@ -44,6 +44,8 @@ const SELECTED_INPUTS: [&str; 13] = [
     "part_of_service",
     "reads_result",
     "reads_result_directly",
+    "passes_value",
+    "named_around",
     "unread_request",
 ];
 
@@ -60,13 +62,15 @@ const WRITTEN_WITH_CALLS: [&str; 1] = ["addressed_to"];
 
 /// Consumer facts about one scope (a file or a function in it): complete
 /// for every file read.
-const SCOPED_INPUTS: [&str; 6] = [
+const SCOPED_INPUTS: [&str; 8] = [
     "mentions",
     "calls_function",
     "in_file",
     "named",
     "reads_result",
     "reads_result_directly",
+    "passes_value",
+    "named_around",
 ];
 
 /// Inputs written only from services' route and schema code, which is

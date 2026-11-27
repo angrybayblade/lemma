@@ -684,6 +684,51 @@ pub fn file_exists(
     Ok(output.status.success() && output.stdout.trim_ascii() == b"blob")
 }
 
+/// Whether some file of `repository` at `commit`, or in its working
+/// directory, holds `word` as a whole word, the files under `excluded`
+/// left out. Every text file counts, whatever its language, and in a
+/// working directory those not yet tracked that Git does not ignore.
+///
+/// A name nobody writes anywhere cannot be sent by anybody: this is how a
+/// request passed from one function to another is known to lack it.
+pub fn holds_word(
+    repository: &Path,
+    commit: Option<&str>,
+    word: &str,
+    excluded: &[String],
+) -> Result<bool, SourceError> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repository).args([
+        "grep",
+        "--quiet",
+        "--word-regexp",
+        "--fixed-strings",
+        "-I",
+    ]);
+    match commit {
+        Some(commit) => command.args(["-e", word, commit]),
+        None => command.args(["--untracked", "-e", word]),
+    };
+    command.args(["--", "."]);
+    command.args(excluded.iter().map(|path| format!(":(exclude){path}")));
+    let output = command
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|source| SourceError::Io {
+            path: repository.to_owned(),
+            source,
+        })?;
+    // Git exits with 1 when nothing matches, and higher when it failed.
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(SourceError::Git {
+            repository: repository.to_owned(),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        }),
+    }
+}
+
 fn git_paths(
     repository: &Path,
     commit: &str,
@@ -1094,6 +1139,40 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn a_word_is_found_whole_in_any_file_outside_the_excluded_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::create_dir_all(root.join("api")).unwrap();
+        std::fs::create_dir_all(root.join("web")).unwrap();
+        std::fs::write(root.join("api/openapi.json"), "{ \"mcp_url\": {} }").unwrap();
+        std::fs::write(root.join("web/form.vue"), "const mcp_url_old = 1\n").unwrap();
+        git_in(root, &["init", "-q"]);
+        git_in(root, &["add", "."]);
+        git_in(root, &["commit", "-q", "-m", "start"]);
+        let outside_the_api = ["api".to_owned()];
+
+        let anywhere = holds_word(root, Some("HEAD"), "mcp_url", &[]).unwrap();
+        let committed = holds_word(root, Some("HEAD"), "mcp_url", &outside_the_api).unwrap();
+        std::fs::write(root.join("web/new.ts"), "send({ mcp_url })\n").unwrap();
+        let still_committed = holds_word(root, Some("HEAD"), "mcp_url", &outside_the_api).unwrap();
+        let working = holds_word(root, None, "mcp_url", &outside_the_api).unwrap();
+
+        assert!(anywhere);
+        assert!(!committed, "`mcp_url_old` is another word");
+        assert!(!still_committed);
+        assert!(working, "a file not yet tracked counts");
+    }
+
+    #[test]
+    fn a_directory_that_is_no_repository_cannot_be_searched() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let searched = holds_word(directory.path(), Some("HEAD"), "mcp_url", &[]);
+
+        assert!(searched.is_err());
     }
 
     fn blobs(listed: &[ListedFile]) -> Vec<(&str, bool)> {

@@ -8,6 +8,7 @@
 
 mod based;
 mod fetch;
+mod given;
 mod go;
 mod joined;
 mod nesting;
@@ -18,8 +19,9 @@ mod routers;
 mod rust;
 mod zod;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+pub use given::RequestArguments;
 pub use relative::UnreadRequest;
 pub use results::ResultRead;
 pub use zod::{SchemaUnion, SchemaUse};
@@ -224,6 +226,11 @@ pub struct CodeFacts {
     /// unique.
     #[serde(default)]
     pub named_bases: Vec<String>,
+    /// The requests made by a call whose arguments were read, each with
+    /// what it is given that is not written out at the call (see
+    /// [`RequestArguments`]). Sorted by line, one a line.
+    #[serde(default)]
+    pub request_arguments: Vec<RequestArguments>,
 }
 
 /// What to look for.
@@ -379,11 +386,15 @@ pub fn facts_of(
         registered: Vec::new(),
         results: BTreeMap::new(),
         relative: relative::Relative::default(),
+        written: BTreeMap::new(),
+        request_arguments: BTreeMap::new(),
+        read_path_lines: BTreeSet::new(),
     };
     walk.visit(tree.root_node());
     walk.finish_routers();
     walk.finish_relative();
     walk.collect_strings(tree.root_node());
+    walk.finish_arguments();
     walk.facts.is_generated = says_generated(source);
     sorted(walk.facts)
 }
@@ -523,6 +534,15 @@ struct Walk<'a> {
     results: BTreeMap<(Option<String>, String), results::ResultValue>,
     /// Paths read without a leading slash.
     relative: relative::Relative,
+    /// What variables assigned an object, an array or a literal are given
+    /// that is built elsewhere, by the start of the function they are
+    /// assigned in (`None` outside functions) and their name.
+    written: BTreeMap<(Option<usize>, String), BTreeSet<String>>,
+    /// What each request's call is given that is built elsewhere, by the
+    /// request's line.
+    request_arguments: BTreeMap<u32, BTreeSet<String>>,
+    /// The lines of the paths a call was read for.
+    read_path_lines: BTreeSet<u32>,
 }
 
 /// A path string assigned to a variable: its node, as consumed strings
@@ -634,14 +654,20 @@ const HOST_KEYS: [&str; 4] = ["host", "hostname", "protocol", "port"];
 impl Walk<'_> {
     fn visit(&mut self, node: Node<'_>) {
         match node.kind() {
-            "object" => self.object(node),
+            "object" => {
+                let before = self.recorded();
+                self.object(node);
+                self.note_object_arguments(node, &before);
+            }
             "variable_declarator" => {
+                self.bind_written(node);
                 self.bind_path(node);
                 self.bind_result(node);
                 self.router_definition(node);
                 self.zod_definition(node);
             }
             "assignment" => {
+                self.bind_written(node);
                 self.bind_path(node);
                 self.bind_result(node);
                 self.router_definition(node);
@@ -651,12 +677,15 @@ impl Walk<'_> {
             }
             "call_expression" | "call" => {
                 self.called_function(node);
+                let before = self.recorded();
                 self.call(node);
+                self.note_call_arguments(node, &before);
             }
             "import_statement" | "import_from_statement" => self.import(node),
             "import_spec" => self.go_import(node),
             "export_statement" => self.export(node),
             "short_var_declaration" | "assignment_statement" => {
+                self.bind_written(node);
                 self.go_router_prefix(node);
                 self.go_bind_path(node);
             }

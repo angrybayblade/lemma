@@ -47,6 +47,8 @@ pub struct FactWriter<'g> {
     /// The only relations facts are written for, when a run asks for some
     /// relations' rows and nothing else: the ones those depend on.
     needed: Option<BTreeSet<String>>,
+    /// The names each operation requires in a request, by snapshot.
+    required: crate::around::Required,
 }
 
 impl<'g> FactWriter<'g> {
@@ -56,6 +58,7 @@ impl<'g> FactWriter<'g> {
             counts: BTreeMap::new(),
             inputs: BTreeMap::new(),
             needed: None,
+            required: crate::around::Required::default(),
         }
     }
 
@@ -91,6 +94,7 @@ impl<'g> FactWriter<'g> {
             counts,
             inputs,
             needed,
+            required: _,
         } = self;
         for snapshot in snapshots {
             let Some(name) = input_relation(inputs, (grammar, needed.as_ref()), relation, snapshot)
@@ -248,10 +252,12 @@ fn extract_with(
             import_depth,
         )
     });
+    let around = crate::around::Around::new(manifest, &writer.required);
     for (name, repository) in consumers {
         for mut snapshot in snapshots(manifest, repository, &system, &clients, specs) {
             snapshot.selection = selection.as_ref();
-            consumer(name, repository, &snapshot, writer, extractor)?;
+            let named = around.named_in(repository, snapshot.commit);
+            consumer((name, repository), &snapshot, named, writer, extractor)?;
         }
     }
     extractor.counts.log();
@@ -1655,6 +1661,9 @@ fn operation_facts(
         writer.add("parameter", snapshots, &args);
         if parameter.required {
             writer.add("required_parameter", snapshots, &args);
+            writer
+                .required
+                .note(service, op, snapshots, &parameter.name);
         }
     }
     for field in &operation.request_fields {
@@ -1666,6 +1675,9 @@ fn operation_facts(
         writer.add("request_field", snapshots, &args);
         if field.required {
             writer.add("required_request_field", snapshots, &args);
+            writer
+                .required
+                .note(service, op, snapshots, leaf(&field.path));
         }
         write_fields_above(&field.path, snapshots, writer);
     }
@@ -1850,14 +1862,17 @@ struct ConsumerScope<'a> {
     /// The bases the repository's files name: a path read under another
     /// base is no call.
     named_bases: BTreeSet<String>,
+    /// The names the change newly requires that some file of the
+    /// repository writes, each with the service requiring it.
+    named_around: Vec<(String, String)>,
 }
 
 const BOTH: [&str; 2] = ["base", "head"];
 
 fn consumer(
-    name: &str,
-    repository: &Repository,
+    (name, repository): (&str, &Repository),
     snapshot: &Snapshot<'_>,
+    named_around: Vec<(String, String)>,
     writer: &mut FactWriter<'_>,
     extractor: &mut FactReader,
 ) -> Result<(), VerifyError> {
@@ -1889,6 +1904,7 @@ fn consumer(
         reexports: BTreeMap::new(),
         imports: read_import_aliases(repository, snapshot.commit, snapshot.specs)?,
         named_bases: BTreeSet::new(),
+        named_around,
     };
     let listed = files.len();
     let to_read = if snapshot.selection.is_some() {
@@ -2159,6 +2175,34 @@ fn write_result_reads(
     }
 }
 
+/// Under which keys each request of `facts` is passed a value built
+/// elsewhere, and the newly required names the file's repository writes
+/// somewhere.
+fn write_request_arguments(
+    scope: &ConsumerScope<'_>,
+    file_id: &str,
+    facts: &CodeFacts,
+    writer: &mut FactWriter<'_>,
+) {
+    for request in &facts.request_arguments {
+        let line = i64::from(request.line);
+        for key in &request.built_elsewhere {
+            writer.add(
+                "passes_value",
+                scope.snapshots,
+                &[Arg::Text(file_id), Arg::Number(line), Arg::Text(key)],
+            );
+        }
+    }
+    for (service, name) in &scope.named_around {
+        writer.add(
+            "named_around",
+            scope.snapshots,
+            &[Arg::Text(file_id), Arg::Text(service), Arg::Text(name)],
+        );
+    }
+}
+
 fn consumer_file(
     scope: &ConsumerScope<'_>,
     path: &str,
@@ -2279,7 +2323,8 @@ fn consumer_id(file_id: &str, symbol: Option<&String>) -> String {
     )
 }
 
-/// Calls by path and through clients, adding each caller to `scopes`.
+/// Calls by path and through clients, adding each caller to `scopes`, and
+/// what the call of each request read is passed.
 fn write_calls(
     scope: &ConsumerScope<'_>,
     file_id: &str,
@@ -2348,6 +2393,7 @@ fn write_calls(
     }
     write_client_method_calls(scope, file_id, facts, writer, scopes);
     write_generated_calls(scope, file_id, facts, writer, scopes);
+    write_request_arguments(scope, file_id, facts, writer);
 }
 
 /// The lines of `facts` where a path is read under more than one of the

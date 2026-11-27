@@ -42,6 +42,17 @@ export relation reads_result(file: Text, line: Int, name: Text)
 // `client.invoices.retrieve(id)`). Names a response object has too
 // (`status`, `data`) are left out.
 export relation reads_result_directly(file: Text, line: Int, name: Text)
+// The request at a file's line is passed a value built elsewhere (a
+// parameter, a variable assigned a call's result, a member of another
+// value, a spread) under a key; the empty key for a whole argument or a
+// spread, and for a request no call was read for. A parameter of a
+// primitive type and a value under a key that only steers the transport
+// (`headers`, `signal`) are left out.
+export relation passes_value(file: Text, line: Int, key: Text)
+// Some file of the file's repository writes a name that an operation of
+// the service newly requires, as a whole word, outside the service's own
+// documents and code. Only for names a change newly requires.
+export relation named_around(file: Text, service: Text, name: Text)
 // A call that looks like a request and was not read as a call of a path,
 // with why: `joined` (the path may go on past what is written),
 // `computed` (a request function given a path computed elsewhere),
@@ -156,6 +167,13 @@ export rule sends(c: Text, n: Text) {
     (c, n) :- uses(c, n)
 }
 
+// The names a request to an operation is written with: its fields', at any
+// depth, and its parameters'.
+export rule request_name(op: Text, n: Text) {
+    (op, n) :- request_field(op, _, n)
+    (op, n) :- parameter(op, n, _)
+}
+
 // What changed between the base and head of the change. Parameter and
 // field changes count only on operations the change kept; a removed
 // operation is reported once, not once per field it had.
@@ -206,6 +224,53 @@ export rule new_required_request_field(op: Text, fld: Text, leaf: Text) {
         required_request_field@head(op, fld, leaf),
         !required_request_field@base(op, fld, leaf),
         kept_operation(op)
+}
+
+// The request made at a file's line is passed a value in which fld, newly
+// required by op, may be set out of sight: a whole argument, a spread, or
+// a value under a key that is not one of the request's own names, as
+// `body: data` is; or a value under the key of a field above fld, as
+// `profile: data` is with `profile.email` now required. `name: form.name`
+// passes a value under a field's own key, which holds that field and no
+// other.
+export rule passes_field(f: Text, l: Int, op: Text, fld: Text) {
+    (f, l, op, fld) :-
+        new_required_request_field(op, fld, _),
+        passes_value(f, l, key),
+        !request_name(op, key)
+    (f, l, op, fld) :-
+        new_required_request_field(op, fld, _),
+        field_under(fld, above),
+        request_field(op, above, key),
+        passes_value(f, l, key)
+}
+
+// fld, newly required by op, may be set where Lemma does not look: the
+// request made at a file's line is passed a value that may hold it, and
+// some other file of the repository writes its name. A name the calling
+// code never writes is then no proof the request lacks it. Where no file
+// writes the name, no caller can set it, however the request is passed.
+export rule field_may_be_set_elsewhere(f: Text, l: Int, op: Text, fld: Text) {
+    (f, l, op, fld) :-
+        passes_field(f, l, op, fld),
+        new_required_request_field(op, fld, leaf),
+        operation@base(s, op, _, _),
+        named_around(f, s, leaf)
+}
+
+// The same for a newly required parameter n.
+export rule passes_parameter(f: Text, l: Int, op: Text, n: Text) {
+    (f, l, op, n) :-
+        new_required_parameter(op, n, _),
+        passes_value(f, l, key),
+        !request_name(op, key)
+}
+
+export rule parameter_may_be_set_elsewhere(f: Text, l: Int, op: Text, n: Text) {
+    (f, l, op, n) :-
+        passes_parameter(f, l, op, n),
+        operation@base(s, op, _, _),
+        named_around(f, s, n)
 }
 
 export rule removed_response_field(op: Text, fld: Text, leaf: Text) {
@@ -498,8 +563,34 @@ export require consumer_misses_new_required_parameter {
     when:
         calls(c, op, f, l),
         new_required_parameter(op, n, loc),
-        !sends(c, n)
+        !sends(c, n),
+        !parameter_may_be_set_elsewhere(f, l, op, n),
+        loc != "header"
     message: "{c} calls {op}, which now requires {loc} parameter `{n}`; its code never names `{n}` ({f}:{l})"
+}
+
+export require consumer_may_miss_new_required_parameter {
+    severity: warning
+    when:
+        calls(c, op, f, l),
+        new_required_parameter(op, n, loc),
+        !sends(c, n),
+        parameter_may_be_set_elsewhere(f, l, op, n),
+        loc != "header"
+    message: "{c} calls {op}, which now requires {loc} parameter `{n}`; its code never names `{n}`, but the request is passed in from elsewhere and other code of its repository names `{n}`, so it may be set there ({f}:{l})"
+}
+
+// A client sets headers for every request where it is made, and a gateway
+// may add one on the way, which no call shows: a header the calling code
+// never names is not known to be missing.
+export require consumer_may_miss_new_required_header {
+    severity: warning
+    when:
+        calls(c, op, f, l),
+        new_required_parameter(op, n, loc),
+        !sends(c, n),
+        loc == "header"
+    message: "{c} calls {op}, which now requires header `{n}`; its code never names `{n}`, but headers are often set where a client is made, which the call does not show ({f}:{l})"
 }
 
 export require consumer_misses_new_required_field {
@@ -507,8 +598,19 @@ export require consumer_misses_new_required_field {
     when:
         calls(c, op, f, l),
         new_required_request_field(op, fld, leaf),
-        !sends(c, leaf)
+        !sends(c, leaf),
+        !field_may_be_set_elsewhere(f, l, op, fld)
     message: "{c} calls {op}, which now requires `{fld}`; its code never names `{leaf}` ({f}:{l})"
+}
+
+export require consumer_may_miss_new_required_field {
+    severity: warning
+    when:
+        calls(c, op, f, l),
+        new_required_request_field(op, fld, leaf),
+        !sends(c, leaf),
+        field_may_be_set_elsewhere(f, l, op, fld)
+    message: "{c} calls {op}, which now requires `{fld}`; its code never names `{leaf}`, but the request is passed in from elsewhere and other code of its repository names `{leaf}`, so it may be set there ({f}:{l})"
 }
 
 export require consumer_sends_removed_parameter {

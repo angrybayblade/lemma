@@ -47,6 +47,8 @@ HTTP contracts between services, their generated clients and consumers.
 - relation `calls_function`: `(scope: Text, name: Text)`
 - relation `reads_result`: `(file: Text, line: Int, name: Text)`
 - relation `reads_result_directly`: `(file: Text, line: Int, name: Text)`
+- relation `passes_value`: `(file: Text, line: Int, key: Text)`
+- relation `named_around`: `(file: Text, service: Text, name: Text)`
 - relation `unread_request`: `(file: Text, line: Int, reason: Text, written: Text)`
 - relation `in_file`: `(function: Text, file: Text)`
 - relation `named`: `(function: Text, simple_name: Text)`
@@ -68,6 +70,7 @@ HTTP contracts between services, their generated clients and consumers.
 - rule `imported_callee`: `(c: Text, g: Text)`
 - rule `uses`: `(c: Text, n: Text)`
 - rule `sends`: `(c: Text, n: Text)`
+- rule `request_name`: `(op: Text, n: Text)`
 - rule `removed_operation`: `(op: Text)`
 - rule `kept_operation`: `(op: Text)`
 - rule `still_a_parameter`: `(op: Text, n: Text)`
@@ -75,6 +78,10 @@ HTTP contracts between services, their generated clients and consumers.
 - rule `new_required_parameter`: `(op: Text, n: Text, loc: Text)`
 - rule `removed_request_field`: `(op: Text, fld: Text, leaf: Text)`
 - rule `new_required_request_field`: `(op: Text, fld: Text, leaf: Text)`
+- rule `passes_field`: `(f: Text, l: Int, op: Text, fld: Text)`
+- rule `field_may_be_set_elsewhere`: `(f: Text, l: Int, op: Text, fld: Text)`
+- rule `passes_parameter`: `(f: Text, l: Int, op: Text, n: Text)`
+- rule `parameter_may_be_set_elsewhere`: `(f: Text, l: Int, op: Text, n: Text)`
 - rule `removed_response_field`: `(op: Text, fld: Text, leaf: Text)`
 - rule `removed_under_request_field`: `(op: Text, fld: Text)`
 - rule `outermost_removed_request_field`: `(op: Text, fld: Text, leaf: Text)`
@@ -111,7 +118,10 @@ HTTP contracts between services, their generated clients and consumers.
 - requirement `consumer_calls_unserved_operation`: `requirement`
 - requirement `consumer_calls_removed_operation`: `requirement`
 - requirement `consumer_misses_new_required_parameter`: `requirement`
+- requirement `consumer_may_miss_new_required_parameter`: `requirement`
+- requirement `consumer_may_miss_new_required_header`: `requirement`
 - requirement `consumer_misses_new_required_field`: `requirement`
+- requirement `consumer_may_miss_new_required_field`: `requirement`
 - requirement `consumer_sends_removed_parameter`: `requirement`
 - requirement `consumer_sends_ignored_parameter`: `requirement`
 - requirement `consumer_sends_rejected_field`: `requirement`

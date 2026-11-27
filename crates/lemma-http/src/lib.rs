@@ -25,8 +25,8 @@ pub use paths::{
     has_marker, is_test_file, names_base, path_markers, path_under_base,
 };
 pub use source::{
-    ListedFile, Listings, SourceError, SourceFile, contents_key, file_exists, is_under_any,
-    list_files, list_with_blobs, read_file, read_files, read_files_where, read_from_disk,
-    read_listed, read_paths,
+    ListedFile, Listings, SourceError, SourceFile, contents_key, file_exists, holds_word,
+    is_under_any, list_files, list_with_blobs, read_file, read_files, read_files_where,
+    read_from_disk, read_listed, read_paths,
 };
 pub use tsconfig::PathAliases;
