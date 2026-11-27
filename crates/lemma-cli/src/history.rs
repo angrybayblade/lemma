@@ -10,7 +10,9 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use lemma_graph::config::Level;
-use lemma_graph::history::{Commit, LaterChange, PastChange, later_change, past_changes, rests_on};
+use lemma_graph::history::{
+    Commit, LaterChange, PastChange, is_named_at, later_change, past_changes, rests_on,
+};
 use lemma_graph::{Change, CheckOptions, Finding, Report, Severity};
 
 use crate::cli::CheckArgs;
@@ -160,17 +162,18 @@ fn followed(report: &Report, change: &Commit) -> Vec<FollowedFinding> {
 }
 
 /// What happened after `change` to the code `finding` rests on; `None` for
-/// a finding that names no code, or code read from a working directory,
-/// which has no later commit. A history that cannot be read says nothing
+/// a finding that names no code, code read from a working directory, which
+/// has no later commit, or a file that does not write the name itself. A history that cannot be read says nothing
 /// rather than failing the change's report.
 fn afterwards(finding: &Finding, report: &Report, change: &Commit) -> Option<Afterwards> {
     let (repository, path) = rests_on(finding, &report.repositories)?;
     let read_at = repository.head.as_deref()?;
     let names = shown_names(finding);
-    if names.is_empty() {
+    let root = Path::new(&repository.root);
+    if !is_named_at(root, read_at, &path, &names) {
         return None;
     }
-    let changed_in = later_change(Path::new(&repository.root), read_at, &path, &names).ok()?;
+    let changed_in = later_change(root, read_at, &path, &names).ok()?;
     let days_after = changed_in.as_ref().map(|later| {
         (later.commit.committed_at_seconds - change.committed_at_seconds).div_euclid(DAY_SECONDS)
     });

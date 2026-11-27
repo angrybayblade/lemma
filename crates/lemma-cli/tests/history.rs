@@ -159,6 +159,47 @@ fn a_caller_that_still_names_the_field_is_said_to() {
 }
 
 #[test]
+fn a_finding_whose_file_does_not_write_the_name_is_not_followed() {
+    let shop = shop();
+    let web = shop.path().join("web");
+    git_on_day(&web, 9, &["reset", "-q", "--hard", "HEAD~1"]);
+    write(
+        &web.join("src/sum.ts"),
+        "export function sum(body: any) {\n  return body.total\n}\n",
+    );
+    write(
+        &web.join("src/list.ts"),
+        "import { sum } from './sum'\n\nexport async function invoices() {\n  const res = await fetch('/v1/invoices')\n  return sum(await res.json())\n}\n",
+    );
+    git_on_day(&web, 3, &["add", "."]);
+    git_on_day(&web, 3, &["commit", "-q", "--amend", "--no-edit"]);
+
+    let output = lemma(
+        shop.path(),
+        &["check", "mod.lm", "--change", "billing", "--last", "1"],
+    );
+
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let about_the_list: Vec<&str> = printed
+        .lines()
+        .filter(|line| line.contains("src/list.ts"))
+        .collect();
+    assert!(
+        about_the_list
+            .iter()
+            .any(|line| line.starts_with("  warning ") && line.contains("names `total`")),
+        "{printed}"
+    );
+    assert!(
+        about_the_list
+            .iter()
+            .all(|line| !line.contains("afterwards")),
+        "{printed}"
+    );
+    assert_eq!(printed.matches("afterwards:").count(), 1, "{printed}");
+}
+
+#[test]
 fn as_json_each_change_holds_its_commit_its_pins_and_its_findings() {
     let shop = shop();
 

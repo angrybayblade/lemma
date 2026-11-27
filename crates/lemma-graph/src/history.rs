@@ -244,6 +244,19 @@ pub struct LaterChange {
     pub lines_added: usize,
 }
 
+/// Whether `path`, as the clone at `root` holds it at `commit`, mentions one
+/// of `names`. A finding can rest on a name its file never writes, one read
+/// in a file it imports, and a file that cannot be read at the commit names
+/// nothing: neither has lines to follow, and saying that no later commit
+/// changed them would read as "still broken".
+pub fn is_named_at(root: &Path, commit: &str, path: &str, names: &[&str]) -> bool {
+    let Ok(text) = git(root, &["show", &format!("{commit}:{path}")]) else {
+        return false;
+    };
+    text.lines()
+        .any(|line| names.iter().any(|name| mentions(line, name)))
+}
+
 /// The first commit after `from`, on the checked-out history of the clone
 /// at `root`, that changed the lines of `path` mentioning `names`: it
 /// removed or added such a line. `None` when no later commit did.

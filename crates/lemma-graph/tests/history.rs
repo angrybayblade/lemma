@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::Command;
 
 use lemma_graph::config::Level;
-use lemma_graph::history::{later_change, past_changes};
+use lemma_graph::history::{is_named_at, later_change, past_changes};
 use lemma_graph::{Change, CheckOptions, Severity, check};
 use lemma_logic::ReferenceEngine;
 
@@ -278,4 +278,21 @@ fn lines_naming_the_field_that_stand_have_no_later_change() {
 
     assert_eq!(another_name, None);
     assert_eq!(from_the_last_commit, None);
+}
+
+#[test]
+fn only_a_file_that_names_the_field_at_the_commit_has_lines_to_follow() {
+    let shop = shop();
+    let web = shop.directory.path().join("web");
+    let then = shop.web_reading_total.as_str();
+
+    let reads_it = is_named_at(&web, then, "src/invoice.ts", &["total"]);
+    let another_file = is_named_at(&web, then, "src/title.ts", &["total"]);
+    let no_such_file = is_named_at(&web, then, "src/invoice.ts/src/invoice.ts", &["total"]);
+    let after_the_fix = is_named_at(&web, &shop.web_reading_paid, "src/invoice.ts", &["total"]);
+
+    assert!(reads_it);
+    assert!(!another_file);
+    assert!(!no_such_file);
+    assert!(!after_the_fix);
 }
