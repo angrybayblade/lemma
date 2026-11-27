@@ -26,6 +26,7 @@ pub mod handlers;
 mod impact;
 mod infer;
 pub mod lm;
+pub mod names;
 pub mod openapi;
 mod proof;
 mod reach;

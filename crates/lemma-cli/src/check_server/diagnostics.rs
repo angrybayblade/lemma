@@ -267,19 +267,15 @@ fn short_message(finding: &CheckedFinding) -> String {
 /// changed line of each changed file; a file Git does not know, from its
 /// top.
 fn anchors(finding: &CheckedFinding, changed: &[ChangedFile]) -> Vec<Anchor> {
-    let mut names: Vec<&str> = finding
-        .values
-        .iter()
-        .filter(|(variable, _)| !["f", "l"].contains(&variable.as_str()))
-        .map(|(_, value)| value.as_str())
-        .filter(|value| is_identifier(value))
-        .collect();
-    names.sort_by_key(|name| std::cmp::Reverse(name.len()));
+    let names = lemma_graph::names::named_in(&finding.values);
     for name in names {
         let naming: Vec<Anchor> = changed
             .iter()
             .filter_map(|file| {
-                let line = file.lines.iter().find(|line| mentions(&line.text, name))?;
+                let line = file
+                    .lines
+                    .iter()
+                    .find(|line| lemma_graph::names::mentions(&line.text, name))?;
                 Some((file.path.clone(), line.line))
             })
             .collect();
@@ -296,26 +292,6 @@ fn anchors(finding: &CheckedFinding, changed: &[ChangedFile]) -> Vec<Anchor> {
             )
         })
         .collect()
-}
-
-/// Whether `value` reads as a name in code: a field, a parameter or a
-/// function, rather than a path, an operation or a number.
-fn is_identifier(value: &str) -> bool {
-    let mut characters = value.chars();
-    characters
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
-}
-
-/// Whether `text` holds `name` as a word of its own.
-fn mentions(text: &str, name: &str) -> bool {
-    let is_word = |character: char| character.is_ascii_alphanumeric() || character == '_';
-    text.match_indices(name).any(|(start, _)| {
-        let before = text[..start].chars().next_back();
-        let after = text[start + name.len()..].chars().next();
-        !before.is_some_and(is_word) && !after.is_some_and(is_word)
-    })
 }
 
 /// The changed lines a finding in `own` comes from, outside `own`, as
@@ -566,12 +542,6 @@ mod tests {
         assert_eq!(files[&touched].len(), 1);
         assert_eq!(files[&touched][0].message, "the request schemas disagree");
         assert_eq!(files[&touched][0].line, 7);
-    }
-
-    #[test]
-    fn a_name_inside_a_longer_word_is_not_a_mention() {
-        assert!(mentions("  user_id: z.string(),", "user_id"));
-        assert!(!mentions("  owner_user_id: z.string(),", "user_id"));
     }
 
     #[test]
