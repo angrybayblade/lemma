@@ -70,7 +70,7 @@ Findings name a location as `#repo:service`: `include_matches_nothing`, `documen
 | `consumer_sends_ignored_parameter` | warning | As above, where the operation ignores unknown parameters |
 | `consumer_sends_rejected_field` | error | A consumer sends a removed request field to an operation that rejects unknown fields |
 | `consumer_uses_removed_request_field` | warning | As above, where the operation ignores unknown fields |
-| `consumer_reads_removed_response_field` | error | A consumer reads a response field the change removed off the call's body |
+| `consumer_reads_removed_response_field` | error | A consumer reads a response field the change removed off the call's body, or one step off the call's result for a field at the top of the response |
 | `consumer_uses_removed_response_field` | warning | A consumer names a response field the change removed, not read off the call's body |
 | `client_declares_removed_parameter` | error | A generated client still declares a removed parameter |
 | `client_code_sends_removed_parameter` | error | A generated client's code still sends a removed parameter; its copy of the spec was updated without generating the code again |

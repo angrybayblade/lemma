@@ -36,6 +36,12 @@ export relation calls_function(scope: Text, name: Text)
 // to be a field of the response body: `body.status` after
 // `const body = await res.json()`.
 export relation reads_result(file: Text, line: Int, name: Text)
+// A name read one step off what the call at a file's line returned: a
+// field of the response body if the call returned the body itself, as a
+// generated client's method does (`invoice.amount` after
+// `client.invoices.retrieve(id)`). Names a response object has too
+// (`status`, `data`) are left out.
+export relation reads_result_directly(file: Text, line: Int, name: Text)
 // A call that looks like a request and was not read as a call of a path,
 // with why: `joined` (the path may go on past what is written),
 // `computed` (a request function given a path computed elsewhere),
@@ -249,14 +255,30 @@ export rule removed_response_name(op: Text, fld: Text, n: Text) {
         removed_response_field(op, below, n)
 }
 
+// A response field that sits under another: `customer.email`, and not
+// `customer`.
+export rule below_response_field(op: Text, fld: Text) {
+    (op, fld) :-
+        response_field@base(op, fld, _),
+        field_under@base(fld, above),
+        response_field@base(op, above, _)
+}
+
 // The call at a file's line reads, off what it returned, a removed
 // response field or a field that went with it: `invoice.customer.email`
 // reads `email` deep enough to be a field of the body, and so reads the
-// removed `customer`.
+// removed `customer`. One step off the result, only a removed field at
+// the top of the response is read (`invoice.amount`): a call that
+// returned the body itself gives its top fields there, and a name from
+// deeper in the response found there would be another value's.
 export rule reads_removed_response_field(f: Text, l: Int, op: Text, fld: Text) {
     (f, l, op, fld) :-
         removed_response_name(op, fld, n),
         reads_result(f, l, n)
+    (f, l, op, fld) :-
+        outermost_removed_response_field(op, fld, n),
+        !below_response_field(op, fld),
+        reads_result_directly(f, l, n)
 }
 
 // Route parts whose schema rejects unknown keys (zod's `.strict()`): a

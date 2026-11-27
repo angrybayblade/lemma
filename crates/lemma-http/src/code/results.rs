@@ -8,17 +8,22 @@
 //! `res.status` and `res.data` are properties of `fetch`'s and axios's
 //! responses, not fields of the body. So each name is read at a depth,
 //! the steps between the call and the name (a property, a string key, or
-//! a call such as `.json()`), and only names two or more steps away are
-//! kept: by then the code is inside the body. A name one step away stays
-//! a mention only, and so does anything read through the response
-//! object's own parts (`res.headers.allow`, `r.history[0].status_code`).
+//! a call such as `.json()`). A name two or more steps away is inside the
+//! body whatever the call returned. A name one step away is a field only
+//! if the call returned the body itself, as a generated client's method
+//! or a wrapper does (`invoice.amount` after `client.invoices.retrieve`),
+//! so it is kept apart, for a rule to take as a read of a top-level field
+//! alone, and not at all when it is a name a response object or an
+//! envelope around a body has too (`res.status`, `result.data`). Nothing
+//! read through the response object's own parts is kept
+//! (`res.headers.allow`, `r.history[0].status_code`).
 
 use tree_sitter::Node;
 
 use super::{Walk, is_identifier};
 
-/// A name read two or more steps off a call's result, and the lines the
-/// call spans, from 1, so a rule can find it beside the call's facts.
+/// A name read off a call's result, and the lines the call spans, from 1,
+/// so a rule can find it beside the call's facts.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct ResultRead {
     /// The name read.
@@ -48,6 +53,39 @@ const BODY_DEPTH: u32 = 2;
 /// code commonly uses (`fetch`, axios, requests, httpx): names read
 /// through one of them, first step off a result, are not body fields.
 const RESPONSE_PARTS: [&str; 6] = ["headers", "request", "history", "raw", "cookies", "config"];
+
+/// Names a response object has in those clients, or an envelope a
+/// generated client puts around a body (`{ data, error, response }`): one
+/// step off a result, such a name may be the object's or the envelope's
+/// own, so it is not taken for a field of the body.
+const RESPONSE_NAMES: [&str; 26] = [
+    "status",
+    "statusText",
+    "status_code",
+    "ok",
+    "data",
+    "error",
+    "errors",
+    "response",
+    "body",
+    "bodyUsed",
+    "json",
+    "text",
+    "content",
+    "url",
+    "type",
+    "redirected",
+    "reason",
+    "encoding",
+    "elapsed",
+    "links",
+    "next",
+    "is_success",
+    "is_error",
+    "is_redirect",
+    "http_version",
+    "extensions",
+];
 
 impl Walk<'_> {
     /// `const x = await call(...)`, `x = call(...)`, `const { data } =
@@ -145,14 +183,23 @@ impl Walk<'_> {
     }
 
     fn record_result_read(&mut self, name: String, read: ResultValue) {
-        if read.depth < BODY_DEPTH || read.is_outside_body || !is_identifier(&name) {
+        if read.is_outside_body || !is_identifier(&name) {
             return;
         }
-        self.facts.result_reads.push(ResultRead {
+        let is_one_step = read.depth < BODY_DEPTH;
+        if is_one_step && RESPONSE_NAMES.contains(&name.as_str()) {
+            return;
+        }
+        let read = ResultRead {
             name,
             first_line: read.first_line,
             last_line: read.last_line,
-        });
+        };
+        if is_one_step {
+            self.facts.direct_result_reads.push(read);
+        } else {
+            self.facts.result_reads.push(read);
+        }
     }
 
     /// What `node` holds of a call's result: a fresh call's result, a
@@ -273,12 +320,24 @@ mod tests {
 
     use crate::code::{CodeOptions, extract};
 
-    /// The names `source` reads off call results, with the call's lines.
+    /// The names `source` reads two or more steps off call results, with
+    /// the call's lines.
     fn reads(file: &str, source: &str) -> Vec<(String, u32, u32)> {
         let mut extractor = Extractor::new().unwrap();
         let facts = extract(file, source, &CodeOptions::default(), &mut extractor).unwrap();
         facts
             .result_reads
+            .into_iter()
+            .map(|read| (read.name, read.first_line, read.last_line))
+            .collect()
+    }
+
+    /// The names `source` reads one step off call results.
+    fn direct_reads(file: &str, source: &str) -> Vec<(String, u32, u32)> {
+        let mut extractor = Extractor::new().unwrap();
+        let facts = extract(file, source, &CodeOptions::default(), &mut extractor).unwrap();
+        facts
+            .direct_result_reads
             .into_iter()
             .map(|read| (read.name, read.first_line, read.last_line))
             .collect()
@@ -334,11 +393,34 @@ mod tests {
     }
 
     #[test]
-    fn a_name_one_step_off_a_result_is_not_taken_for_a_field() {
+    fn a_name_one_step_off_a_result_is_kept_apart_from_those_inside_the_body() {
         let source = "export async function amount(client: Client, id: string) {\n  const invoice = await client.invoices.retrieve(id)\n  return invoice.amount\n}\n";
 
-        let found = reads("src/invoices.ts", source);
+        let inside = reads("src/invoices.ts", source);
+        let one_step = direct_reads("src/invoices.ts", source);
 
-        assert_eq!(found, Vec::<(String, u32, u32)>::new());
+        assert_eq!(inside, Vec::<(String, u32, u32)>::new());
+        assert_eq!(one_step, vec![read("amount", 2, 2)]);
+    }
+
+    #[test]
+    fn a_name_a_response_object_has_is_not_read_one_step_off_a_result() {
+        let source = "export async function state(client: Client, id: string) {\n  const result = await client.invoices.retrieve(id)\n  return [result.status, result.data, result.error]\n}\n";
+
+        let one_step = direct_reads("src/invoices.ts", source);
+
+        assert_eq!(one_step, Vec::<(String, u32, u32)>::new());
+    }
+
+    #[test]
+    fn a_key_taken_out_of_a_result_is_read_one_step_off_it() {
+        let source = "export async function page(client: Client) {\n  const { items, next_cursor: cursor } = await client.invoices.list()\n  return [items, cursor]\n}\n";
+
+        let one_step = direct_reads("src/invoices.ts", source);
+
+        assert_eq!(
+            one_step,
+            vec![read("items", 2, 2), read("next_cursor", 2, 2)]
+        );
     }
 }

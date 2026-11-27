@@ -46,6 +46,7 @@ HTTP contracts between services, their generated clients and consumers.
 - relation `mentions`: `(scope: Text, name: Text)`
 - relation `calls_function`: `(scope: Text, name: Text)`
 - relation `reads_result`: `(file: Text, line: Int, name: Text)`
+- relation `reads_result_directly`: `(file: Text, line: Int, name: Text)`
 - relation `unread_request`: `(file: Text, line: Int, reason: Text, written: Text)`
 - relation `in_file`: `(function: Text, file: Text)`
 - relation `named`: `(function: Text, simple_name: Text)`
@@ -80,6 +81,7 @@ HTTP contracts between services, their generated clients and consumers.
 - rule `removed_under_response_field`: `(op: Text, fld: Text)`
 - rule `outermost_removed_response_field`: `(op: Text, fld: Text, leaf: Text)`
 - rule `removed_response_name`: `(op: Text, fld: Text, n: Text)`
+- rule `below_response_field`: `(op: Text, fld: Text)`
 - rule `reads_removed_response_field`: `(f: Text, l: Int, op: Text, fld: Text)`
 - rule `strict_in_scope`: `(f: Text, n: Text)`
 - rule `loose_union`: `(f: Text, u: Text)`

@@ -211,6 +211,10 @@ pub struct CodeFacts {
     /// its body (see [`ResultRead`]). Sorted, unique.
     #[serde(default)]
     pub result_reads: Vec<ResultRead>,
+    /// Names read one step off what a call returned: fields of its body
+    /// if the call returned the body itself. Sorted, unique.
+    #[serde(default)]
+    pub direct_result_reads: Vec<ResultRead>,
     /// Calls that look like requests and were not read as calls of a path,
     /// each with why. Sorted, unique.
     #[serde(default)]
@@ -287,6 +291,8 @@ fn sorted(mut facts: CodeFacts) -> CodeFacts {
     facts.called.dedup();
     facts.result_reads.sort();
     facts.result_reads.dedup();
+    facts.direct_result_reads.sort();
+    facts.direct_result_reads.dedup();
     facts.unread_requests.sort();
     facts.unread_requests.dedup();
     facts.named_bases.sort();

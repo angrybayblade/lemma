@@ -24,6 +24,7 @@
 | `calls_path` | consumer, method (`*` if unknown), path, file, line | service code: path strings and request calls |
 | `calls_client` | consumer, chain, file, line | service code: calls through client receivers and imported client functions |
 | `mentions` | scope, name | names used as fields: object keys, members, keyword arguments, dictionary keys, struct fields, JSON tags, and keys set by a call (`params.set("limit", n)`) |
+| `reads_result`, `reads_result_directly` | file, line, name | a name read off what the call at the line returned: two or more steps off it, or one step off it (names a response object has too, such as `status`, left out) |
 | `in_file` | scope, file | which file a consumer or function is in |
 | `imports` | file, imported file | relative and alias imports; for Go, files of one package |
 | `addressed_to` | path, service | a path called in code that is under a prefix the service owns, derived from its documents |
@@ -48,7 +49,7 @@ These come from the rules in the standard library's `lemma.http`; any can be pri
 | `new_required_request_field` | operation, field, leaf | A kept operation's request now requires a field |
 | `removed_response_field` | operation, field, leaf | A kept operation's response lost a field |
 | `outermost_removed_request_field`, `outermost_removed_response_field` | operation, field, leaf | A removed field with no removed field above it: what findings rest on, so a field removed with those under it is reported once |
-| `reads_removed_response_field` | file, line, operation, field | The call at the line reads an outermost removed field, or one that went with it, off its body |
+| `reads_removed_response_field` | file, line, operation, field | The call at the line reads an outermost removed field, or one that went with it, off its body; one step off its result, only a removed field at the top of the response |
 | `strict_route` | service, method, path, part | A route's body or query schema rejects unknown keys (zod `.strict()`) |
 | `rejects_unknown` | operation | Requests sending an unknown field fail, after the change |
 | `rejects_unknown_parameter` | operation | Requests sending an unknown query parameter fail, after the change |

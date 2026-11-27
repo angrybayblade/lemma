@@ -2134,17 +2134,23 @@ fn write_result_reads(
     facts: &CodeFacts,
     writer: &mut FactWriter<'_>,
 ) {
-    for read in &facts.result_reads {
-        for line in read.first_line..=read.last_line {
-            writer.add(
-                "reads_result",
-                scope.snapshots,
-                &[
-                    Arg::Text(file_id),
-                    Arg::Number(i64::from(line)),
-                    Arg::Text(&read.name),
-                ],
-            );
+    let relations = [
+        ("reads_result", &facts.result_reads),
+        ("reads_result_directly", &facts.direct_result_reads),
+    ];
+    for (relation, reads) in relations {
+        for read in reads {
+            for line in read.first_line..=read.last_line {
+                writer.add(
+                    relation,
+                    scope.snapshots,
+                    &[
+                        Arg::Text(file_id),
+                        Arg::Number(i64::from(line)),
+                        Arg::Text(&read.name),
+                    ],
+                );
+            }
         }
     }
 }
