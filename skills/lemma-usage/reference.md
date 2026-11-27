@@ -36,6 +36,7 @@ Every command takes `--json`. Positions in JSON are zero-based.
 | --- | --- |
 | `--change <name or directory>` | The changed repository, or `self` |
 | `--base <commit>`, `--head <commit>` | The commits before and with the change |
+| `--last <N>` | Checks the repository's last N contract changes one by one, against the other repositories as they stood then; fails on no finding |
 | `--level audit` / `check` / `strict` | What fails; overrides the workspace's `level` |
 | `--explain` | Shows the facts and rules behind each inferred finding |
 | `--evaluation demand` / `full` / `both` | How much code is read; `both` fails if the two differ |

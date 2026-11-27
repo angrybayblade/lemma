@@ -95,13 +95,13 @@ Pick three or four calls you can see in the code and confirm they appear. If one
 
 ## 5. Calibrate on history
 
-Replay 20-50 past changes to a service's spec before gating anything:
+Check 20-50 past changes to a service's contracts before gating anything:
 
 ```sh
-git -C <service> log --format='%h %cI %s' -- <spec file> | head -50
+lemma check --change <repo> --last 50
 ```
 
-For each: pin every other repository in the workspace to `local("../<repo>", rev: "<commit>")`, the commit given by `git -C <repo> rev-list -1 --before=<commit date> HEAD`, and run `lemma check --change <repo> --base <commit>^ --head <commit>`. For every error and warning, read the pull request and the calling code's history: was it a real break, fixed by a follow-up? Report a table of change, findings, and whether each was real to the user. False errors are worth a bug report; false warnings on common names are a known limitation.
+Each commit that touched a file the description reads the service's contracts from is checked as its own change, against every other repository at its last commit before it. Under each: the errors and warnings it introduced, and an `afterwards` line naming the first later commit that changed the lines naming the field or parameter in the flagged file, if any. That line is evidence, not a verdict: for every error and warning, read the pull request and the later commit. Was it a real break, fixed by a follow-up? Report a table of change, findings, and whether each was real to the user. False errors are worth a bug report; false warnings on common names are a known limitation.
 
 ## 6. CI
 

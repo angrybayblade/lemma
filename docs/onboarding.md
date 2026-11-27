@@ -234,13 +234,28 @@ Debug a finding with `--explain`. Each line is a fact or rule, indented under wh
 
 ## 6. Calibrate on history
 
-Before you gate merges, replay changes your team already made and compare the findings with what happened. List the commits that changed a service's spec:
+Before you gate merges, check changes your team already made and compare the findings with what happened:
 
 ```sh
-git -C ../billing log --format=%h -- openapi.json | head -50
+lemma check --change billing --last 50
 ```
 
-For each commit, pin every other repository to the last commit before the change merged (`git rev-list -1 --before=<date> main`) in the workspace with `local("../web", rev: "...")`, and run `lemma check --change billing --base <commit>^ --head <commit>`. Check every error and warning by hand against the pull request and any follow-up in the callers. A sweep of a hundred changes takes a few minutes.
+This checks the last 50 commits that changed `billing`'s contracts, one by one, each against the other repositories at their last commit before it. A contract change is a commit that touched a file the description reads a contract from: a service's documents, or a generator's `inputs`.
+
+```text
+3f2a1c9e04 2026-03-02 remove search from the invoice list
+  error   #web:app:src/invoices.ts::listInvoices calls GET /v1/invoices and uses `search`, a query parameter that was removed and that GET /v1/invoices now rejects (#web:app:src/invoices.ts:84)
+          [consumer_sends_removed_parameter] #web:app:src/invoices.ts::listInvoices -> GET /v1/invoices
+          afterwards: 81d04be2aa changed the lines naming `search` in src/invoices.ts (2 removed, 0 added), 7 days later (stop sending search)
+9c1e55d0b7 2026-02-27 add a due date to invoices
+  introduced no error or warning
+
+2 changes: 1 introduced errors, 0 introduced warnings only, 1 introduced neither, 0 not checked
+```
+
+Only errors and warnings a change introduced are listed, at level `check` unless you pass `--level`. The `afterwards` line is evidence, not a verdict. It names the first later commit that removed or added a line naming the field or parameter in that file, which usually means someone fixed the caller; a commit that only moves such a line does not count, and one that edits another use of the same name does. Read the pull request for every error. An error with no such commit is either still broken, was never a break, or was fixed somewhere else. `--json` prints the same per change, with the commit each other repository was read at.
+
+The command never fails on a finding and runs no checkers. A hundred changes take a few minutes; a service whose documents come from a [generator](adapters.md#a-services-own-generator) runs it for each commit it has not kept a document for.
 
 Keep the changes that found real breaks as regression cases for upgrades of Lemma or your requirements.
 

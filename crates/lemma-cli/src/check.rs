@@ -25,6 +25,9 @@ const EXIT_INCOMPLETE: u8 = 5;
 /// attached, and otherwise by running the check in a process of its own.
 /// Otherwise the check runs in this process.
 pub(crate) fn run(args: &CheckArgs, asks_daemon: bool, json: bool) -> ExitCode {
+    if let Some(last) = args.last {
+        return crate::history::run(args, last, json);
+    }
     #[cfg(unix)]
     if asks_daemon {
         if let Some(code) = answered_by_daemon(asked_arguments(args)) {
@@ -109,6 +112,18 @@ pub(crate) fn answer(
 
 /// The report of the check `args` ask for.
 pub(crate) fn evaluate(args: &CheckArgs, served: Option<&Served<'_>>) -> anyhow::Result<Report> {
+    let (manifest, options) = options_for(args, served)?;
+    if args.evaluation.as_deref() == Some("both") {
+        return check_both(&manifest, args, &options);
+    }
+    check(&manifest, args, &options)
+}
+
+/// The description `args` start from and what they ask to check there.
+pub(crate) fn options_for(
+    args: &CheckArgs,
+    served: Option<&Served<'_>>,
+) -> anyhow::Result<(PathBuf, CheckOptions)> {
     let manifest = served.map_or_else(
         || args.manifest.clone(),
         |served| served.manifest.to_path_buf(),
@@ -120,10 +135,7 @@ pub(crate) fn evaluate(args: &CheckArgs, served: Option<&Served<'_>>) -> anyhow:
     let cloning = crate::cloning::permitted(args.no_clone, directory)?;
     let mut options = check_options(args, cloning, served);
     options.runtime = crate::daemon::warm_runtime(directory);
-    if args.evaluation.as_deref() == Some("both") {
-        return check_both(&manifest, args, &options);
-    }
-    check(&manifest, args, &options)
+    Ok((manifest, options))
 }
 
 /// The command line sentry is asked with: as given, with `--no-clone` when
@@ -379,7 +391,11 @@ pub(crate) fn entry_manifest_in(cwd: &Path, manifest: &Path) -> PathBuf {
     cwd.join(manifest)
 }
 
-fn check(manifest: &Path, args: &CheckArgs, options: &CheckOptions) -> anyhow::Result<Report> {
+pub(crate) fn check(
+    manifest: &Path,
+    args: &CheckArgs,
+    options: &CheckOptions,
+) -> anyhow::Result<Report> {
     if let Some(cache) = &options.facts_cache {
         log::debug!("facts cache: {}", cache.directory.display());
     }

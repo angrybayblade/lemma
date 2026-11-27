@@ -406,6 +406,7 @@ fn check_change(
     warm: Arc<lemma_graph::Warm>,
 ) -> anyhow::Result<lemma_graph::Report> {
     let asked = CheckArgs {
+        last: None,
         manifest: manifest.to_path_buf(),
         // An editor's server has no one to ask, and cloning behind its back
         // would surprise.

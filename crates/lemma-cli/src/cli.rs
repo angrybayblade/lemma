@@ -162,6 +162,18 @@ pub(crate) struct CheckArgs {
     /// changes included, if absent.
     #[arg(long, requires = "change")]
     pub head: Option<String>,
+    /// Instead of one change, check the repository's last changes to its
+    /// contracts one by one, each against the other repositories as they
+    /// stood then, and list the errors and warnings each introduced and
+    /// whether their code was changed afterwards. At level `check` unless
+    /// `--level` says otherwise; runs no checkers; fails on no finding.
+    #[arg(
+        long,
+        value_name = "CHANGES",
+        requires = "change",
+        conflicts_with_all = ["base", "head", "since", "run_base"]
+    )]
+    pub last: Option<usize>,
     /// `audit` reports differences as warnings; `check` fails on them and
     /// on violated behaviors; `strict` also fails on behaviors whose
     /// outcome is unknown. Overrides the graph's level.
