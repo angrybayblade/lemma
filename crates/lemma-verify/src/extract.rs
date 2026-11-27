@@ -1547,7 +1547,7 @@ fn schema_facts(
     facts: &CodeFacts,
     writer: &mut FactWriter<'_>,
 ) {
-    let file_id = format!("{}:{path}", scope.name);
+    let file_id = file_id(scope.name, path);
     for used in &facts.schema_uses {
         for path in scope.route_paths(&used.path) {
             schema_use_facts(scope, &file_id, used, &path, writer);
@@ -1700,12 +1700,13 @@ fn client(
     let both = snapshot.names;
     for method in snapshot.clients.methods_of(name) {
         let key = method.key();
+        let file = file_id(name, &method.file);
         let args = [
             Arg::Text(name),
             Arg::Text(&key),
             Arg::Text(&method.method),
             Arg::Text(&method.path),
-            Arg::Text(&method.file),
+            Arg::Text(&file),
             Arg::Number(i64::from(method.line)),
         ];
         writer.add("client_operation", both, &args);
@@ -1717,6 +1718,7 @@ fn client(
             let Some(operation_id) = operation.operation_id.as_deref() else {
                 continue;
             };
+            let file = file_id(name, spec);
             for template in &templates {
                 let function = call_name(template, operation_id);
                 let args = [
@@ -1724,7 +1726,7 @@ fn client(
                     Arg::Text(&function),
                     Arg::Text(&operation.method),
                     Arg::Text(&operation.path),
-                    Arg::Text(spec),
+                    Arg::Text(&file),
                     Arg::Number(0),
                 ];
                 writer.add("client_operation", both, &args);
@@ -1749,13 +1751,14 @@ fn client_method_names(
     writer: &mut FactWriter<'_>,
     snapshots: &[&str],
 ) {
+    let file = file_id(client, &method.file);
     for used in &method.names {
         let args = [
             Arg::Text(client),
             Arg::Text(&method.method),
             Arg::Text(&method.path),
             Arg::Text(used),
-            Arg::Text(&method.file),
+            Arg::Text(&file),
             Arg::Number(i64::from(method.line)),
         ];
         writer.add("client_method_name", snapshots, &args);
@@ -1789,13 +1792,14 @@ fn client_parameters(
 ) {
     for parameter in &operation.parameters {
         for (file, line) in places {
+            let file = file_id(client, file);
             let args = [
                 Arg::Text(client),
                 Arg::Text(&operation.method),
                 Arg::Text(&operation.path),
                 Arg::Text(&parameter.name),
                 Arg::Text(&parameter.location),
-                Arg::Text(file),
+                Arg::Text(&file),
                 Arg::Number(i64::from(*line)),
             ];
             writer.add("client_parameter", snapshots, &args);
@@ -2161,7 +2165,7 @@ fn consumer_file(
     facts: &CodeFacts,
     writer: &mut FactWriter<'_>,
 ) {
-    let file_id = format!("{}:{path}", scope.name);
+    let file_id = file_id(scope.name, path);
     let mut scopes = BTreeSet::from([file_id.clone()]);
     write_calls(scope, &file_id, facts, writer, &mut scopes);
     // A file mentions many names from few functions: each function's id is
@@ -2256,6 +2260,15 @@ impl<'a> FunctionIds<'a> {
     fn into_ids(self) -> impl Iterator<Item = String> {
         self.ids.into_values().map(|(id, _)| id)
     }
+}
+
+/// A file as facts name it, whoever it belongs to: the repository and
+/// service it is of, then its path from the repository's root
+/// (`#web:app:src/a.ts`). A consumer's, a client's and a document's file
+/// are written the same way, so whatever reads a finding's file reads one
+/// form.
+fn file_id(owner: &str, path: &str) -> String {
+    format!("{owner}:{path}")
 }
 
 /// A consumer's id: the function a fact is in, or the file outside functions.
@@ -2420,12 +2433,13 @@ fn write_generated_calls(
         };
         let client = format!("{} (generated)", operation.service);
         let key = format!("{}:{function}", operation.service);
+        let document = self::file_id(&operation.service, &operation.document);
         let declared = [
             Arg::Text(&client),
             Arg::Text(&key),
             Arg::Text(&operation.method),
             Arg::Text(&operation.path),
-            Arg::Text(&operation.document),
+            Arg::Text(&document),
             Arg::Number(0),
         ];
         writer.add("client_operation", scope.snapshots, &declared);

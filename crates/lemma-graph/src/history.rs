@@ -197,40 +197,20 @@ fn others_as_of(
 /// file is in and the file's path from that repository's root. `None` for
 /// a finding that names no file, or one in a repository not read.
 ///
-/// A file is written with its repository and service (`#web:app:src/a.ts`),
-/// or bare (`src/a.ts`) beside another value that says whose it is, as a
-/// client's file is beside `#sdk:client`.
+/// A file is written with its repository and service
+/// (`#web:app:src/a.ts`), whether a consumer's or a client's.
 pub fn rests_on<'r>(
     finding: &Finding,
     repositories: &'r [ResolvedRepository],
 ) -> Option<(&'r ResolvedRepository, String)> {
     let file = finding.values.get("f")?;
-    let is_within = |value: &str, repository: &ResolvedRepository| {
-        value
-            .strip_prefix(&repository.name)
-            .is_some_and(|rest| rest.starts_with(':'))
-    };
-    let addressed = repositories.iter().find_map(|repository| {
+    repositories.iter().find_map(|repository| {
         let in_repository = file.strip_prefix(&repository.name)?.strip_prefix(':')?;
         let path = in_repository
             .split_once(':')
             .map_or(in_repository, |(_, path)| path);
         Some((repository, path.to_owned()))
-    });
-    if addressed.is_some() || file.starts_with('#') {
-        return addressed;
-    }
-    let mut owners = repositories.iter().filter(|repository| {
-        finding
-            .values
-            .values()
-            .any(|value| is_within(value, repository))
-    });
-    let owner = owners.next()?;
-    if owners.next().is_some() {
-        return None;
-    }
-    Some((owner, file.clone()))
+    })
 }
 
 /// A later commit that changed the lines of a file naming something.
@@ -423,8 +403,8 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_file_belongs_to_the_one_repository_the_finding_names() {
-        let finding = finding_with(&[("f", "src/sdk.gen.ts"), ("cl", "#sdk:client")]);
+    fn a_clients_file_is_placed_as_a_consumers_is() {
+        let finding = finding_with(&[("f", "#sdk:client:src/sdk.gen.ts"), ("cl", "#sdk:client")]);
         let repositories = [read("#billing"), read("#sdk")];
 
         let place = rests_on(&finding, &repositories);
@@ -432,20 +412,6 @@ mod tests {
         let (repository, path) = place.unwrap();
         assert_eq!(repository.name, "#sdk");
         assert_eq!(path, "src/sdk.gen.ts");
-    }
-
-    #[test]
-    fn a_bare_file_between_two_named_repositories_is_not_placed() {
-        let finding = finding_with(&[
-            ("f", "src/a.ts"),
-            ("c", "#web:app:src/b.ts::load"),
-            ("cl", "#sdk:client"),
-        ]);
-        let repositories = [read("#sdk"), read("#web")];
-
-        let place = rests_on(&finding, &repositories);
-
-        assert_eq!(place.map(|(_, path)| path), None);
     }
 
     #[test]
