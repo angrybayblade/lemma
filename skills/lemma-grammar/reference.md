@@ -23,7 +23,7 @@
 | `client_parameter` | client, method, path, name, location, file, line | client specs; the file and line of the client method sending the operation, or the spec with line 0 |
 | `calls_path` | consumer, method (`*` if unknown), path, file, line | service code: path strings and request calls |
 | `calls_client` | consumer, chain, file, line | service code: calls through client receivers and imported client functions |
-| `mentions` | scope, name | names used as fields: object keys, members, keyword arguments, dictionary keys, struct fields, JSON tags |
+| `mentions` | scope, name | names used as fields: object keys, members, keyword arguments, dictionary keys, struct fields, JSON tags, and keys set by a call (`params.set("limit", n)`) |
 | `in_file` | scope, file | which file a consumer or function is in |
 | `imports` | file, imported file | relative and alias imports; for Go, files of one package |
 | `addressed_to` | path, service | a path called in code that is under a prefix the service owns, derived from its documents |

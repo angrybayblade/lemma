@@ -569,6 +569,11 @@ const TEXT_SEARCHES: [&str; 22] = [
     "strip_suffix",
 ];
 
+/// Methods that set one key of a query string, a form or a set of
+/// headers to a value, in the languages Lemma reads (`URLSearchParams`,
+/// `FormData`, `Headers`, Go's `url.Values` and `http.Header`).
+const KEY_SETTERS: [&str; 4] = ["set", "append", "Set", "Add"];
+
 /// Operators comparing two values, or testing whether one is in the other.
 const COMPARISONS: [&str; 5] = ["==", "===", "!=", "!==", "in"];
 
@@ -1184,7 +1189,8 @@ impl Walk<'_> {
             "call_expression" | "call" => node
                 .child_by_field_name("function")
                 .filter(|function| function.kind() == "identifier")
-                .map(|function| self.text(function).to_owned()),
+                .map(|function| self.text(function).to_owned())
+                .or_else(|| self.set_key(node)),
             "subscript" | "subscript_expression" => {
                 let index = node.child_by_field_name(if self.dialect == Dialect::Python {
                     "subscript"
@@ -1201,6 +1207,24 @@ impl Walk<'_> {
             let function = self.enclosing_function(node);
             self.facts.mentions.push(Mention { name, function });
         }
+    }
+
+    /// The key a call sets on what it is called on: `limit` in
+    /// `params.set("limit", n)`, `query.Set("limit", n)` or
+    /// `form.append("limit", n)`, as query strings, forms and headers are
+    /// filled. The name is sent as surely as an object's key is.
+    fn set_key(&self, call: Node<'_>) -> Option<String> {
+        let function = call.child_by_field_name("function")?;
+        let parts = self.chain_parts(function);
+        let called = parts.last().filter(|_| parts.len() > 1)?;
+        if !KEY_SETTERS.contains(&called.as_str()) {
+            return None;
+        }
+        let arguments = Self::children(call.child_by_field_name("arguments")?);
+        let [key, _value] = arguments.as_slice() else {
+            return None;
+        };
+        self.string_value(*key)
     }
 
     /// Records the function a call names, if it names one of its own: by
@@ -1747,6 +1771,22 @@ mod tests {
             "const feed = () => get('/v1/feed?limit=10&offset=0');",
         );
         assert!(names(&found).contains(&"limit"));
+    }
+
+    #[test]
+    fn a_key_set_on_a_query_a_form_or_headers_is_mentioned() {
+        let script = facts(
+            "src/agent.ts",
+            "export function feed(team: string) {\n  const query = new URLSearchParams()\n  query.set('team', team)\n  seen.add('visited')\n  return get(`/v1/feed?${query}`)\n}\n",
+        );
+        let go = facts(
+            "client/feed.go",
+            "package client\n\nfunc feed(q url.Values, team string) {\n\tq.Set(\"team_id\", team)\n}\n",
+        );
+
+        assert!(names(&script).contains(&"team"));
+        assert!(!names(&script).contains(&"visited"));
+        assert!(names(&go).contains(&"team_id"));
     }
 
     fn names(found: &CodeFacts) -> Vec<&str> {
