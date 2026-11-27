@@ -255,7 +255,7 @@ This checks the last 50 commits that changed `billing`'s contracts, one by one, 
 
 Only errors and warnings a change introduced are listed, at level `check` unless you pass `--level`. The `afterwards` line is evidence, not a verdict. It names the first later commit that removed or added a line naming the field or parameter in that file, which usually means someone fixed the caller; a commit that only moves such a line does not count, and one that edits another use of the same name does. Read the pull request for every error. An error with no such commit is either still broken, was never a break, or was fixed somewhere else. `--json` prints the same per change, with the commit each other repository was read at.
 
-The command never fails on a finding and runs no checkers. A hundred changes take a few minutes; a service whose documents come from a [generator](adapters.md#a-services-own-generator) runs it for each commit it has not kept a document for.
+The command never fails on a finding and runs no checkers, so it says nothing about [behaviors](language.md#behaviors-and-checkers): a change listed as introducing no error or warning may still be one a behavior would have failed. A hundred changes take a few minutes; a service whose documents come from a [generator](adapters.md#a-services-own-generator) runs it for each commit it has not kept a document for.
 
 Keep the changes that found real breaks as regression cases for upgrades of Lemma or your requirements.
 

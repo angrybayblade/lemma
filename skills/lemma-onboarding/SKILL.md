@@ -101,7 +101,7 @@ Check 20-50 past changes to a service's contracts before gating anything:
 lemma check --change <repo> --last 50
 ```
 
-Each commit that touched a file the description reads the service's contracts from is checked as its own change, against every other repository at its last commit before it. Under each: the errors and warnings it introduced, and an `afterwards` line naming the first later commit that changed the lines naming the field or parameter in the flagged file, if any. That line is evidence, not a verdict: for every error and warning, read the pull request and the later commit. Was it a real break, fixed by a follow-up? Report a table of change, findings, and whether each was real to the user. False errors are worth a bug report; false warnings on common names are a known limitation.
+Each commit that touched a file the description reads the service's contracts from is checked as its own change, against every other repository at its last commit before it. Under each: the errors and warnings it introduced, and an `afterwards` line naming the first later commit that changed the lines naming the field or parameter in the flagged file, if any. No checkers run, so behaviors report nothing here. That line is evidence, not a verdict: for every error and warning, read the pull request and the later commit. Was it a real break, fixed by a follow-up? Report a table of change, findings, and whether each was real to the user. False errors are worth a bug report; false warnings on common names are a known limitation.
 
 ## 6. CI
 
