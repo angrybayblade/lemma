@@ -121,6 +121,8 @@ When the working directory changes only TypeScript files, and a changed file's z
 
 A contract laid over committed documents is kept by its inputs (the service, the adapter's document and the committed documents' contents), so a check whose documents are unchanged lays nothing again.
 
+When an adapter fails, as it does on code that does not parse, Lemma checks the service's committed documents instead and says so in a warning. A service with no committed document has nothing to check instead: it is reported as not checked, as an error naming the failure, and nothing else is said about it. Where its code was read at the change's other commit, that reading stands for both, so that its callers are not reported as calling operations that no longer exist.
+
 Lemma reads other repositories in a check where they are checked out. A pinned repository (`local(..., rev: ...)` or `git(...)`) uses a kept document if there is one and its committed documents otherwise; Lemma never runs another repository's `setup`.
 
 In Python, a build imports the worktree's code before any installed copy of it. An adapter that imports a module from outside the code it is reading (an editable install of the main checkout) fails rather than describe today's code as a past commit's.

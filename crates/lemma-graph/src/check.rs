@@ -1510,6 +1510,7 @@ fn apply_adapters(
     };
     let results = run_adapter_jobs(&jobs, keeping, operations.as_deref());
     let mut has_drift = false;
+    let mut unread = Vec::new();
     for (job, result) in jobs.iter().zip(results) {
         let Some(repository) = inferred.manifest.repositories.get_mut(&job.entry) else {
             continue;
@@ -1532,23 +1533,67 @@ fn apply_adapters(
             // A pinned repository nobody has read the code of: its
             // committed documents are its contract.
             Ok(None) => {}
+            Err(error) if job.documents.is_empty() => unread.push((job, error)),
             Err(error) => {
-                let at = job
-                    .checkout
-                    .commit
-                    .as_deref()
-                    .unwrap_or("working directory");
                 findings.push(adapter_warning(
                     &job.entry,
                     format!(
-                        "could not read {}'s operations from its code ({at}), so its committed documents were checked: {error}",
-                        job.service
+                        "could not read {}'s operations from its code ({}), so its committed documents were checked: {error}",
+                        job.service,
+                        job.at()
                     ),
                 ));
             }
         }
     }
+    findings.extend(not_checked(&unread, &mut inferred.manifest));
     has_drift
+}
+
+/// An error for each service whose code could not be read at a snapshot
+/// and that has no committed document to check instead: what it serves
+/// there is unknown, and nothing is said about it. Where its code was
+/// read at the change's other snapshot, that reading stands for both, so
+/// that no operation looks removed or added: taking the service to serve
+/// nothing would report every caller as broken by code that only fails
+/// to parse.
+fn not_checked(
+    unread: &[(&AdapterJob<'_>, GraphError)],
+    manifest: &mut lemma_verify::Manifest,
+) -> Vec<Finding> {
+    let is_unread = |entry: &str, role: &str| {
+        unread
+            .iter()
+            .any(|(job, _)| job.entry == entry && job.role == role)
+    };
+    let mut errors = Vec::new();
+    for (job, error) in unread {
+        let other = match job.role {
+            "head" => "base",
+            "base" => "head",
+            _ => "",
+        };
+        let was_read_before = job.role == "head" && !is_unread(&job.entry, "base");
+        if let Some(repository) = manifest.repositories.get_mut(&job.entry) {
+            if let Some(read) = repository.generated.get(other).cloned() {
+                repository.generated.insert(job.role.to_owned(), read);
+            }
+        }
+        errors.push(Finding {
+            severity: Severity::Error,
+            introduced: was_read_before,
+            ..adapter_warning(
+                &job.entry,
+                format!(
+                    "could not read {}'s operations from its code ({}), and it has no committed document to check instead, so {} was not checked: {error}",
+                    job.service,
+                    job.at(),
+                    job.service
+                ),
+            )
+        });
+    }
+    errors
 }
 
 /// One adapter run an inference needs: a service's code at one snapshot.
@@ -1567,6 +1612,16 @@ struct AdapterJob<'r> {
     /// The documents the adapter is given to as their command; empty when
     /// it is laid over them all.
     documents_from_code: &'r [String],
+}
+
+impl AdapterJob<'_> {
+    /// The snapshot read, as a message names it.
+    fn at(&self) -> &str {
+        self.checkout
+            .commit
+            .as_deref()
+            .unwrap_or("working directory")
+    }
 }
 
 fn adapter_jobs<'r>(

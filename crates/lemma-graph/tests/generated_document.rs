@@ -170,6 +170,63 @@ fn an_uncommitted_code_change_is_checked_before_the_document_is_regenerated() {
     );
 }
 
+/// Makes the provider's document come from its code alone, committed.
+fn keep_no_document(workspace: &Path) {
+    let provider = workspace.join("billing");
+    let description = std::fs::read_to_string(provider.join("mod.lm")).unwrap();
+    let from_code_alone = description.replace(
+        "http.openapi(\"openapi.json\", command: spec)",
+        "http.openapi(command: spec)",
+    );
+    write(&provider.join("mod.lm"), &from_code_alone);
+    git(&provider, &["rm", "-q", "openapi.json"]);
+    git(&provider, &["add", "."]);
+    git(
+        &provider,
+        &["commit", "-q", "-m", "build the document from code"],
+    );
+}
+
+#[test]
+fn code_that_cannot_be_read_with_no_document_to_check_instead_is_not_checked() {
+    let workspace = tempfile::tempdir().unwrap();
+    system(workspace.path());
+    keep_no_document(workspace.path());
+    // The generator fails, as it does on code that does not parse.
+    write(
+        &workspace.path().join("billing/tools/openapi.sh"),
+        "#!/bin/sh\necho 'SyntaxError: unexpected token' >&2\nexit 1\n",
+    );
+
+    let report = run_check(workspace.path(), "HEAD", None);
+
+    let errors: Vec<(&str, bool)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.severity == Severity::Error)
+        .map(|finding| (finding.check.as_str(), finding.introduced))
+        .collect();
+    assert_eq!(errors, [("adapter", true)], "{:?}", report.findings);
+    let said = &report.findings[0].message;
+    assert!(said.contains("api was not checked"), "{said}");
+    assert!(said.contains("SyntaxError"), "{said}");
+}
+
+#[test]
+fn code_read_from_code_alone_is_checked_while_it_can_be_read() {
+    let workspace = tempfile::tempdir().unwrap();
+    system(workspace.path());
+    keep_no_document(workspace.path());
+    require_currency(workspace.path());
+
+    let report = run_check(workspace.path(), "HEAD", None);
+
+    assert_eq!(
+        errors_on_the_call(&report),
+        ["consumer_misses_new_required_field"]
+    );
+}
+
 /// A second committed document of the provider that no command writes,
 /// larger than the generated one.
 const OTHER_DOCUMENT: &str = r#"{ "openapi": "3.0.0", "paths": {
